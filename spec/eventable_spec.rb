@@ -1,12 +1,6 @@
 require 'spec_helper'
-require 'sourced/aggregate_root'
-require 'sourced/event'
 
-UserCreated = Struct.new(:aggregate_id)
-NameChanged = Struct.new(:aggregate_id, :name)
-AgeChanged = Struct.new(:aggregate_id, :age)
-
-RSpec.describe Sourced::AggregateRoot do
+RSpec.describe Sourced::Eventable do
   UserCreated = Sourced::Event.define('users.created')
   NameChanged = Sourced::Event.define('users.name_changed') do
     field(:name).type(:string)
@@ -17,7 +11,7 @@ RSpec.describe Sourced::AggregateRoot do
 
   let(:user_class) {
     Class.new do
-      include Sourced::AggregateRoot
+      include Sourced::Eventable
       attr_reader :id, :name
 
       def initialize(id = nil)

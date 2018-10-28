@@ -1,5 +1,5 @@
 module Sourced
-  module AggregateRoot
+  module Eventable
     def self.included(base)
       base.extend ClassMethods
     end

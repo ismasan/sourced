@@ -1,5 +1,4 @@
 require 'spec_helper'
-require 'sourced/event'
 
 RSpec.describe Sourced::Event do
   let(:user_created) {

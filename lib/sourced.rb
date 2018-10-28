@@ -6,3 +6,6 @@ module Sourced
     SecureRandom.uuid
   end
 end
+
+require 'sourced/eventable'
+require 'sourced/event'
