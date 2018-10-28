@@ -44,7 +44,7 @@ RSpec.describe Sourced::AggregateRoot do
     user.name = 'Ismael'
     expect(user.id).to eq id
     expect(user.name).to eq 'Ismael'
-    expect(user.uncommited_events.map{|e| e.class.to_s }).to eq ['UserCreated', 'NameChanged']
+    expect(user.events.map{|e| e.class.to_s }).to eq ['UserCreated', 'NameChanged']
   end
 end
 

@@ -7,12 +7,12 @@ module Sourced
     def apply(event, collect: true)
       self.class.handlers[event.topic].each do |handler|
         instance_exec(event, &handler)
-        uncommited_events << event if collect
+        events << event if collect
       end
     end
 
-    def uncommited_events
-      @uncommited_events ||= []
+    def events
+      @events ||= []
     end
 
     module ClassMethods
