@@ -40,5 +40,31 @@ RSpec.describe Sourced::Eventable do
     expect(user.name).to eq 'Ismael'
     expect(user.events.map{|e| e.class.to_s }).to eq ['UserCreated', 'NameChanged']
   end
+
+  it 'inherits handlers' do
+    sub_class = Class.new(user_class) do
+      attr_reader :title, :age
+
+      def age=(int)
+        apply AgeChanged.instance(age: int)
+      end
+
+      # register a second handler for same event
+      on NameChanged do |event|
+        @title = "Mr. #{event.name}"
+      end
+
+      on AgeChanged do |event|
+        @age = event.age
+      end
+    end
+
+    user = sub_class.new(Sourced.uuid)
+    user.name = 'Ismael'
+    user.age = 30
+
+    expect(user.title).to eq 'Mr. Ismael'
+    expect(user.age).to eq 30
+  end
 end
 

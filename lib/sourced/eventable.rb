@@ -16,6 +16,12 @@ module Sourced
     end
 
     module ClassMethods
+      def inherited(subclass)
+        handlers.each do |key, list|
+          subclass.handlers[key] = list
+        end
+      end
+
       def on(event_type, &block)
         key = event_type.respond_to?(:topic) ? event_type.topic : event_type.to_s
         handlers[key] << block
