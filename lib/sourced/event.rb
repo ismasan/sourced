@@ -63,7 +63,7 @@ module Sourced
       schema.fields[:topic].visit(:default)
     end
 
-    def self.instance(data)
+    def self.instance(data = {})
       event = new(data)
       raise InvalidEventError.new(event.topic, event.errors) unless event.valid?
       event

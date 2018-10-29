@@ -39,6 +39,8 @@ RSpec.describe Sourced::Eventable do
     expect(user.id).to eq id
     expect(user.name).to eq 'Ismael'
     expect(user.events.map{|e| e.class.to_s }).to eq ['UserCreated', 'NameChanged']
+    expect(user.clear_events.map{|e| e.class.to_s }).to eq ['UserCreated', 'NameChanged']
+    expect(user.events.size).to eq 0
   end
 
   it 'inherits handlers' do

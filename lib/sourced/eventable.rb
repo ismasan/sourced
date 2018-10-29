@@ -15,6 +15,12 @@ module Sourced
       @events ||= []
     end
 
+    def clear_events
+      evts = @events.clone
+      @events = []
+      evts
+    end
+
     module ClassMethods
       def inherited(subclass)
         handlers.each do |key, list|

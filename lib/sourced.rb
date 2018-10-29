@@ -9,3 +9,4 @@ end
 
 require 'sourced/eventable'
 require 'sourced/event'
+require 'sourced/handler'
