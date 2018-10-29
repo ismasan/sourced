@@ -1,33 +1,35 @@
 require 'spec_helper'
 
 RSpec.describe Sourced::Handler do
-  CreateUser = Sourced::Event.define('create_user') do
-    field(:name).type(:string).present
-    field(:age).type(:integer).present
-  end
-  UpdateUser = Sourced::Event.define('update_user') do
-    field(:name).type(:string).present
-    field(:age).type(:integer).present
-  end
-  UserCreated = Sourced::Event.define('users.created')
-  NameChanged = Sourced::Event.define('users.name_changed') do
-    field(:name).type(:string)
-  end
-  AgeChanged = Sourced::Event.define('users.age_changed') do
-    field(:age).type(:integer)
+  module HTE
+    CreateUser = Sourced::Event.define('create_user') do
+      field(:name).type(:string).present
+      field(:age).type(:integer).present
+    end
+    UpdateUser = Sourced::Event.define('update_user') do
+      field(:name).type(:string).present
+      field(:age).type(:integer).present
+    end
+    UserCreated = Sourced::Event.define('users.created')
+    NameChanged = Sourced::Event.define('users.name_changed') do
+      field(:name).type(:string)
+    end
+    AgeChanged = Sourced::Event.define('users.age_changed') do
+      field(:age).type(:integer)
+    end
   end
 
   let(:user_handler) {
     Class.new do
       include Sourced::Handler
 
-      on CreateUser do |cmd|
-        emit UserCreated.instance
-        emit NameChanged.instance(name: cmd.name)
-        emit AgeChanged.instance(age: cmd.age)
+      on HTE::CreateUser do |cmd|
+        emit HTE::UserCreated.instance
+        emit HTE::NameChanged.instance(name: cmd.name)
+        emit HTE::AgeChanged.instance(age: cmd.age)
       end
 
-      on UpdateUser do |cmd|
+      on HTE::UpdateUser do |cmd|
 
       end
     end
@@ -40,9 +42,9 @@ RSpec.describe Sourced::Handler do
     end
   end
 
-  describe '#call' do
+  describe '#call(command)' do
     it 'handles command and gathers events' do
-      cmd = CreateUser.instance(
+      cmd = HTE::CreateUser.instance(
         name: 'Ismael',
         age: 40,
       )

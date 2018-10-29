@@ -1,12 +1,14 @@
 require 'spec_helper'
 
 RSpec.describe Sourced::Eventable do
-  UserCreated = Sourced::Event.define('users.created')
-  NameChanged = Sourced::Event.define('users.name_changed') do
-    field(:name).type(:string)
-  end
-  AgeChanged = Sourced::Event.define('users.age_changed') do
-    field(:age).type(:integer)
+  module ETE
+    UserCreated = Sourced::Event.define('users.created')
+    NameChanged = Sourced::Event.define('users.name_changed') do
+      field(:name).type(:string)
+    end
+    AgeChanged = Sourced::Event.define('users.age_changed') do
+      field(:age).type(:integer)
+    end
   end
 
   let(:user_class) {
@@ -15,14 +17,14 @@ RSpec.describe Sourced::Eventable do
       attr_reader :id, :name
 
       def initialize(id = nil)
-        apply UserCreated.instance(aggregate_id: id) if id
+        apply ETE::UserCreated.instance(aggregate_id: id) if id
       end
 
       def name=(n)
-        apply NameChanged.instance(aggregate_id: id, name: n)
+        apply ETE::NameChanged.instance(aggregate_id: id, name: n)
       end
 
-      on UserCreated do |event|
+      on ETE::UserCreated do |event|
         @id = event.aggregate_id
       end
 
@@ -38,8 +40,9 @@ RSpec.describe Sourced::Eventable do
     user.name = 'Ismael'
     expect(user.id).to eq id
     expect(user.name).to eq 'Ismael'
-    expect(user.events.map{|e| e.class.to_s }).to eq ['UserCreated', 'NameChanged']
-    expect(user.clear_events.map{|e| e.class.to_s }).to eq ['UserCreated', 'NameChanged']
+    topics = %w(users.created users.name_changed)
+    expect(user.events.map(&:topic)).to eq topics
+    expect(user.clear_events.map(&:topic)).to eq topics
     expect(user.events.size).to eq 0
   end
 
@@ -48,15 +51,15 @@ RSpec.describe Sourced::Eventable do
       attr_reader :title, :age
 
       def age=(int)
-        apply AgeChanged.instance(age: int)
+        apply ETE::AgeChanged.instance(age: int)
       end
 
       # register a second handler for same event
-      on NameChanged do |event|
+      on ETE::NameChanged do |event|
         @title = "Mr. #{event.name}"
       end
 
-      on AgeChanged do |event|
+      on ETE::AgeChanged do |event|
         @age = event.age
       end
     end
