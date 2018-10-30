@@ -47,16 +47,16 @@ module Sourced
       @registry ||= {}
     end
 
-    def self.define(event_name, &block)
+    def self.define(topic, &block)
       klass = Class.new(self)
       # redefine topic with default value
       klass.schema do
-        field(:topic).default(event_name).options([event_name])
+        field(:topic).default(topic).options([topic])
       end
       # apply new schema
       klass.schema &block
 
-      registry[event_name] = klass
+      registry[topic] = klass
     end
 
     def self.topic
