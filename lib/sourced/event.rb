@@ -1,4 +1,3 @@
-require 'securerandom'
 require 'time'
 require 'parametric/struct'
 
@@ -38,7 +37,7 @@ module Sourced
 
     schema do
       field(:topic).type(:string).present
-      field(:id).type(:uuid).default(->(*_){ SecureRandom.uuid })
+      field(:id).type(:uuid).default(->(*_){ ::Sourced.uuid })
       field(:aggregate_id).declared.type(:uuid)
       field(:date).type(:datetime).default(->(*_){ Time.now.utc })
     end
