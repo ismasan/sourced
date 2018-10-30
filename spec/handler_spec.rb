@@ -49,8 +49,8 @@ RSpec.describe Sourced::Handler do
         age: 40,
       )
       events = handler.call(cmd)
-      expect(events.size).to eq 4
-      expect(events.map(&:topic)).to eq %w(create_user users.created users.name_changed users.age_changed)
+      expect(events.size).to eq 3
+      expect(events.map(&:topic)).to eq %w(users.created users.name_changed users.age_changed)
     end
   end
 end

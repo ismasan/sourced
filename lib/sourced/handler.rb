@@ -11,7 +11,7 @@ module Sourced
     def call(cmd, *args)
       clear_events
       apply(cmd, collect: false)
-      [cmd] + clear_events
+      clear_events
     end
 
     private
