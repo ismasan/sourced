@@ -15,7 +15,13 @@ module Sourced
     end
 
     private
-    def emit(event)
+    def emit(event_or_class, attrs = {})
+      event = if event_or_class.respond_to?(:instance)
+        event_or_class.instance(attrs)
+      else
+        event_or_class
+      end
+
       events << event
     end
   end

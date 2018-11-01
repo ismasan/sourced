@@ -24,8 +24,8 @@ RSpec.describe Sourced::Handler do
       include Sourced::Handler
 
       on HTE::CreateUser do |cmd|
-        emit HTE::UserCreated.instance
-        emit HTE::NameChanged.instance(name: cmd.name)
+        emit HTE::UserCreated
+        emit HTE::NameChanged, name: cmd.name # will instantiate
         emit HTE::AgeChanged.instance(age: cmd.age)
       end
 
