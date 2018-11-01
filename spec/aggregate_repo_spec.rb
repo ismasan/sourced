@@ -60,6 +60,7 @@ RSpec.describe Sourced::AggregateRepo do
       expect(user.version).to eq 3
 
       # it loads cached aggregate
+      expect(event_store).not_to receive(:by_aggregate_id)
       user2 = repo.load(aggregate_id, ARE::User)
       expect(user).to eq user2
     end
@@ -79,7 +80,7 @@ RSpec.describe Sourced::AggregateRepo do
       expect(user.version).to eq 2
     end
 
-    it 'catches up with new changes' do
+    it 'catches up with new changes if :catchup' do
       event_store.append([
         ARE::UserCreated.instance(aggregate_id: aggregate_id, version: 1, name: 'Ismael', age: 39),
         ARE::NameChanged.instance(aggregate_id: aggregate_id, version: 2, name: 'Mr. Ismael'),
@@ -95,7 +96,7 @@ RSpec.describe Sourced::AggregateRepo do
         ARE::AgeChanged.instance(aggregate_id: aggregate_id, version: 3, age: 40),
       ])
 
-      user2 = repo.load(aggregate_id, ARE::User)
+      user2 = repo.load(aggregate_id, ARE::User, catchup: true)
       expect(user2).to eq user
       expect(user2.id).to eq aggregate_id
       expect(user2.name).to eq 'Mr. Ismael'
