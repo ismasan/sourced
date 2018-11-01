@@ -6,6 +6,7 @@ module Sourced
 
     def apply(event, collect: true)
       self.class.handlers[event.topic].each do |handler|
+        before_apply(event)
         instance_exec(event, &handler)
         events << event if collect
       end
@@ -19,6 +20,11 @@ module Sourced
       evts = @events.clone
       @events = []
       evts
+    end
+
+    private
+    def before_apply(_)
+
     end
 
     module ClassMethods
