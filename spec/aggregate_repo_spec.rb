@@ -79,7 +79,7 @@ RSpec.describe Sourced::AggregateRepo do
       expect(user.version).to eq 2
     end
 
-    it 'it catches up with new changes' do
+    it 'catches up with new changes' do
       event_store.append([
         ARE::UserCreated.instance(aggregate_id: aggregate_id, version: 1, name: 'Ismael', age: 39),
         ARE::NameChanged.instance(aggregate_id: aggregate_id, version: 2, name: 'Mr. Ismael'),
