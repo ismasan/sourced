@@ -1,11 +1,9 @@
 module Sourced
-  module Handler
-    def self.included(base)
-      base.send(:include, Eventable)
-    end
+  class CommandHandler
+    include Eventable
 
-    def topics
-      self.class.handlers.keys
+    def self.call(*args)
+      new.call(*args)
     end
 
     def call(cmd, *args)

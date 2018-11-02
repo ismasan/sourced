@@ -5,9 +5,10 @@ module Sourced
     end
 
     def apply(event, collect: true)
-      self.class.handlers[event.topic].each do |handler|
+      self.class.handlers[event.topic].each do |record|
         before_apply(event)
-        instance_exec(event, &handler)
+        deps = resolve_handler_dependencies(event, record.options)
+        instance_exec(event, *deps, &record.handler)
         events << event if collect
       end
     end
@@ -27,6 +28,12 @@ module Sourced
 
     end
 
+    def resolve_handler_dependencies(*_)
+
+    end
+
+    Record = Struct.new(:handler, :options)
+
     module ClassMethods
       def inherited(subclass)
         handlers.each do |key, list|
@@ -34,13 +41,17 @@ module Sourced
         end
       end
 
-      def on(event_type, &block)
+      def on(event_type, opts = {},  &block)
         key = event_type.respond_to?(:topic) ? event_type.topic : event_type.to_s
-        handlers[key] << block
+        handlers[key] << Record.new(block, opts)
       end
 
       def handlers
         @handlers ||= Hash.new{|h, k| h[k] = [] }
+      end
+
+      def topics
+        handlers.keys
       end
     end
   end

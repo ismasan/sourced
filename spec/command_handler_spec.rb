@@ -1,6 +1,6 @@
 require 'spec_helper'
 
-RSpec.describe Sourced::Handler do
+RSpec.describe Sourced::CommandHandler do
   module HTE
     CreateUser = Sourced::Event.define('create_user') do
       field(:name).type(:string).present
@@ -19,10 +19,8 @@ RSpec.describe Sourced::Handler do
     end
   end
 
-  let(:user_handler) {
-    Class.new do
-      include Sourced::Handler
-
+  subject(:user_handler) {
+    Class.new(Sourced::CommandHandler) do
       on HTE::CreateUser do |cmd|
         emit HTE::UserCreated
         emit HTE::NameChanged, name: cmd.name # will instantiate
@@ -34,11 +32,10 @@ RSpec.describe Sourced::Handler do
       end
     end
   }
-  subject(:handler) { user_handler.new }
 
   describe '#topics' do
     it 'list all handled topics' do
-      expect(handler.topics).to eq %w(create_user update_user)
+      expect(user_handler.topics).to eq %w(create_user update_user)
     end
   end
 
@@ -48,7 +45,7 @@ RSpec.describe Sourced::Handler do
         name: 'Ismael',
         age: 40,
       )
-      events = handler.call(cmd)
+      events = user_handler.call(cmd)
       expect(events.size).to eq 3
       expect(events.map(&:topic)).to eq %w(users.created users.name_changed users.age_changed)
     end
