@@ -2,7 +2,7 @@
 
 Bare-bones Event Sourcing in Ruby. WiP.
 
-![diagram](https://static.swimlanes.io/ab44d1c3433cf6697a84bd15b6e4c64d.png)
+![diagram](https://static.swimlanes.io/ab58ca5bacf8a6e60024c3e8335bdfee.png)
 
 ## Installation
 
