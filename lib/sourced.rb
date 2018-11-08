@@ -7,6 +7,7 @@ module Sourced
   end
 end
 
+require 'sourced/errors'
 require 'sourced/eventable'
 require 'sourced/event'
 require 'sourced/command_handler'

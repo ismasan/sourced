@@ -46,4 +46,11 @@ RSpec.describe Sourced::Dispatcher do
     expect(events.map(&:version)).to eq [1, 1, 2, 3, 1, 4]
     expect(events.map(&:parent_id).uniq.compact).to eq [create.id, update.id]
   end
+
+  it 'raises a useful error when no handlers found for a given command' do
+    cmd_class = Sourced::Event.define('foo.bar')
+    expect {
+      dispatcher.call(cmd_class.instance(aggregate_id: Sourced.uuid))
+    }.to raise_error(Sourced::UnhandledCommandError)
+  end
 end
