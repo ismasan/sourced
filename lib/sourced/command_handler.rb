@@ -7,6 +7,9 @@ module Sourced
       # pass your own pre-instantiated repository
       # to share repository state across handlers
       def call(cmd, repository: AggregateRepo.new)
+        if !topics.include?(cmd.topic)
+          raise UnhandledCommandError, "#{self.name} does not handle command '#{cmd.topic}'"
+        end
         repository.clear_events
         new(repository).call(cmd)
       end
