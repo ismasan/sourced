@@ -5,8 +5,8 @@ module UserDomain
     field(:age).type(:integer).present
   end
   UpdateUser = Sourced::Event.define('users.update') do
-    field(:name).type(:string).present
-    field(:age).type(:integer).present
+    field(:name).type(:string)
+    field(:age).type(:integer)
   end
 
   ## Events
@@ -67,7 +67,8 @@ module UserDomain
     end
 
     on UserDomain::UpdateUser do |cmd, user|
-
+      user.apply(UserDomain::NameChanged, name: cmd.name) if cmd.name
+      user.apply(UserDomain::AgeChanged, age: cmd.age) if cmd.age
     end
   end
 end
