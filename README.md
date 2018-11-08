@@ -1,8 +1,8 @@
 # Sourced
 
-Welcome to your new gem! In this directory, you'll find the files you need to be able to package up your Ruby library into a gem. Put your Ruby code in the file `lib/sourced`. To experiment with that code, run `bin/console` for an interactive prompt.
+Bare-bones Event Sourcing in Ruby. WiP.
 
-TODO: Delete this and the text above, and describe your gem
+![diagram](https://static.swimlanes.io/ab58ca5bacf8a6e60024c3e8335bdfee.png)
 
 ## Installation
 
