@@ -38,7 +38,7 @@ module Sourced
     schema do
       field(:topic).type(:string).present
       field(:id).type(:uuid).default(->(*_){ ::Sourced.uuid })
-      field(:aggregate_id).declared.type(:uuid)
+      field(:aggregate_id).present.type(:uuid)
       field(:version).type(:integer).default(1)
       field(:date).type(:datetime).default(->(*_){ Time.now.utc })
     end
