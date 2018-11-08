@@ -35,6 +35,25 @@ RSpec.describe Sourced::Event do
         }.to raise_error Sourced::InvalidEventError
       end
     end
+
+    describe '.from' do
+      it 'finds subclass from topic and builds event' do
+        id = Sourced.uuid
+        aggrid = Sourced.uuid
+        data = {
+          id: id,
+          aggregate_id: aggrid,
+          topic: 'users.name.changed',
+          name: 'Joe',
+        }
+
+        evt = Sourced::Event.from(data)
+        expect(evt).to be_a UserDomain::NameChanged
+        expect(evt.id).to eq id
+        expect(evt.aggregate_id).to eq aggrid
+        expect(evt.name).to eq 'Joe'
+      end
+    end
   end
 
   context 'instance-level' do
