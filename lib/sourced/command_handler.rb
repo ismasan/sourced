@@ -3,8 +3,11 @@ module Sourced
     include Eventable
 
     class << self
-      def call(cmd, event_store: MemEventStore.new)
-        new(event_store).call(cmd)
+      # by default it will use a repository with a memory-only event store
+      # pass your own pre-instantiated repository
+      # to share repository state across handlers
+      def call(cmd, repository: AggregateRepo.new)
+        new(repository).call(cmd)
       end
 
       def aggregates(klass)
@@ -14,8 +17,8 @@ module Sourced
       attr_reader :aggregate_class
     end
 
-    def initialize(event_store)
-      @repository = AggregateRepo.new(event_store: event_store)
+    def initialize(repository)
+      @repository = repository
     end
 
     def call(cmd)
