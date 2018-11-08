@@ -22,17 +22,26 @@ module Sourced
       clear_events
       aggr = load_aggregate(cmd.aggregate_id)
       apply(cmd, deps: [aggr].compact, collect: false)
-      [aggr, collect_and_clear_events]
+      [aggr, collect_and_clear_events(cmd)]
     end
 
     private
     attr_reader :repository
 
-    # collect events
+    # collect events, add #parent_id from command
     # 1. added directly to command handler, if any
     # 2. applied to aggregates managed by repository
-    def collect_and_clear_events
-      clear_events + repository.clear_events
+    def collect_and_clear_events(cmd)
+      (clear_events + repository.clear_events).map do |evt|
+        evt.copy(copy_cmd_attrs(cmd))
+      end
+    end
+
+    # these attributes will be copied from originating command
+    # on to new events emitted by this handler
+    # overwrite this in your sub-classes if you need to copy aditional attributes
+    def copy_cmd_attrs(cmd)
+      {parent_id: cmd.id}
     end
 
     def load_aggregate(id)

@@ -70,6 +70,7 @@ RSpec.describe Sourced::CommandHandler do
       expect(events.map(&:topic)).to eq %w(users.created users.name_changed users.age_changed)
       expect(events.map(&:aggregate_id).uniq).to eq [id]
       expect(events.map(&:version)).to eq [1, 2, 3]
+      expect(events.map(&:parent_id).uniq).to eq [cmd.id]
     end
   end
 end
