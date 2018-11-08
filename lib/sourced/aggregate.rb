@@ -5,6 +5,8 @@ module Sourced
     end
     include Eventable
 
+    attr_reader :id
+
     def version
       @version ||= 0
     end

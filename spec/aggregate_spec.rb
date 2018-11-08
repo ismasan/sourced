@@ -15,7 +15,7 @@ RSpec.describe Sourced::Aggregate do
 
     User = Class.new do
       include Sourced::Aggregate
-      attr_reader :id, :name, :age
+      attr_reader :name, :age
       def initialize
         @id = nil
         @name = nil
@@ -56,6 +56,7 @@ RSpec.describe Sourced::Aggregate do
       user.name = 'Mr. Ismael'
       user.age = 40
 
+      expect(user.id).to eq id
       expect(user.name).to eq 'Mr. Ismael'
       expect(user.age).to eq 40
       expect(user.version).to eq 3
