@@ -44,6 +44,9 @@ RSpec.describe Sourced::AggregateRepo do
     it 'loads new aggregate when no events available' do
       user = repo.load(aggregate_id, ARE::User)
       expect(user.id).to be nil
+      # loads same new user again, even if it's new
+      user2 = repo.load(aggregate_id, ARE::User)
+      expect(user.object_id).to eq user.object_id
     end
 
     it 'loads from available history' do
@@ -102,6 +105,29 @@ RSpec.describe Sourced::AggregateRepo do
       expect(user2.name).to eq 'Mr. Ismael'
       expect(user2.age).to eq 40
       expect(user2.version).to eq 3
+    end
+  end
+
+  describe '#clear_events' do
+    it 'collects aggregate events' do
+      id1 = Sourced.uuid
+      id2 = Sourced.uuid
+      user1 = repo.load(id1, ARE::User)
+      user2 = repo.load(id2, ARE::User)
+
+      user1.apply ARE::UserCreated, aggregate_id: id1, name: 'Ismael', age: 39
+      user1.apply ARE::NameChanged, name: 'Ismael'
+      user2.apply ARE::UserCreated, aggregate_id: id2, name: 'Joe', age: 42
+      user1.apply ARE::AgeChanged, age: 40
+
+      expect(user1.events.map(&:topic)).to eq %w(users.created users.name.changed users.age.changed)
+      expect(user2.events.map(&:topic)).to eq %w(users.created)
+
+      events = repo.clear_events
+      # events will be in order aggregates where loaded, not in order they where applied to aggregates
+      # is this a problem?
+      expect(events.map(&:topic)).to eq %w(users.created users.name.changed users.age.changed users.created)
+      expect(events.map(&:aggregate_id)).to eq [user1.id, user1.id, user1.id, user2.id]
     end
   end
 end

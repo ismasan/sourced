@@ -19,9 +19,13 @@ module Sourced
         stream = event_store.by_aggregate_id(id, opts)
         aggr = aggregate_class.new
         aggr.load_from(stream)
-        aggregates[aggr.id] = aggr
+        aggregates[id] = aggr
         aggr
       end
+    end
+
+    def clear_events
+      aggregates.values.flat_map(&:clear_events)
     end
 
     private
@@ -29,10 +33,6 @@ module Sourced
 
     def reset!
       @aggregates = {}
-    end
-
-    def clear_events
-      aggregates.values.flat_map(&:clear_events)
     end
   end
 end
