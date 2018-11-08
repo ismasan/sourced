@@ -2,6 +2,7 @@ module Sourced
   class MemEventStore
     def initialize
       @events = []
+      @mutex = Mutex.new
     end
 
     def by_aggregate_id(id, upto: nil, from: nil)
@@ -14,11 +15,15 @@ module Sourced
       end
     end
 
-    def append(events)
-      @events += Array(events)
+    def append(evts)
+      evts = Array(evts)
+      mutex.synchronize {
+        @events += evts
+      }
+      evts
     end
 
     private
-    attr_reader :events
+    attr_reader :events, :mutex
   end
 end
