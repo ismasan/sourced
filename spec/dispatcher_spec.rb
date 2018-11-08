@@ -3,11 +3,13 @@ require 'spec_helper'
 RSpec.describe Sourced::Dispatcher do
   let(:store) { Sourced::MemEventStore.new }
   let(:repo) { Sourced::AggregateRepo.new(event_store: store) }
+  let(:subscribers) { Sourced::Subscribers.new }
   subject(:dispatcher) {
     described_class.new(
       repository: repo,
       store: store,
-      handler: UserDomain::UserHandler
+      handler: UserDomain::UserHandler,
+      subscribers: subscribers
     )
   }
 
@@ -45,6 +47,17 @@ RSpec.describe Sourced::Dispatcher do
     # commands don't increment version
     expect(events.map(&:version)).to eq [1, 1, 2, 3, 1, 4]
     expect(events.map(&:parent_id).uniq.compact).to eq [create.id, update.id]
+  end
+
+  it 'sends events to subscribers' do
+    id = Sourced.uuid
+    create = UserDomain::CreateUser.instance(aggregate_id: id, name: 'Ismael', age: 40)
+
+    expect(subscribers).to receive(:call) do |events|
+      expect(events.map(&:topic)).to eq %w(users.create users.created users.name.changed users.age.changed)
+    end
+
+    dispatcher.call(create)
   end
 
   it 'raises a useful error when no handlers found for a given command' do
