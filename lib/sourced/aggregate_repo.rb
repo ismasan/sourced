@@ -1,6 +1,6 @@
 module Sourced
   class AggregateRepo
-    def initialize(event_store:)
+    def initialize(event_store: MemEventStore.new)
       @event_store = event_store
       reset!
     end
