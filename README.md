@@ -4,6 +4,56 @@ Bare-bones Event Sourcing in Ruby. WiP.
 
 ![diagram](https://static.swimlanes.io/ab58ca5bacf8a6e60024c3e8335bdfee.png)
 
+## TL;DR;
+
+This gem gives you the basic components to build in-process event-sourced apps in Ruby. Extend by providing your own implementation of the interfaces described here.
+
+### Commands
+
+Commands are the things that you want your app to do. They describe _intents_, and by convention are named in the imperative (ex. "create user", "update account").
+
+```ruby
+CreateUser = Sourced::Event.define('users.create') do
+  field(:name).type(:string).present
+  field(:age).type(:integer).present
+end
+```
+
+### Events
+
+Events describe things that have happened in your system, and are usually produced in response to commands.
+For example, a `CreateUser` command might result in a `UserCreated` event.
+Events are named in past tense. ex. "user created", "account updated".
+
+```ruby
+UserCreated = Sourced::Event.define('users.created') do
+  field(:name).type(:string).present
+  field(:age).type(:integer).present
+end
+UserNameUpdated = Sourced::Event.define('users.updated.name') do
+  field(:name).type(:string).present
+end
+UserAgeUpdated = Sourced::Event.define('users.updated.age') do
+  field(:age).type(:integer).present
+end
+```
+
+Commands and events define data schemas and their validations. Both are inmutable.
+Sourced won't let invalid events go through.
+You can add your own validators and field types. See [Parametric](https://github.com/ismasan/parametric) for more.
+
+### Command Handler
+
+ToDO
+
+### Aggregate
+
+ToDO
+
+### Event Store
+
+ToDO
+
 ## Installation
 
 Add this line to your application's Gemfile:
