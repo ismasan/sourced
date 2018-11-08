@@ -87,6 +87,18 @@ ToDO
 
 ToDO
 
+### Subscribers
+
+ToDO
+
+### Projections
+
+ToDO
+
+## Using with REST APIs
+
+ToDO
+
 ## Installation
 
 Add this line to your application's Gemfile:
