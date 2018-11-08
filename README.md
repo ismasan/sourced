@@ -62,6 +62,10 @@ You can build an instance of a given event or command class:
 ```ruby
 # this will raise an exception if event data is invalid or missing
 cmd = CreateUser.instance(aggregate_id: Sourced.uuid, name: 'Joan', age: 38)
+cmd.name # 'Joan'
+cmd.age # 38
+cmd.id # UUID
+cmd.aggregate_idid # UUID
 ```
 
 You can build events of the right class from a hash (uses `topic` to find class).
@@ -75,11 +79,90 @@ cmd = Sourced::Event.from(
 )
 ```
 
-### Command Handler
-
-ToDO
-
 ### Aggregate
+
+Aggregates are your domain objects. They encapsulate related properties and state, and guard against invalid state changes.
+Aggregates are _not_ "models" in the ActiveRecord sense! They know nothing about databases.
+
+Aggregates can hold whatever internal state you need, but they must be able to build said state entirely from events.
+For a given list of events, an aggregate instance should arrive to the exact same state every time.
+
+```ruby
+class User
+  include Sourced::Aggregate
+  attr_reader :name, :age
+
+  on UserCreated do |event|
+    @id = event.aggregate_id
+    @name = event.name
+    @age = event.age
+  end
+
+  on UserNameUpdated do |event|
+    @name = event.name
+  end
+
+  on UserAgeUpdated do |event|
+    @age = event.age
+  end
+end
+```
+
+Applying events will move an aggregate's state forward.
+
+```ruby
+user = User.new
+user.apply UserCreated, aggregated_id: Sourced.uuid, name: 'Joe', age: 30
+user.name # 'Joe'
+user.age # 30
+user.version # 1, tracked automatically
+
+user.apply UserAgeUpdated, age: 40
+user.age # 40
+user.version # 2
+
+# Instance collects applied events
+user.events # [<UserCreated>, <UserAgeUpdated>]
+```
+
+You can apply events directly to aggregates, but you can also add your own methods and guard against invalid state changes.
+
+```ruby
+class User
+  include Sourced::Aggregate
+
+  def start(id:, name:, age:)
+    raise "already started" if self.id
+    apply UserCreated, aggregate_id: id, name: name, age: age
+  end
+
+  def name=(n)
+    raise "not created yet" unless id
+    apply UserNameUpdated, name: n
+  end
+
+  def age=(a)
+    raise "not created yet" unless id
+    apply UserAgeUpdated, age: a
+  end
+
+  # event blocks here
+  on UserCreated do |event|
+    # etc
+  end
+end
+```
+
+Now the outside world can treat your users as regular Ruby objects.
+
+```ruby
+user = User.new
+user.start(id: Sourced.uuid, name: 'Joe', age: 30)
+user.age = 40
+user.events # [<UserCreated>, <UserAgeUpdated>]
+```
+
+### Command Handler
 
 ToDO
 
