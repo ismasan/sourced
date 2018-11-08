@@ -4,10 +4,19 @@ module Sourced
       base.extend ClassMethods
     end
 
-    def apply(event, collect: true)
+    def apply(event_or_class, attrs = {})
+      attrs = attrs.dup
+      deps = attrs.delete(:deps) || []
+      collect = attrs.key?(:collect) ? attrs.delete(:collect) : true
+
+      event = if event_or_class.respond_to?(:instance)
+        event_or_class.instance(next_event_attrs.merge(attrs))
+      else
+        event_or_class
+      end
+
       self.class.handlers[event.topic].each do |record|
         before_apply(event)
-        deps = resolve_handler_dependencies(event, record.options)
         instance_exec(event, *deps, &record.handler)
         events << event if collect
       end
@@ -24,11 +33,11 @@ module Sourced
     end
 
     private
-    def before_apply(_)
-
+    def next_event_attrs
+      {}
     end
 
-    def resolve_handler_dependencies(*_)
+    def before_apply(_)
 
     end
 

@@ -23,15 +23,15 @@ RSpec.describe Sourced::Aggregate do
       end
 
       def start(id, name, age)
-        emit UserCreated, aggregate_id: id, name: name, age: age
+        apply UserCreated, aggregate_id: id, name: name, age: age
       end
 
       def name=(n)
-        emit NameChanged, name: n
+        apply NameChanged, name: n
       end
 
       def age=(a)
-        emit AgeChanged, age: a
+        apply AgeChanged, age: a
       end
 
       on UserCreated do |evt|
@@ -48,7 +48,7 @@ RSpec.describe Sourced::Aggregate do
     end
   end
 
-  describe '#emit' do
+  describe '#apply' do
     it 'increments version and gathers events with aggregate id' do
       id = Sourced.uuid
       user = AGT::User.new

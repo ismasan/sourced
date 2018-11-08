@@ -23,16 +23,6 @@ module Sourced
       @version = event.version
     end
 
-    def emit(event_or_class, attrs = {})
-      event = if event_or_class.respond_to?(:instance)
-        event_or_class.instance(next_event_attrs.merge(attrs))
-      else
-        event_or_class
-      end
-
-      apply event
-    end
-
     def next_event_attrs
       {
         aggregate_id: id,
