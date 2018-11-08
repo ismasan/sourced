@@ -22,6 +22,10 @@ module Sourced
       end
     end
 
+    def topics
+      self.class.topics
+    end
+
     def events
       @events ||= []
     end

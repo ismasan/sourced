@@ -30,6 +30,10 @@ RSpec.describe Sourced::Eventable do
     expect(user_class.topics).to eq %w(users.created users.name_changed)
   end
 
+  it '#topics' do
+    expect(user_class.new.topics).to eq %w(users.created users.name_changed)
+  end
+
   describe '#apply' do
     it 'updates state and collects events' do
       id = Sourced.uuid
