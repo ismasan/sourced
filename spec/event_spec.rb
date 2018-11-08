@@ -36,4 +36,22 @@ RSpec.describe Sourced::Event do
       end
     end
   end
+
+  context 'instance-level' do
+    describe '#copy' do
+      it 'produces copy of the same class, with optional new attributes' do
+        aggrid = Sourced.uuid
+        parent_id = Sourced.uuid
+        evt1 = user_created.instance(aggregate_id: aggrid, name: 'Ismael', age: 40)
+        evt2 = evt1.copy(parent_id: parent_id)
+
+        expect(evt1.id).to eq evt2.id
+        expect(evt1.aggregate_id).to eq aggrid
+        expect(evt1.aggregate_id).to eq evt2.aggregate_id
+        expect(evt1.name).to eq evt2.name
+        expect(evt1.parent_id).to be nil
+        expect(evt2.parent_id).to eq parent_id
+      end
+    end
+  end
 end

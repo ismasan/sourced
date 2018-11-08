@@ -39,6 +39,7 @@ module Sourced
       field(:topic).type(:string).present
       field(:id).type(:uuid).default(->(*_){ ::Sourced.uuid })
       field(:aggregate_id).present.type(:uuid)
+      field(:parent_id).declared.type(:uuid)
       field(:version).type(:integer).default(1)
       field(:date).type(:datetime).default(->(*_){ Time.now.utc })
     end
@@ -67,6 +68,11 @@ module Sourced
       event = new(data)
       raise InvalidEventError.new(event.topic, event.errors) unless event.valid?
       event
+    end
+
+    def copy(new_attrs = {})
+      data = to_h.merge(new_attrs)
+      self.class.instance(data)
     end
 
     def inspect
