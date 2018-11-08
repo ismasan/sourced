@@ -70,6 +70,22 @@ module Sourced
       event
     end
 
+    def self.resolve(topic)
+      klass = registry[topic]
+      raise UnknownEventError, "no event schema registered for '#{topic}'" unless klass
+      klass
+    end
+
+    def self.topic
+      schema.fields[:topic].visit(:default)
+    end
+
+    def self.from(data = {})
+      data[:topic] = topic unless data[:topic]
+      klass = resolve(data[:topic])
+      klass.instance data
+    end
+
     def copy(new_attrs = {})
       data = to_h.merge(new_attrs)
       self.class.instance(data)
