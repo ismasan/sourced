@@ -42,6 +42,39 @@ Commands and events define data schemas and their validations. Both are inmutabl
 Sourced won't let invalid events go through.
 You can add your own validators and field types. See [Parametric](https://github.com/ismasan/parametric) for more.
 
+All Sourced commands and events come with a basic data schema.
+
+```ruby
+topic # String, required
+id # UUID, required, set on creation
+aggregate_id # UUID, required
+date # Time, set on creation
+version # Integer, usually sey by aggregates (more on that below)
+parent_id # UUID, optional. Set by command handlers
+```
+
+You add field definitions to event constructors by passing a block to `Sourced::Event.define(topic, &block)`.
+
+#### Instantiating events
+
+You can build an instance of a given event or command class:
+
+```ruby
+# this will raise an exception if event data is invalid or missing
+cmd = CreateUser.instance(aggregate_id: Sourced.uuid, name: 'Joan', age: 38)
+```
+
+You can build events of the right class from a hash (uses `topic` to find class).
+
+```ruby
+# Will return a CreateUser command
+cmd = Sourced::Event.from(
+  topic: 'users.create',
+  name: 'Joan',
+  age: 38
+)
+```
+
 ### Command Handler
 
 ToDO
