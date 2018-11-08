@@ -68,5 +68,16 @@ module Sourced
       raise InvalidEventError.new(event.topic, event.errors) unless event.valid?
       event
     end
+
+    def inspect
+      %(<#{self.class.name} #{inspect_line}>)
+    end
+
+    private
+    def inspect_line
+      to_h.map { |k, v|
+        [k, v].join('=')
+      }.join(' ')
+    end
   end
 end
