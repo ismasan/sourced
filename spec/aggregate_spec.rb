@@ -1,57 +1,10 @@
 require 'spec_helper'
 
 RSpec.describe Sourced::Aggregate do
-  module AGT
-    UserCreated = Sourced::Event.define('users.created') do
-      field(:name).type(:string).present
-      field(:age).type(:integer).present
-    end
-    NameChanged = Sourced::Event.define('users.name.changed') do
-      field(:name).type(:string).present
-    end
-    AgeChanged = Sourced::Event.define('users.age.changed') do
-      field(:age).type(:integer).present
-    end
-
-    User = Class.new do
-      include Sourced::Aggregate
-      attr_reader :name, :age
-      def initialize
-        @id = nil
-        @name = nil
-        @age = nil
-      end
-
-      def start(id, name, age)
-        apply UserCreated, aggregate_id: id, name: name, age: age
-      end
-
-      def name=(n)
-        apply NameChanged, name: n
-      end
-
-      def age=(a)
-        apply AgeChanged, age: a
-      end
-
-      on UserCreated do |evt|
-        @id = evt.aggregate_id
-        @name = evt.name
-        @age = evt.age
-      end
-      on NameChanged do |evt|
-        @name = evt.name
-      end
-      on AgeChanged do |evt|
-        @age = evt.age
-      end
-    end
-  end
-
   describe '#apply' do
     it 'increments version and gathers events with aggregate id' do
       id = Sourced.uuid
-      user = AGT::User.new
+      user = UserDomain::User.new
       user.start id, 'Ismael', 30
       user.name = 'Mr. Ismael'
       user.age = 40

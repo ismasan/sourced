@@ -1,6 +1,7 @@
 require "bundler/setup"
 require "sourced"
 require 'byebug'
+require_relative './support/user_domain'
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
