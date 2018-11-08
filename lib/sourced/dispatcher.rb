@@ -1,7 +1,7 @@
 module Sourced
   class Dispatcher
-    def initialize(repository:, store:, handler:, subscribers: Subscribers.new)
-      @repository = repository
+    def initialize(repository: nil, store:, handler:, subscribers: Subscribers.new)
+      @repository = repository || AggregateRepo.new(event_store: store)
       @store = store
       @handler = handler
       @subscribers = subscribers
