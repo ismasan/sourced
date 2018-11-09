@@ -9,7 +9,7 @@ module Sourced
 
     def call(cmd)
       aggr, events = handler.call(cmd, repository: repository)
-      subscribers.call(store.append([cmd] + events))
+      subscribers.call(store.append(events))
       aggr
     end
 

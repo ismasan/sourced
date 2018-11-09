@@ -39,9 +39,11 @@ module Sourced
     # 1. added directly to command handler, if any
     # 2. applied to aggregates managed by repository
     def collect_and_clear_events(cmd)
-      (clear_events + repository.clear_events).map do |evt|
+      out = (clear_events + repository.clear_events).map do |evt|
         evt.copy(copy_cmd_attrs(cmd))
       end
+
+      [cmd] + out
     end
 
     # these attributes will be copied from originating command
