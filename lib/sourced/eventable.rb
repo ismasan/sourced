@@ -31,7 +31,7 @@ module Sourced
     end
 
     def clear_events
-      evts = @events.clone
+      evts = events.clone
       @events = []
       evts
     end
