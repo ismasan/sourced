@@ -34,14 +34,20 @@ module Sourced
       @registry ||= {}
     end
 
-    def self.define(topic, &block)
+    def self.define(topic, schema = nil, &block)
       klass = Class.new(self)
       # redefine topic with default value
       klass.schema do
         field(:topic).default(topic).options([topic])
       end
       # apply new schema
-      klass.schema &block
+      klass.schema = klass.schema.merge(schema.schema) if schema
+      # we need to call .schema(&block) to define struct methods
+      if block_given?
+        klass.schema &block
+      else
+        klass.schema(&Proc.new{})
+      end
 
       registry[topic] = klass
     end
