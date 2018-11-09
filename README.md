@@ -1,5 +1,7 @@
 # Sourced
 
+[![Build Status](https://travis-ci.org/ismasan/sourced.svg?branch=master)](https://travis-ci.org/ismasan/sourced)
+ 
 Bare-bones Event Sourcing in Ruby. WiP.
 
 ![diagram](https://static.swimlanes.io/ab58ca5bacf8a6e60024c3e8335bdfee.png)
