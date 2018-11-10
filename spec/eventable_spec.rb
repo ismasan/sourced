@@ -20,6 +20,11 @@ RSpec.describe Sourced::Eventable do
         @id = event.aggregate_id
       end
 
+      # multiple handlers don't break anything
+      on ETE::UserCreated do |event|
+
+      end
+
       on 'users.name_changed' do |event|
         @name = event.name
       end

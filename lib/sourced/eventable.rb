@@ -15,11 +15,14 @@ module Sourced
         event_or_class
       end
 
-      self.class.handlers[event.topic].each do |record|
+      handlers = self.class.handlers[event.topic]
+      return unless handlers.any?
+
+      handlers.each do |record|
         before_apply(event)
         instance_exec(event, *deps, &record.handler)
-        events << event if collect
       end
+      events << event if  collect
     end
 
     def topics
