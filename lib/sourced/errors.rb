@@ -1,5 +1,6 @@
 module Sourced
-  EventError = Class.new(StandardError)
+  SourcedError = Class.new(StandardError)
+  EventError = Class.new(SourcedError)
   UnknownEventError = Class.new(EventError)
 
   class InvalidEventError < EventError
@@ -14,4 +15,7 @@ module Sourced
   end
 
   UnhandledCommandError = Class.new(EventError)
+
+  AggregateError = Class.new(SourcedError)
+  InvalidAggregateError = Class.new(AggregateError)
 end
