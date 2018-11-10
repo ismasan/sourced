@@ -8,7 +8,7 @@ RSpec.describe Sourced::AggregateRepo do
   describe '#load' do
     it 'loads new aggregate when no events available' do
       user = repo.load(aggregate_id, UserDomain::User)
-      expect(user.id).to be nil
+      expect(user.id).to eq aggregate_id
       # loads same new user again, even if it's new
       user2 = repo.load(aggregate_id, UserDomain::User)
       expect(user.object_id).to eq user.object_id

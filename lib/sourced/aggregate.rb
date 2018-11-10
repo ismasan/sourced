@@ -7,6 +7,10 @@ module Sourced
 
     attr_reader :id
 
+    def initialize(id)
+      @id = id
+    end
+
     def version
       @version ||= 0
     end

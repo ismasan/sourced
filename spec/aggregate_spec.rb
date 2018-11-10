@@ -4,8 +4,8 @@ RSpec.describe Sourced::Aggregate do
   describe '#apply' do
     it 'increments version and gathers events with aggregate id' do
       id = Sourced.uuid
-      user = UserDomain::User.new
-      user.start id, 'Ismael', 30
+      user = UserDomain::User.new(id)
+      user.start 'Ismael', 30
       user.name = 'Mr. Ismael'
       user.age = 40
 
