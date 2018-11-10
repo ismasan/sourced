@@ -18,6 +18,7 @@ module Sourced
       else
         stream = event_store.by_aggregate_id(id, opts)
         aggr = aggregate_class.new(id)
+        raise InvalidAggregateError, 'aggregates must set :id on initialize' unless aggr.id == id
         aggr.load_from(stream)
         aggregates[id] = aggr
         aggr
