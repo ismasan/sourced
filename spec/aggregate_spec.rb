@@ -27,5 +27,26 @@ RSpec.describe Sourced::Aggregate do
       expect(user.events[2].aggregate_id).to eq id
       expect(user.events[2].version).to eq 3
     end
+
+    it 'can define attributes to be added to all events' do
+      evt = Sourced::Event.define('foobar') do
+        field(:foo)
+      end
+
+      klass = Class.new(UserDomain::User) do
+        on evt do |e|
+
+        end
+
+        private
+        def basic_event_attrs
+          {foo: 'bar'}
+        end
+      end
+
+      user = klass.new(Sourced.uuid)
+      user.apply evt
+      expect(user.events.first.foo).to eq 'bar'
+    end
   end
 end
