@@ -22,7 +22,7 @@ module Sourced
         before_apply(event)
         instance_exec(event, *deps, &record.handler)
       end
-      events << event if  collect
+      events << event if collect
     end
 
     def topics

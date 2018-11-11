@@ -4,7 +4,8 @@ RSpec.describe Sourced::Aggregate do
   describe '#apply' do
     it 'increments version and gathers events with aggregate id' do
       id = Sourced.uuid
-      user = UserDomain::User.new(id)
+      events = []
+      user = UserDomain::User.new(id, events: events)
       user.start 'Ismael', 30
       user.name = 'Mr. Ismael'
       user.age = 40
@@ -13,6 +14,7 @@ RSpec.describe Sourced::Aggregate do
       expect(user.name).to eq 'Mr. Ismael'
       expect(user.age).to eq 40
       expect(user.version).to eq 3
+      expect(user.events).to eq events
       expect(user.events.size).to eq 3
 
       expect(user.events[0].topic).to eq 'users.created'

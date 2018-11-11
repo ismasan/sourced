@@ -25,11 +25,6 @@ module UserDomain
   User = Class.new do
     include Sourced::Aggregate
     attr_reader :name, :age
-    def initialize(id)
-      @id = id
-      @name = nil
-      @age = nil
-    end
 
     def start(name, age)
       apply UserCreated, name: name, age: age
