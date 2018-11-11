@@ -17,7 +17,7 @@ module Sourced
         aggr
       else
         stream = event_store.by_aggregate_id(id, opts)
-        aggr = aggregate_class.new(id)
+        aggr = aggregate_class.new(id, events: events)
         raise InvalidAggregateError, 'aggregates must set :id on initialize' unless aggr.id == id
         aggr.load_from(stream)
         aggregates[id] = aggr
@@ -26,14 +26,17 @@ module Sourced
     end
 
     def clear_events
-      aggregates.values.flat_map(&:clear_events)
+      evts = events.dup
+      events.clear
+      evts
     end
 
     private
-    attr_reader :event_store, :aggregates
+    attr_reader :event_store, :aggregates, :events
 
     def reset!
       @aggregates = {}
+      @events = []
     end
   end
 end

@@ -5,10 +5,11 @@ module Sourced
     end
     include Eventable
 
-    attr_reader :id
+    attr_reader :id, :events
 
-    def initialize(id)
+    def initialize(id, events: [])
       @id = id
+      @events = events
     end
 
     def version

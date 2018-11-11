@@ -74,7 +74,7 @@ RSpec.describe Sourced::AggregateRepo do
   end
 
   describe '#clear_events' do
-    it 'collects aggregate events' do
+    it 'collects aggregate events, in the order they were applied across aggregates' do
       id1 = Sourced.uuid
       id2 = Sourced.uuid
       user1 = repo.load(id1, UserDomain::User)
@@ -85,14 +85,16 @@ RSpec.describe Sourced::AggregateRepo do
       user2.apply UserDomain::UserCreated, aggregate_id: id2, name: 'Joe', age: 42
       user1.apply UserDomain::AgeChanged, age: 40
 
-      expect(user1.events.map(&:topic)).to eq %w(users.created users.name.changed users.age.changed)
-      expect(user2.events.map(&:topic)).to eq %w(users.created)
+      # expect(user1.events.map(&:topic)).to eq %w(users.created users.name.changed users.age.changed)
+      # expect(user2.events.map(&:topic)).to eq %w(users.created)
 
       events = repo.clear_events
       # events will be in order aggregates where loaded, not in order they where applied to aggregates
       # is this a problem?
-      expect(events.map(&:topic)).to eq %w(users.created users.name.changed users.age.changed users.created)
-      expect(events.map(&:aggregate_id)).to eq [user1.id, user1.id, user1.id, user2.id]
+      # expect(events.map(&:topic)).to eq %w(users.created users.name.changed users.age.changed users.created)
+      expect(events.map(&:topic)).to eq %w(users.created users.name.changed users.created users.age.changed)
+      expect(events.map(&:aggregate_id)).to eq [user1.id, user1.id, user2.id, user1.id]
+      # expect(events.map(&:aggregate_id)).to eq [user1.id, user1.id, user1.id, user2.id]
     end
   end
 end
