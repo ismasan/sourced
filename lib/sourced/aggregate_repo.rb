@@ -5,6 +5,14 @@ module Sourced
       reset!
     end
 
+    def add(id, aggregate_class)
+      if aggr = aggregates[id]
+        aggr
+      else
+        register_aggregate(id, aggregate_class)
+      end
+    end
+
     def load(id, aggregate_class, opts = {})
       catchup = !!opts.delete(:catchup)
       # if aggregate already cached, should we use that one and only load any new events?
@@ -17,10 +25,8 @@ module Sourced
         aggr
       else
         stream = event_store.by_aggregate_id(id, opts)
-        aggr = aggregate_class.new(id, events: events)
-        raise InvalidAggregateError, 'aggregates must set :id on initialize' unless aggr.id == id
+        aggr = register_aggregate(id, aggregate_class)
         aggr.load_from(stream)
-        aggregates[id] = aggr
         aggr
       end
     end
@@ -33,6 +39,13 @@ module Sourced
 
     private
     attr_reader :event_store, :aggregates, :events
+
+    def register_aggregate(id, aggregate_class)
+      aggr = aggregate_class.new(id, events: events)
+      raise InvalidAggregateError, 'aggregates must set :id on initialize' unless aggr.id == id
+      aggregates[id] = aggr
+      aggr
+    end
 
     def reset!
       @aggregates = {}

@@ -5,6 +5,20 @@ RSpec.describe Sourced::AggregateRepo do
   let(:aggregate_id) { Sourced.uuid }
   subject(:repo) { described_class.new(event_store: event_store) }
 
+  describe '#add' do
+    it 'registers aggregate without loading history' do
+      event_store.append([
+        UserDomain::UserCreated.instance(aggregate_id: aggregate_id, version: 1, name: 'Ismael', age: 39),
+        UserDomain::NameChanged.instance(aggregate_id: aggregate_id, version: 2, name: 'Mr. Ismael'),
+      ])
+
+      user = repo.add(aggregate_id, UserDomain::User)
+      expect(user.id).to eq aggregate_id
+      expect(user.name).to be nil
+      expect(user.version).to eq 0
+    end
+  end
+
   describe '#load' do
     it 'loads new aggregate when no events available' do
       user = repo.load(aggregate_id, UserDomain::User)
