@@ -22,7 +22,7 @@ RSpec.describe Sourced::Event do
 
         klass = Sourced::Event.define('foobar', user_schema)
 
-        event = klass.instance(
+        event = klass.new!(
           aggregate_id: Sourced.uuid,
           name: 'Ismael',
           age: 40,
@@ -33,9 +33,9 @@ RSpec.describe Sourced::Event do
       end
     end
 
-    describe '.instance' do
+    describe '.new!' do
       it 'instantiates with valid payload' do
-        evt = user_created.instance(
+        evt = user_created.new!(
           aggregate_id: Sourced.uuid,
           name: 'Ismael'
         )
@@ -49,7 +49,7 @@ RSpec.describe Sourced::Event do
 
       it 'raises with invalid payload' do
         expect {
-          user_created.instance(
+          user_created.new!(
             aggregate_id: Sourced.uuid,
           )
         }.to raise_error Sourced::InvalidEventError
@@ -81,7 +81,7 @@ RSpec.describe Sourced::Event do
       it 'produces copy of the same class, with optional new attributes' do
         aggrid = Sourced.uuid
         parent_id = Sourced.uuid
-        evt1 = user_created.instance(aggregate_id: aggrid, name: 'Ismael', age: 40)
+        evt1 = user_created.new!(aggregate_id: aggrid, name: 'Ismael', age: 40)
         evt2 = evt1.copy(parent_id: parent_id)
 
         expect(evt1.id).to eq evt2.id
