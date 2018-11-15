@@ -1,7 +1,7 @@
 # Sourced
 
 [![Build Status](https://travis-ci.org/ismasan/sourced.svg?branch=master)](https://travis-ci.org/ismasan/sourced)
- 
+
 Bare-bones Event Sourcing in Ruby. WiP.
 
 ![diagram](https://static.swimlanes.io/ab58ca5bacf8a6e60024c3e8335bdfee.png)
@@ -63,7 +63,7 @@ You can build an instance of a given event or command class:
 
 ```ruby
 # this will raise an exception if event data is invalid or missing
-cmd = CreateUser.instance(aggregate_id: Sourced.uuid, name: 'Joan', age: 38)
+cmd = CreateUser.new!(aggregate_id: Sourced.uuid, name: 'Joan', age: 38)
 cmd.name # 'Joan'
 cmd.age # 38
 cmd.id # UUID

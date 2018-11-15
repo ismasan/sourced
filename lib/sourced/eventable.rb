@@ -9,8 +9,8 @@ module Sourced
       deps = attrs.delete(:deps) || []
       collect = attrs.key?(:collect) ? attrs.delete(:collect) : true
 
-      event = if event_or_class.respond_to?(:instance)
-        event_or_class.instance(next_event_attrs.merge(attrs))
+      event = if event_or_class.respond_to?(:new!)
+        event_or_class.new!(next_event_attrs.merge(attrs))
       else
         event_or_class
       end

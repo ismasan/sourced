@@ -56,7 +56,7 @@ module Sourced
       schema.fields[:topic].visit(:default)
     end
 
-    def self.instance(data = {})
+    def self.new!(data = {})
       event = new(data)
       raise InvalidEventError.new(event.topic, event.errors) unless event.valid?
       event
@@ -75,12 +75,12 @@ module Sourced
     def self.from(data = {})
       data[:topic] = topic unless data[:topic]
       klass = resolve(data[:topic])
-      klass.instance data
+      klass.new! data
     end
 
     def copy(new_attrs = {})
       data = to_h.merge(new_attrs)
-      self.class.instance(data)
+      self.class.new!(data)
     end
 
     def inspect

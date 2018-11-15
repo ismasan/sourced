@@ -8,8 +8,8 @@ RSpec.describe Sourced::AggregateRepo do
   describe '#add' do
     it 'registers aggregate without loading history' do
       event_store.append([
-        UserDomain::UserCreated.instance(aggregate_id: aggregate_id, version: 1, name: 'Ismael', age: 39),
-        UserDomain::NameChanged.instance(aggregate_id: aggregate_id, version: 2, name: 'Mr. Ismael'),
+        UserDomain::UserCreated.new!(aggregate_id: aggregate_id, version: 1, name: 'Ismael', age: 39),
+        UserDomain::NameChanged.new!(aggregate_id: aggregate_id, version: 2, name: 'Mr. Ismael'),
       ])
 
       user = repo.add(aggregate_id, UserDomain::User)
@@ -30,9 +30,9 @@ RSpec.describe Sourced::AggregateRepo do
 
     it 'loads from available history' do
       event_store.append([
-        UserDomain::UserCreated.instance(aggregate_id: aggregate_id, version: 1, name: 'Ismael', age: 39),
-        UserDomain::NameChanged.instance(aggregate_id: aggregate_id, version: 2, name: 'Mr. Ismael'),
-        UserDomain::AgeChanged.instance(aggregate_id: aggregate_id, version: 3, age: 40),
+        UserDomain::UserCreated.new!(aggregate_id: aggregate_id, version: 1, name: 'Ismael', age: 39),
+        UserDomain::NameChanged.new!(aggregate_id: aggregate_id, version: 2, name: 'Mr. Ismael'),
+        UserDomain::AgeChanged.new!(aggregate_id: aggregate_id, version: 3, age: 40),
       ])
 
       user = repo.load(aggregate_id, UserDomain::User)
@@ -49,9 +49,9 @@ RSpec.describe Sourced::AggregateRepo do
 
     it 'loads up to a specific version' do
       event_store.append([
-        UserDomain::UserCreated.instance(aggregate_id: aggregate_id, version: 1, name: 'Ismael', age: 39),
-        UserDomain::NameChanged.instance(aggregate_id: aggregate_id, version: 2, name: 'Mr. Ismael'),
-        UserDomain::AgeChanged.instance(aggregate_id: aggregate_id, version: 3, age: 40),
+        UserDomain::UserCreated.new!(aggregate_id: aggregate_id, version: 1, name: 'Ismael', age: 39),
+        UserDomain::NameChanged.new!(aggregate_id: aggregate_id, version: 2, name: 'Mr. Ismael'),
+        UserDomain::AgeChanged.new!(aggregate_id: aggregate_id, version: 3, age: 40),
       ])
 
       user = repo.load(aggregate_id, UserDomain::User, upto: 2)
@@ -64,8 +64,8 @@ RSpec.describe Sourced::AggregateRepo do
 
     it 'catches up with new changes if :catchup' do
       event_store.append([
-        UserDomain::UserCreated.instance(aggregate_id: aggregate_id, version: 1, name: 'Ismael', age: 39),
-        UserDomain::NameChanged.instance(aggregate_id: aggregate_id, version: 2, name: 'Mr. Ismael'),
+        UserDomain::UserCreated.new!(aggregate_id: aggregate_id, version: 1, name: 'Ismael', age: 39),
+        UserDomain::NameChanged.new!(aggregate_id: aggregate_id, version: 2, name: 'Mr. Ismael'),
       ])
 
       user = repo.load(aggregate_id, UserDomain::User)
@@ -75,7 +75,7 @@ RSpec.describe Sourced::AggregateRepo do
       expect(user.version).to eq 2
 
       event_store.append([
-        UserDomain::AgeChanged.instance(aggregate_id: aggregate_id, version: 3, age: 40),
+        UserDomain::AgeChanged.new!(aggregate_id: aggregate_id, version: 3, age: 40),
       ])
 
       user2 = repo.load(aggregate_id, UserDomain::User, catchup: true)

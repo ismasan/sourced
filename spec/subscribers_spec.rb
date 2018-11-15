@@ -50,9 +50,9 @@ RSpec.describe Sourced::Subscribers do
     id1 = Sourced.uuid
     id2 = Sourced.uuid
 
-    subs.call(UserDomain::UserCreated.instance(aggregate_id: id1, name: 'Ismael', age: 40))
-    subs.call(UserDomain::NameChanged.instance(aggregate_id: id1, name: 'Joe'))
-    subs.call(UserDomain::UserCreated.instance(aggregate_id: id2, name: 'Joan', age: 41))
+    subs.call(UserDomain::UserCreated.new!(aggregate_id: id1, name: 'Ismael', age: 40))
+    subs.call(UserDomain::NameChanged.new!(aggregate_id: id1, name: 'Joe'))
+    subs.call(UserDomain::UserCreated.new!(aggregate_id: id2, name: 'Joan', age: 41))
 
     expect(topic_counter.counts['users.created']).to eq 2
     expect(topic_counter.counts['users.name.changed']).to eq 1

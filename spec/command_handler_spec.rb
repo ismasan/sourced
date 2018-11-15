@@ -10,7 +10,7 @@ RSpec.describe Sourced::CommandHandler do
   describe '#call(command)' do
     it 'handles command and gathers events' do
       id = Sourced.uuid
-      cmd = UserDomain::CreateUser.instance(
+      cmd = UserDomain::CreateUser.new!(
         aggregate_id: id,
         name: 'Ismael',
         age: 40,
@@ -25,4 +25,24 @@ RSpec.describe Sourced::CommandHandler do
       expect(events.map(&:parent_id).uniq).to eq [nil, cmd.id] # command itself doesn't have parent id
     end
   end
+
+  # context 'calling another handler from within a handler' do
+  #   CreateAccount = Sourced::Event.define('accounts.create')
+  #   AccountCreated = Sourced::Event.define('accounts.created')
+
+  #   it 'works' do
+  #     account_handler = Class.new(Sourced::CommandHandler) do
+  #       on CreateAccount do |cmd|
+  #         # generate events of its own
+  #         apply AccountCreated, aggregate_id: cmd.aggregate_id
+  #         # call other handlers, pass the repository
+  #         UserDomain::UserHandler.call(UserDomain::CreateUser.new!(
+  #           aggregate_id: Sourced.uuid,
+  #           name: 'Ismael',
+  #           age: 40
+  #         ))
+  #       end
+  #     end
+  #   end
+  # end
 end
