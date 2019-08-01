@@ -1,6 +1,21 @@
 require 'spec_helper'
 
 RSpec.describe Sourced::Aggregate do
+  describe '#load_from' do
+    it 'loads state from event stream Enumerable' do
+      id = Sourced.uuid
+      stream = [
+        UserDomain::UserCreated.new!(aggregate_id: id, name: 'Joe', age: 41),
+        UserDomain::NameChanged.new!(aggregate_id: id, name: 'Joan')
+      ]
+      user = UserDomain::User.new(id)
+      user.load_from(stream)
+
+      expect(user.name).to eq 'Joan'
+      expect(user.events.size).to eq 0
+    end
+  end
+
   describe '#apply' do
     it 'increments version and gathers events with aggregate id' do
       id = Sourced.uuid
