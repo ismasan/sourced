@@ -8,7 +8,7 @@ Bare-bones Event Sourcing in Ruby. WiP.
 
 ## TL;DR;
 
-This gem gives you the basic components to build in-process event-sourced apps in Ruby. Extend by providing your own implementation of the interfaces described here.
+This gem attempts to provide the basic components to build in-process event-sourced apps in Ruby.
 
 ### Commands
 
