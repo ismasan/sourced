@@ -87,7 +87,7 @@ Aggregates are your domain objects. They encapsulate related properties and stat
 Aggregates are _not_ "models" in the ActiveRecord sense! They know nothing about databases.
 
 Aggregates can hold whatever internal state you need, but they must be able to build said state entirely from events.
-For a given list of events, an aggregate instance should arrive to the exact same state every time.
+For a given list of events, an aggregate instance should arrive at the exact same state every time.
 
 ```ruby
 class User
