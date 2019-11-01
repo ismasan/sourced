@@ -68,9 +68,9 @@ RSpec.describe Sourced::Dispatcher do
   end
 
   it 'can take a run-time handler' do
-    cmd = double('Command')
+    cmd = double('Command', topic: 'foobar')
     aggregate = double('Aggregate')
-    handler = Proc.new { |_cms| [aggregate, []] }
+    handler = double('Handler', call: [aggregate, []], topics: ['foobar'])
     aggr = dispatcher.call(cmd, handler: handler)
 
     expect(aggr).to eq(aggregate)
