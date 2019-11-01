@@ -7,7 +7,7 @@ RSpec.describe Sourced::Dispatcher do
   subject(:dispatcher) {
     described_class.new(
       repository: repo,
-      store: store,
+      event_store: store,
       handler: UserDomain::UserHandler,
       subscribers: subscribers
     )
