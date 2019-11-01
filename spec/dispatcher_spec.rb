@@ -66,4 +66,13 @@ RSpec.describe Sourced::Dispatcher do
       dispatcher.call(cmd_class.new!(aggregate_id: Sourced.uuid))
     }.to raise_error(Sourced::UnhandledCommandError)
   end
+
+  it 'can take a run-time handler' do
+    cmd = double('Command')
+    aggregate = double('Aggregate')
+    handler = Proc.new { |_cms| [aggregate, []] }
+    aggr = dispatcher.call(cmd, handler: handler)
+
+    expect(aggr).to eq(aggregate)
+  end
 end
