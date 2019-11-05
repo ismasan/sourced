@@ -1,12 +1,11 @@
 module Sourced
-  class CommandHandler
-    include Eventable
+  module CommandHandler
+    def self.included(base)
+      base.send :include, Eventable
+      base.extend ClassMethods
+    end
 
-    class << self
-      def call(cmd, aggr)
-        new.call(cmd, aggr)
-      end
-
+    module ClassMethods
       def aggregates(klass)
         @aggregate_class = klass
       end
@@ -17,6 +16,10 @@ module Sourced
     def call(cmd, aggr)
       apply(cmd, deps: [aggr].compact, collect: false)
       [aggr, aggr.clear_events]
+    end
+
+    def aggregate_class
+      self.class.aggregate_class
     end
   end
 end

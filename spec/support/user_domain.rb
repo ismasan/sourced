@@ -52,7 +52,9 @@ module UserDomain
   end
 
   ## Handler
-  class UserHandler < Sourced::CommandHandler
+  class UserHandler
+    include Sourced::CommandHandler
+
     aggregates UserDomain::User
 
     on UserDomain::CreateUser do |cmd, user|
