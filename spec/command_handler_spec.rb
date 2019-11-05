@@ -3,12 +3,13 @@ require 'spec_helper'
 RSpec.describe Sourced::CommandHandler do
   describe '#topics' do
     it 'list all handled topics' do
-      expect(UserDomain::UserHandler.topics).to eq %w(users.create users.update)
+      expect(UserDomain::UserHandler.new.topics).to eq %w(users.create users.update)
     end
   end
 
   specify '#aggregate_class' do
     expect(UserDomain::UserHandler.aggregate_class).to eq UserDomain::User
+    expect(UserDomain::UserHandler.new.aggregate_class).to eq UserDomain::User
   end
 
   describe '#call(command, aggregate)' do
@@ -20,7 +21,7 @@ RSpec.describe Sourced::CommandHandler do
         name: 'Ismael',
         age: 40,
       )
-      user, events = UserDomain::UserHandler.call(cmd, user)
+      user, events = UserDomain::UserHandler.new.call(cmd, user)
       expect(user.id).to eq id
       expect(user.name).to eq 'Ismael'
       expect(events.size).to eq 3

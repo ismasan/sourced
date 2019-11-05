@@ -14,7 +14,7 @@ module Sourced
     end
 
     def call(cmd, handler: nil)
-      hndl = handler || _handler
+      hndl = prepare_handler(handler || _handler)
       validate_handler!(hndl, cmd)
       aggr = load_aggregate(cmd.aggregate_id, hndl.aggregate_class)
       aggr, events = hndl.call(cmd, aggr)
@@ -25,6 +25,16 @@ module Sourced
 
     private
     attr_reader :repository, :event_store, :_handler, :subscribers
+
+    def prepare_handler(handler)
+      if handler.respond_to?(:call)
+        handler
+      elsif handler.respond_to?(:new)
+        handler.new
+      else
+        handler
+      end
+    end
 
     def validate_handler!(handler, cmd)
       if !handler.topics.include?(cmd.topic)
