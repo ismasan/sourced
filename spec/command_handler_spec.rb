@@ -28,27 +28,6 @@ RSpec.describe Sourced::CommandHandler do
       expect(events.map(&:topic)).to eq %w(users.created users.name.changed users.age.changed)
       expect(events.map(&:aggregate_id).uniq).to eq [id]
       expect(events.map(&:version)).to eq [1, 2, 3]
-      # expect(events.map(&:parent_id).uniq).to eq [nil, cmd.id] # command itself doesn't have parent id
     end
   end
-
-  # context 'calling another handler from within a handler' do
-  #   CreateAccount = Sourced::Event.define('accounts.create')
-  #   AccountCreated = Sourced::Event.define('accounts.created')
-
-  #   it 'works' do
-  #     account_handler = Class.new(Sourced::CommandHandler) do
-  #       on CreateAccount do |cmd|
-  #         # generate events of its own
-  #         apply AccountCreated, aggregate_id: cmd.aggregate_id
-  #         # call other handlers, pass the repository
-  #         UserDomain::UserHandler.call(UserDomain::CreateUser.new!(
-  #           aggregate_id: Sourced.uuid,
-  #           name: 'Ismael',
-  #           age: 40
-  #         ))
-  #       end
-  #     end
-  #   end
-  # end
 end
