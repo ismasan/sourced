@@ -3,6 +3,14 @@ module Sourced
     def self.call(*_args)
       [nil, []]
     end
+
+    def self.aggregate_class
+      nil
+    end
+
+    def self.topics
+      []
+    end
   end
 
   class Dispatcher
