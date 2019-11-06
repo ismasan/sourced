@@ -48,10 +48,12 @@ module Sourced
       if !handler.topics.include?(cmd.topic)
         raise UnhandledCommandError, "#{handler} does not handle command '#{cmd.topic}'"
       end
+      if !handler.aggregate_class
+        raise ArgumentError, "#{handler}#aggregate_class must return an Aggregate class"
+      end
     end
 
     def load_aggregate(id, aggregate_class)
-      return nil unless aggregate_class
       repository.load(id, aggregate_class)
     end
 
