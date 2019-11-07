@@ -15,7 +15,7 @@ module Sourced
 
     def call(cmd, aggr)
       apply(cmd, deps: [aggr].compact, collect: false)
-      [aggr, aggr.clear_events]
+      aggr
     end
 
     def aggregate_class

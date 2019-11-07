@@ -69,10 +69,10 @@ RSpec.describe Sourced::Dispatcher do
 
   it 'can take a run-time handler' do
     cmd = double('Command', topic: 'foobar', aggregate_id: Sourced.uuid)
-    aggregate = double('Aggregate')
+    aggregate = double('Aggregate', clear_events: [])
     handler = double('Handler',
                      aggregate_class: UserDomain::User,
-                     call: [aggregate, []],
+                     call: aggregate,
                      topics: ['foobar']
                     )
     aggr = dispatcher.call(cmd, handler: handler)

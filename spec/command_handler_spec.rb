@@ -21,13 +21,13 @@ RSpec.describe Sourced::CommandHandler do
         name: 'Ismael',
         age: 40,
       )
-      user, events = UserDomain::UserHandler.new.call(cmd, user)
+      user = UserDomain::UserHandler.new.call(cmd, user)
       expect(user.id).to eq id
       expect(user.name).to eq 'Ismael'
-      expect(events.size).to eq 3
-      expect(events.map(&:topic)).to eq %w(users.created users.name.changed users.age.changed)
-      expect(events.map(&:aggregate_id).uniq).to eq [id]
-      expect(events.map(&:version)).to eq [1, 2, 3]
+      expect(user.events.size).to eq 3
+      expect(user.events.map(&:topic)).to eq %w(users.created users.name.changed users.age.changed)
+      expect(user.events.map(&:aggregate_id).uniq).to eq [id]
+      expect(user.events.map(&:version)).to eq [1, 2, 3]
     end
   end
 end
