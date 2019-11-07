@@ -65,12 +65,50 @@ RSpec.describe Sourced::Aggregate do
     end
   end
 
-  # context 'when setup as self-persisting' do
-  #   let!(:aggregate_class) do
-  #     Class.new do
-  #       include Sourced::
-  #       include Sourced
-  #     end
-  #   end
-  # end
+  context 'when setup as self-persisting' do
+    let(:event_store) { Sourced::MemEventStore.new }
+    let(:repo) { Sourced::AggregateRepo.new(event_store: event_store) }
+    let!(:user_class) do
+      Class.new(Sourced::Aggregate) do
+        include Sourced::Persistable
+        # repository repo
+
+        attr_reader :name, :age
+
+        on UserDomain::UserCreated do |evt|
+          @id = evt.aggregate_id
+          @name = evt.name
+          @age = evt.age
+        end
+
+        on UserDomain::NameChanged do |evt|
+          @name = evt.name
+        end
+
+        on UserDomain::AgeChanged do |evt|
+          @age = evt.age
+        end
+      end
+    end
+
+    before do
+      user_class.repository(repo)
+    end
+
+    it 'works' do
+      user = user_class.build
+      user.apply UserDomain::UserCreated, name: 'Ismael', age: 41
+      user.apply UserDomain::NameChanged, name: 'Joe'
+
+      user.persist
+
+      expect(user.name).to eq 'Joe'
+
+      user2 = user_class.load(user.id)
+      expect(user.object_id).not_to eq(user2.object_id)
+      expect(user2.name).to eq 'Joe'
+      stream = event_store.by_aggregate_id(user.id)
+      expect(stream.map(&:topic)).to eq(%w(users.created users.name.changed))
+    end
+  end
 end
