@@ -54,4 +54,13 @@ RSpec.describe Sourced::AggregateRepo do
       expect(stream.map(&:topic)).to eq %w(users.created users.name.changed)
     end
   end
+
+  describe '#persist_events' do
+    it 'persists aggregate events into the event store' do
+      id = Sourced.uuid
+      repo.persist_events([UserDomain::UserCreated.new!(aggregate_id: id, name: 'Foo', age: 41)])
+      stream = event_store.by_aggregate_id(id)
+      expect(stream.map(&:topic)).to eq %w(users.created)
+    end
+  end
 end

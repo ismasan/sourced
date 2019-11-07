@@ -16,7 +16,12 @@ module Sourced
     end
 
     def persist(aggregate)
-      event_store.append(aggregate.clear_events)
+      persist_events(aggregate.clear_events)
+    end
+
+    def persist_events(events)
+      event_store.append(events)
+      events
     end
 
     private
