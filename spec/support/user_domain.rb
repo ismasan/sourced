@@ -22,8 +22,7 @@ module UserDomain
   end
 
   ## Aggregate
-  User = Class.new do
-    include Sourced::Aggregate
+  class User < Sourced::Aggregate
     attr_reader :name, :age
 
     def start(name, age)

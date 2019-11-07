@@ -1,15 +1,12 @@
 module Sourced
-  module Aggregate
-    def self.included(base)
-      base.send :include, Eventable
-    end
+  class Aggregate
     include Eventable
 
     attr_reader :id, :events
 
-    def initialize(id, events: [])
+    def initialize(id)
       @id = id
-      @events = events
+      @events = []
     end
 
     def version
