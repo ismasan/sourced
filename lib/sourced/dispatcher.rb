@@ -24,10 +24,10 @@ module Sourced
     def call(cmd, handler: nil)
       hndl = prepare_handler(handler || _handler)
       validate_handler!(hndl, cmd)
-      aggr = load_aggregate(cmd.aggregate_id, hndl.aggregate_class)
-      aggr, events = hndl.call(cmd, aggr)
-      events = collect_and_decorate_events(events, cmd)
-      subscribers.call(event_store.append(events))
+      aggr = repository.load(cmd.aggregate_id, hndl.aggregate_class)
+      aggr = hndl.call(cmd, aggr)
+      events = collect_and_decorate_events(aggr.clear_events, cmd)
+      subscribers.call repository.persist_events(events)
       aggr
     end
 
@@ -51,10 +51,6 @@ module Sourced
       if !handler.aggregate_class
         raise ArgumentError, "#{handler}#aggregate_class must return an Aggregate class"
       end
-    end
-
-    def load_aggregate(id, aggregate_class)
-      repository.load(id, aggregate_class)
     end
 
     def collect_and_decorate_events(events, cmd)
