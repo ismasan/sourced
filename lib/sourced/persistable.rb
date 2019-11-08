@@ -11,7 +11,7 @@ module Sourced
     module ClassMethods
       def repository(repo = nil)
         @repository = repo if repo
-        @repository
+        @repository || Sourced.configuration.aggregate_repo
       end
 
       def load(id)
