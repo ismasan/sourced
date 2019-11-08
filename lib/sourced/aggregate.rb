@@ -2,7 +2,7 @@ module Sourced
   class Aggregate
     include Eventable
 
-    attr_reader :id, :events
+    attr_reader :id, :events, :last_event_id
 
     def initialize(id)
       @id = id
@@ -20,9 +20,14 @@ module Sourced
       self
     end
 
+    def ==(other)
+      other.id == id && other.last_event_id == last_event_id
+    end
+
     private
     def before_apply(event)
       @version = event.version
+      @last_event_id = event.id
     end
 
     def next_event_attrs
