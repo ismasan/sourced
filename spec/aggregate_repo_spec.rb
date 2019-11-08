@@ -40,7 +40,7 @@ RSpec.describe Sourced::AggregateRepo do
   describe '#build' do
     it 'builds a new aggregate with a UUID' do
       user = repo.build(UserDomain::User)
-      expect(user.id).not_to be_nil
+      expect(user.id).to be_a(String)
     end
   end
 

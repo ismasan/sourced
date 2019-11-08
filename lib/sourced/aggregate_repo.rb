@@ -12,7 +12,7 @@ module Sourced
     end
 
     def build(aggregate_class)
-      aggregate_class.new(id: Sourced.uuid)
+      aggregate_class.new(Sourced.uuid)
     end
 
     def persist(aggregate)
