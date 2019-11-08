@@ -14,9 +14,8 @@ module Sourced
   end
 
   class Dispatcher
-    def initialize(repository: nil, event_store:, handler: NullHandler, subscribers: Subscribers.new)
-      @repository = repository || AggregateRepo.new(event_store: event_store)
-      @event_store = event_store
+    def initialize(repository: Sourced.configuration.aggregate_repo, handler: NullHandler, subscribers: Subscribers.new)
+      @repository = repository
       @_handler = handler
       @subscribers = subscribers
     end
@@ -32,7 +31,7 @@ module Sourced
     end
 
     private
-    attr_reader :repository, :event_store, :_handler, :subscribers
+    attr_reader :repository, :_handler, :subscribers
 
     def prepare_handler(handler)
       if handler.respond_to?(:call)

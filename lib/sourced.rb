@@ -1,9 +1,24 @@
-require "sourced/version"
+# frozen_string_literal: true
+
 require 'securerandom'
+require 'sourced/version'
+require 'sourced/aggregate_repo'
+require 'sourced/mem_event_store'
+require 'sourced/configuration'
 
 module Sourced
   def self.uuid
     SecureRandom.uuid
+  end
+
+  def self.configuration
+    @configuration ||= Configuration.new
+  end
+
+  def self.configure(&_block)
+    conf = Configuration.new
+    yield conf
+    @configuration = conf.freeze
   end
 end
 
@@ -13,7 +28,5 @@ require 'sourced/event'
 require 'sourced/command_handler'
 require 'sourced/persistable'
 require 'sourced/aggregate'
-require 'sourced/aggregate_repo'
-require 'sourced/mem_event_store'
 require 'sourced/dispatcher'
 require 'sourced/subscribers'
