@@ -12,7 +12,27 @@ RSpec.describe Sourced::Aggregate do
       user.load_from(stream)
 
       expect(user.name).to eq 'Joan'
+      expect(user.last_event_id).to eq(stream.last.id)
       expect(user.events.size).to eq 0
+    end
+  end
+
+  describe '#==' do
+    it 'works on current state' do
+      id = Sourced.uuid
+      stream = [
+        UserDomain::UserCreated.new!(aggregate_id: id, name: 'Joe', age: 41),
+        UserDomain::NameChanged.new!(aggregate_id: id, name: 'Joan')
+      ]
+      user1 = UserDomain::User.new(id)
+      user1.load_from(stream)
+      user2 = UserDomain::User.new(id)
+      user2.load_from(stream)
+      user3 = UserDomain::User.new(id)
+      user3.load_from([stream.first])
+
+      expect(user1 == user2).to be true
+      expect(user1 == user3).to be false
     end
   end
 
