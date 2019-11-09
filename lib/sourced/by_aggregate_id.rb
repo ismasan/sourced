@@ -5,7 +5,7 @@ module Sourced
         events.each do |evt|
           next if from && evt.version <= from
           yielder.yield evt if evt.aggregate_id == id
-          break if upto && upto == evt.version
+          break if upto && upto == evt.id
         end
       end
     end
