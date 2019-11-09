@@ -115,7 +115,7 @@ RSpec.describe Sourced::Aggregate do
       user_class.repository(repo)
     end
 
-    it 'works' do
+    it 'includes .build, .load and #persist to manage state from event store' do
       user = user_class.build
       user.apply UserDomain::UserCreated, name: 'Ismael', age: 41
       user.apply UserDomain::NameChanged, name: 'Joe'
