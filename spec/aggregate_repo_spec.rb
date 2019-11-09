@@ -22,13 +22,15 @@ RSpec.describe Sourced::AggregateRepo do
     end
 
     it 'loads up to a specific version' do
-      event_store.append([
+      events = [
         UserDomain::UserCreated.new!(aggregate_id: aggregate_id, version: 1, name: 'Ismael', age: 39),
         UserDomain::NameChanged.new!(aggregate_id: aggregate_id, version: 2, name: 'Mr. Ismael'),
         UserDomain::AgeChanged.new!(aggregate_id: aggregate_id, version: 3, age: 40),
-      ])
+      ]
 
-      user = repo.load(aggregate_id, UserDomain::User, upto: 2)
+      event_store.append(events)
+
+      user = repo.load(aggregate_id, UserDomain::User, upto: events[1].id)
       expect(user.id).to eq aggregate_id
       expect(user.name).to eq 'Mr. Ismael'
       expect(user.age).to eq 39
