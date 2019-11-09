@@ -18,7 +18,7 @@ module Sourced
   def self.configure(&_block)
     conf = Configuration.new
     yield conf
-    @configuration = conf.freeze
+    @configuration = conf
   end
 end
 
