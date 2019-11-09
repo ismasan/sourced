@@ -1,11 +1,11 @@
 require 'thread'
 require 'fileutils'
 require 'json'
-require 'sourced/by_aggregate_id'
+require 'sourced/array_based_event_store'
 
 module Sourced
   class FileEventStore
-    include ByAggregateId
+    include ArrayBasedEventStore
 
     def initialize(dir = ".")
       @mutex = Mutex.new
@@ -27,12 +27,10 @@ module Sourced
 
     def events
       if File.exists?(@file_name)
-        Enumerator.new do |yielder|
-          f = File.new(@file_name)
-          f.each_line.map do |line|
-            data = JSON.parse(line, symbolize_names: true)
-            yielder.yield Sourced::Event.from(data)
-          end
+        f = File.new(@file_name)
+        f.each_line.map do |line|
+          data = JSON.parse(line, symbolize_names: true)
+          Sourced::Event.from(data)
         end
       else
         []

@@ -37,4 +37,45 @@ RSpec.shared_examples_for 'an event store' do
       expect(stream.map(&:id)).to eq [e3.id, e4.id]
     end
   end
+
+  describe '#stream' do
+    let(:events) { [e1, e2, e3, e4] }
+    before do
+      store.append(events)
+    end
+
+    it 'returns an Enumerator' do
+      expect(store.stream).to be_a Enumerator
+      expect(store.stream.map(&:id)).to eq events.map(&:id)
+    end
+
+    it 'supports :aggregate_id argument' do
+      stream = store.stream(aggregate_id: id1)
+      expect(stream.map(&:id)).to eq [e1, e3, e4].map(&:id)
+    end
+
+    it 'supports :from argument' do
+      stream = store.stream(from: Sourced.uuid)
+      expect(stream.map(&:id)).to eq []
+
+      stream = store.stream(from: e2.id)
+      expect(stream.map(&:id)).to eq [e2, e3, e4].map(&:id)
+    end
+
+    it 'supports :upto argument' do
+      stream = store.stream(upto: Sourced.uuid)
+      expect(stream.map(&:id)).to eq []
+
+      stream = store.stream(upto: e3.id)
+      expect(stream.map(&:id)).to eq [e1, e2, e3].map(&:id)
+    end
+
+    it 'combines filters' do
+      stream = store.stream(aggregate_id: id1, from: e2.id)
+      expect(stream.map(&:id)).to eq []
+
+      stream = store.stream(aggregate_id: id1, from: e3.id)
+      expect(stream.map(&:id)).to eq [e3, e4].map(&:id)
+    end
+  end
 end
