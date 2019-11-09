@@ -1,8 +1,8 @@
-require 'sourced/by_aggregate_id'
+require 'sourced/array_based_event_store'
 
 module Sourced
   class MemEventStore
-    include ByAggregateId
+    include ArrayBasedEventStore
 
     def initialize
       @events = []
