@@ -21,7 +21,7 @@ RSpec.describe Sourced::Dispatcher do
     expect(user.id).to eq create.aggregate_id
     expect(user.name).to eq 'Ismael'
     expect(user.age).to eq 40
-    expect(user.version).to eq 3
+    expect(user.seq).to eq 3
 
     update = UserDomain::UpdateUser.new!(aggregate_id: id, age: 41)
     user_b = dispatcher.call(update)
@@ -29,7 +29,7 @@ RSpec.describe Sourced::Dispatcher do
     expect(user_b.id).to eq user.id
     expect(user_b.name).to eq 'Ismael'
     expect(user_b.age).to eq 41
-    expect(user_b.version).to eq 4
+    expect(user_b.seq).to eq 4
   end
 
   it 'appends resulting events to event store, including commands' do
@@ -43,8 +43,8 @@ RSpec.describe Sourced::Dispatcher do
     events = store.by_aggregate_id(id)
 
     expect(events.map(&:topic)).to eq %w(users.create users.created users.name.changed users.age.changed users.update users.age.changed)
-    # commands don't increment version
-    expect(events.map(&:version)).to eq [1, 1, 2, 3, 1, 4]
+    # commands don't increment seq
+    expect(events.map(&:seq)).to eq [1, 1, 2, 3, 1, 4]
     expect(events.map(&:parent_id).uniq.compact).to eq [create.id, update.id]
   end
 

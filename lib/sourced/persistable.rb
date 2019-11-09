@@ -14,8 +14,8 @@ module Sourced
         @repository || Sourced.configuration.aggregate_repo
       end
 
-      def load(id)
-        repository.load(id, self)
+      def load(id, opts = {})
+        repository.load(id, self, opts)
       end
 
       def build

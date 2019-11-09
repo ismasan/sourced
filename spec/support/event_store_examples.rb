@@ -1,12 +1,13 @@
 RSpec.shared_examples_for 'an event store' do
-  describe '#append' do
-    it 'appends events and retrieves events by aggregate_id' do
-      id1 = Sourced.uuid
-      id2 = Sourced.uuid
-      e1 = UserDomain::UserCreated.new!(aggregate_id: id1, name: 'Ismael', age: 40)
-      e2 = UserDomain::UserCreated.new!(aggregate_id: id2, name: 'Joe', age: 42)
-      e3 = UserDomain::NameChanged.new!(aggregate_id: id1, name: 'Ismael jr.')
+  let(:id1) { Sourced.uuid }
+  let(:id2) { Sourced.uuid }
+  let(:e1) { UserDomain::UserCreated.new!(aggregate_id: id1, name: 'Ismael', age: 40) }
+  let(:e2) { UserDomain::UserCreated.new!(aggregate_id: id2, name: 'Joe', age: 42) }
+  let(:e3) { UserDomain::NameChanged.new!(aggregate_id: id1, name: 'Ismael jr.') }
+  let(:e4) { UserDomain::NameChanged.new!(aggregate_id: id1, name: 'Ismael sr.') }
 
+  describe '#append and #aggregate_id' do
+    it 'appends events and retrieves events by aggregate_id' do
       evts = store.append(e1)
       expect(evts).to eq [e1]
 
@@ -18,6 +19,22 @@ RSpec.shared_examples_for 'an event store' do
 
       evts = store.by_aggregate_id(id2)
       expect(evts.map(&:id)).to eq [e2.id]
+    end
+  end
+
+  describe '#by_aggregate_id' do
+    it 'supports :upto argument' do
+      store.append([e1, e2, e3, e4])
+
+      stream = store.by_aggregate_id(id1, upto: e3.id)
+      expect(stream.map(&:id)).to eq [e1.id, e3.id]
+    end
+
+    it 'supports :from argument' do
+      store.append([e1, e2, e3, e4])
+
+      stream = store.by_aggregate_id(id1, from: e3.id)
+      expect(stream.map(&:id)).to eq [e3.id, e4.id]
     end
   end
 end
