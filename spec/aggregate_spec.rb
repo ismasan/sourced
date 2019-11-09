@@ -91,7 +91,6 @@ RSpec.describe Sourced::Aggregate do
     let!(:user_class) do
       Class.new(Sourced::Aggregate) do
         include Sourced::Persistable
-        # repository repo
 
         attr_reader :name, :age
 
