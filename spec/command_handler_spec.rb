@@ -27,7 +27,7 @@ RSpec.describe Sourced::CommandHandler do
       expect(user.events.size).to eq 3
       expect(user.events.map(&:topic)).to eq %w(users.created users.name.changed users.age.changed)
       expect(user.events.map(&:aggregate_id).uniq).to eq [id]
-      expect(user.events.map(&:version)).to eq [1, 2, 3]
+      expect(user.events.map(&:seq)).to eq [1, 2, 3]
     end
   end
 end

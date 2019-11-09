@@ -26,7 +26,7 @@ module Sourced
       field(:id).type(:uuid).default(->(*_){ ::Sourced.uuid })
       field(:aggregate_id).present.type(:uuid)
       field(:parent_id).declared.type(:uuid)
-      field(:version).type(:integer).default(1)
+      field(:seq).type(:integer).default(1)
       field(:date).type(:datetime).default(->(*_){ Time.now.utc })
     end
 

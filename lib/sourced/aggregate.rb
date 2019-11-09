@@ -9,8 +9,8 @@ module Sourced
       @events = []
     end
 
-    def version
-      @version ||= 0
+    def seq
+      @seq ||= 0
     end
 
     def load_from(stream)
@@ -24,16 +24,21 @@ module Sourced
       other.id == id && other.last_event_id == last_event_id
     end
 
+    def inspect
+      %(<#{self.class.name}##{id} #{events.size} uncommitted events >)
+    end
+
     private
+
     def before_apply(event)
-      @version = event.version
+      @seq = event.seq
       @last_event_id = event.id
     end
 
     def next_event_attrs
       basic_event_attrs.merge({
         aggregate_id: id,
-        version: version + 1,
+        seq: seq + 1,
       })
     end
 
