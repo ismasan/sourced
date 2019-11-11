@@ -2,6 +2,10 @@ module Sourced
   class Aggregate
     include Eventable
 
+    def self.build(id = Sourced.uuid)
+      new(id)
+    end
+
     attr_reader :id, :events, :last_event_id
 
     def initialize(id)

@@ -54,16 +54,9 @@ RSpec.describe Sourced::AggregateRepo do
     end
   end
 
-  describe '#build' do
-    it 'builds a new aggregate with a UUID' do
-      user = repo.build(UserDomain::User)
-      expect(user.id).to be_a(String)
-    end
-  end
-
   describe '#persist' do
     it 'persists aggregate events into the event store' do
-      user = repo.build(UserDomain::User)
+      user = UserDomain::User.build
       user.start('Ismael', 41)
       user.name = 'Joe'
       repo.persist(user)
