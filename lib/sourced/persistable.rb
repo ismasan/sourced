@@ -17,10 +17,6 @@ module Sourced
       def load(id, opts = {})
         repository.load(id, self, opts)
       end
-
-      def build
-        repository.build(self)
-      end
     end
   end
 end

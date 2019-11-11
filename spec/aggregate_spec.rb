@@ -1,6 +1,19 @@
 require 'spec_helper'
 
 RSpec.describe Sourced::Aggregate do
+  describe '.build' do
+    it 'builds new with generated uuid' do
+      user = UserDomain::User.build
+      expect(user.id).not_to be nil
+    end
+
+    it 'builds with passed uuid' do
+      uuid = Sourced.uuid
+      user = UserDomain::User.build(uuid)
+      expect(user.id).to eq(uuid)
+    end
+  end
+
   describe '#load_from' do
     it 'loads state from event stream Enumerable' do
       id = Sourced.uuid

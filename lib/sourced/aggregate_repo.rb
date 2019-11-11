@@ -11,10 +11,6 @@ module Sourced
       aggr
     end
 
-    def build(aggregate_class)
-      aggregate_class.new(Sourced.uuid)
-    end
-
     def persist(aggregate)
       persist_events(aggregate.clear_events)
     end
