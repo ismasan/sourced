@@ -34,9 +34,7 @@ module Sourced
     end
 
     def clear_events
-      evts = events.clone
-      @events = []
-      evts
+      @events.slice!(0, @events.size)
     end
 
     private
