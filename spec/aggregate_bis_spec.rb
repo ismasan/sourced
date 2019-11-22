@@ -30,7 +30,7 @@ RSpec.describe 'Composite aggregates' do
     end
   end
 
-  class Aggr
+  class AggregateRoot
     def self.projection(pr = nil, &block)
       if pr
         @projector = pr
@@ -55,26 +55,76 @@ RSpec.describe 'Composite aggregates' do
       new.load(id, stream)
     end
 
-    def initialize(projector: self.class.projection, entity: self.class.entity)
+    def initialize(projector: self.class.projection, entity_constructor: self.class.entity)
       @projector = projector
-      @entity = entity
+      @entity_constructor = entity_constructor
     end
 
     def build(id)
-      @entity.call(id)
+      @entity_constructor.call(id)
     end
 
     def load(id, stream)
-      instance = build(id)
+      entity = build(id)
+      seq = 0
       stream.each do |evt|
-        @projector.call(evt, instance)
+        seq = evt.seq
+        @projector.call(evt, entity)
       end
 
-      instance
+      AggregateSession.new(id, entity, @projector, seq: seq)
     end
   end
 
-  class User < Aggr
+  class AggregateSession
+    attr_reader :id, :entity, :events, :seq
+
+    def initialize(id, entity, projector, seq: 0)
+      @id = id
+      @entity = entity
+      @projector = projector
+      @seq = seq
+      @events = []
+    end
+
+    def ==(other)
+      other.id == id && other.seq == seq
+    end
+
+    def inspect
+      %(<#{self.class.name}##{id} #{events.size} uncommitted events #{entity} >)
+    end
+
+    def apply(event_or_class, attrs = {})
+      attrs = attrs.dup
+      event = if event_or_class.respond_to?(:new!)
+        event_or_class.new!(next_event_attrs.merge(attrs))
+      else
+        event_or_class
+      end
+      projector.call(event, entity)
+      @seq = event.seq
+      events << event
+      self
+    end
+
+    def clear_events
+      @events.slice!(0, @events.size)
+    end
+
+    private
+
+    attr_reader :projector
+
+    def next_event_attrs
+      {
+        aggregate_id: id,
+        seq: seq + 1,
+      }
+    end
+  end
+
+  class User < AggregateRoot
     entity do |id|
       {
         id: id,
@@ -100,14 +150,29 @@ RSpec.describe 'Composite aggregates' do
 
   it 'works' do
     id = Sourced.uuid
-    e1 = UserDomain::UserCreated.new!(aggregate_id: id, name: 'Joe', age: 41)
-    e2 = UserDomain::NameChanged.new!(aggregate_id: id, name: 'Ismael')
-    e3 = UserDomain::AgeChanged.new!(aggregate_id: id, age: 42)
+    e1 = UserDomain::UserCreated.new!(aggregate_id: id, name: 'Joe', age: 41, seq: 1)
+    e2 = UserDomain::NameChanged.new!(aggregate_id: id, name: 'Ismael', seq: 2)
+    e3 = UserDomain::AgeChanged.new!(aggregate_id: id, age: 42, seq: 3)
     stream = [e1, e2, e3]
 
     user = User.load(id, stream)
-    expect(user[:id]).to eq id
-    expect(user[:name]).to eq 'Ismael'
-    expect(user[:age]).to eq 42
+    expect(user.seq).to eq 3
+    expect(user.entity[:id]).to eq id
+    expect(user.entity[:name]).to eq 'Ismael'
+    expect(user.entity[:age]).to eq 42
+
+    user.apply(UserDomain::NameChanged, name: 'Ismael 2')
+    user.apply(UserDomain::AgeChanged, age: 43)
+
+    expect(user.id).to eq id
+    expect(user.seq).to eq 5
+    expect(user.entity[:name]).to eq 'Ismael 2'
+    expect(user.entity[:age]).to eq 43
+    expect(user.events.size).to eq 2
+    user.clear_events.tap do |events|
+      expect(events.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
+      expect(events.map(&:seq)).to eq([4, 5])
+    end
+    expect(user.events.size).to eq(0)
   end
 end
