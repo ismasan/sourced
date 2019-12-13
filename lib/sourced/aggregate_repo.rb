@@ -5,7 +5,7 @@ module Sourced
     end
 
     def load(id, aggregate_class, opts = {})
-      stream = event_store.by_aggregate_id(id, opts)
+      stream = event_store.by_entity_id(id, opts)
       aggr = aggregate_class.new(id)
       aggr.load_from(stream)
       aggr

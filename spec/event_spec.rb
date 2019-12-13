@@ -23,7 +23,7 @@ RSpec.describe Sourced::Event do
         klass = Sourced::Event.define('foobar', user_schema)
 
         event = klass.new!(
-          aggregate_id: Sourced.uuid,
+          entity_id: Sourced.uuid,
           name: 'Ismael',
           age: 40,
         )
@@ -36,7 +36,7 @@ RSpec.describe Sourced::Event do
     describe '.new!' do
       it 'instantiates with valid payload' do
         evt = user_created.new!(
-          aggregate_id: Sourced.uuid,
+          entity_id: Sourced.uuid,
           name: 'Ismael'
         )
 
@@ -50,7 +50,7 @@ RSpec.describe Sourced::Event do
       it 'raises with invalid payload' do
         expect {
           user_created.new!(
-            aggregate_id: Sourced.uuid,
+            entity_id: Sourced.uuid,
           )
         }.to raise_error Sourced::InvalidEventError
       end
@@ -62,7 +62,7 @@ RSpec.describe Sourced::Event do
         aggrid = Sourced.uuid
         data = {
           id: id,
-          aggregate_id: aggrid,
+          entity_id: aggrid,
           topic: 'users.name.changed',
           name: 'Joe',
         }
@@ -70,7 +70,7 @@ RSpec.describe Sourced::Event do
         evt = Sourced::Event.from(data)
         expect(evt).to be_a UserDomain::NameChanged
         expect(evt.id).to eq id
-        expect(evt.aggregate_id).to eq aggrid
+        expect(evt.entity_id).to eq aggrid
         expect(evt.name).to eq 'Joe'
       end
     end
@@ -81,12 +81,12 @@ RSpec.describe Sourced::Event do
       it 'produces copy of the same class, with optional new attributes' do
         aggrid = Sourced.uuid
         parent_id = Sourced.uuid
-        evt1 = user_created.new!(aggregate_id: aggrid, name: 'Ismael', age: 40)
+        evt1 = user_created.new!(entity_id: aggrid, name: 'Ismael', age: 40)
         evt2 = evt1.copy(parent_id: parent_id)
 
         expect(evt1.id).to eq evt2.id
-        expect(evt1.aggregate_id).to eq aggrid
-        expect(evt1.aggregate_id).to eq evt2.aggregate_id
+        expect(evt1.entity_id).to eq aggrid
+        expect(evt1.entity_id).to eq evt2.entity_id
         expect(evt1.name).to eq evt2.name
         expect(evt1.parent_id).to be nil
         expect(evt2.parent_id).to eq parent_id

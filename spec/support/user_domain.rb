@@ -38,7 +38,7 @@ module UserDomain
     end
 
     on UserCreated do |evt|
-      @id = evt.aggregate_id
+      @id = evt.entity_id
       @name = evt.name
       @age = evt.age
     end
@@ -57,7 +57,7 @@ module UserDomain
     aggregates UserDomain::User
 
     on UserDomain::CreateUser do |cmd, user|
-      user.apply UserDomain::UserCreated, aggregate_id: cmd.aggregate_id, name: 'foo', age: 10
+      user.apply UserDomain::UserCreated, entity_id: cmd.entity_id, name: 'foo', age: 10
       user.apply UserDomain::NameChanged, name: cmd.name
       user.apply UserDomain::AgeChanged, age: cmd.age
     end

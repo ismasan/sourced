@@ -17,7 +17,7 @@ RSpec.describe Sourced::Eventable do
       attr_reader :id, :name
 
       on ETE::UserCreated do |event|
-        @id = event.aggregate_id
+        @id = event.entity_id
       end
 
       # multiple handlers don't break anything
@@ -43,8 +43,8 @@ RSpec.describe Sourced::Eventable do
     it 'updates state and collects events' do
       id = Sourced.uuid
       user = user_class.new
-      user.apply ETE::UserCreated, aggregate_id: id
-      user.apply ETE::NameChanged, aggregate_id: id, name: 'Ismael'
+      user.apply ETE::UserCreated, entity_id: id
+      user.apply ETE::NameChanged, entity_id: id, name: 'Ismael'
       expect(user.id).to eq id
       expect(user.name).to eq 'Ismael'
       topics = %w(users.created users.name_changed)
@@ -56,7 +56,7 @@ RSpec.describe Sourced::Eventable do
     it 'does not collect when collect: false' do
       id = Sourced.uuid
       user = user_class.new
-      user.apply ETE::UserCreated, aggregate_id: id, collect: false
+      user.apply ETE::UserCreated, entity_id: id, collect: false
 
       expect(user.id).to eq id
       expect(user.events.size).to eq 0
@@ -79,9 +79,9 @@ RSpec.describe Sourced::Eventable do
 
     id = Sourced.uuid
     user = sub_class.new
-    user.apply ETE::UserCreated, aggregate_id: id
-    user.apply ETE::NameChanged, aggregate_id: id, name: 'Ismael'
-    user.apply ETE::AgeChanged, aggregate_id: id, age: 41
+    user.apply ETE::UserCreated, entity_id: id
+    user.apply ETE::NameChanged, entity_id: id, name: 'Ismael'
+    user.apply ETE::AgeChanged, entity_id: id, age: 41
 
     expect(user.name).to eq 'Ismael'
     expect(user.title).to eq 'Mr. Ismael'

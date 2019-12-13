@@ -19,8 +19,8 @@ RSpec.describe Sourced::Projector do
       end
     end
 
-    e1 = UserDomain::UserCreated.new!(aggregate_id: id, name: 'Joe', age: 41, seq: 1)
-    e2 = UserDomain::NameChanged.new!(aggregate_id: id, name: 'Ismael', seq: 2)
+    e1 = UserDomain::UserCreated.new!(entity_id: id, name: 'Joe', age: 41, seq: 1)
+    e2 = UserDomain::NameChanged.new!(entity_id: id, name: 'Ismael', seq: 2)
 
     user = { name: 'Foo', age: 20 }
     projector.call(e1, user)

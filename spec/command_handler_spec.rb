@@ -17,7 +17,7 @@ RSpec.describe Sourced::CommandHandler do
       id = Sourced.uuid
       user = UserDomain::User.new(id: id)
       cmd = UserDomain::CreateUser.new!(
-        aggregate_id: id,
+        entity_id: id,
         name: 'Ismael',
         age: 40,
       )
@@ -26,7 +26,7 @@ RSpec.describe Sourced::CommandHandler do
       expect(user.name).to eq 'Ismael'
       expect(user.events.size).to eq 3
       expect(user.events.map(&:topic)).to eq %w(users.created users.name.changed users.age.changed)
-      expect(user.events.map(&:aggregate_id).uniq).to eq [id]
+      expect(user.events.map(&:entity_id).uniq).to eq [id]
       expect(user.events.map(&:seq)).to eq [1, 2, 3]
     end
   end

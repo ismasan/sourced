@@ -23,7 +23,7 @@ module Sourced
     def call(cmd, handler: nil)
       hndl = prepare_handler(handler || _handler)
       validate_handler!(hndl, cmd)
-      aggr = repository.load(cmd.aggregate_id, hndl.aggregate_class)
+      aggr = repository.load(cmd.entity_id, hndl.aggregate_class)
       aggr = hndl.call(cmd, aggr)
       events = collect_and_decorate_events(aggr.clear_events, cmd)
       subscribers.call repository.persist_events(events)

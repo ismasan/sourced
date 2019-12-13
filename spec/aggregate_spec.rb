@@ -18,8 +18,8 @@ RSpec.describe Sourced::Aggregate do
     it 'loads state from event stream Enumerable' do
       id = Sourced.uuid
       stream = [
-        UserDomain::UserCreated.new!(aggregate_id: id, name: 'Joe', age: 41),
-        UserDomain::NameChanged.new!(aggregate_id: id, name: 'Joan')
+        UserDomain::UserCreated.new!(entity_id: id, name: 'Joe', age: 41),
+        UserDomain::NameChanged.new!(entity_id: id, name: 'Joan')
       ]
       user = UserDomain::User.new(id)
       user.load_from(stream)
@@ -34,8 +34,8 @@ RSpec.describe Sourced::Aggregate do
     it 'works on current state' do
       id = Sourced.uuid
       stream = [
-        UserDomain::UserCreated.new!(aggregate_id: id, name: 'Joe', age: 41),
-        UserDomain::NameChanged.new!(aggregate_id: id, name: 'Joan')
+        UserDomain::UserCreated.new!(entity_id: id, name: 'Joe', age: 41),
+        UserDomain::NameChanged.new!(entity_id: id, name: 'Joan')
       ]
       user1 = UserDomain::User.new(id)
       user1.load_from(stream)
@@ -64,15 +64,15 @@ RSpec.describe Sourced::Aggregate do
       expect(user.events.size).to eq 3
 
       expect(user.events[0].topic).to eq 'users.created'
-      expect(user.events[0].aggregate_id).to eq id
+      expect(user.events[0].entity_id).to eq id
       expect(user.events[0].seq).to eq 1
 
       expect(user.events[1].topic).to eq 'users.name.changed'
-      expect(user.events[1].aggregate_id).to eq id
+      expect(user.events[1].entity_id).to eq id
       expect(user.events[1].seq).to eq 2
 
       expect(user.events[2].topic).to eq 'users.age.changed'
-      expect(user.events[2].aggregate_id).to eq id
+      expect(user.events[2].entity_id).to eq id
       expect(user.events[2].seq).to eq 3
     end
 
@@ -108,7 +108,7 @@ RSpec.describe Sourced::Aggregate do
         attr_reader :name, :age
 
         on UserDomain::UserCreated do |evt|
-          @id = evt.aggregate_id
+          @id = evt.entity_id
           @name = evt.name
           @age = evt.age
         end
@@ -139,7 +139,7 @@ RSpec.describe Sourced::Aggregate do
       user2 = user_class.load(user.id)
       expect(user.object_id).not_to eq(user2.object_id)
       expect(user2.name).to eq 'Joe'
-      stream = event_store.by_aggregate_id(user.id)
+      stream = event_store.by_entity_id(user.id)
       expect(stream.map(&:topic)).to eq(%w(users.created users.name.changed))
     end
   end

@@ -29,9 +29,9 @@ RSpec.describe Sourced::EntitySession do
   end
 
   let(:id) { Sourced.uuid }
-  let(:e1) { UserDomain::UserCreated.new!(aggregate_id: id, name: 'Joe', age: 41, seq: 1) }
-  let(:e2) { UserDomain::NameChanged.new!(aggregate_id: id, name: 'Ismael', seq: 2) }
-  let(:e3) { UserDomain::AgeChanged.new!(aggregate_id: id, age: 42, seq: 3) }
+  let(:e1) { UserDomain::UserCreated.new!(entity_id: id, name: 'Joe', age: 41, seq: 1) }
+  let(:e2) { UserDomain::NameChanged.new!(entity_id: id, name: 'Ismael', seq: 2) }
+  let(:e3) { UserDomain::AgeChanged.new!(entity_id: id, age: 42, seq: 3) }
 
   shared_examples_for 'an EntitySession' do
     describe '.load(id, stream)' do
