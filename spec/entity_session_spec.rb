@@ -66,31 +66,58 @@ RSpec.describe Sourced::EntitySession do
     end
   end
 
-  it 'works' do
-    id = Sourced.uuid
-    e1 = UserDomain::UserCreated.new!(aggregate_id: id, name: 'Joe', age: 41, seq: 1)
-    e2 = UserDomain::NameChanged.new!(aggregate_id: id, name: 'Ismael', seq: 2)
-    e3 = UserDomain::AgeChanged.new!(aggregate_id: id, age: 42, seq: 3)
-    stream = [e1, e2, e3]
+  let(:id) { Sourced.uuid }
+  let(:e1) { UserDomain::UserCreated.new!(aggregate_id: id, name: 'Joe', age: 41, seq: 1) }
+  let(:e2) { UserDomain::NameChanged.new!(aggregate_id: id, name: 'Ismael', seq: 2) }
+  let(:e3) { UserDomain::AgeChanged.new!(aggregate_id: id, age: 42, seq: 3) }
 
-    user = UserSession.load(id, stream)
-    expect(user.seq).to eq 3
-    expect(user.entity[:id]).to eq id
-    expect(user.entity[:name]).to eq 'Ismael'
-    expect(user.entity[:age]).to eq 42
+  describe '.load(id, stream)' do
+    it 'instantiates entity and projects state from stream' do
+      stream = [e1, e2, e3]
 
-    user.apply(UserDomain::NameChanged, name: 'Ismael 2')
-    user.apply(UserDomain::AgeChanged, age: 43)
-
-    expect(user.id).to eq id
-    expect(user.seq).to eq 5
-    expect(user.entity[:name]).to eq 'Ismael 2'
-    expect(user.entity[:age]).to eq 43
-    expect(user.events.size).to eq 2
-    user.clear_events.tap do |events|
-      expect(events.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
-      expect(events.map(&:seq)).to eq([4, 5])
+      user = UserSession.load(id, stream)
+      expect(user.seq).to eq 3
+      expect(user.entity[:id]).to eq id
+      expect(user.entity[:name]).to eq 'Ismael'
+      expect(user.entity[:age]).to eq 42
     end
-    expect(user.events.size).to eq(0)
+  end
+
+  describe '#apply and #events' do
+    it 'applies new events, projects new state and collects events' do
+      stream = [e1, e2, e3]
+
+      user = UserSession.load(id, stream)
+
+      user.apply(UserDomain::NameChanged, name: 'Ismael 2')
+      user.apply(UserDomain::AgeChanged, age: 43)
+
+      expect(user.id).to eq id
+      expect(user.seq).to eq 5
+      expect(user.entity[:name]).to eq 'Ismael 2'
+      expect(user.entity[:age]).to eq 43
+      expect(user.events.size).to eq 2
+      user.events.tap do |events|
+        expect(events.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
+        expect(events.map(&:seq)).to eq([4, 5])
+      end
+    end
+  end
+
+  describe '#clear_events' do
+    it 'returns collected events and clear them from session' do
+      stream = [e1, e2, e3]
+
+      user = UserSession.load(id, stream)
+
+      user.apply(UserDomain::NameChanged, name: 'Ismael 2')
+      user.apply(UserDomain::AgeChanged, age: 43)
+
+      user.clear_events.tap do |events|
+        expect(events.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
+        expect(events.map(&:seq)).to eq([4, 5])
+      end
+      expect(user.events.size).to eq(0)
+    end
   end
 end

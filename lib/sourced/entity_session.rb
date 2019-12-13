@@ -25,18 +25,14 @@ module Sourced
     end
 
     def self.load(id, stream)
-      entity = build(id)
+      _entity = entity.call(id)
       seq = 0
       stream.each do |evt|
         seq = evt.seq
-        projector.call(evt, entity)
+        projector.call(evt, _entity)
       end
 
-      new(id, entity: entity, projector: projector, seq: seq)
-    end
-
-    def self.build(id)
-      entity.call(id)
+      new(id, entity: _entity, projector: projector, seq: seq)
     end
 
     attr_reader :id, :entity, :events, :seq
