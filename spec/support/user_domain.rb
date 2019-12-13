@@ -26,27 +26,27 @@ module UserDomain
     attr_reader :name, :age
 
     def start(name, age)
-      apply UserCreated, name: name, age: age
+      apply UserCreated, payload: { name: name, age: age }
     end
 
     def name=(n)
-      apply NameChanged, name: n
+      apply NameChanged, payload: { name: n }
     end
 
     def age=(a)
-      apply AgeChanged, age: a
+      apply AgeChanged, payload: { age: a }
     end
 
     on UserCreated do |evt|
       @id = evt.entity_id
-      @name = evt.name
-      @age = evt.age
+      @name = evt.payload.name
+      @age = evt.payload.age
     end
     on NameChanged do |evt|
-      @name = evt.name
+      @name = evt.payload.name
     end
     on AgeChanged do |evt|
-      @age = evt.age
+      @age = evt.payload.age
     end
   end
 
@@ -57,14 +57,14 @@ module UserDomain
     aggregates UserDomain::User
 
     on UserDomain::CreateUser do |cmd, user|
-      user.apply UserDomain::UserCreated, entity_id: cmd.entity_id, name: 'foo', age: 10
-      user.apply UserDomain::NameChanged, name: cmd.name
-      user.apply UserDomain::AgeChanged, age: cmd.age
+      user.apply UserDomain::UserCreated, entity_id: cmd.entity_id, payload: { name: 'foo', age: 10 }
+      user.apply UserDomain::NameChanged, payload: { name: cmd.payload.name }
+      user.apply UserDomain::AgeChanged, payload: { age: cmd.payload.age }
     end
 
     on UserDomain::UpdateUser do |cmd, user|
-      user.apply(UserDomain::NameChanged, name: cmd.name) if cmd.name
-      user.apply(UserDomain::AgeChanged, age: cmd.age) if cmd.age
+      user.apply(UserDomain::NameChanged, payload: { name: cmd.payload.name }) if cmd.payload.name
+      user.apply(UserDomain::AgeChanged, payload: { age: cmd.payload.age }) if cmd.payload.age
     end
   end
 end

@@ -7,14 +7,14 @@ RSpec.describe Sourced::EntitySession do
 
   class UserProjector < Sourced::Projector
     on UserDomain::UserCreated do |event, user|
-      user[:name] = event.name
-      user[:age] = event.age
+      user[:name] = event.payload.name
+      user[:age] = event.payload.age
     end
     on UserDomain::AgeChanged do |event, user|
-      user[:age] = event.age
+      user[:age] = event.payload.age
     end
     on UserDomain::NameChanged do |event, user|
-      user[:name] = event.name
+      user[:name] = event.payload.name
     end
   end
 
@@ -29,9 +29,9 @@ RSpec.describe Sourced::EntitySession do
   end
 
   let(:id) { Sourced.uuid }
-  let(:e1) { UserDomain::UserCreated.new!(entity_id: id, name: 'Joe', age: 41, seq: 1) }
-  let(:e2) { UserDomain::NameChanged.new!(entity_id: id, name: 'Ismael', seq: 2) }
-  let(:e3) { UserDomain::AgeChanged.new!(entity_id: id, age: 42, seq: 3) }
+  let(:e1) { UserDomain::UserCreated.new!(entity_id: id, seq: 1, payload: { name: 'Joe', age: 41 }) }
+  let(:e2) { UserDomain::NameChanged.new!(entity_id: id, seq: 2, payload: { name: 'Ismael' }) }
+  let(:e3) { UserDomain::AgeChanged.new!(entity_id: id, seq: 3, payload: { age: 42 }) }
 
   shared_examples_for 'an EntitySession' do
     describe '.load(id, stream)' do
@@ -52,8 +52,8 @@ RSpec.describe Sourced::EntitySession do
 
         user = session_constructor.load(id, stream)
 
-        user.apply(UserDomain::NameChanged, name: 'Ismael 2')
-        user.apply(UserDomain::AgeChanged, age: 43)
+        user.apply(UserDomain::NameChanged, payload: { name: 'Ismael 2' })
+        user.apply(UserDomain::AgeChanged, payload: { age: 43 })
 
         expect(user.id).to eq id
         expect(user.seq).to eq 5
@@ -73,8 +73,8 @@ RSpec.describe Sourced::EntitySession do
 
         user = session_constructor.load(id, stream)
 
-        user.apply(UserDomain::NameChanged, name: 'Ismael 2')
-        user.apply(UserDomain::AgeChanged, age: 43)
+        user.apply(UserDomain::NameChanged, payload: { name: 'Ismael 2' })
+        user.apply(UserDomain::AgeChanged, payload: { age: 43 })
 
         user.clear_events.tap do |events|
           expect(events.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
@@ -99,14 +99,14 @@ RSpec.describe Sourced::EntitySession do
         # projector UserProjector
         projector do
           on UserDomain::UserCreated do |event, user|
-            user[:name] = event.name
-            user[:age] = event.age
+            user[:name] = event.payload.name
+            user[:age] = event.payload.age
           end
           on UserDomain::AgeChanged do |event, user|
-            user[:age] = event.age
+            user[:age] = event.payload.age
           end
           on UserDomain::NameChanged do |event, user|
-            user[:name] = event.name
+            user[:name] = event.payload.name
           end
         end
       end

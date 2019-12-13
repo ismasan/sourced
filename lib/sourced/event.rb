@@ -28,6 +28,7 @@ module Sourced
       field(:parent_id).declared.type(:uuid)
       field(:seq).type(:integer).default(1)
       field(:date).type(:datetime).default(->(*_){ Time.now.utc })
+      field(:payload).type(:object).default({})
     end
 
     def self.registry
@@ -36,18 +37,23 @@ module Sourced
 
     def self.define(topic, schema = nil, &block)
       klass = Class.new(self)
+      if schema.nil? && block_given?
+        schema = Parametric::Schema.new(&block)
+      end
       # redefine topic with default value
       klass.schema do
         field(:topic).default(topic).options([topic])
+        field(:payload).type(:object).present.schema(schema) if schema
       end
       # apply new schema
-      klass.schema = klass.schema.merge(schema.schema) if schema
+      # klass.schema = klass.schema.merge(schema.schema) if schema
       # we need to call .schema(&block) to define struct methods
-      if block_given?
-        klass.schema &block
-      else
-        klass.schema(&Proc.new{})
-      end
+      # klass.schema(&Proc.new{})
+      # if block_given?
+      #   klass.schema &block
+      # else
+      #   klass.schema(&Proc.new{})
+      # end
 
       registry[topic] = klass
     end

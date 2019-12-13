@@ -26,7 +26,7 @@ RSpec.describe Sourced::Eventable do
       end
 
       on 'users.name_changed' do |event|
-        @name = event.name
+        @name = event.payload.name
       end
     end
   }
@@ -44,7 +44,7 @@ RSpec.describe Sourced::Eventable do
       id = Sourced.uuid
       user = user_class.new
       user.apply ETE::UserCreated, entity_id: id
-      user.apply ETE::NameChanged, entity_id: id, name: 'Ismael'
+      user.apply ETE::NameChanged, entity_id: id, payload: { name: 'Ismael' }
       expect(user.id).to eq id
       expect(user.name).to eq 'Ismael'
       topics = %w(users.created users.name_changed)
@@ -69,19 +69,19 @@ RSpec.describe Sourced::Eventable do
 
       # register a second handler for same event
       on ETE::NameChanged do |event|
-        @title = "Mr. #{event.name}"
+        @title = "Mr. #{event.payload.name}"
       end
 
       on ETE::AgeChanged do |event|
-        @age = event.age
+        @age = event.payload.age
       end
     end
 
     id = Sourced.uuid
     user = sub_class.new
     user.apply ETE::UserCreated, entity_id: id
-    user.apply ETE::NameChanged, entity_id: id, name: 'Ismael'
-    user.apply ETE::AgeChanged, entity_id: id, age: 41
+    user.apply ETE::NameChanged, entity_id: id, payload: { name: 'Ismael' }
+    user.apply ETE::AgeChanged, entity_id: id, payload: { age: 41 }
 
     expect(user.name).to eq 'Ismael'
     expect(user.title).to eq 'Mr. Ismael'

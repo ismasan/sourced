@@ -18,8 +18,10 @@ RSpec.describe Sourced::CommandHandler do
       user = UserDomain::User.new(id: id)
       cmd = UserDomain::CreateUser.new!(
         entity_id: id,
-        name: 'Ismael',
-        age: 40,
+        payload: {
+          name: 'Ismael',
+          age: 40
+        }
       )
       user = UserDomain::UserHandler.new.call(cmd, user)
       expect(user.id).to eq id
