@@ -3,9 +3,9 @@ module Sourced
   # to any object that implements #events()[Event]
   # Ie. in-memory or simple test stores.
   module ArrayBasedEventStore
-    def stream(aggregate_id: nil, from: nil, upto: nil)
+    def stream(entity_id: nil, from: nil, upto: nil)
       _events = events
-      _events = events.find_all { |e| e.aggregate_id == aggregate_id } if aggregate_id
+      _events = events.find_all { |e| e.entity_id == entity_id } if entity_id
       if from
         idx = _events.index { |e| e.id == from}
         return [] unless idx
@@ -19,8 +19,8 @@ module Sourced
       _events.to_enum
     end
 
-    def by_aggregate_id(id, upto: nil, from: nil)
-      stream(aggregate_id: id, upto: upto, from: from)
+    def by_entity_id(id, upto: nil, from: nil)
+      stream(entity_id: id, upto: upto, from: from)
     end
   end
 end

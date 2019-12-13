@@ -15,15 +15,15 @@ RSpec.describe Sourced::Dispatcher do
   it 'passes commands to handler and returns updated aggregate' do
     id = Sourced.uuid
 
-    create = UserDomain::CreateUser.new!(aggregate_id: id, name: 'Ismael', age: 40)
+    create = UserDomain::CreateUser.new!(entity_id: id, name: 'Ismael', age: 40)
     user = dispatcher.call(create)
 
-    expect(user.id).to eq create.aggregate_id
+    expect(user.id).to eq create.entity_id
     expect(user.name).to eq 'Ismael'
     expect(user.age).to eq 40
     expect(user.seq).to eq 3
 
-    update = UserDomain::UpdateUser.new!(aggregate_id: id, age: 41)
+    update = UserDomain::UpdateUser.new!(entity_id: id, age: 41)
     user_b = dispatcher.call(update)
 
     expect(user_b.id).to eq user.id
@@ -35,12 +35,12 @@ RSpec.describe Sourced::Dispatcher do
   it 'appends resulting events to event store, including commands' do
     id = Sourced.uuid
 
-    create = UserDomain::CreateUser.new!(aggregate_id: id, name: 'Ismael', age: 40)
+    create = UserDomain::CreateUser.new!(entity_id: id, name: 'Ismael', age: 40)
     dispatcher.call(create)
-    update = UserDomain::UpdateUser.new!(aggregate_id: id, age: 41)
+    update = UserDomain::UpdateUser.new!(entity_id: id, age: 41)
     dispatcher.call(update)
 
-    events = store.by_aggregate_id(id)
+    events = store.by_entity_id(id)
 
     expect(events.map(&:topic)).to eq %w(users.create users.created users.name.changed users.age.changed users.update users.age.changed)
     # commands don't increment seq
@@ -50,7 +50,7 @@ RSpec.describe Sourced::Dispatcher do
 
   it 'sends events to subscribers' do
     id = Sourced.uuid
-    create = UserDomain::CreateUser.new!(aggregate_id: id, name: 'Ismael', age: 40)
+    create = UserDomain::CreateUser.new!(entity_id: id, name: 'Ismael', age: 40)
 
     expect(subscribers).to receive(:call) do |events|
       expect(events.map(&:topic)).to eq %w(users.create users.created users.name.changed users.age.changed)
@@ -62,12 +62,12 @@ RSpec.describe Sourced::Dispatcher do
   it 'raises a useful error when no handlers found for a given command' do
     cmd_class = Sourced::Event.define('foo.bar')
     expect {
-      dispatcher.call(cmd_class.new!(aggregate_id: Sourced.uuid))
+      dispatcher.call(cmd_class.new!(entity_id: Sourced.uuid))
     }.to raise_error(Sourced::UnhandledCommandError)
   end
 
   it 'can take a run-time handler' do
-    cmd = double('Command', topic: 'foobar', aggregate_id: Sourced.uuid)
+    cmd = double('Command', topic: 'foobar', entity_id: Sourced.uuid)
     aggregate = double('Aggregate', clear_events: [])
     handler = double('Handler',
                      aggregate_class: UserDomain::User,

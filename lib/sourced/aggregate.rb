@@ -41,7 +41,7 @@ module Sourced
 
     def next_event_attrs
       basic_event_attrs.merge({
-        aggregate_id: id,
+        entity_id: id,
         seq: seq + 1,
       })
     end
