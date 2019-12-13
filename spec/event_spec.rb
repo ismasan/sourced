@@ -24,12 +24,14 @@ RSpec.describe Sourced::Event do
 
         event = klass.new!(
           entity_id: Sourced.uuid,
-          name: 'Ismael',
-          age: 40,
+          payload: {
+            name: 'Ismael',
+            age: 40
+          }
         )
 
-        expect(event.name).to eq 'Ismael'
-        expect(event.age).to eq 40
+        expect(event.payload.name).to eq 'Ismael'
+        expect(event.payload.age).to eq 40
       end
     end
 
@@ -37,14 +39,16 @@ RSpec.describe Sourced::Event do
       it 'instantiates with valid payload' do
         evt = user_created.new!(
           entity_id: Sourced.uuid,
-          name: 'Ismael'
+          payload: {
+            name: 'Ismael'
+          }
         )
 
         expect(evt.topic).to eq 'users.created'
-        expect(evt.name).to eq 'Ismael'
+        expect(evt.payload.name).to eq 'Ismael'
         expect(evt.id).not_to be nil
         expect(evt.date).not_to be nil
-        expect(evt.age).to eq 40 # default
+        expect(evt.payload.age).to eq 40 # default
       end
 
       it 'raises with invalid payload' do
@@ -64,14 +68,16 @@ RSpec.describe Sourced::Event do
           id: id,
           entity_id: aggrid,
           topic: 'users.name.changed',
-          name: 'Joe',
+          payload: {
+            name: 'Joe'
+          }
         }
 
         evt = Sourced::Event.from(data)
         expect(evt).to be_a UserDomain::NameChanged
         expect(evt.id).to eq id
         expect(evt.entity_id).to eq aggrid
-        expect(evt.name).to eq 'Joe'
+        expect(evt.payload.name).to eq 'Joe'
       end
     end
   end
@@ -81,13 +87,13 @@ RSpec.describe Sourced::Event do
       it 'produces copy of the same class, with optional new attributes' do
         aggrid = Sourced.uuid
         parent_id = Sourced.uuid
-        evt1 = user_created.new!(entity_id: aggrid, name: 'Ismael', age: 40)
+        evt1 = user_created.new!(entity_id: aggrid, payload: { name: 'Ismael', age: 40 })
         evt2 = evt1.copy(parent_id: parent_id)
 
         expect(evt1.id).to eq evt2.id
         expect(evt1.entity_id).to eq aggrid
         expect(evt1.entity_id).to eq evt2.entity_id
-        expect(evt1.name).to eq evt2.name
+        expect(evt1.payload.name).to eq evt2.payload.name
         expect(evt1.parent_id).to be nil
         expect(evt2.parent_id).to eq parent_id
       end

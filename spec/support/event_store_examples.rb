@@ -1,10 +1,10 @@
 RSpec.shared_examples_for 'an event store' do
   let(:id1) { Sourced.uuid }
   let(:id2) { Sourced.uuid }
-  let(:e1) { UserDomain::UserCreated.new!(entity_id: id1, name: 'Ismael', age: 40) }
-  let(:e2) { UserDomain::UserCreated.new!(entity_id: id2, name: 'Joe', age: 42) }
-  let(:e3) { UserDomain::NameChanged.new!(entity_id: id1, name: 'Ismael jr.') }
-  let(:e4) { UserDomain::NameChanged.new!(entity_id: id1, name: 'Ismael sr.') }
+  let(:e1) { UserDomain::UserCreated.new!(entity_id: id1, payload: { name: 'Ismael', age: 40 }) }
+  let(:e2) { UserDomain::UserCreated.new!(entity_id: id2, payload: { name: 'Joe', age: 42 }) }
+  let(:e3) { UserDomain::NameChanged.new!(entity_id: id1, payload: { name: 'Ismael jr.' }) }
+  let(:e4) { UserDomain::NameChanged.new!(entity_id: id1, payload: { name: 'Ismael sr.' }) }
 
   describe '#append and #entity_id' do
     it 'appends events and retrieves events by entity_id' do

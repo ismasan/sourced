@@ -15,7 +15,7 @@ RSpec.describe Sourced::Dispatcher do
   it 'passes commands to handler and returns updated aggregate' do
     id = Sourced.uuid
 
-    create = UserDomain::CreateUser.new!(entity_id: id, name: 'Ismael', age: 40)
+    create = UserDomain::CreateUser.new!(entity_id: id, payload: { name: 'Ismael', age: 40 })
     user = dispatcher.call(create)
 
     expect(user.id).to eq create.entity_id
@@ -23,7 +23,7 @@ RSpec.describe Sourced::Dispatcher do
     expect(user.age).to eq 40
     expect(user.seq).to eq 3
 
-    update = UserDomain::UpdateUser.new!(entity_id: id, age: 41)
+    update = UserDomain::UpdateUser.new!(entity_id: id, payload: { age: 41 })
     user_b = dispatcher.call(update)
 
     expect(user_b.id).to eq user.id
@@ -35,9 +35,9 @@ RSpec.describe Sourced::Dispatcher do
   it 'appends resulting events to event store, including commands' do
     id = Sourced.uuid
 
-    create = UserDomain::CreateUser.new!(entity_id: id, name: 'Ismael', age: 40)
+    create = UserDomain::CreateUser.new!(entity_id: id, payload: { name: 'Ismael', age: 40 })
     dispatcher.call(create)
-    update = UserDomain::UpdateUser.new!(entity_id: id, age: 41)
+    update = UserDomain::UpdateUser.new!(entity_id: id, payload: { age: 41 })
     dispatcher.call(update)
 
     events = store.by_entity_id(id)
@@ -50,7 +50,7 @@ RSpec.describe Sourced::Dispatcher do
 
   it 'sends events to subscribers' do
     id = Sourced.uuid
-    create = UserDomain::CreateUser.new!(entity_id: id, name: 'Ismael', age: 40)
+    create = UserDomain::CreateUser.new!(entity_id: id, payload: { name: 'Ismael', age: 40 })
 
     expect(subscribers).to receive(:call) do |events|
       expect(events.map(&:topic)).to eq %w(users.create users.created users.name.changed users.age.changed)

@@ -18,8 +18,8 @@ RSpec.describe Sourced::Aggregate do
     it 'loads state from event stream Enumerable' do
       id = Sourced.uuid
       stream = [
-        UserDomain::UserCreated.new!(entity_id: id, name: 'Joe', age: 41),
-        UserDomain::NameChanged.new!(entity_id: id, name: 'Joan')
+        UserDomain::UserCreated.new!(entity_id: id, payload: { name: 'Joe', age: 41 }),
+        UserDomain::NameChanged.new!(entity_id: id, payload: { name: 'Joan' })
       ]
       user = UserDomain::User.new(id)
       user.load_from(stream)
@@ -34,8 +34,8 @@ RSpec.describe Sourced::Aggregate do
     it 'works on current state' do
       id = Sourced.uuid
       stream = [
-        UserDomain::UserCreated.new!(entity_id: id, name: 'Joe', age: 41),
-        UserDomain::NameChanged.new!(entity_id: id, name: 'Joan')
+        UserDomain::UserCreated.new!(entity_id: id, payload: { name: 'Joe', age: 41 }),
+        UserDomain::NameChanged.new!(entity_id: id, payload: { name: 'Joan' })
       ]
       user1 = UserDomain::User.new(id)
       user1.load_from(stream)
@@ -75,27 +75,6 @@ RSpec.describe Sourced::Aggregate do
       expect(user.events[2].entity_id).to eq id
       expect(user.events[2].seq).to eq 3
     end
-
-    it 'can define attributes to be added to all events' do
-      evt = Sourced::Event.define('foobar') do
-        field(:foo)
-      end
-
-      klass = Class.new(UserDomain::User) do
-        on evt do |e|
-
-        end
-
-        private
-        def basic_event_attrs
-          {foo: 'bar'}
-        end
-      end
-
-      user = klass.new(Sourced.uuid)
-      user.apply evt
-      expect(user.events.first.foo).to eq 'bar'
-    end
   end
 
   context 'when setup as self-persisting' do
@@ -109,16 +88,16 @@ RSpec.describe Sourced::Aggregate do
 
         on UserDomain::UserCreated do |evt|
           @id = evt.entity_id
-          @name = evt.name
-          @age = evt.age
+          @name = evt.payload.name
+          @age = evt.payload.age
         end
 
         on UserDomain::NameChanged do |evt|
-          @name = evt.name
+          @name = evt.payload.name
         end
 
         on UserDomain::AgeChanged do |evt|
-          @age = evt.age
+          @age = evt.payload.age
         end
       end
     end
@@ -129,8 +108,8 @@ RSpec.describe Sourced::Aggregate do
 
     it 'includes .build, .load and #persist to manage state from event store' do
       user = user_class.build
-      user.apply UserDomain::UserCreated, name: 'Ismael', age: 41
-      user.apply UserDomain::NameChanged, name: 'Joe'
+      user.apply UserDomain::UserCreated, payload: { name: 'Ismael', age: 41 }
+      user.apply UserDomain::NameChanged, payload: { name: 'Joe' }
 
       user.persist
 
