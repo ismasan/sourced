@@ -9,10 +9,12 @@ module Sourced
       @mutex = Mutex.new
     end
 
-    def append(evts)
+    def append(evts, expected_seq: nil)
       evts = Array(evts)
       mutex.synchronize {
-        @events += evts
+        with_sequence_constraint(evts.last, expected_seq) do
+          @events += evts
+        end
       }
       evts
     end

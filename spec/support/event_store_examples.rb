@@ -1,10 +1,10 @@
 RSpec.shared_examples_for 'an event store' do
   let(:id1) { Sourced.uuid }
   let(:id2) { Sourced.uuid }
-  let(:e1) { UserDomain::UserCreated.new!(entity_id: id1, payload: { name: 'Ismael', age: 40 }) }
-  let(:e2) { UserDomain::UserCreated.new!(entity_id: id2, payload: { name: 'Joe', age: 42 }) }
-  let(:e3) { UserDomain::NameChanged.new!(entity_id: id1, payload: { name: 'Ismael jr.' }) }
-  let(:e4) { UserDomain::NameChanged.new!(entity_id: id1, payload: { name: 'Ismael sr.' }) }
+  let(:e1) { UserDomain::UserCreated.new!(entity_id: id1, seq: 1, payload: { name: 'Ismael', age: 40 }) }
+  let(:e2) { UserDomain::UserCreated.new!(entity_id: id2, seq: 1, payload: { name: 'Joe', age: 42 }) }
+  let(:e3) { UserDomain::NameChanged.new!(entity_id: id1, seq: 2, payload: { name: 'Ismael jr.' }) }
+  let(:e4) { UserDomain::NameChanged.new!(entity_id: id1, seq: 3, payload: { name: 'Ismael sr.' }) }
 
   describe '#append and #entity_id' do
     it 'appends events and retrieves events by entity_id' do
@@ -19,6 +19,14 @@ RSpec.shared_examples_for 'an event store' do
 
       evts = store.by_entity_id(id2)
       expect(evts.map(&:id)).to eq [e2.id]
+    end
+
+    it 'blows up if passed unexpected sequence' do
+      store.append([e1, e2, e3, e4])
+      e5 = UserDomain::NameChanged.new!(entity_id: id1, seq: 4, payload: { name: 'nope' })
+      expect {
+        store.append(e5, expected_seq: e3.seq)
+      }.to raise_error(Sourced::ConcurrencyError)
     end
   end
 

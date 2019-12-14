@@ -22,5 +22,22 @@ module Sourced
     def by_entity_id(id, upto: nil, from: nil)
       stream(entity_id: id, upto: upto, from: from)
     end
+
+    private
+
+    def with_sequence_constraint(event, expected_seq, &_block)
+      return yield unless expected_seq
+
+      index = events.each.with_object(Hash.new(0)) do |evt, ret|
+        ret[evt.entity_id] = evt.seq
+      end
+
+      current_seq = index[event.entity_id]
+      if current_seq > expected_seq
+        raise Sourced::ConcurrencyError, "attempting to append entity #{event.entity_id} after seq #{expected_seq}, but last in store is #{current_seq}"
+      end
+
+      yield
+    end
   end
 end
