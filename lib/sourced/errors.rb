@@ -18,4 +18,6 @@ module Sourced
 
   AggregateError = Class.new(SourcedError)
   InvalidAggregateError = Class.new(AggregateError)
+
+  ConcurrencyError = Class.new(SourcedError)
 end

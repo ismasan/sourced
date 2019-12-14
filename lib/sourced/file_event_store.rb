@@ -13,13 +13,15 @@ module Sourced
       @file_name = File.join(@dir, 'events')
     end
 
-    def append(events)
-      events = Array(events)
-      encoded = events.map do |e|
-        JSON.generate(e.to_h)
+    def append(evts, expected_seq: nil)
+      evts = Array(evts)
+      with_sequence_constraint(evts.last, expected_seq) do
+        encoded = evts.map do |e|
+          JSON.generate(e.to_h)
+        end
+        append_to_file(encoded)
+        evts
       end
-      append_to_file(encoded)
-      events
     end
 
     private

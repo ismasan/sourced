@@ -16,11 +16,11 @@ module Sourced
     end
 
     def persist(entity_session)
-      persist_events(entity_session.clear_events)
+      persist_events(entity_session.clear_events, expected_seq: entity_session.last_persisted_seq)
     end
 
-    def persist_events(events)
-      event_store.append(events)
+    def persist_events(events, expected_seq: nil)
+      event_store.append(events, expected_seq: expected_seq)
       events
     end
 
