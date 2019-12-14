@@ -10,7 +10,7 @@ module Sourced
       entity_session_builder.load(id, [])
     end
 
-    def load(id, entity_session_builder, opts = {})
+    def load(id, entity_session_builder, **opts)
       stream = event_store.by_entity_id(id, opts)
       entity_session_builder.load(id, stream)
     end
