@@ -35,13 +35,14 @@ module Sourced
       new(id, entity: _entity, projector: projector, seq: seq)
     end
 
-    attr_reader :id, :entity, :events, :seq
+    attr_reader :id, :entity, :events, :seq, :last_persisted_seq
 
     def initialize(id, entity:, projector:, seq: 0)
       @id = id
       @entity = entity
       @projector = projector
       @seq = seq
+      @last_persisted_seq = seq
       @events = []
     end
 
@@ -67,6 +68,7 @@ module Sourced
     end
 
     def clear_events
+      @last_persisted_seq = @seq
       @events.slice!(0, @events.size)
     end
 
