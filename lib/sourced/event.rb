@@ -1,4 +1,5 @@
 require 'time'
+require 'delegate'
 require 'parametric/struct'
 
 Parametric.policy :uuid do
