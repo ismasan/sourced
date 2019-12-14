@@ -1,4 +1,5 @@
 require 'spec_helper'
+require 'json'
 
 RSpec.describe Sourced::Event do
   let(:user_created) {
@@ -97,6 +98,17 @@ RSpec.describe Sourced::Event do
         expect(evt1.parent_id).to be nil
         expect(evt2.parent_id).to eq parent_id
       end
+    end
+  end
+
+  context 'when loading from JSON' do
+    it 'preserves equality' do
+      uuid = Sourced.uuid
+      e1 = user_created.new!(entity_id: uuid, payload: { name: 'Ismael', age: 40 })
+      json = JSON.dump(e1.to_h)
+      data = JSON.parse(json, symbolize_names: true)
+      e2 = user_created.new!(data)
+      expect(e1).to eq(e2)
     end
   end
 end
