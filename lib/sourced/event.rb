@@ -17,6 +17,42 @@ Parametric.policy :uuid do
   end
 end
 
+# Time equality compares fractional seconds,
+# but Time#to_s (used by JSON.dump) doesn't preserve fractions,
+# so reconstituing an event with JSON.parse produces different times
+class ComparableTime < SimpleDelegator
+  def self.utc
+    new(Time.now.utc)
+  end
+
+  def self.wrap(obj)
+    case obj
+    when String
+      new(Time.parse(obj))
+    when Time, DateTime
+      new(obj.to_time)
+    when ComparableTime
+      obj
+    else
+      raise ArgumentError, "#{obj.class} #{obj} cannot be coerce to Time"
+    end
+  end
+
+  def ==(time)
+    time.to_i == time.to_time.to_i
+  end
+end
+
+Parametric.policy :time do
+  coerce do |v, k, c|
+    ComparableTime.wrap(v)
+  end
+
+  meta_data do
+    {type: :time}
+  end
+end
+
 module Sourced
   class Event
     include Parametric::Struct
@@ -27,7 +63,7 @@ module Sourced
       field(:entity_id).present.type(:uuid)
       field(:parent_id).declared.type(:uuid)
       field(:seq).type(:integer).default(1)
-      field(:date).type(:datetime).default(->(*_){ Time.now.utc })
+      field(:date).type(:time).default(->(*_){ ComparableTime.utc })
       field(:payload).type(:object).default({})
     end
 
@@ -90,7 +126,11 @@ module Sourced
     end
 
     def inspect
-      %(<#{self.class.name} #{inspect_line}>)
+      %(<Event #{inspect_line}>)
+    end
+
+    def ==(other)
+      other.respond_to?(:to_h) && other.to_h == to_h
     end
 
     private
