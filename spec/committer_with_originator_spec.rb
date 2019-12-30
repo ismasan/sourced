@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'sourced/events_with_originator'
+require 'sourced/committer_with_originator'
 
-RSpec.describe Sourced::EventsWithOriginator do
+RSpec.describe Sourced::CommitterWithOriginator do
   let(:session) { double('Committable', events: events) }
   let(:eid) { Sourced.uuid }
   let(:e1) { UserDomain::NameChanged.new!(entity_id: eid, payload: { name: 'Ismael' }) }
