@@ -50,21 +50,25 @@ module UserDomain
     end
   end
 
-  ## Handler
-  class UserHandler
-    include Sourced::CommandHandler
+  class UserSession < Sourced::EntitySession
+    User = Struct.new(:id, :name, :age)
 
-    aggregates UserDomain::User
-
-    on UserDomain::CreateUser do |cmd, user|
-      user.apply UserDomain::UserCreated, entity_id: cmd.entity_id, payload: { name: 'foo', age: 10 }
-      user.apply UserDomain::NameChanged, payload: { name: cmd.payload.name }
-      user.apply UserDomain::AgeChanged, payload: { age: cmd.payload.age }
+    entity do |id|
+      User.new(id, '', 0)
     end
 
-    on UserDomain::UpdateUser do |cmd, user|
-      user.apply(UserDomain::NameChanged, payload: { name: cmd.payload.name }) if cmd.payload.name
-      user.apply(UserDomain::AgeChanged, payload: { age: cmd.payload.age }) if cmd.payload.age
+    projector do
+      on UserCreated do |evt, user|
+        user.id = evt.entity_id
+        user.name = evt.payload.name
+        user.age = evt.payload.age
+      end
+      on NameChanged do |evt, user|
+        user.name = evt.payload.name
+      end
+      on AgeChanged do |evt, user|
+        user.age = evt.payload.age
+      end
     end
   end
 end
