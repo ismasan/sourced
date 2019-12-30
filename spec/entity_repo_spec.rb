@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'sourced/entity_repo'
 
 RSpec.describe Sourced::EntityRepo do
   let(:uuid) { Sourced.uuid }
