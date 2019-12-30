@@ -15,6 +15,8 @@ module Sourced
 
     def append(evts, expected_seq: nil)
       evts = Array(evts)
+      return evts unless evts.any?
+
       with_sequence_constraint(evts.last, expected_seq) do
         encoded = evts.map do |e|
           JSON.generate(e.to_h)
