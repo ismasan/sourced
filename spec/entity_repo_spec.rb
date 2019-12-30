@@ -8,8 +8,12 @@ RSpec.describe Sourced::EntityRepo do
   let(:event_store) { instance_double(Sourced::MemEventStore) }
   let(:past_events) { [instance_double(Sourced::Event)] }
   let(:session_events) { [instance_double(Sourced::Event)] }
-  let(:session) { instance_double(Sourced::EntitySession, clear_events: session_events, last_persisted_seq: 3) }
+  let(:session) { instance_double(Sourced::EntitySession) }
   let(:session_builder) { double('EntitySession', load: session) }
+
+  before do
+    allow(session).to receive(:commit).and_yield(3, session_events)
+  end
 
   describe '#load' do
     it 'loads events from event store and invokes session.load' do
@@ -22,7 +26,7 @@ RSpec.describe Sourced::EntityRepo do
   end
 
   describe '#persist' do
-    it 'takes events from EntitySession#clear_events and appends them to store' do
+    it 'takes events from EntitySession#commit and appends them to store' do
       repo = described_class.new(event_store: event_store)
 
       expect(event_store).to receive(:append).with(session_events, expected_seq: 3)
