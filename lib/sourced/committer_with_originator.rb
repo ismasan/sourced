@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Sourced
-  class EventsWithOriginator
+  class CommitterWithOriginator
     def initialize(originator, committable)
       @originator = originator
       @committable = committable
