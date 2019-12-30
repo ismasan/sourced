@@ -28,6 +28,11 @@ RSpec.shared_examples_for 'an event store' do
         store.append(e5, expected_seq: e3.seq)
       }.to raise_error(Sourced::ConcurrencyError)
     end
+
+    it 'is a noop if empty events list' do
+      evts = store.append([])
+      expect(evts).to eq([])
+    end
   end
 
   describe '#by_entity_id' do
