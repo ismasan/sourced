@@ -87,16 +87,16 @@ RSpec.describe Sourced::Event do
     describe '#copy' do
       it 'produces copy of the same class, with optional new attributes' do
         aggrid = Sourced.uuid
-        parent_id = Sourced.uuid
+        originator_id = Sourced.uuid
         evt1 = user_created.new!(entity_id: aggrid, payload: { name: 'Ismael', age: 40 })
-        evt2 = evt1.copy(parent_id: parent_id)
+        evt2 = evt1.copy(originator_id: originator_id)
 
         expect(evt1.id).to eq evt2.id
         expect(evt1.entity_id).to eq aggrid
         expect(evt1.entity_id).to eq evt2.entity_id
         expect(evt1.payload.name).to eq evt2.payload.name
-        expect(evt1.parent_id).to be nil
-        expect(evt2.parent_id).to eq parent_id
+        expect(evt1.originator_id).to be nil
+        expect(evt2.originator_id).to eq originator_id
       end
     end
   end

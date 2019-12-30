@@ -62,7 +62,7 @@ module Sourced
       field(:topic).type(:string).present
       field(:id).type(:uuid).default(->(*_){ ::Sourced.uuid })
       field(:entity_id).present.type(:uuid)
-      field(:parent_id).declared.type(:uuid)
+      field(:originator_id).declared.type(:uuid)
       field(:seq).type(:integer).default(1)
       field(:date).type(:time).default(->(*_){ ComparableTime.utc })
       field(:payload).type(:object).default({})
