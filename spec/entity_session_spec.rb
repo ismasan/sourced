@@ -40,7 +40,7 @@ RSpec.describe Sourced::EntitySession do
 
         user = session_constructor.load(id, stream)
         expect(user.seq).to eq 3
-        expect(user.last_persisted_seq).to eq 3
+        expect(user.last_committed_seq).to eq 3
         expect(user.entity[:id]).to eq id
         expect(user.entity[:name]).to eq 'Ismael'
         expect(user.entity[:age]).to eq 42
@@ -57,7 +57,7 @@ RSpec.describe Sourced::EntitySession do
         user.apply(UserDomain::AgeChanged, payload: { age: 43 })
 
         expect(user.id).to eq id
-        expect(user.last_persisted_seq).to eq 3
+        expect(user.last_committed_seq).to eq 3
         expect(user.seq).to eq 5
         expect(user.entity[:name]).to eq 'Ismael 2'
         expect(user.entity[:age]).to eq 43
@@ -69,8 +69,8 @@ RSpec.describe Sourced::EntitySession do
       end
     end
 
-    describe '#clear_events' do
-      it 'returns collected events and clear them from session' do
+    describe '#commit' do
+      it 'yields collected events and last committed seq, clears them from session' do
         stream = [e1, e2, e3]
 
         user = session_constructor.load(id, stream)
@@ -79,14 +79,20 @@ RSpec.describe Sourced::EntitySession do
         user.apply(UserDomain::AgeChanged, payload: { age: 43 })
 
         expect(user.seq).to eq 5
-        expect(user.last_persisted_seq).to eq 3
+        expect(user.last_committed_seq).to eq 3
 
-        user.clear_events.tap do |events|
+        called = false
+        user.commit do |seq, events|
+          called = true
+          expect(seq).to eq(3)
           expect(events.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
           expect(events.map(&:seq)).to eq([4, 5])
         end
+
+        expect(called).to be true
+        # Updates session state after committing
+        expect(user.last_committed_seq).to eq 5
         expect(user.events.size).to eq(0)
-        expect(user.last_persisted_seq).to eq 5
       end
     end
   end

@@ -35,14 +35,14 @@ module Sourced
       new(id, entity: _entity, projector: projector, seq: seq)
     end
 
-    attr_reader :id, :entity, :events, :seq, :last_persisted_seq
+    attr_reader :id, :entity, :events, :seq, :last_committed_seq
 
     def initialize(id, entity:, projector:, seq: 0)
       @id = id
       @entity = entity
       @projector = projector
       @seq = seq
-      @last_persisted_seq = seq
+      @last_committed_seq = seq
       @events = []
     end
 
@@ -67,9 +67,13 @@ module Sourced
       self
     end
 
-    def clear_events
-      @last_persisted_seq = @seq
-      @events.slice!(0, @events.size)
+    def commit(&_block)
+      # Yield last known committed sequence and new events
+      yield @last_committed_seq, @events.slice(0, @events.size)
+
+      # Only update @seq and clear events if yield above hasn't raised
+      @last_committed_seq = @seq
+      @events = []
     end
 
     private

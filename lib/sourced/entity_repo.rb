@@ -16,7 +16,9 @@ module Sourced
     end
 
     def persist(entity_session)
-      persist_events(entity_session.clear_events, expected_seq: entity_session.last_persisted_seq)
+      entity_session.commit do |last_committed_seq, events|
+        persist_events(events, expected_seq: last_committed_seq)
+      end
     end
 
     def persist_events(events, expected_seq: nil)
