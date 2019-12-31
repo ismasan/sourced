@@ -16,10 +16,11 @@ module Sourced
 
     def to_a
       @to_a ||= (
+        evts = @committable.events
         [
-          @originator,
-          *@committable.events.map do |evt|
-            evt.copy(originator_id: @originator.id)
+          @originator.copy(seq: evts.first.seq),
+          *evts.map do |evt|
+            evt.copy(originator_id: @originator.id, seq: evt.seq + 1)
           end
         ]
       )
