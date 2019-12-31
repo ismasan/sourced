@@ -2,7 +2,6 @@
 
 require 'securerandom'
 require 'sourced/version'
-require 'sourced/aggregate_repo'
 require 'sourced/mem_event_store'
 require 'sourced/configuration'
 
@@ -25,8 +24,6 @@ end
 require 'sourced/errors'
 require 'sourced/eventable'
 require 'sourced/event'
-require 'sourced/persistable'
-require 'sourced/aggregate'
 require 'sourced/subscribers'
 require 'sourced/entity_session'
 require 'sourced/entity_repo'

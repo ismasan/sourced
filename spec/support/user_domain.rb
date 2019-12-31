@@ -21,35 +21,6 @@ module UserDomain
     field(:age).type(:integer).present
   end
 
-  ## Aggregate
-  class User < Sourced::Aggregate
-    attr_reader :name, :age
-
-    def start(name, age)
-      apply UserCreated, payload: { name: name, age: age }
-    end
-
-    def name=(n)
-      apply NameChanged, payload: { name: n }
-    end
-
-    def age=(a)
-      apply AgeChanged, payload: { age: a }
-    end
-
-    on UserCreated do |evt|
-      @id = evt.entity_id
-      @name = evt.payload.name
-      @age = evt.payload.age
-    end
-    on NameChanged do |evt|
-      @name = evt.payload.name
-    end
-    on AgeChanged do |evt|
-      @age = evt.payload.age
-    end
-  end
-
   class UserSession < Sourced::EntitySession
     User = Struct.new(:id, :name, :age)
 
