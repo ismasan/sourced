@@ -7,7 +7,6 @@ module Sourced
     def apply(event_or_class, attrs = {})
       attrs = attrs.dup
       deps = attrs.delete(:deps) || []
-      collect = attrs.key?(:collect) ? attrs.delete(:collect) : true
 
       event = if event_or_class.respond_to?(:new!)
         event_or_class.new!(next_event_attrs.merge(attrs))
@@ -22,19 +21,10 @@ module Sourced
         before_apply(event)
         instance_exec(event, *deps, &record.handler)
       end
-      events << event if collect
     end
 
     def topics
       self.class.topics
-    end
-
-    def events
-      @events ||= []
-    end
-
-    def clear_events
-      @events.slice!(0, @events.size)
     end
 
     private

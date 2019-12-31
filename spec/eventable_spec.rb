@@ -40,26 +40,13 @@ RSpec.describe Sourced::Eventable do
   end
 
   describe '#apply' do
-    it 'updates state and collects events' do
+    it 'updates state' do
       id = Sourced.uuid
       user = user_class.new
       user.apply ETE::UserCreated, entity_id: id
       user.apply ETE::NameChanged, entity_id: id, payload: { name: 'Ismael' }
       expect(user.id).to eq id
       expect(user.name).to eq 'Ismael'
-      topics = %w(users.created users.name_changed)
-      expect(user.events.map(&:topic)).to eq topics
-      expect(user.clear_events.map(&:topic)).to eq topics
-      expect(user.events.size).to eq 0
-    end
-
-    it 'does not collect when collect: false' do
-      id = Sourced.uuid
-      user = user_class.new
-      user.apply ETE::UserCreated, entity_id: id, collect: false
-
-      expect(user.id).to eq id
-      expect(user.events.size).to eq 0
     end
   end
 

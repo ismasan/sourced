@@ -9,7 +9,7 @@ module Sourced
     end
 
     def call(evt, entity)
-      apply(evt, deps: [entity], collect: false)
+      apply(evt, deps: [entity])
     end
   end
 end
