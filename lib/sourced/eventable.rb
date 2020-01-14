@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Sourced
   module Eventable
     def self.included(base)

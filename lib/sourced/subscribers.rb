@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Sourced
   class Subscribers
     def initialize

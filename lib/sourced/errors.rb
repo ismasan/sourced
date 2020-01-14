@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Sourced
   SourcedError = Class.new(StandardError)
   EventError = Class.new(SourcedError)

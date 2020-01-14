@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Sourced
   # Mixin to provide EventStore interface
   # to any object that implements #events()[Event]
