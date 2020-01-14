@@ -49,10 +49,10 @@ All Sourced commands and events come with a basic data schema.
 ```ruby
 topic # String, required
 id # UUID, required, set on creation
-aggregate_id # UUID, required
+entity_id # UUID, required
 date # Time, set on creation
 version # Integer, usually set by aggregates (more on that below)
-parent_id # UUID, optional. Set by command handlers
+originator_id # UUID, optional. Set by command handlers
 ```
 
 You add field definitions to event constructors by passing a block to `Sourced::Event.define(topic, &block)`.
