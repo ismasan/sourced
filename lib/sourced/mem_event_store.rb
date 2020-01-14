@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'sourced/array_based_event_store'
 
 module Sourced

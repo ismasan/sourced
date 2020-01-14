@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 RSpec.shared_examples_for 'an event store' do
   let(:id1) { Sourced.uuid }
   let(:id2) { Sourced.uuid }

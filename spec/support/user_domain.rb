@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module UserDomain
   ## Commands
   CreateUser = Sourced::Event.define('users.create') do
