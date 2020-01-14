@@ -6,7 +6,7 @@ RSpec.shared_examples_for 'an event store' do
   let(:e3) { UserDomain::NameChanged.new!(entity_id: id1, seq: 2, payload: { name: 'Ismael jr.' }) }
   let(:e4) { UserDomain::NameChanged.new!(entity_id: id1, seq: 3, payload: { name: 'Ismael sr.' }) }
 
-  describe '#append and #entity_id' do
+  describe '#append and #by_entity_id' do
     it 'appends events and retrieves events by entity_id' do
       evts = store.append(e1)
       expect(evts).to eq [e1]
