@@ -45,52 +45,52 @@ RSpec.shared_examples_for 'an event store' do
       expect(stream.map(&:id)).to eq [e1.id, e3.id]
     end
 
-    it 'supports :from argument' do
+    it 'supports :after argument' do
       store.append([e1, e2, e3, e4])
 
-      stream = store.by_entity_id(id1, from: e3.id)
+      stream = store.by_entity_id(id1, after: e1.id)
       expect(stream.map(&:id)).to eq [e3.id, e4.id]
     end
   end
 
-  describe '#stream' do
+  describe '#filter' do
     let(:events) { [e1, e2, e3, e4] }
     before do
       store.append(events)
     end
 
     it 'returns an Enumerator' do
-      expect(store.stream).to be_a Enumerator
-      expect(store.stream.map(&:id)).to eq events.map(&:id)
+      expect(store.filter).to be_a Enumerator
+      expect(store.filter.map(&:id)).to eq events.map(&:id)
     end
 
     it 'supports :entity_id argument' do
-      stream = store.stream(entity_id: id1)
+      stream = store.filter(entity_id: id1)
       expect(stream.map(&:id)).to eq [e1, e3, e4].map(&:id)
     end
 
-    it 'supports :from argument' do
-      stream = store.stream(from: Sourced.uuid)
+    it 'supports :after argument' do
+      stream = store.filter(after: Sourced.uuid)
       expect(stream.map(&:id)).to eq []
 
-      stream = store.stream(from: e2.id)
-      expect(stream.map(&:id)).to eq [e2, e3, e4].map(&:id)
+      stream = store.filter(after: e2.id)
+      expect(stream.map(&:id)).to eq [e3, e4].map(&:id)
     end
 
     it 'supports :upto argument' do
-      stream = store.stream(upto: Sourced.uuid)
+      stream = store.filter(upto: Sourced.uuid)
       expect(stream.map(&:id)).to eq []
 
-      stream = store.stream(upto: e3.id)
+      stream = store.filter(upto: e3.id)
       expect(stream.map(&:id)).to eq [e1, e2, e3].map(&:id)
     end
 
     it 'combines filters' do
-      stream = store.stream(entity_id: id1, from: e2.id)
+      stream = store.filter(entity_id: id1, after: e2.id)
       expect(stream.map(&:id)).to eq []
 
-      stream = store.stream(entity_id: id1, from: e3.id)
-      expect(stream.map(&:id)).to eq [e3, e4].map(&:id)
+      stream = store.filter(entity_id: id1, after: e3.id)
+      expect(stream.map(&:id)).to eq [e4].map(&:id)
     end
   end
 end

@@ -18,9 +18,9 @@ RSpec.describe Sourced::EntityRepo do
     it 'loads events from event store and invokes session.load' do
       repo = described_class.new(event_store: event_store)
 
-      expect(event_store).to receive(:by_entity_id).with(uuid, from: 2).and_return past_events
+      expect(event_store).to receive(:by_entity_id).with(uuid, after: 2).and_return past_events
       expect(session_builder).to receive(:load).with(uuid, past_events).and_return session
-      expect(repo.load(uuid, session_builder, from: 2)).to eq(session)
+      expect(repo.load(uuid, session_builder, after: 2)).to eq(session)
     end
   end
 

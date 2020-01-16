@@ -5,13 +5,19 @@ module Sourced
   # to any object that implements #events()[Event]
   # Ie. in-memory or simple test stores.
   module ArrayBasedEventStore
-    def stream(entity_id: nil, from: nil, upto: nil)
+    def filter(opts = {})
+      opts = opts.dup
+      after = opts.delete(:after)
+      upto = opts.delete(:upto)
       _events = events
-      _events = events.find_all { |e| e.entity_id == entity_id } if entity_id
-      if from
-        idx = _events.index { |e| e.id == from}
+      _events = _events.find_all do |e|
+        opts.all?{ |k, v| e.to_h[k] == v }
+      end
+      # _events = events.find_all { |e| e.entity_id == entity_id } if entity_id
+      if after
+        idx = _events.index { |e| e.id == after}
         return [] unless idx
-        _events = _events[idx..-1]
+        _events = _events[idx+1..-1]
       end
       if upto
         idx = _events.index { |e| e.id == upto}
@@ -21,8 +27,8 @@ module Sourced
       _events.to_enum
     end
 
-    def by_entity_id(id, upto: nil, from: nil)
-      stream(entity_id: id, upto: upto, from: from)
+    def by_entity_id(id, upto: nil, after: nil)
+      filter(entity_id: id, upto: upto, after: after)
     end
 
     private
