@@ -53,6 +53,17 @@ RSpec.shared_examples_for 'an event store' do
     end
   end
 
+  describe '#transaction' do
+    it 'yields' do
+      evts = []
+      store.transaction do
+        evts = store.append([e1, e2])
+      end
+
+      expect(evts).to eq [e1, e2]
+    end
+  end
+
   describe '#filter' do
     let(:events) { [e1, e2, e3, e4] }
     before do

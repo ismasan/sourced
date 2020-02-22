@@ -31,6 +31,10 @@ module Sourced
       filter(entity_id: id, upto: upto, after: after)
     end
 
+    def transaction
+      yield
+    end
+
     private
 
     def with_sequence_constraint(event, expected_seq, &_block)
