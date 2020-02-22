@@ -2,8 +2,9 @@
 
 module Sourced
   class EntityRepo
-    def initialize(event_store: MemEventStore.new)
+    def initialize(event_store: MemEventStore.new, subscribers: [])
       @event_store = event_store
+      @subscribers = subscribers
     end
 
     def build(id, entity_session_builder)
@@ -17,17 +18,29 @@ module Sourced
 
     def persist(entity_session)
       entity_session.commit do |last_committed_seq, events|
-        persist_events(events, expected_seq: last_committed_seq)
+        event_store.transaction do
+          events = persist_events(events, expected_seq: last_committed_seq)
+          dispatch(events, entity_session.entity)
+        end
       end
     end
 
     def persist_events(events, expected_seq: nil)
       event_store.append(events, expected_seq: expected_seq)
-      events
     end
 
     private
 
-    attr_reader :event_store
+    attr_reader :event_store, :subscribers
+
+    def dispatch(events, entity)
+      # Subscribers should not be dependent on eachother,
+      # so this could potentially write concurrently to all of them.
+      subscribers.each do |sub|
+        sub.call(events, entity)
+      end
+
+      events
+    end
   end
 end
