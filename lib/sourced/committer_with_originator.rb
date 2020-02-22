@@ -7,6 +7,10 @@ module Sourced
       @committable = committable
     end
 
+    def entity
+      @committable.entity
+    end
+
     def commit(&_block)
       evts = to_a
       @committable.commit do |seq, _events|

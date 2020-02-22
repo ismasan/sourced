@@ -4,7 +4,7 @@ require 'spec_helper'
 require 'sourced/committer_with_originator'
 
 RSpec.describe Sourced::CommitterWithOriginator do
-  let(:session) { double('Committable', events: events) }
+  let(:session) { double('Committable', events: events, entity: {}) }
   let(:eid) { Sourced.uuid }
   let(:e1) { UserDomain::NameChanged.new!(entity_id: eid, seq: 1, payload: { name: 'Ismael' }) }
   let(:e2) { UserDomain::AgeChanged.new!(entity_id: eid, seq: 2, payload: { age: 42 }) }
@@ -38,6 +38,13 @@ RSpec.describe Sourced::CommitterWithOriginator do
         cmd.id,
         cmd.id
       ]
+    end
+  end
+
+  describe '#entity' do
+    it "is the session's entity" do
+      list = described_class.new(cmd, session)
+      expect(list.entity).to eq(session.entity)
     end
   end
 
