@@ -17,7 +17,7 @@ RSpec.describe Sourced::CommitterWithOriginator do
   end
 
   before do
-    allow(session).to receive(:commit).and_yield(2, events)
+    allow(session).to receive(:commit).and_yield(2, events, session.entity)
   end
 
   describe '#to_a' do
@@ -41,18 +41,10 @@ RSpec.describe Sourced::CommitterWithOriginator do
     end
   end
 
-  describe '#entity' do
-    it "is the session's entity" do
-      list = described_class.new(cmd, session)
-      expect(list.entity).to eq(session.entity)
-    end
-  end
-
   describe '#commit' do
     it 'commits session and decorates events with originator' do
       list = described_class.new(cmd, session)
-      called = false
-      list.commit do |seq, evts|
+      list.commit do |seq, evts, entity|
         expect(seq).to eq 2
         expect(evts.map(&:id)).to eq [
           cmd.id,
@@ -69,6 +61,7 @@ RSpec.describe Sourced::CommitterWithOriginator do
           2,
           3
         ]
+        expect(entity).to eq(session.entity)
       end
       expect(session).to have_received(:commit)
     end

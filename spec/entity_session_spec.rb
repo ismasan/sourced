@@ -81,11 +81,12 @@ RSpec.describe Sourced::EntitySession do
         expect(user.last_committed_seq).to eq 3
 
         called = false
-        user.commit do |seq, events|
+        user.commit do |seq, events, entity|
           called = true
           expect(seq).to eq(3)
           expect(events.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
           expect(events.map(&:seq)).to eq([4, 5])
+          expect(entity).to eq(user.entity)
         end
 
         expect(called).to be true

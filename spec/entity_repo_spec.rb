@@ -11,7 +11,7 @@ RSpec.describe Sourced::EntityRepo do
   let(:session_builder) { double('EntitySession', load: session) }
 
   before do
-    allow(session).to receive(:commit).and_yield(3, session_events)
+    allow(session).to receive(:commit).and_yield(3, session_events, session.entity)
   end
 
   describe '#load' do
