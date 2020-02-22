@@ -17,10 +17,10 @@ module Sourced
     end
 
     def persist(entity_session)
-      entity_session.commit do |last_committed_seq, events|
+      entity_session.commit do |last_committed_seq, events, entity|
         event_store.transaction do
           events = persist_events(events, expected_seq: last_committed_seq)
-          dispatch(events, entity_session.entity)
+          dispatch(events, entity)
         end
       end
     end
