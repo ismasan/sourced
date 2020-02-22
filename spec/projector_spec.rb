@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'sourced/entity_session'
+require 'sourced/projector'
 
 RSpec.describe Sourced::Projector do
   it 'registers event handlers and responds to .call' do
