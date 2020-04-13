@@ -67,7 +67,7 @@ module Sourced
       field(:originator_id).declared.type(:uuid)
       field(:seq).type(:integer).default(1)
       field(:date).type(:time).default(->(*_){ ComparableTime.utc })
-      field(:payload).type(:object).default({})
+      # field(:payload).type(:object).default({})
     end
 
     def self.registry
@@ -84,6 +84,8 @@ module Sourced
         field(:topic).default(topic).options([topic])
         field(:payload).type(:object).present.schema(schema) if schema
       end
+
+      # klass.parametric_after_define_schema(klass.schema)
       # apply new schema
       # klass.schema = klass.schema.merge(schema.schema) if schema
       # we need to call .schema(&block) to define struct methods
