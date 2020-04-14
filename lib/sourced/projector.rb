@@ -4,12 +4,12 @@ module Sourced
   class Projector
     include Sourced::Eventable
 
-    def self.call(evt, entity)
-      new.call(evt, entity)
+    def self.call(entity, event)
+      new.call(entity, event)
     end
 
-    def call(evt, entity)
-      apply(evt, deps: [entity])
+    def call(entity, event)
+      apply(event, deps: [entity])
     end
   end
 end

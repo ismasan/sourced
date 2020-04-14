@@ -5,14 +5,14 @@ require 'spec_helper'
 RSpec.describe Sourced::EntitySession do
 
   class UserProjector < Sourced::Projector
-    on UserDomain::UserCreated do |event, user|
+    on UserDomain::UserCreated do |user, event|
       user[:name] = event.payload.name
       user[:age] = event.payload.age
     end
-    on UserDomain::AgeChanged do |event, user|
+    on UserDomain::AgeChanged do |user, event|
       user[:age] = event.payload.age
     end
-    on UserDomain::NameChanged do |event, user|
+    on UserDomain::NameChanged do |user, event|
       user[:name] = event.payload.name
     end
   end
@@ -110,14 +110,14 @@ RSpec.describe Sourced::EntitySession do
 
         # projector UserProjector
         projector do
-          on UserDomain::UserCreated do |event, user|
+          on UserDomain::UserCreated do |user, event|
             user[:name] = event.payload.name
             user[:age] = event.payload.age
           end
-          on UserDomain::AgeChanged do |event, user|
+          on UserDomain::AgeChanged do |user, event|
             user[:age] = event.payload.age
           end
-          on UserDomain::NameChanged do |event, user|
+          on UserDomain::NameChanged do |user, event|
             user[:name] = event.payload.name
           end
         end

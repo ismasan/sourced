@@ -8,12 +8,12 @@ RSpec.describe Sourced::Projector do
     id = Sourced.uuid
 
     projector = Class.new(described_class) do
-      on UserDomain::UserCreated do |event, user|
+      on UserDomain::UserCreated do |user, event|
         user[:seq] = event.seq
         user[:name] = event.payload.name
         user[:age] = event.payload.age
       end
-      on UserDomain::NameChanged do |event, user|
+      on UserDomain::NameChanged do |user, event|
         user[:seq] = event.seq
         user[:name] = event.payload.name
       end
@@ -23,8 +23,8 @@ RSpec.describe Sourced::Projector do
     e2 = UserDomain::NameChanged.new!(entity_id: id, seq: 2, payload: { name: 'Ismael' })
 
     user = { name: 'Foo', age: 20 }
-    projector.call(e1, user)
-    projector.call(e2, user)
+    projector.call(user, e1)
+    projector.call(user, e2)
 
     expect(user[:name]).to eq('Ismael')
     expect(user[:age]).to eq(41)
