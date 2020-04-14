@@ -27,9 +27,9 @@ module Sourced
     def self.load(id, stream)
       _entity = entity.call(id)
       seq = 0
-      stream.each do |evt|
-        seq = evt.seq
-        projector.call(evt, _entity)
+      stream.each do |event|
+        seq = event.seq
+        projector.call(_entity, event)
       end
 
       new(id, entity: _entity, projector: projector, seq: seq)
@@ -61,7 +61,7 @@ module Sourced
       else
         event_or_class
       end
-      projector.call(event, entity)
+      projector.call(entity, event)
       @seq = event.seq
       events << event
       self

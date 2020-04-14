@@ -21,7 +21,7 @@ module Sourced
 
       handlers.each do |record|
         before_apply(event)
-        instance_exec(event, *deps, &record.handler)
+        instance_exec(*deps, event, &record.handler)
       end
     end
 
