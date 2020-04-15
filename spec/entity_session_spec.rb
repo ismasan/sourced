@@ -68,6 +68,29 @@ RSpec.describe Sourced::EntitySession do
       end
     end
 
+    describe '#apply with event instance' do
+      it 'still keeps track of seq' do
+        stream = [e1, e2, e3]
+
+        user = session_constructor.load(id, stream)
+
+        user.apply(UserDomain::NameChanged.new(payload: { name: 'Ismael 2' }))
+        user.apply(UserDomain::AgeChanged.new(payload: { age: 43 }))
+
+        expect(user.id).to eq id
+        expect(user.last_committed_seq).to eq 3
+        expect(user.seq).to eq 5
+        expect(user.entity[:name]).to eq 'Ismael 2'
+        expect(user.entity[:age]).to eq 43
+        expect(user.events.size).to eq 2
+        user.events.tap do |events|
+          expect(events.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
+          expect(events.map(&:seq)).to eq([4, 5])
+          expect(events.map(&:entity_id)).to eq([id, id])
+        end
+      end
+    end
+
     describe '#commit' do
       it 'yields collected events and last committed seq, clears them from session' do
         stream = [e1, e2, e3]

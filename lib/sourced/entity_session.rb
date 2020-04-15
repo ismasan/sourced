@@ -55,11 +55,11 @@ module Sourced
     end
 
     def apply(event_or_class, attrs = {})
-      attrs = attrs.dup
+      attrs = next_event_attrs.merge(attrs)
       event = if event_or_class.respond_to?(:new!)
-        event_or_class.new!(next_event_attrs.merge(attrs))
+        event_or_class.new!(attrs)
       else
-        event_or_class
+        event_or_class.copy(attrs)
       end
       projector.call(entity, event)
       @seq = event.seq
