@@ -16,7 +16,7 @@ RSpec.describe Sourced::Eventable do
   let(:user_class) {
     Class.new do
       include Sourced::Eventable
-      attr_reader :id, :name
+      attr_reader :id, :name, :seq
 
       on ETE::UserCreated do |event|
         @id = event.entity_id
@@ -29,6 +29,10 @@ RSpec.describe Sourced::Eventable do
 
       on 'users.name_changed' do |event|
         @name = event.payload.name
+      end
+
+      on :any do |event|
+        @seq = event.seq
       end
     end
   }
@@ -45,10 +49,11 @@ RSpec.describe Sourced::Eventable do
     it 'updates state' do
       id = Sourced.uuid
       user = user_class.new
-      user.apply ETE::UserCreated, entity_id: id
-      user.apply ETE::NameChanged, entity_id: id, payload: { name: 'Ismael' }
+      user.apply ETE::UserCreated, entity_id: id, seq: 1
+      user.apply ETE::NameChanged, entity_id: id, seq: 2, payload: { name: 'Ismael' }
       expect(user.id).to eq id
       expect(user.name).to eq 'Ismael'
+      expect(user.seq).to eq 2
     end
   end
 
