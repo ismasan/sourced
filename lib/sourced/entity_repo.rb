@@ -2,16 +2,17 @@
 
 module Sourced
   class EntityRepo
-    def initialize(event_store: MemEventStore.new, subscribers: [])
+    def initialize(entity_session_builder, event_store: MemEventStore.new, subscribers: [])
+      @entity_session_builder = entity_session_builder
       @event_store = event_store
       @subscribers = subscribers
     end
 
-    def build(id, entity_session_builder)
+    def build(id)
       entity_session_builder.load(id, [])
     end
 
-    def load(id, entity_session_builder, **opts)
+    def load(id, **opts)
       stream = event_store.by_entity_id(id, opts)
       entity_session_builder.load(id, stream)
     end
@@ -31,7 +32,7 @@ module Sourced
 
     private
 
-    attr_reader :event_store, :subscribers
+    attr_reader :entity_session_builder, :event_store, :subscribers
 
     def dispatch(events, entity)
       # Subscribers should not be dependent on eachother,
