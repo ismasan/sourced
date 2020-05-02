@@ -43,6 +43,7 @@ module Sourced
     end
 
     Record = Struct.new(:handler, :options)
+    NOOP = ->(*) {}
 
     module ClassMethods
       def inherited(subclass)
@@ -52,6 +53,8 @@ module Sourced
       end
 
       def on(event_type, opts = {},  &block)
+        block = NOOP unless block_given?
+
         if event_type == :any
           return handlers_for_any << Record.new(block, opts)
         end
