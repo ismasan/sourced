@@ -9,6 +9,7 @@ module Sourced
       opts = opts.dup
       after = opts.delete(:after)
       upto = opts.delete(:upto)
+      upto_seq = opts.delete(:upto_seq)
       _events = events
       _events = _events.find_all do |e|
         opts.all?{ |k, v| e.to_h[k] == v }
@@ -19,7 +20,11 @@ module Sourced
         return [] unless idx
         _events = _events[idx+1..-1]
       end
-      if upto
+      if upto_seq
+        idx = _events.index { |e| e.seq == upto_seq}
+        return [] unless idx
+        _events = _events[0..idx]
+      elsif upto
         idx = _events.index { |e| e.id == upto}
         return [] unless idx
         _events = _events[0..idx]
@@ -27,8 +32,8 @@ module Sourced
       _events.to_enum
     end
 
-    def by_entity_id(id, upto: nil, after: nil)
-      filter(entity_id: id, upto: upto, after: after)
+    def by_entity_id(id, upto: nil, upto_seq: nil, after: nil)
+      filter(entity_id: id, upto: upto, upto_seq: upto_seq, after: after)
     end
 
     def transaction
