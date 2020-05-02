@@ -19,6 +19,10 @@ module Sourced
       handlers = self.class.handlers[event.topic]
       return unless handlers.any?
 
+      self.class.handlers_for_any.each do |record|
+        instance_exec(*deps, event, &record.handler)
+      end
+
       handlers.each do |record|
         before_apply(event)
         instance_exec(*deps, event, &record.handler)
@@ -48,12 +52,20 @@ module Sourced
       end
 
       def on(event_type, opts = {},  &block)
+        if event_type == :any
+          return handlers_for_any << Record.new(block, opts)
+        end
+
         key = event_type.respond_to?(:topic) ? event_type.topic : event_type.to_s
         handlers[key] << Record.new(block, opts)
       end
 
       def handlers
         @handlers ||= Hash.new{|h, k| h[k] = [] }
+      end
+
+      def handlers_for_any
+        @handlers_for_any ||= []
       end
 
       def topics
