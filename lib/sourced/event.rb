@@ -67,7 +67,7 @@ module Sourced
       field(:originator_id).declared.type(:uuid)
       field(:seq).type(:integer).default(1)
       field(:date).type(:time).default(->(*_){ ComparableTime.utc })
-      field(:payload).type(:object).default({})
+      # field(:payload).type(:object).default({})
     end
 
     def self.registry
@@ -137,6 +137,7 @@ module Sourced
     end
 
     private
+
     def inspect_line
       to_h.map { |k, v|
         [k, v].join('=')
