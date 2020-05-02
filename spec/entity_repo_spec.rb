@@ -16,17 +16,17 @@ RSpec.describe Sourced::EntityRepo do
 
   describe '#load' do
     it 'loads events from event store and invokes session.load' do
-      repo = described_class.new(event_store: event_store)
+      repo = described_class.new(session_builder, event_store: event_store)
 
       expect(event_store).to receive(:by_entity_id).with(uuid, after: 2).and_return past_events
       expect(session_builder).to receive(:load).with(uuid, past_events).and_return session
-      expect(repo.load(uuid, session_builder, after: 2)).to eq(session)
+      expect(repo.load(uuid, after: 2)).to eq(session)
     end
   end
 
   describe '#persist' do
     it 'takes events from EntitySession#commit and appends them to store' do
-      repo = described_class.new(event_store: event_store)
+      repo = described_class.new(session_builder, event_store: event_store)
 
       expect(event_store).to receive(:append).with(session_events, expected_seq: 3).and_return(session_events)
       expect(repo.persist(session)).to eq(session_events)
@@ -37,7 +37,7 @@ RSpec.describe Sourced::EntityRepo do
         sub1 = double('Reactor1', call: true)
         sub2 = double('Reactor2', call: true)
 
-        repo = described_class.new(event_store: event_store, subscribers: [sub1, sub2])
+        repo = described_class.new(session_builder, event_store: event_store, subscribers: [sub1, sub2])
         repo.persist(session)
 
         expect(sub1).to have_received(:call).with(session_events, session.entity)
@@ -48,7 +48,7 @@ RSpec.describe Sourced::EntityRepo do
 
   describe '#persist_events' do
     it 'appends events to event store' do
-      repo = described_class.new(event_store: event_store)
+      repo = described_class.new(session_builder, event_store: event_store)
 
       expect(event_store).to receive(:append).with(session_events, expected_seq: nil).and_return(session_events)
       expect(repo.persist_events(session_events)).to eq(session_events)
@@ -57,10 +57,10 @@ RSpec.describe Sourced::EntityRepo do
 
   describe '#build' do
     it 'builds pristine session instance' do
-      repo = described_class.new(event_store: event_store)
+      repo = described_class.new(session_builder, event_store: event_store)
 
       expect(session_builder).to receive(:load).with(uuid, []).and_return session
-      expect(repo.build(uuid, session_builder)).to eq(session)
+      expect(repo.build(uuid)).to eq(session)
     end
   end
 end
