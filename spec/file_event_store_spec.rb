@@ -9,7 +9,7 @@ RSpec.describe Sourced::FileEventStore do
     File.join(dir, 'tmp')
   }
 
-  subject(:store) { described_class.new(dir) }
+  subject(:store) { described_class.new(dir: dir) }
 
   after do
     FileUtils.rm_rf dir
