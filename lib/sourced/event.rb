@@ -1,110 +1,82 @@
 # frozen_string_literal: true
 
 require 'time'
-require 'delegate'
-require 'parametric/struct'
+require 'dry-struct'
 
-Parametric.policy :uuid do
-  UUID_EXP = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/.freeze
+module Sourced
+  # Time equality compares fractional seconds,
+  # but Time#to_s (used by JSON.dump) doesn't preserve fractions,
+  # so reconstituing an event with JSON.parse produces different times
+  class ComparableTime < SimpleDelegator
+    def self.utc
+      new(Time.now.utc)
+    end
 
-  message do
-    "it must be a valid UUID"
-  end
+    def self.wrap(obj)
+      case obj
+      when String
+        new(Time.parse(obj))
+      when Time, DateTime
+        new(obj.to_time)
+      when ComparableTime
+        obj
+      else
+        raise ArgumentError, "#{obj.class} #{obj} cannot be coerced to Time"
+      end
+    end
 
-  validate do |value, key, payload|
-    !!(value.to_s =~ UUID_EXP)
-  end
-
-  meta_data do
-    {type: :string}
-  end
-end
-
-# Time equality compares fractional seconds,
-# but Time#to_s (used by JSON.dump) doesn't preserve fractions,
-# so reconstituing an event with JSON.parse produces different times
-class ComparableTime < SimpleDelegator
-  def self.utc
-    new(Time.now.utc)
-  end
-
-  def self.wrap(obj)
-    case obj
-    when String
-      new(Time.parse(obj))
-    when Time, DateTime
-      new(obj.to_time)
-    when ComparableTime
-      obj
-    else
-      raise ArgumentError, "#{obj.class} #{obj} cannot be coerce to Time"
+    def ==(time)
+      time.to_i == time.to_time.to_i
     end
   end
 
-  def ==(time)
-    time.to_i == time.to_time.to_i
-  end
-end
-
-Parametric.policy :time do
-  coerce do |v, k, c|
-    ComparableTime.wrap(v)
+  module Types
+    include Dry.Types()
+    UUID = String.constrained(format: /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/.freeze)
+    EventTime = Types.Constructor(ComparableTime){|v| ComparableTime.wrap(v) }.default { ComparableTime.utc }
   end
 
-  meta_data do
-    {type: :time}
-  end
-end
+  class Event < Dry::Struct
+    transform_keys(&:to_sym)
 
-module Sourced
-  class Event
-    include Parametric::Struct
+    attribute :topic, Types::String
+    attribute :id, Types::UUID.default { SecureRandom.uuid }
+    attribute? :entity_id, Types::String
+    attribute :seq, Types::Integer.default(1)
+    attribute :date, Types::EventTime
+    attribute? :originator_id, Types::UUID
+    attribute? :payload do
 
-    schema do
-      field(:topic).type(:string).present
-      field(:id).type(:uuid).default(->(*_){ ::Sourced.uuid })
-      field(:entity_id).present.type(:string)
-      field(:originator_id).declared.type(:uuid)
-      field(:seq).type(:integer).default(1)
-      field(:date).type(:time).default(->(*_){ ComparableTime.utc })
-      # field(:payload).type(:object).default({})
     end
 
     def self.registry
       @registry ||= {}
     end
 
-    def self.define(topic, schema = nil, &block)
-      klass = Class.new(self)
-      if schema.nil? && block_given?
-        schema = Parametric::Schema.new(&block)
+    def self.define(topic, &block)
+      klass = Class.new(self) do
+        def self.name
+          'Sourced::Event'
+        end
       end
-      # redefine topic with default value
-      klass.schema do
-        field(:topic).default(topic).options([topic])
-        field(:payload).type(:object).present.schema(schema) if schema
+      klass.define_singleton_method(:topic) { topic }
+      klass.attribute :topic, Types.Value(topic).default(topic)
+      if block_given?
+        payload_class = Class.new(Dry::Struct) do
+          def self.name
+            'Sourced::Event::Payload'
+          end
+          transform_keys(&:to_sym)
+        end
+        payload_class.instance_eval(&block)
+        klass.attribute :payload, payload_class
       end
-      # apply new schema
-      # klass.schema = klass.schema.merge(schema.schema) if schema
-      # we need to call .schema(&block) to define struct methods
-      # klass.schema(&Proc.new{})
-      # if block_given?
-      #   klass.schema &block
-      # else
-      #   klass.schema(&Proc.new{})
-      # end
 
       ::Sourced::Event.registry[topic] = klass
     end
 
-    def self.topic
-      schema.fields[:topic].visit(:default)
-    end
-
-    def self.new!(data = {})
-      event = new(data)
-      raise InvalidEventError.new(event.topic, event.errors) unless event.valid?
-      event
+    def self.new!(*args)
+      new(*args)
     end
 
     def self.resolve(topic)
@@ -113,35 +85,15 @@ module Sourced
       klass
     end
 
-    def self.topic
-      schema.fields[:topic].visit(:default)
-    end
-
     def self.from(data = {})
       data[:topic] = topic unless data[:topic]
       klass = resolve(data[:topic])
-      klass.new! data
+      klass.new(data)
     end
 
     def copy(new_attrs = {})
       data = to_h.merge(new_attrs)
-      self.class.new!(data)
-    end
-
-    def inspect
-      %(<Event #{inspect_line}>)
-    end
-
-    def ==(other)
-      other.respond_to?(:to_h) && other.to_h == to_h
-    end
-
-    private
-
-    def inspect_line
-      to_h.map { |k, v|
-        [k, v].join('=')
-      }.join(' ')
+      self.class.new(data)
     end
   end
 end

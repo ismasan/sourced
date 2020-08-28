@@ -6,10 +6,10 @@ RSpec.describe Sourced::Eventable do
   module ETE
     UserCreated = Sourced::Event.define('users.created')
     NameChanged = Sourced::Event.define('users.name_changed') do
-      field(:name).type(:string)
+      attribute :name, Sourced::Types::String
     end
     AgeChanged = Sourced::Event.define('users.age_changed') do
-      field(:age).type(:integer)
+      attribute :age, Sourced::Types::Coercible::Integer
     end
   end
 
