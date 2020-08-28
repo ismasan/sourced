@@ -96,7 +96,7 @@ module Sourced
       #   klass.schema(&Proc.new{})
       # end
 
-      registry[topic] = klass
+      ::Sourced::Event.registry[topic] = klass
     end
 
     def self.topic
@@ -110,7 +110,7 @@ module Sourced
     end
 
     def self.resolve(topic)
-      klass = registry[topic]
+      klass = ::Sourced::Event.registry[topic]
       raise UnknownEventError, "no event schema registered for '#{topic}'" unless klass
       klass
     end
@@ -139,6 +139,7 @@ module Sourced
     end
 
     private
+
     def inspect_line
       to_h.map { |k, v|
         [k, v].join('=')

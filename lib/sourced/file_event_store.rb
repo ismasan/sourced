@@ -9,10 +9,11 @@ module Sourced
   class FileEventStore
     include ArrayBasedEventStore
 
-    def initialize(dir = ".")
+    def initialize(dir: ".", event_registry: Sourced::Event)
       @mutex = Mutex.new
       @dir = dir
       @file_name = File.join(@dir, 'events')
+      @event_registry = event_registry
     end
 
     def append(evts, expected_seq: nil)
@@ -29,14 +30,14 @@ module Sourced
     end
 
     private
-    attr_reader :mutex
+    attr_reader :mutex, :event_registry
 
     def events
       if File.exists?(@file_name)
         f = File.new(@file_name)
         f.each_line.map do |line|
           data = JSON.parse(line, symbolize_names: true)
-          Sourced::Event.from(data)
+          event_registry.from(data)
         end
       else
         []

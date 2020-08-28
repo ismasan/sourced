@@ -38,6 +38,13 @@ RSpec.shared_examples_for 'an event store' do
   end
 
   describe '#by_entity_id' do
+    it 'supports :upto_seq argument' do
+      store.append([e1, e2, e3, e4])
+
+      stream = store.by_entity_id(id1, upto_seq: 2)
+      expect(stream.map(&:id)).to eq [e1.id, e3.id]
+    end
+
     it 'supports :upto argument' do
       store.append([e1, e2, e3, e4])
 
