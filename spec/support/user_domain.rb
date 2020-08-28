@@ -3,24 +3,24 @@
 module UserDomain
   ## Commands
   CreateUser = Sourced::Event.define('users.create') do
-    field(:name).type(:string).present
-    field(:age).type(:integer).present
+    attribute :name, Sourced::Types::String
+    attribute :age, Sourced::Types::Coercible::Integer
   end
   UpdateUser = Sourced::Event.define('users.update') do
-    field(:name).type(:string)
-    field(:age).type(:integer)
+    attribute :name, Sourced::Types::String
+    attribute :age, Sourced::Types::Coercible::Integer
   end
 
   ## Events
   UserCreated = Sourced::Event.define('users.created') do
-    field(:name).type(:string).present
-    field(:age).type(:integer).present
+    attribute :name, Sourced::Types::String
+    attribute :age, Sourced::Types::Coercible::Integer
   end
   NameChanged = Sourced::Event.define('users.name.changed') do
-    field(:name).type(:string).present
+    attribute :name, Sourced::Types::String
   end
   AgeChanged = Sourced::Event.define('users.age.changed') do
-    field(:age).type(:integer).present
+    attribute :age, Sourced::Types::Coercible::Integer
   end
 
   class UserSession < Sourced::EntitySession
