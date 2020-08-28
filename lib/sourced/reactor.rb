@@ -33,7 +33,7 @@ module Sourced
         { id: id, last_processed_event_id: nil, date: nil }
       end
       projector do
-        on Sourced::Reactor::EventProcessed do |evt, state|
+        on Sourced::Reactor::EventProcessed do |state, evt|
           state[:date] = Time.now.utc
           state[:last_processed_event_id] = evt.payload.event_id
         end
@@ -51,14 +51,14 @@ module Sourced
       @event_store = PollingEventStore.new(event_store, 2) unless event_store.respond_to?(:stream)
       @save_every = save_every
       @save_after_seconds = save_after_seconds
-      @repo = EntityRepo.new(event_store: event_store)
+      @repo = EntityRepo.new(Session, event_store: event_store)
       @mutex = Mutex.new
     end
 
     def run
       puts "Starting reactor #{id}"
       # Get latest state for this reactor
-      session = repo.load(id, Session)
+      session = repo.load(id)
 
       last_event = nil
 
