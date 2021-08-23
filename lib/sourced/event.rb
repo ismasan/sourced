@@ -37,6 +37,14 @@ module Sourced
   end
 
   class Event < Dry::Struct
+    class BasePayload < Dry::Struct
+      def self.name
+        'Sourced::Event::Payload'
+      end
+
+      transform_keys(&:to_sym)
+    end
+
     transform_keys(&:to_sym)
 
     attribute :topic, Types::String
@@ -62,12 +70,7 @@ module Sourced
       klass.define_singleton_method(:topic) { topic }
       klass.attribute :topic, Types.Value(topic).default(topic)
       if block_given?
-        payload_class = Class.new(Dry::Struct) do
-          def self.name
-            'Sourced::Event::Payload'
-          end
-          transform_keys(&:to_sym)
-        end
+        payload_class = Class.new(BasePayload)
         payload_class.instance_eval(&block)
         klass.attribute :payload, payload_class
       end
