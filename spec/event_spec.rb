@@ -16,28 +16,6 @@ RSpec.describe Sourced::Event do
       expect(user_created.topic).to eq 'users.created'
     end
 
-    describe '.define' do
-      # it 'can be defined from another schema' do
-      #   user_schema = Parametric::Schema.new do
-      #     attribute :name, Sourced::Types::String
-      #     attribute :age, Sourced::Types::Coercible::Integer
-      #   end
-
-      #   klass = Sourced::Event.define('foobar', user_schema)
-
-      #   event = klass.new!(
-      #     entity_id: Sourced.uuid,
-      #     payload: {
-      #       name: 'Ismael',
-      #       age: 40
-      #     }
-      #   )
-
-      #   expect(event.payload.name).to eq 'Ismael'
-      #   expect(event.payload.age).to eq 40
-      # end
-    end
-
     describe '.new!' do
       it 'instantiates with valid payload' do
         evt = user_created.new!(
