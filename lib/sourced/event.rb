@@ -36,8 +36,8 @@ module Sourced
     EventTime = Types.Constructor(ComparableTime){|v| ComparableTime.wrap(v) }.default { ComparableTime.utc }
   end
 
-  class Event < Dry::Struct
-    class BasePayload < Dry::Struct
+  class Event < Dry::Struct::Value
+    class BasePayload < Dry::Struct::Value
       def self.name
         'Sourced::Event::Payload'
       end
