@@ -23,7 +23,7 @@ module UserDomain
     attribute :age, Sourced::Types::Coercible::Integer
   end
 
-  class UserSession < Sourced::EntitySession
+  class UserStage < Sourced::Stage
     User = Struct.new(:id, :name, :age)
 
     entity do |id|

@@ -3,7 +3,7 @@
 require 'sourced/projector'
 
 module Sourced
-  class EntitySession
+  class Stage
     def self.projector(pr = nil, &block)
       if pr
         @projector = pr
