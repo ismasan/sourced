@@ -2,7 +2,7 @@
 
 require 'spec_helper'
 
-RSpec.describe Sourced::EntitySession do
+RSpec.describe Sourced::Stage do
 
   class UserProjector < Sourced::Projector
     on UserDomain::UserCreated do |user, event|
@@ -32,7 +32,7 @@ RSpec.describe Sourced::EntitySession do
   let(:e2) { UserDomain::NameChanged.new!(entity_id: id, seq: 2, payload: { name: 'Ismael' }) }
   let(:e3) { UserDomain::AgeChanged.new!(entity_id: id, seq: 3, payload: { age: 42 }) }
 
-  shared_examples_for 'an EntitySession' do
+  shared_examples_for 'an Stage' do
     describe '.load(id, stream)' do
       it 'instantiates entity and projects state from stream' do
         stream = [e1, e2, e3]
@@ -122,7 +122,7 @@ RSpec.describe Sourced::EntitySession do
 
   context 'with inline entity and projector' do
     let(:session_constructor) do
-      Class.new(Sourced::EntitySession) do
+      Class.new(Sourced::Stage) do
         entity do |id|
           {
             id: id,
@@ -147,12 +147,12 @@ RSpec.describe Sourced::EntitySession do
       end
     end
 
-    it_behaves_like 'an EntitySession'
+    it_behaves_like 'an Stage'
   end
 
   context 'with inline entity and shared projector' do
     let(:session_constructor) do
-      Class.new(Sourced::EntitySession) do
+      Class.new(Sourced::Stage) do
         entity do |id|
           {
             id: id,
@@ -165,17 +165,17 @@ RSpec.describe Sourced::EntitySession do
       end
     end
 
-    it_behaves_like 'an EntitySession'
+    it_behaves_like 'an Stage'
   end
 
   context 'with shared entity constructor' do
     let(:session_constructor) do
-      Class.new(Sourced::EntitySession) do
+      Class.new(Sourced::Stage) do
         entity UserEntity
         projector UserProjector
       end
     end
 
-    it_behaves_like 'an EntitySession'
+    it_behaves_like 'an Stage'
   end
 end
