@@ -4,7 +4,7 @@ require 'spec_helper'
 require 'sourced/committer_with_originator'
 
 RSpec.describe Sourced::CommitterWithOriginator do
-  let(:session) { double('Committable', events: events, entity: {}) }
+  let(:stage) { double('Committable', events: events, entity: {}) }
   let(:eid) { Sourced.uuid }
   let(:e1) { UserDomain::NameChanged.new(entity_id: eid, seq: 1, payload: { name: 'Ismael' }) }
   let(:e2) { UserDomain::AgeChanged.new(entity_id: eid, seq: 2, payload: { age: 42 }) }
@@ -17,12 +17,12 @@ RSpec.describe Sourced::CommitterWithOriginator do
   end
 
   before do
-    allow(session).to receive(:commit).and_yield(2, events, session.entity)
+    allow(stage).to receive(:commit).and_yield(2, events, stage.entity)
   end
 
   describe '#to_a' do
     it 'produces new array with originator first, and adds #originator_id to all events' do
-      list = described_class.new(cmd, session)
+      list = described_class.new(cmd, stage)
       expect(list.to_a.map(&:class)).to eq [
         UserDomain::UpdateUser,
         UserDomain::NameChanged,
@@ -42,8 +42,8 @@ RSpec.describe Sourced::CommitterWithOriginator do
   end
 
   describe '#commit' do
-    it 'commits session and decorates events with originator' do
-      list = described_class.new(cmd, session)
+    it 'commits stage and decorates events with originator' do
+      list = described_class.new(cmd, stage)
       list.commit do |seq, evts, entity|
         expect(seq).to eq 2
         expect(evts.map(&:id)).to eq [
@@ -61,9 +61,9 @@ RSpec.describe Sourced::CommitterWithOriginator do
           2,
           3
         ]
-        expect(entity).to eq(session.entity)
+        expect(entity).to eq(stage.entity)
       end
-      expect(session).to have_received(:commit)
+      expect(stage).to have_received(:commit)
     end
   end
 end
