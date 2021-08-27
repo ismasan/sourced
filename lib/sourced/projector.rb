@@ -10,6 +10,7 @@ module Sourced
 
     def call(entity, event)
       apply(event, deps: [entity])
+      entity
     end
   end
 end

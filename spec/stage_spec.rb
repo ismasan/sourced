@@ -178,4 +178,26 @@ RSpec.describe Sourced::Stage do
 
     it_behaves_like 'an Stage'
   end
+
+  context 'with a simple callable projector' do
+    let(:session_constructor) do
+      Class.new(Sourced::Stage) do
+        entity UserEntity
+        projector ->(user, evt) {
+          case evt
+          when UserDomain::UserCreated
+            user.merge(evt.payload.to_h)
+          when UserDomain::AgeChanged
+            user.merge(evt.payload.to_h)
+          when UserDomain::NameChanged
+            user.merge(evt.payload.to_h)
+          else
+            user
+          end
+        }
+      end
+    end
+
+    it_behaves_like 'an Stage'
+  end
 end
