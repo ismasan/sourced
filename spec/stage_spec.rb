@@ -37,7 +37,7 @@ RSpec.describe Sourced::Stage do
       it 'instantiates entity and projects state from stream' do
         stream = [e1, e2, e3]
 
-        user = session_constructor.load(id, stream)
+        user = stage_constructor.load(id, stream)
         expect(user.seq).to eq 3
         expect(user.last_committed_seq).to eq 3
         expect(user.entity[:id]).to eq id
@@ -50,7 +50,7 @@ RSpec.describe Sourced::Stage do
       it 'applies new events, projects new state and collects events' do
         stream = [e1, e2, e3]
 
-        user = session_constructor.load(id, stream)
+        user = stage_constructor.load(id, stream)
 
         user.apply(UserDomain::NameChanged, payload: { name: 'Ismael 2' })
         user.apply(UserDomain::AgeChanged, payload: { age: 43 })
@@ -72,7 +72,7 @@ RSpec.describe Sourced::Stage do
       it 'still keeps track of seq' do
         stream = [e1, e2, e3]
 
-        user = session_constructor.load(id, stream)
+        user = stage_constructor.load(id, stream)
 
         user.apply(UserDomain::NameChanged.new(payload: { name: 'Ismael 2' }))
         user.apply(UserDomain::AgeChanged.new(payload: { age: 43 }))
@@ -92,10 +92,10 @@ RSpec.describe Sourced::Stage do
     end
 
     describe '#commit' do
-      it 'yields collected events and last committed seq, clears them from session' do
+      it 'yields collected events and last committed seq, clears them from stage' do
         stream = [e1, e2, e3]
 
-        user = session_constructor.load(id, stream)
+        user = stage_constructor.load(id, stream)
 
         user.apply(UserDomain::NameChanged, payload: { name: 'Ismael 2' })
         user.apply(UserDomain::AgeChanged, payload: { age: 43 })
@@ -113,7 +113,7 @@ RSpec.describe Sourced::Stage do
         end
 
         expect(called).to be true
-        # Updates session state after committing
+        # Updates stage state after committing
         expect(user.last_committed_seq).to eq 5
         expect(user.events.size).to eq(0)
       end
@@ -121,7 +121,7 @@ RSpec.describe Sourced::Stage do
   end
 
   context 'with inline entity and projector' do
-    let(:session_constructor) do
+    let(:stage_constructor) do
       Class.new(Sourced::Stage) do
         entity do |id|
           {
@@ -151,7 +151,7 @@ RSpec.describe Sourced::Stage do
   end
 
   context 'with inline entity and shared projector' do
-    let(:session_constructor) do
+    let(:stage_constructor) do
       Class.new(Sourced::Stage) do
         entity do |id|
           {
@@ -169,7 +169,7 @@ RSpec.describe Sourced::Stage do
   end
 
   context 'with shared entity constructor' do
-    let(:session_constructor) do
+    let(:stage_constructor) do
       Class.new(Sourced::Stage) do
         entity UserEntity
         projector UserProjector
@@ -180,7 +180,7 @@ RSpec.describe Sourced::Stage do
   end
 
   context 'with a simple callable projector' do
-    let(:session_constructor) do
+    let(:stage_constructor) do
       Class.new(Sourced::Stage) do
         entity UserEntity
         projector ->(user, evt) {
