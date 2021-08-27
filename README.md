@@ -10,160 +10,219 @@ Bare-bones Event Sourcing in Ruby. WiP.
 
 This gem attempts to provide the basic components to build in-process event-sourced apps in Ruby.
 
-### Commands
+### Entities
 
-Commands are the things that you want your app to do. They describe _intents_, and by convention are named in the imperative (ex. "create user", "update account").
+An entity represents the current state of an object in your domain. It can be any type (a Hash, a Struct, your own class, etc) as long as it exposes an `id`.
+Entities are sometimes called "aggregate root" in Event Sourcing circles, but in reality an entity doesn't not have to qualify as an [aggregate](https://martinfowler.com/bliki/DDD_Aggregate.html) object. Any object will do.
 
 ```ruby
-CreateUser = Sourced::Event.define('users.create') do
-  field(:name).type(:string).present
-  field(:age).type(:integer).present
-end
+User = Struct.new(:id, :name, :age, keyword_init: true)
 ```
 
 ### Events
 
-Events describe things that have happened in your system, and are usually produced in response to commands.
+Events describe things that have happened to entities in your system, and are usually produced in response to commands of some kind.
 For example, a `CreateUser` command might result in a `UserCreated` event.
 Events are named in past tense. ex. "user created", "account updated".
 
 ```ruby
 UserCreated = Sourced::Event.define('users.created') do
-  field(:name).type(:string).present
-  field(:age).type(:integer).present
+  property :name, Sourced::Types::String
+  property :age, Sourced::Types::Integer
 end
 UserNameUpdated = Sourced::Event.define('users.updated.name') do
-  field(:name).type(:string).present
+  property :name, Sourced::Types::String
 end
 UserAgeUpdated = Sourced::Event.define('users.updated.age') do
-  field(:age).type(:integer).present
+  property :age, Sourced::Types::Integer
 end
 ```
 
-Commands and events define data schemas and their validations. Both are inmutable.
-Sourced won't let invalid events go through.
-You can add your own validators and field types. See [Parametric](https://github.com/ismasan/parametric) for more.
+* Sourced uses [Dry-Types](https://dry-rb.org/gems/dry-types/1.2/) for event property definitions.
 
-All Sourced commands and events come with a basic data schema.
+Event are inmutable struct definitions.
+Events are assumed to be valid. Validating user input or domain data should be done at the command layer, which will depend on your app.
+
+All Sourced events come with a basic data schema.
 
 ```ruby
-topic # String, required
+topic # String, required. Ex. 'users.created'
 id # UUID, required, set on creation
 entity_id # UUID, required
 date # Time, set on creation
-version # Integer, usually set by aggregates (more on that below)
-originator_id # UUID, optional. Set by command handlers
+seq # Integer, usually set by stages (more on that below)
+originator_id # UUID, optional. The command or event that lead up to this event.
+payload # Object, your custom event properties.
 ```
 
 You add field definitions to event constructors by passing a block to `Sourced::Event.define(topic, &block)`.
 
 #### Instantiating events
 
-You can build an instance of a given event or command class:
+You can build an instance of a given event class:
 
 ```ruby
-# this will raise an exception if event data is invalid or missing
-cmd = CreateUser.new!(aggregate_id: Sourced.uuid, name: 'Joan', age: 38)
-cmd.name # 'Joan'
-cmd.age # 38
-cmd.id # UUID
-cmd.aggregate_idid # UUID
+evt = UserCreated.new(entity_id: Sourced.uuid, name: 'Joan', age: 38)
+evt.name # 'Joan'
+evt.age # 38
+evt.id # UUID
+evt.entity_id # UUID
 ```
 
 You can build events of the right class from a hash (uses `topic` to find class).
 
 ```ruby
-# Will return a CreateUser command
-cmd = Sourced::Event.from(
-  topic: 'users.create',
-  name: 'Joan',
-  age: 38
+# Will return a UserCreated event
+evt = Sourced::Event.from(
+  topic: 'users.created',
+  payload: {
+    name: 'Joan',
+    age: 38
+  }
 )
 ```
 
-### Aggregate
+### Projectors
 
-Aggregates are your domain objects. They encapsulate related properties and state, and guard against invalid state changes.
-Aggregates are _not_ "models" in the ActiveRecord sense! They know nothing about databases.
-
-Aggregates can hold whatever internal state you need, but they must be able to build said state entirely from events.
-For a given list of events, an aggregate instance should arrive at the exact same state every time.
+A projector subscribes to events and uses them to mutate entities (*).
 
 ```ruby
-class User
-  include Sourced::Aggregate
-  attr_reader :name, :age
-
-  on UserCreated do |event|
-    @id = event.aggregate_id
-    @name = event.name
-    @age = event.age
+class UserProjector < Sourced::Projector
+  on UserCreated do |user, evt|
+    user.id = evt.payload.id
+    user.name = evt.payload.name
+    user.age = evt.payload.age
   end
 
-  on UserNameUpdated do |event|
-    @name = event.name
+  on UserNameUpdated do |user, evt|
+    user.name = evt.payload.name
   end
 
-  on UserAgeUpdated do |event|
-    @age = event.age
+  on UserAgeUpdated do |user, evt|
+    user.age = evt.payload.age
   end
 end
 ```
 
-Applying events will move an aggregate's state forward.
+A projector produces a simple callable object that applies given events to an entity instance.
 
 ```ruby
-user = User.new
-user.apply UserCreated, aggregated_id: Sourced.uuid, name: 'Joe', age: 30
-user.name # 'Joe'
-user.age # 30
-user.version # 1, tracked automatically
-
-user.apply UserAgeUpdated, age: 40
-user.age # 40
-user.version # 2
-
-# Instance collects applied events
-user.events # [<UserCreated>, <UserAgeUpdated>]
+user_id = Sourced.uuid
+user = User.new(name: nil, age: nil)
+projector = UserProjector.new
+projector.call(user, UserCreated.new(entity_id: user_id, payload: { name: 'Joe', age: 40 }))
+projector.call(user, UserAgeUpdated.new(entity_id: user_id, payload: { age: 41 }))
+user.name # "Joe"
+user.age # 41
 ```
 
-You can apply events directly to aggregates, but you can also add your own methods and guard against invalid state changes.
+(*) `Sourced::Projector` assumes Entities to be mutable. An alternative would have been to make projectors pure functions that return copies of entities,
+but this makes the syntax less idiomatic, and also means that projector blocks must always return an entity instance, which is easy to forget.
+
+Projectors are just syntax sugar for the following interface: `#call(Entity, Event) Entity`, so you can create your own. Example:
+
+The following is a "pure" functional projector that returns copies of immutable entities.
 
 ```ruby
-class User
-  include Sourced::Aggregate
+simple_user_projector = proc do |user, evt|
+  case evt
+    when UserCreated
+      user.copy(id: evt.entity_id, **evt.payload)
+    when UserNameUpdated
+      user.copy(**evt.payload)
+    # etc...
+    else
+      user
+  end
+end
+```
 
-  def start(id:, name:, age:)
-    raise "already started" if self.id
-    apply UserCreated, aggregate_id: id, name: name, age: age
+### Stage
+
+A Stage composes an entity factory and a projector into an entity's life-cycle.
+
+```ruby
+class UserStage < Sourced::Stage
+  # A factory to initialize a new Entity
+  # Can be a block, or any `#call(id) Entity` interface.
+  entity do |id|
+    User.new(id: id)
   end
 
-  def name=(n)
-    raise "not created yet" unless id
-    apply UserNameUpdated, name: n
-  end
-
-  def age=(a)
-    raise "not created yet" unless id
-    apply UserAgeUpdated, age: a
-  end
-
-  # event blocks here
-  on UserCreated do |event|
+  # A projector to project events into user entities.
+  # Accepts a block (to be wrapped by `Sourced::Projector`),
+  # or any `#call(Entity, Event) Entity` interface.
+  projector do
+    on UserCreated do |user, evt|
+      user[:name] = evt.payload.name
+      user[:age] = evt.payload.age
+    end
     # etc
   end
 end
 ```
 
-Now the outside world can treat your users as regular Ruby objects.
+The Stage entity life-cycle is:
 
 ```ruby
-user = User.new
-user.start(id: Sourced.uuid, name: 'Joe', age: 30)
-user.age = 40
-user.events # [<UserCreated>, <UserAgeUpdated>]
+# 1). Given a stream of events _for the same entity_, re-constitute the current state of an entity.
+events = [event1, event2, event3]
+stage = UserStage.load(event1.entity_id, events)
+
+# 2). Apply new events to the current entity state.
+stage.apply(UserAgeChanged, payload: { age: 50 })
+stage.apply(UserNameChanged, payload: { name: 'Joan' })
+
+# User entity has been updated
+state.entity.name # "Joan"
+
+# Stage#events lists new events applied since last load
+stage.events# [<UserAgeChanged>, <UserNameChanged>]
+
+# Stage tracks event sequence number.
+stage.events.map(&:seq) # [4, 5]
+# Applied events are populated with #entity_id
+stage.events.map(&:entity_id)
+
+# #last_committed_seq is the last event sequence loaded
+stage.last_committed_seq # 3
+# #seq is the current sequence number (from the last event applied)
+stage.seq # 5
+
+# 3). Commit new events
+# This yields new events for storage
+# and resets new event list and sequences only if storage was successful.
+stage.commit do |last_committed_seq, applied_events, user|
+  # last_committed_seq can be used for optimistic locking
+  SomeEventStore.append(applied_events, last_committed_seq)
+end
+
+# On successful commit, stage is updated
+stage.events # []
+stage.last_committed_seq # 5
+stage.seq # 5
 ```
 
+### Event Store
+
+An _Event Store_ persists and retrieves events from storage.
+It must implement the following interface (*):
+
+```
+# Append events to storage
+append(Array<Event>, expected_seq: nil | Integer) Array<Event>
+# Retrieve entire list of events for an entity ID
+by_entity_id(id UUID, options Hash) Array<Event>
+```
+
+Currently Sourced ships with an `Sourced::MemEventStore` (in-memory, for tests) implementation.
+Different implementations could be written to support databases, Kafka, file system, etc.
+
+(*) event stores implementations are free to expose othe methods too, for example for filtering or querying events.
+
+### Entity Repo
+
+ToDO
 ### Command Handler
 
 ToDO
