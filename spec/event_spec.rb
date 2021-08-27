@@ -61,6 +61,15 @@ RSpec.describe Sourced::Event do
         expect(evt.payload.name).to eq 'Joe'
       end
     end
+
+    specify 'yielding to definition block' do
+      attr_name = :foo
+      klass = Sourced::Event.define('users.created2') do |e|
+        e.attribute attr_name, Sourced::Types::String
+      end
+      evt = klass.new(payload: { foo: 'test' })
+      expect(evt.payload.foo).to eq('test')
+    end
   end
 
   context 'instance-level' do
