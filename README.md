@@ -54,18 +54,18 @@ Events are named in past tense. ex. "user created", "account updated".
 
 ```ruby
 UserCreated = Sourced::Event.define('users.created') do
-  property :name, Sourced::Types::String
-  property :age, Sourced::Types::Integer
+  attribute :name, Sourced::Types::String
+  attribute :age, Sourced::Types::Integer
 end
 UserNameUpdated = Sourced::Event.define('users.updated.name') do
-  property :name, Sourced::Types::String
+  attribute :name, Sourced::Types::String
 end
 UserAgeUpdated = Sourced::Event.define('users.updated.age') do
-  property :age, Sourced::Types::Integer
+  attribute :age, Sourced::Types::Integer
 end
 ```
 
-* Sourced uses [Dry-Types](https://dry-rb.org/gems/dry-types/1.2/) for event property definitions.
+* Sourced uses [Dry-Types](https://dry-rb.org/gems/dry-types/1.2/) for event attribute definitions.
 
 Events are inmutable struct definitions.
 Events are assumed to be valid. Validating user input or domain data should be done at the command layer, which will depend on your app.
@@ -79,7 +79,7 @@ entity_id # UUID, required
 date # Time, set on creation
 seq # Integer, usually set by stages (more on that below)
 originator_id # UUID, optional. The command or event that lead up to this event.
-payload # Object, your custom event properties.
+payload # Object, your custom event attributes.
 ```
 
 You add field definitions to event constructors by passing a block to `Sourced::Event.define(topic, &block)`.
