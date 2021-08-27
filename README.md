@@ -13,7 +13,7 @@ This gem attempts to provide the basic components to build in-process event-sour
 ### Entities
 
 An entity represents the current state of an object in your domain. It can be any type (a Hash, a Struct, your own class, etc) as long as it exposes an `id`.
-Entities are sometimes called "aggregate root" in Event Sourcing circles, but in reality an entity doesn't not have to qualify as an [aggregate](https://martinfowler.com/bliki/DDD_Aggregate.html) object. Any object will do.
+Entities are sometimes called "aggregate root" in Event Sourcing circles, but in reality an entity does not have to qualify as an [aggregate](https://martinfowler.com/bliki/DDD_Aggregate.html) object. Any object will do.
 
 ```ruby
 User = Struct.new(:id, :name, :age, keyword_init: true)
