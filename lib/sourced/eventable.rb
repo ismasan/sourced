@@ -10,8 +10,8 @@ module Sourced
       attrs = attrs.dup
       deps = attrs.delete(:deps) || []
 
-      event = if event_or_class.respond_to?(:new!)
-        event_or_class.new!(next_event_attrs.merge(attrs))
+      event = if event_or_class.respond_to?(:new)
+        event_or_class.new(next_event_attrs.merge(attrs))
       else
         event_or_class
       end

@@ -16,9 +16,9 @@ RSpec.describe Sourced::Event do
       expect(user_created.topic).to eq 'users.created'
     end
 
-    describe '.new!' do
+    describe '.new' do
       it 'instantiates with valid payload' do
-        evt = user_created.new!(
+        evt = user_created.new(
           entity_id: Sourced.uuid,
           payload: {
             name: 'Ismael'
@@ -34,7 +34,7 @@ RSpec.describe Sourced::Event do
 
       it 'raises with invalid payload' do
         expect {
-          user_created.new!(
+          user_created.new(
             entity_id: Sourced.uuid,
           )
         }.to raise_error Dry::Struct::Error
@@ -68,7 +68,7 @@ RSpec.describe Sourced::Event do
       it 'produces copy of the same class, with optional new attributes' do
         aggrid = Sourced.uuid
         originator_id = Sourced.uuid
-        evt1 = user_created.new!(entity_id: aggrid, payload: { name: 'Ismael', age: 40 })
+        evt1 = user_created.new(entity_id: aggrid, payload: { name: 'Ismael', age: 40 })
         evt2 = evt1.copy(originator_id: originator_id)
 
         expect(evt1.id).to eq evt2.id
@@ -84,10 +84,10 @@ RSpec.describe Sourced::Event do
   context 'when loading from JSON' do
     it 'preserves equality' do
       uuid = Sourced.uuid
-      e1 = user_created.new!(entity_id: uuid, payload: { name: 'Ismael', age: 40 })
+      e1 = user_created.new(entity_id: uuid, payload: { name: 'Ismael', age: 40 })
       json = JSON.dump(e1.to_h)
       data = JSON.parse(json, symbolize_names: true)
-      e2 = user_created.new!(data)
+      e2 = user_created.new(data)
       expect(e1).to eq(e2)
     end
   end

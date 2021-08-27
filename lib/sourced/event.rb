@@ -78,10 +78,6 @@ module Sourced
       ::Sourced::Event.registry[topic] = klass
     end
 
-    def self.new!(*args)
-      new(*args)
-    end
-
     def self.resolve(topic)
       klass = ::Sourced::Event.registry[topic]
       raise UnknownEventError, "no event schema registered for '#{topic}'" unless klass
