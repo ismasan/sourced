@@ -40,7 +40,7 @@ end
 
 * Sourced uses [Dry-Types](https://dry-rb.org/gems/dry-types/1.2/) for event property definitions.
 
-Event are inmutable struct definitions.
+Events are inmutable struct definitions.
 Events are assumed to be valid. Validating user input or domain data should be done at the command layer, which will depend on your app.
 
 All Sourced events come with a basic data schema.
@@ -62,11 +62,11 @@ You add field definitions to event constructors by passing a block to `Sourced::
 You can build an instance of a given event class:
 
 ```ruby
-evt = UserCreated.new(entity_id: Sourced.uuid, name: 'Joan', age: 38)
-evt.name # 'Joan'
-evt.age # 38
+evt = UserCreated.new(entity_id: Sourced.uuid, payload: { name: 'Joan', age: 38 })
 evt.id # UUID
 evt.entity_id # UUID
+evt.payload.name # 'Joan'
+evt.payload.age # 38
 ```
 
 You can build events of the right class from a hash (uses `topic` to find class).
