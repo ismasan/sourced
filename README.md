@@ -8,6 +8,35 @@ Bare-bones Event Sourcing in Ruby. WiP.
 
 This gem attempts to provide the basic components to build in-process event-sourced apps in Ruby.
 
+Example app:
+
+```ruby
+class UserEndpoint
+  def initialize(event_store:)
+    @repo = Sourced::EntityRepo.new(UserStage, event_store: event_store)
+  end
+
+  def create_user(name:, age:)
+    id = Sourced.uuid
+    stage = @repo.build(id)
+    stage.apply UserCreated, payload: { name: name, age: age }
+    stage.persist(stage)
+    stage.entity
+  end
+
+  def find_user(id)
+    @repo.load(id).entity
+  end
+
+  def update_user_age(id, age)
+    stage = @repo.load(id)
+    stage.apply UserAgeUpdated, payload: { age: age }
+    @repo.persist(stage)
+    stage.entity
+  end
+end
+```
+
 ### Entities
 
 An entity represents the current state of an object in your domain. It can be any type (a Hash, a Struct, your own class, etc) as long as it exposes an `id`.
