@@ -70,6 +70,7 @@ evt.payload.age # 38
 ```
 
 You can build events of the right class from a hash (uses `topic` to find class).
+This is used for deserializing from storage.
 
 ```ruby
 # Will return a UserCreated event
