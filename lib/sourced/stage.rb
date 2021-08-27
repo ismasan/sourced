@@ -29,7 +29,7 @@ module Sourced
       seq = 0
       stream.each do |event|
         seq = event.seq
-        projector.call(_entity, event)
+        _entity = projector.call(_entity, event)
       end
 
       new(id, entity: _entity, projector: projector, seq: seq)
@@ -61,7 +61,7 @@ module Sourced
       else
         event_or_class.copy(attrs)
       end
-      projector.call(entity, event)
+      @entity = projector.call(entity, event)
       @seq = event.seq
       events << event
       self
