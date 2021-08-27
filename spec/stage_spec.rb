@@ -3,7 +3,6 @@
 require 'spec_helper'
 
 RSpec.describe Sourced::Stage do
-
   class UserProjector < Sourced::Projector
     on UserDomain::UserCreated do |user, event|
       user[:name] = event.payload.name
@@ -32,7 +31,7 @@ RSpec.describe Sourced::Stage do
   let(:e2) { UserDomain::NameChanged.new(entity_id: id, seq: 2, payload: { name: 'Ismael' }) }
   let(:e3) { UserDomain::AgeChanged.new(entity_id: id, seq: 3, payload: { age: 42 }) }
 
-  shared_examples_for 'an Stage' do
+  shared_examples_for 'a Stage' do
     describe '.load(id, stream)' do
       it 'instantiates entity and projects state from stream' do
         stream = [e1, e2, e3]
@@ -147,7 +146,7 @@ RSpec.describe Sourced::Stage do
       end
     end
 
-    it_behaves_like 'an Stage'
+    it_behaves_like 'a Stage'
   end
 
   context 'with inline entity and shared projector' do
@@ -165,7 +164,7 @@ RSpec.describe Sourced::Stage do
       end
     end
 
-    it_behaves_like 'an Stage'
+    it_behaves_like 'a Stage'
   end
 
   context 'with shared entity constructor' do
@@ -176,7 +175,7 @@ RSpec.describe Sourced::Stage do
       end
     end
 
-    it_behaves_like 'an Stage'
+    it_behaves_like 'a Stage'
   end
 
   context 'with a simple callable projector' do
@@ -198,6 +197,6 @@ RSpec.describe Sourced::Stage do
       end
     end
 
-    it_behaves_like 'an Stage'
+    it_behaves_like 'a Stage'
   end
 end
