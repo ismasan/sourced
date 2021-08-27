@@ -169,6 +169,7 @@ The Stage entity life-cycle is:
 # 1). Given a stream of events _for the same entity_, re-constitute the current state of an entity.
 events = [event1, event2, event3]
 stage = UserStage.load(event1.entity_id, events)
+stage.entity # user entity, projected from event stream.
 
 # 2). Apply new events to the current entity state.
 stage.apply(UserAgeChanged, payload: { age: 50 })
