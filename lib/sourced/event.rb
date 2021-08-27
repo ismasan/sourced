@@ -68,7 +68,7 @@ module Sourced
         end
       end
       klass.define_singleton_method(:topic) { topic }
-      klass.attribute :topic, Types.Value(topic).default(topic)
+      klass.attribute :topic, Types.Value(topic).default(topic.freeze)
       if block_given?
         payload_class = Class.new(BasePayload)
         payload_class.instance_eval(&block)
