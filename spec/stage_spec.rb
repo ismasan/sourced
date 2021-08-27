@@ -28,9 +28,9 @@ RSpec.describe Sourced::Stage do
   end
 
   let(:id) { Sourced.uuid }
-  let(:e1) { UserDomain::UserCreated.new!(entity_id: id, seq: 1, payload: { name: 'Joe', age: 41 }) }
-  let(:e2) { UserDomain::NameChanged.new!(entity_id: id, seq: 2, payload: { name: 'Ismael' }) }
-  let(:e3) { UserDomain::AgeChanged.new!(entity_id: id, seq: 3, payload: { age: 42 }) }
+  let(:e1) { UserDomain::UserCreated.new(entity_id: id, seq: 1, payload: { name: 'Joe', age: 41 }) }
+  let(:e2) { UserDomain::NameChanged.new(entity_id: id, seq: 2, payload: { name: 'Ismael' }) }
+  let(:e3) { UserDomain::AgeChanged.new(entity_id: id, seq: 3, payload: { age: 42 }) }
 
   shared_examples_for 'an Stage' do
     describe '.load(id, stream)' do

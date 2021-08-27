@@ -6,11 +6,11 @@ require 'sourced/committer_with_originator'
 RSpec.describe Sourced::CommitterWithOriginator do
   let(:session) { double('Committable', events: events, entity: {}) }
   let(:eid) { Sourced.uuid }
-  let(:e1) { UserDomain::NameChanged.new!(entity_id: eid, seq: 1, payload: { name: 'Ismael' }) }
-  let(:e2) { UserDomain::AgeChanged.new!(entity_id: eid, seq: 2, payload: { age: 42 }) }
+  let(:e1) { UserDomain::NameChanged.new(entity_id: eid, seq: 1, payload: { name: 'Ismael' }) }
+  let(:e2) { UserDomain::AgeChanged.new(entity_id: eid, seq: 2, payload: { age: 42 }) }
   let(:events) { [e1, e2] }
   let(:cmd) do
-    UserDomain::UpdateUser.new!(entity_id: eid, payload: {
+    UserDomain::UpdateUser.new(entity_id: eid, payload: {
       name: 'Ismael',
       age: 42
     })
