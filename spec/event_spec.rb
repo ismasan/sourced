@@ -4,12 +4,17 @@ require 'spec_helper'
 require 'json'
 
 RSpec.describe Sourced::Event do
-  let(:user_created) {
+  let(:create_user) do
+    Sourced::Event.define('users.create') do
+      attribute :name, Sourced::Types::String
+    end
+  end
+  let(:user_created) do
     Sourced::Event.define('users.created') do
       attribute :name, Sourced::Types::String
       attribute :age, Sourced::Types::Coercible::Integer.default(40)
     end
-  }
+  end
 
   context 'class-level' do
     it '.topic' do
@@ -59,6 +64,19 @@ RSpec.describe Sourced::Event do
         expect(evt.id).to eq id
         expect(evt.entity_id).to eq aggrid
         expect(evt.payload.name).to eq 'Joe'
+      end
+    end
+
+    describe '.follow' do
+      it 'produces another event with :originator_id set to origin event' do
+        eid = Sourced.uuid
+        cmd = create_user.new(entity_id: eid, payload: { name: 'Ismael' })
+
+        evt2 = user_created.follow(cmd, name: cmd.payload.name, age: 21)
+        expect(evt2.originator_id).to eq(cmd.id)
+        expect(evt2.entity_id).to eq(cmd.entity_id)
+        expect(evt2.payload.name).to eq(cmd.payload.name)
+        expect(evt2.payload.age).to eq(21)
       end
     end
 

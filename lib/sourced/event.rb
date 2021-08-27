@@ -90,6 +90,16 @@ module Sourced
       klass.new(data)
     end
 
+    # ToDO: events should have a #metadata object
+    # extensible by users, which would be copied when following.
+    def self.follow(evt, payload = {})
+      new(
+        entity_id: evt.entity_id,
+        originator_id: evt.id,
+        payload: payload
+      )
+    end
+
     def copy(new_attrs = {})
       data = to_h.merge(new_attrs)
       self.class.new(data)
