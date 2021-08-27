@@ -4,8 +4,6 @@
 
 Bare-bones Event Sourcing in Ruby. WiP.
 
-![diagram](https://static.swimlanes.io/ab58ca5bacf8a6e60024c3e8335bdfee.png)
-
 ## TL;DR;
 
 This gem attempts to provide the basic components to build in-process event-sourced apps in Ruby.
@@ -225,11 +223,8 @@ Different implementations could be written to support databases, Kafka, file sys
 ### Entity Repo
 
 ToDO
+
 ### Command Handler
-
-ToDO
-
-### Event Store
 
 ToDO
 
