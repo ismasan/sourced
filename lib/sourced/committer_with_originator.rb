@@ -12,6 +12,7 @@ module Sourced
       @committable.commit do |seq, _events, entity|
         yield seq, evts, entity
       end
+      evts
     end
 
     def to_a

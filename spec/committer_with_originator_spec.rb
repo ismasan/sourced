@@ -44,7 +44,7 @@ RSpec.describe Sourced::CommitterWithOriginator do
   describe '#commit' do
     it 'commits stage and decorates events with originator' do
       list = described_class.new(cmd, stage)
-      list.commit do |seq, evts, entity|
+      evts = list.commit do |seq, evts, entity|
         expect(seq).to eq 2
         expect(evts.map(&:id)).to eq [
           cmd.id,
@@ -64,6 +64,7 @@ RSpec.describe Sourced::CommitterWithOriginator do
         expect(entity).to eq(stage.entity)
       end
       expect(stage).to have_received(:commit)
+      expect(evts.size).to eq(3)
     end
   end
 end
