@@ -43,19 +43,6 @@ RSpec.describe Sourced::EntityRepo do
       expect(the_entity).to eq(stage.entity)
       expect(the_events).to eq(stage_events)
     end
-
-    context 'with subscribed sync reactors' do
-      it 'calls reactors with latest entity and events, inside a transaction' do
-        sub1 = double('Reactor1', call: true)
-        sub2 = double('Reactor2', call: true)
-
-        repo = described_class.new(stage_builder, event_store: event_store, subscribers: [sub1, sub2])
-        repo.persist(stage)
-
-        expect(sub1).to have_received(:call).with(stage_events, stage.entity)
-        expect(sub2).to have_received(:call).with(stage_events, stage.entity)
-      end
-    end
   end
 
   describe '#persist_with_originator' do

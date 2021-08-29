@@ -4,10 +4,9 @@ require 'sourced/committer_with_originator'
 
 module Sourced
   class EntityRepo
-    def initialize(stage_builder, event_store: MemEventStore.new, subscribers: [])
+    def initialize(stage_builder, event_store: MemEventStore.new)
       @stage_builder = stage_builder
       @event_store = event_store
-      @subscribers = subscribers
     end
 
     def build(id)
@@ -24,7 +23,7 @@ module Sourced
         event_store.transaction do
           events = persist_events(events, expected_seq: last_committed_seq)
           block.call(entity, events) if block_given?
-          dispatch(entity, events)
+          events
         end
       end
     end
@@ -39,16 +38,6 @@ module Sourced
 
     private
 
-    attr_reader :stage_builder, :event_store, :subscribers
-
-    def dispatch(entity, events)
-      # Subscribers should not be dependent on eachother,
-      # so this could potentially write concurrently to all of them.
-      subscribers.each do |sub|
-        sub.call(events, entity)
-      end
-
-      events
-    end
+    attr_reader :stage_builder, :event_store
   end
 end
