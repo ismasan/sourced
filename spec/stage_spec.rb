@@ -103,13 +103,15 @@ RSpec.describe Sourced::Stage do
         expect(user.last_committed_seq).to eq 3
 
         called = false
-        user.commit do |seq, events, entity|
+        evts = user.commit do |seq, events, entity|
           called = true
           expect(seq).to eq(3)
           expect(events.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
           expect(events.map(&:seq)).to eq([4, 5])
           expect(entity).to eq(user.entity)
         end
+
+        expect(evts.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
 
         expect(called).to be true
         # Updates stage state after committing
