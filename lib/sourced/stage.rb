@@ -69,11 +69,13 @@ module Sourced
 
     def commit(&_block)
       # Yield last known committed sequence and new events
-      yield @last_committed_seq, @events.slice(0, @events.size), entity
+      output_events = @events.slice(0, @events.size)
+      yield @last_committed_seq, output_events, entity
 
       # Only update @seq and clear events if yield above hasn't raised
       @last_committed_seq = @seq
       @events = []
+      output_events
     end
 
     private
