@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'sourced/committer_with_originator'
+
 module Sourced
   class EntityRepo
     def initialize(stage_builder, event_store: MemEventStore.new, subscribers: [])
@@ -24,6 +26,10 @@ module Sourced
           dispatch(events, entity)
         end
       end
+    end
+
+    def persist_with_originator(stage, originator_event)
+      persist(CommitterWithOriginator.new(originator_event, stage))
     end
 
     def persist_events(events, expected_seq: nil)

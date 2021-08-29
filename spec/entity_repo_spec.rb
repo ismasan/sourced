@@ -46,6 +46,11 @@ RSpec.describe Sourced::EntityRepo do
     end
   end
 
+  describe '#persist_with_originator' do
+    it 'prepends event originator to event list, updates events :originator_id' do
+    end
+  end
+
   describe '#persist_events' do
     it 'appends events to event store' do
       repo = described_class.new(stage_builder, event_store: event_store)
