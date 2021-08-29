@@ -14,7 +14,7 @@ module Sourced
     end
 
     def load(id, **opts)
-      stream = event_store.by_entity_id(id, opts)
+      stream = event_store.by_entity_id(id, **opts)
       stage_builder.load(id, stream)
     end
 
