@@ -32,6 +32,18 @@ RSpec.describe Sourced::EntityRepo do
       expect(repo.persist(stage)).to eq(stage_events)
     end
 
+    it 'yields entity and events within event store transaction' do
+      the_entity = nil
+      the_events = nil
+      repo = described_class.new(stage_builder, event_store: event_store)
+      repo.persist(stage) do |entity, events|
+        the_entity = entity
+        the_events = events
+      end
+      expect(the_entity).to eq(stage.entity)
+      expect(the_events).to eq(stage_events)
+    end
+
     context 'with subscribed sync reactors' do
       it 'calls reactors with latest entity and events, inside a transaction' do
         sub1 = double('Reactor1', call: true)
