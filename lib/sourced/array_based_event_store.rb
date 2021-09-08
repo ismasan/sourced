@@ -50,7 +50,7 @@ module Sourced
       end
 
       current_seq = index[event.entity_id]
-      if current_seq >= expected_seq
+      if current_seq > expected_seq
         raise Sourced::ConcurrencyError.new(entity_id: event.entity_id, expected_seq: expected_seq, current_seq: current_seq)
       end
 
