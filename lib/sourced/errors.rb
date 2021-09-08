@@ -16,5 +16,9 @@ module Sourced
     end
   end
 
-  ConcurrencyError = Class.new(SourcedError)
+  class ConcurrencyError < SourcedError
+    def initialize(entity_id:, expected_seq:, current_seq:)
+      super "attempting to append entity #{entity_id} after seq #{expected_seq}, but last in store is #{current_seq}"
+    end
+  end
 end
