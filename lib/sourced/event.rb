@@ -52,7 +52,7 @@ module Sourced
     attribute? :entity_id, Types::String
     attribute :seq, Types::Integer.default(1)
     attribute :date, Types::EventTime
-    attribute? :originator_id, Types::UUID
+    attribute? :originator_id, Types::String.optional
     attribute? :payload do
 
     end

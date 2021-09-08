@@ -73,7 +73,7 @@ RSpec.describe Sourced::Event do
         }
 
         evt = Sourced::Event.from(data)
-        expect(evt).to be_a UserDomain::NameChanged
+        expect(evt).to be_a Sourced::UserDomain::NameChanged
         expect(evt.id).to eq id
         expect(evt.entity_id).to eq aggrid
         expect(evt.payload.name).to eq 'Joe'

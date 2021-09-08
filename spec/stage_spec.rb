@@ -4,14 +4,14 @@ require 'spec_helper'
 
 RSpec.describe Sourced::Stage do
   class UserProjector < Sourced::Projector
-    on UserDomain::UserCreated do |user, event|
+    on Sourced::UserDomain::UserCreated do |user, event|
       user[:name] = event.payload.name
       user[:age] = event.payload.age
     end
-    on UserDomain::AgeChanged do |user, event|
+    on Sourced::UserDomain::AgeChanged do |user, event|
       user[:age] = event.payload.age
     end
-    on UserDomain::NameChanged do |user, event|
+    on Sourced::UserDomain::NameChanged do |user, event|
       user[:name] = event.payload.name
     end
   end
@@ -27,9 +27,9 @@ RSpec.describe Sourced::Stage do
   end
 
   let(:id) { Sourced.uuid }
-  let(:e1) { UserDomain::UserCreated.new(entity_id: id, seq: 1, payload: { name: 'Joe', age: 41 }) }
-  let(:e2) { UserDomain::NameChanged.new(entity_id: id, seq: 2, payload: { name: 'Ismael' }) }
-  let(:e3) { UserDomain::AgeChanged.new(entity_id: id, seq: 3, payload: { age: 42 }) }
+  let(:e1) { Sourced::UserDomain::UserCreated.new(entity_id: id, seq: 1, payload: { name: 'Joe', age: 41 }) }
+  let(:e2) { Sourced::UserDomain::NameChanged.new(entity_id: id, seq: 2, payload: { name: 'Ismael' }) }
+  let(:e3) { Sourced::UserDomain::AgeChanged.new(entity_id: id, seq: 3, payload: { age: 42 }) }
 
   shared_examples_for 'a Stage' do
     describe '.load(id, stream)' do
@@ -51,8 +51,8 @@ RSpec.describe Sourced::Stage do
 
         user = stage_constructor.load(id, stream)
 
-        user.apply(UserDomain::NameChanged, payload: { name: 'Ismael 2' })
-        user.apply(UserDomain::AgeChanged, payload: { age: 43 })
+        user.apply(Sourced::UserDomain::NameChanged, payload: { name: 'Ismael 2' })
+        user.apply(Sourced::UserDomain::AgeChanged, payload: { age: 43 })
 
         expect(user.id).to eq id
         expect(user.last_committed_seq).to eq 3
@@ -61,7 +61,7 @@ RSpec.describe Sourced::Stage do
         expect(user.entity[:age]).to eq 43
         expect(user.events.size).to eq 2
         user.events.tap do |events|
-          expect(events.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
+          expect(events.map(&:class)).to eq([Sourced::UserDomain::NameChanged, Sourced::UserDomain::AgeChanged])
           expect(events.map(&:seq)).to eq([4, 5])
         end
       end
@@ -73,8 +73,8 @@ RSpec.describe Sourced::Stage do
 
         user = stage_constructor.load(id, stream)
 
-        user.apply(UserDomain::NameChanged.new(payload: { name: 'Ismael 2' }))
-        user.apply(UserDomain::AgeChanged.new(payload: { age: 43 }))
+        user.apply(Sourced::UserDomain::NameChanged.new(payload: { name: 'Ismael 2' }))
+        user.apply(Sourced::UserDomain::AgeChanged.new(payload: { age: 43 }))
 
         expect(user.id).to eq id
         expect(user.last_committed_seq).to eq 3
@@ -83,7 +83,7 @@ RSpec.describe Sourced::Stage do
         expect(user.entity[:age]).to eq 43
         expect(user.events.size).to eq 2
         user.events.tap do |events|
-          expect(events.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
+          expect(events.map(&:class)).to eq([Sourced::UserDomain::NameChanged, Sourced::UserDomain::AgeChanged])
           expect(events.map(&:seq)).to eq([4, 5])
           expect(events.map(&:entity_id)).to eq([id, id])
         end
@@ -96,8 +96,8 @@ RSpec.describe Sourced::Stage do
 
         user = stage_constructor.load(id, stream)
 
-        user.apply(UserDomain::NameChanged, payload: { name: 'Ismael 2' })
-        user.apply(UserDomain::AgeChanged, payload: { age: 43 })
+        user.apply(Sourced::UserDomain::NameChanged, payload: { name: 'Ismael 2' })
+        user.apply(Sourced::UserDomain::AgeChanged, payload: { age: 43 })
 
         expect(user.seq).to eq 5
         expect(user.last_committed_seq).to eq 3
@@ -106,12 +106,12 @@ RSpec.describe Sourced::Stage do
         evts = user.commit do |seq, events, entity|
           called = true
           expect(seq).to eq(3)
-          expect(events.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
+          expect(events.map(&:class)).to eq([Sourced::UserDomain::NameChanged, Sourced::UserDomain::AgeChanged])
           expect(events.map(&:seq)).to eq([4, 5])
           expect(entity).to eq(user.entity)
         end
 
-        expect(evts.map(&:class)).to eq([UserDomain::NameChanged, UserDomain::AgeChanged])
+        expect(evts.map(&:class)).to eq([Sourced::UserDomain::NameChanged, Sourced::UserDomain::AgeChanged])
 
         expect(called).to be true
         # Updates stage state after committing
@@ -134,14 +134,14 @@ RSpec.describe Sourced::Stage do
 
         # projector UserProjector
         projector do
-          on UserDomain::UserCreated do |user, event|
+          on Sourced::UserDomain::UserCreated do |user, event|
             user[:name] = event.payload.name
             user[:age] = event.payload.age
           end
-          on UserDomain::AgeChanged do |user, event|
+          on Sourced::UserDomain::AgeChanged do |user, event|
             user[:age] = event.payload.age
           end
-          on UserDomain::NameChanged do |user, event|
+          on Sourced::UserDomain::NameChanged do |user, event|
             user[:name] = event.payload.name
           end
         end
@@ -186,11 +186,11 @@ RSpec.describe Sourced::Stage do
         entity UserEntity
         projector ->(user, evt) {
           case evt
-          when UserDomain::UserCreated
+          when Sourced::UserDomain::UserCreated
             user.merge(evt.payload.to_h)
-          when UserDomain::AgeChanged
+          when Sourced::UserDomain::AgeChanged
             user.merge(evt.payload.to_h)
-          when UserDomain::NameChanged
+          when Sourced::UserDomain::NameChanged
             user.merge(evt.payload.to_h)
           else
             user
