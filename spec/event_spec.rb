@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'sourced/rspec_helpers'
 require 'json'
 
 RSpec.describe Sourced::Event do
@@ -13,6 +14,18 @@ RSpec.describe Sourced::Event do
     Sourced::Event.define('users.created') do
       attribute :name, Sourced::Types::String
       attribute :age, Sourced::Types::Coercible::Integer.default(40)
+    end
+  end
+
+  it_behaves_like 'a valid Sourced event' do
+    let(:event_constructor) { create_user }
+    let(:attributes) do
+      attrs = {
+        entity_id: Sourced.uuid,
+        payload: {
+          name: 'Ismael'
+        }
+      }
     end
   end
 
