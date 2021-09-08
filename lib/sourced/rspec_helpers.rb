@@ -66,7 +66,7 @@ module Sourced
         event_store.append([e1, e2, e3, e4])
         e5 = UserDomain::NameChanged.new(entity_id: id1, seq: 4, payload: { name: 'nope' })
         expect {
-          event_store.append(e5, expected_seq: e3.seq)
+          event_store.append(e5, expected_seq: 2)
         }.to raise_error(Sourced::ConcurrencyError)
       end
 
