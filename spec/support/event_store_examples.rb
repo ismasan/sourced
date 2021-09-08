@@ -5,10 +5,10 @@ require 'sourced/rspec_helpers'
 RSpec.shared_examples_for 'an event store' do
   let(:id1) { Sourced.uuid }
   let(:id2) { Sourced.uuid }
-  let(:e1) { UserDomain::UserCreated.new(entity_id: id1, seq: 1, payload: { name: 'Ismael', age: 40 }) }
-  let(:e2) { UserDomain::UserCreated.new(entity_id: id2, seq: 1, payload: { name: 'Joe', age: 42 }) }
-  let(:e3) { UserDomain::NameChanged.new(entity_id: id1, seq: 2, payload: { name: 'Ismael jr.' }) }
-  let(:e4) { UserDomain::NameChanged.new(entity_id: id1, seq: 3, payload: { name: 'Ismael sr.' }) }
+  let(:e1) { Sourced::UserDomain::UserCreated.new(entity_id: id1, seq: 1, payload: { name: 'Ismael', age: 40 }) }
+  let(:e2) { Sourced::UserDomain::UserCreated.new(entity_id: id2, seq: 1, payload: { name: 'Joe', age: 42 }) }
+  let(:e3) { Sourced::UserDomain::NameChanged.new(entity_id: id1, seq: 2, payload: { name: 'Ismael jr.' }) }
+  let(:e4) { Sourced::UserDomain::NameChanged.new(entity_id: id1, seq: 3, payload: { name: 'Ismael sr.' }) }
 
   it_behaves_like 'a Sourced event store' do
     subject(:event_store) { store }

@@ -6,11 +6,11 @@ require 'sourced/committer_with_originator'
 RSpec.describe Sourced::CommitterWithOriginator do
   let(:stage) { double('Committable', events: events, entity: {}) }
   let(:eid) { Sourced.uuid }
-  let(:e1) { UserDomain::NameChanged.new(entity_id: eid, seq: 1, payload: { name: 'Ismael' }) }
-  let(:e2) { UserDomain::AgeChanged.new(entity_id: eid, seq: 2, payload: { age: 42 }) }
+  let(:e1) { Sourced::UserDomain::NameChanged.new(entity_id: eid, seq: 1, payload: { name: 'Ismael' }) }
+  let(:e2) { Sourced::UserDomain::AgeChanged.new(entity_id: eid, seq: 2, payload: { age: 42 }) }
   let(:events) { [e1, e2] }
   let(:cmd) do
-    UserDomain::UpdateUser.new(entity_id: eid, payload: {
+    Sourced::UserDomain::UpdateUser.new(entity_id: eid, payload: {
       name: 'Ismael',
       age: 42
     })
@@ -24,9 +24,9 @@ RSpec.describe Sourced::CommitterWithOriginator do
     it 'produces new array with originator first, and adds #originator_id to all events' do
       list = described_class.new(cmd, stage)
       expect(list.to_a.map(&:class)).to eq [
-        UserDomain::UpdateUser,
-        UserDomain::NameChanged,
-        UserDomain::AgeChanged
+        Sourced::UserDomain::UpdateUser,
+        Sourced::UserDomain::NameChanged,
+        Sourced::UserDomain::AgeChanged
       ]
       expect(list.to_a.map(&:id)).to eq [
         cmd.id,

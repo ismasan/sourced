@@ -12,11 +12,11 @@ RSpec.describe Sourced::Subscribers do
         @counts = Hash.new(0)
       end
 
-      on UserDomain::UserCreated do |evt|
+      on Sourced::UserDomain::UserCreated do |evt|
         @counts[evt.topic] += 1
       end
 
-      on UserDomain::NameChanged do |evt|
+      on Sourced::UserDomain::NameChanged do |evt|
         @counts[evt.topic] += 1
       end
     end
@@ -34,7 +34,7 @@ RSpec.describe Sourced::Subscribers do
         @counts.size
       end
 
-      on UserDomain::UserCreated do |evt|
+      on Sourced::UserDomain::UserCreated do |evt|
         @counts.add evt.entity_id
       end
     end
@@ -52,9 +52,9 @@ RSpec.describe Sourced::Subscribers do
     id1 = Sourced.uuid
     id2 = Sourced.uuid
 
-    subs.call(UserDomain::UserCreated.new(entity_id: id1, payload: { name: 'Ismael', age: 40 }))
-    subs.call(UserDomain::NameChanged.new(entity_id: id1, payload: { name: 'Joe' }))
-    subs.call(UserDomain::UserCreated.new(entity_id: id2, payload: { name: 'Joan', age: 41 }))
+    subs.call(Sourced::UserDomain::UserCreated.new(entity_id: id1, payload: { name: 'Ismael', age: 40 }))
+    subs.call(Sourced::UserDomain::NameChanged.new(entity_id: id1, payload: { name: 'Joe' }))
+    subs.call(Sourced::UserDomain::UserCreated.new(entity_id: id2, payload: { name: 'Joan', age: 41 }))
 
     expect(topic_counter.counts['users.created']).to eq 2
     expect(topic_counter.counts['users.name.changed']).to eq 1
