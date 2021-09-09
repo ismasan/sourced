@@ -52,11 +52,11 @@ PLATFORMS
   ruby
 
 DEPENDENCIES
-  bundler (~> 1.16)
+  bundler (>= 2.2.10)
   byebug
   rake (>= 12.3.3)
   rspec (~> 3.0)
   sourced!
 
 BUNDLED WITH
-   1.17.3
+   2.2.27
