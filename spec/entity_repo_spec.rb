@@ -5,8 +5,8 @@ require 'spec_helper'
 RSpec.describe Sourced::EntityRepo do
   let(:uuid) { Sourced.uuid }
   let(:event_store) { Sourced::MemEventStore.new }
-  let(:past_events) { [instance_double(Sourced::Event, entity_id: 'a')] }
-  let(:stage_events) { [instance_double(Sourced::Event, entity_id: 'b')] }
+  let(:past_events) { [instance_double(Sourced::Event, stream_id: 'stream-a')] }
+  let(:stage_events) { [instance_double(Sourced::Event, stream_id: 'stream-b')] }
   let(:stage) { instance_double(Sourced::Stage, entity: {}) }
   let(:stage_builder) { double('Stage', load: stage) }
 
@@ -18,7 +18,7 @@ RSpec.describe Sourced::EntityRepo do
     it 'loads events from event store and invokes stage.load' do
       repo = described_class.new(stage_builder, event_store: event_store)
 
-      expect(event_store).to receive(:by_entity_id).with(uuid, after: 2).and_return past_events
+      expect(event_store).to receive(:read_stream).with(uuid, after: 2).and_return past_events
       expect(stage_builder).to receive(:load).with(uuid, past_events).and_return stage
       expect(repo.load(uuid, after: 2)).to eq(stage)
     end
@@ -28,7 +28,7 @@ RSpec.describe Sourced::EntityRepo do
     it 'takes events from Stage#commit and appends them to store' do
       repo = described_class.new(stage_builder, event_store: event_store)
 
-      expect(event_store).to receive(:append).with(stage_events, expected_seq: 3).and_return(stage_events)
+      expect(event_store).to receive(:append_to_stream).with('stream-b', stage_events, expected_seq: 3).and_return(stage_events)
       expect(repo.persist(stage)).to eq(stage_events)
     end
 
@@ -54,7 +54,7 @@ RSpec.describe Sourced::EntityRepo do
     it 'appends events to event store' do
       repo = described_class.new(stage_builder, event_store: event_store)
 
-      expect(event_store).to receive(:append).with(stage_events, expected_seq: nil).and_return(stage_events)
+      expect(event_store).to receive(:append_to_stream).with('stream-b', stage_events, expected_seq: nil).and_return(stage_events)
       expect(repo.persist_events(stage_events)).to eq(stage_events)
     end
   end

@@ -84,7 +84,7 @@ module Sourced
 
     def next_event_attrs
       {
-        entity_id: id,
+        stream_id: id,
         seq: seq + 1,
       }
     end

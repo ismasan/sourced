@@ -16,9 +16,11 @@ module Sourced
       @event_registry = event_registry
     end
 
-    def append(evts, expected_seq: nil)
-      evts = Array(evts)
+    def append_to_stream(stream_id, evts, expected_seq: nil)
+      evts = [evts].flatten
       return evts unless evts.any?
+
+      validate_stream_ids!(stream_id, evts)
 
       with_sequence_constraint(evts.last, expected_seq) do
         encoded = evts.map do |e|

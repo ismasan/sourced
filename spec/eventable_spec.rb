@@ -19,7 +19,7 @@ RSpec.describe Sourced::Eventable do
       attr_reader :id, :name, :seq
 
       on ETE::UserCreated do |event|
-        @id = event.entity_id
+        @id = event.stream_id
       end
 
       # multiple handlers don't break anything
@@ -49,8 +49,8 @@ RSpec.describe Sourced::Eventable do
     it 'updates state' do
       id = Sourced.uuid
       user = user_class.new
-      user.apply ETE::UserCreated, entity_id: id, seq: 1
-      user.apply ETE::NameChanged, entity_id: id, seq: 2, payload: { name: 'Ismael' }
+      user.apply ETE::UserCreated, stream_id: id, seq: 1
+      user.apply ETE::NameChanged, stream_id: id, seq: 2, payload: { name: 'Ismael' }
       expect(user.id).to eq id
       expect(user.name).to eq 'Ismael'
       expect(user.seq).to eq 2
@@ -73,9 +73,9 @@ RSpec.describe Sourced::Eventable do
 
     id = Sourced.uuid
     user = sub_class.new
-    user.apply ETE::UserCreated, entity_id: id
-    user.apply ETE::NameChanged, entity_id: id, payload: { name: 'Ismael' }
-    user.apply ETE::AgeChanged, entity_id: id, payload: { age: 41 }
+    user.apply ETE::UserCreated, stream_id: id
+    user.apply ETE::NameChanged, stream_id: id, payload: { name: 'Ismael' }
+    user.apply ETE::AgeChanged, stream_id: id, payload: { age: 41 }
 
     expect(user.name).to eq 'Ismael'
     expect(user.title).to eq 'Mr. Ismael'

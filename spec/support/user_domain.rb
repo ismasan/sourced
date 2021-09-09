@@ -33,7 +33,7 @@ module Sourced
 
       projector do
         on UserCreated do |evt, user|
-          user.id = evt.entity_id
+          user.id = evt.stream_id
           user.name = evt.payload.name
           user.age = evt.payload.age
         end

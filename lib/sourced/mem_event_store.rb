@@ -11,9 +11,11 @@ module Sourced
       @mutex = Mutex.new
     end
 
-    def append(evts, expected_seq: nil)
-      evts = Array(evts)
+    def append_to_stream(stream_id, evts, expected_seq: nil)
+      evts = [evts].flatten
       return evts unless evts.any?
+
+      validate_stream_ids!(stream_id, evts)
 
       mutex.synchronize {
         with_sequence_constraint(evts.last, expected_seq) do
