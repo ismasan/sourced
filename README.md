@@ -75,7 +75,7 @@ All Sourced events come with a basic data schema.
 ```ruby
 topic # String, required. Ex. 'users.created'
 id # UUID, required, set on creation
-entity_id # UUID, required
+stream_id # UUID, required
 date # Time, set on creation
 seq # Integer, usually set by stages (more on that below)
 originator_id # UUID, optional. The command or event that lead up to this event.
@@ -89,9 +89,9 @@ You add field definitions to event constructors by passing a block to `Sourced::
 You can build an instance of a given event class:
 
 ```ruby
-evt = UserCreated.new(entity_id: Sourced.uuid, payload: { name: 'Joan', age: 38 })
+evt = UserCreated.new(stream_id: Sourced.uuid, payload: { name: 'Joan', age: 38 })
 evt.id # UUID
-evt.entity_id # UUID
+evt.stream_id # UUID
 evt.payload.name # 'Joan'
 evt.payload.age # 38
 ```
@@ -138,8 +138,8 @@ A projector produces a simple callable object that applies given events to an en
 user_id = Sourced.uuid
 user = User.new(name: nil, age: nil)
 projector = UserProjector.new
-projector.call(user, UserCreated.new(entity_id: user_id, payload: { name: 'Joe', age: 40 }))
-projector.call(user, UserAgeUpdated.new(entity_id: user_id, payload: { age: 41 }))
+projector.call(user, UserCreated.new(stream_id: user_id, payload: { name: 'Joe', age: 40 }))
+projector.call(user, UserAgeUpdated.new(stream_id: user_id, payload: { age: 41 }))
 user.name # "Joe"
 user.age # 41
 ```
@@ -155,7 +155,7 @@ The following is a "pure" functional projector that returns copies of immutable 
 simple_user_projector = proc do |user, evt|
   case evt
     when UserCreated
-      user.copy(id: evt.entity_id, **evt.payload)
+      user.copy(id: evt.stream_id, **evt.payload)
     when UserNameUpdated
       user.copy(**evt.payload)
     # etc...
@@ -195,7 +195,7 @@ The Stage entity life-cycle is:
 ```ruby
 # 1). Given a stream of events _for the same entity_, re-constitute the current state of an entity.
 events = [event1, event2, event3]
-stage = UserStage.load(event1.entity_id, events)
+stage = UserStage.load(event1.stream_id, events)
 stage.entity # user entity, projected from event stream.
 
 # 2). Apply new events to the current entity state.
@@ -210,8 +210,8 @@ stage.events# [<UserAgeChanged>, <UserNameChanged>]
 
 # Stage tracks event sequence number.
 stage.events.map(&:seq) # [4, 5]
-# Applied events are populated with #entity_id
-stage.events.map(&:entity_id)
+# Applied events are populated with #stream_id
+stage.events.map(&:stream_id)
 
 # #last_committed_seq is the last event sequence loaded
 stage.last_committed_seq # 3
@@ -239,9 +239,9 @@ It must implement the following interface (*):
 
 ```
 # Append events to storage
-append(Array<Event>, expected_seq: nil | Integer) Array<Event>
+append_to_stream(stream_id String, Array<Event>, expected_seq: nil | Integer) Array<Event>
 # Retrieve entire list of events for an entity ID
-by_entity_id(id UUID, options Hash) Array<Event>
+read_stream(stream_id String, options Hash) Array<Event>
 ```
 
 Currently Sourced ships with an `Sourced::MemEventStore` (in-memory, for tests) implementation.
