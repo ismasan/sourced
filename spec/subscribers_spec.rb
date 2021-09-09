@@ -35,7 +35,7 @@ RSpec.describe Sourced::Subscribers do
       end
 
       on Sourced::UserDomain::UserCreated do |evt|
-        @counts.add evt.entity_id
+        @counts.add evt.stream_id
       end
     end
 
@@ -52,9 +52,9 @@ RSpec.describe Sourced::Subscribers do
     id1 = Sourced.uuid
     id2 = Sourced.uuid
 
-    subs.call(Sourced::UserDomain::UserCreated.new(entity_id: id1, payload: { name: 'Ismael', age: 40 }))
-    subs.call(Sourced::UserDomain::NameChanged.new(entity_id: id1, payload: { name: 'Joe' }))
-    subs.call(Sourced::UserDomain::UserCreated.new(entity_id: id2, payload: { name: 'Joan', age: 41 }))
+    subs.call(Sourced::UserDomain::UserCreated.new(stream_id: id1, payload: { name: 'Ismael', age: 40 }))
+    subs.call(Sourced::UserDomain::NameChanged.new(stream_id: id1, payload: { name: 'Joe' }))
+    subs.call(Sourced::UserDomain::UserCreated.new(stream_id: id2, payload: { name: 'Joan', age: 41 }))
 
     expect(topic_counter.counts['users.created']).to eq 2
     expect(topic_counter.counts['users.name.changed']).to eq 1

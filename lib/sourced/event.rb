@@ -49,7 +49,7 @@ module Sourced
 
     attribute :topic, Types::String
     attribute :id, Types::UUID.default { SecureRandom.uuid }
-    attribute? :entity_id, Types::String
+    attribute? :stream_id, Types::String
     attribute :seq, Types::Integer.default(1)
     attribute :date, Types::EventTime
     attribute? :originator_id, Types::String.optional
@@ -94,7 +94,7 @@ module Sourced
     # extensible by users, which would be copied when following.
     def self.follow(evt, payload = {})
       new(
-        entity_id: evt.entity_id,
+        stream_id: evt.stream_id,
         originator_id: evt.id,
         payload: payload
       )

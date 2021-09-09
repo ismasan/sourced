@@ -27,9 +27,9 @@ RSpec.describe Sourced::Stage do
   end
 
   let(:id) { Sourced.uuid }
-  let(:e1) { Sourced::UserDomain::UserCreated.new(entity_id: id, seq: 1, payload: { name: 'Joe', age: 41 }) }
-  let(:e2) { Sourced::UserDomain::NameChanged.new(entity_id: id, seq: 2, payload: { name: 'Ismael' }) }
-  let(:e3) { Sourced::UserDomain::AgeChanged.new(entity_id: id, seq: 3, payload: { age: 42 }) }
+  let(:e1) { Sourced::UserDomain::UserCreated.new(stream_id: id, seq: 1, payload: { name: 'Joe', age: 41 }) }
+  let(:e2) { Sourced::UserDomain::NameChanged.new(stream_id: id, seq: 2, payload: { name: 'Ismael' }) }
+  let(:e3) { Sourced::UserDomain::AgeChanged.new(stream_id: id, seq: 3, payload: { age: 42 }) }
 
   shared_examples_for 'a Stage' do
     describe '.load(id, stream)' do
@@ -85,7 +85,7 @@ RSpec.describe Sourced::Stage do
         user.events.tap do |events|
           expect(events.map(&:class)).to eq([Sourced::UserDomain::NameChanged, Sourced::UserDomain::AgeChanged])
           expect(events.map(&:seq)).to eq([4, 5])
-          expect(events.map(&:entity_id)).to eq([id, id])
+          expect(events.map(&:stream_id)).to eq([id, id])
         end
       end
     end

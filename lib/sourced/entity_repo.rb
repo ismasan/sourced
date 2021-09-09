@@ -14,7 +14,7 @@ module Sourced
     end
 
     def load(id, **opts)
-      stream = event_store.by_entity_id(id, **opts)
+      stream = event_store.read_stream(id, **opts)
       stage_builder.load(id, stream)
     end
 
@@ -33,7 +33,9 @@ module Sourced
     end
 
     def persist_events(events, expected_seq: nil)
-      event_store.append(events, expected_seq: expected_seq)
+      return [] unless events.any?
+
+      event_store.append_to_stream(events.first.stream_id, events, expected_seq: expected_seq)
     end
 
     private

@@ -17,8 +17,14 @@ module Sourced
   end
 
   class ConcurrencyError < SourcedError
-    def initialize(entity_id:, expected_seq:, current_seq:)
-      super "attempting to append entity #{entity_id} after seq #{expected_seq}, but last in store is #{current_seq}"
+    def initialize(stream_id:, expected_seq:, current_seq:)
+      super "attempting to append to stream '#{stream_id}' after seq #{expected_seq}, but last in store is #{current_seq}"
+    end
+  end
+
+  class DifferentStreamIdError < SourcedError
+    def initialize(expected_stream_id, unmatching_stream_id)
+      super "trying to append event with :stream_id '#{unmatching_stream_id}' to stream #{expected_stream_id}"
     end
   end
 end

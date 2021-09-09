@@ -19,8 +19,8 @@ RSpec.describe Sourced::Projector do
       end
     end
 
-    e1 = Sourced::UserDomain::UserCreated.new(entity_id: id, seq: 1, payload: { name: 'Joe', age: 41 })
-    e2 = Sourced::UserDomain::NameChanged.new(entity_id: id, seq: 2, payload: { name: 'Ismael' })
+    e1 = Sourced::UserDomain::UserCreated.new(stream_id: id, seq: 1, payload: { name: 'Joe', age: 41 })
+    e2 = Sourced::UserDomain::NameChanged.new(stream_id: id, seq: 2, payload: { name: 'Ismael' })
 
     user = { name: 'Foo', age: 20 }
     projector.call(user, e1)
