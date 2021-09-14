@@ -20,7 +20,7 @@ class UserEndpoint
     id = Sourced.uuid
     stage = @repo.build(id)
     stage.apply UserCreated, payload: { name: name, age: age }
-    stage.persist(stage)
+    @repo.persist(stage)
     stage.entity
   end
 
