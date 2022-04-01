@@ -6,7 +6,7 @@ module Sourced
   # Ie. in-memory or simple test stores.
   module ArrayBasedEventStore
     def read_stream(stream_id, upto_seq: nil)
-      filter(stream_id: stream_id, upto_seq: upto_seq)
+      filter(stream_id: stream_id, upto_seq: upto_seq).sort_by(&:seq)
     end
 
     def transaction

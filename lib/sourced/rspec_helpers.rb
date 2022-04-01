@@ -65,6 +65,12 @@ module Sourced
         expect(evts.map(&:id)).to eq [e2.id]
       end
 
+      it 'reads stream ordered by seq, ascendant' do
+        event_store.append_to_stream(stream_id1, [e3, e1, e4])
+        evts = event_store.read_stream(stream_id1)
+        expect(evts.map(&:id)).to eq [e1.id, e3.id, e4.id]
+      end
+
       it 'blows up if passed unexpected sequence' do
         event_store.append_to_stream(stream_id1, [e1, e3, e4])
         e5 = UserDomain::NameChanged.new(stream_id: stream_id1, seq: 4, payload: { name: 'nope' })
