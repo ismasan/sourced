@@ -119,6 +119,21 @@ RSpec.describe Sourced::Event do
         expect(evt2.originator_id).to eq originator_id
       end
     end
+
+    describe '#hash_for_serialization' do
+      it 'includes all keys' do
+        id = Sourced.uuid
+        evt1 = user_created.new(
+          stream_id: id,
+          payload: { name: 'Ismael', age: 40 }
+        )
+        hash = evt1.hash_for_serialization
+        expect(hash[:id]).not_to be(nil)
+        expect(hash[:stream_id]).to eq(id)
+        expect(hash.key?(:originator_id)).to be(true)
+        expect(hash[:payload]).to eq(name: 'Ismael', age: 40)
+      end
+    end
   end
 
   context 'when loading from JSON' do
