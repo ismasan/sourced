@@ -104,5 +104,14 @@ module Sourced
       data = to_h.merge(new_attrs)
       self.class.new(data)
     end
+
+    # Like #to_h
+    # but include all keys defined in the struct
+    # even optional ones with no value
+    def hash_for_serialization
+      self.class.schema.keys.map(&:name).each.with_object(to_h) do |k, ret|
+        ret[k] = nil unless ret.key?(k)
+      end
+    end
   end
 end
