@@ -97,6 +97,9 @@ module Sourced
 
         stream = event_store.read_stream(stream_id1, upto_seq: 2)
         expect(stream.map(&:id)).to eq [e1.id, e3.id]
+
+        stream = event_store.read_stream(stream_id1, upto_seq: 4)
+        expect(stream.map(&:id)).to eq [e1.id, e3.id, e4.id]
       end
     end
 

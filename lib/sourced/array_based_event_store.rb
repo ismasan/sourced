@@ -23,9 +23,12 @@ module Sourced
         opts.all?{ |k, v| e.to_h[k] == v }
       end
       if upto_seq
-        idx = _events.index { |e| e.seq == upto_seq}
-        return [] unless idx
-        _events = _events[0..idx]
+        ret = []
+        _events.each do |evt|
+          break if evt.seq > upto_seq
+          ret << evt
+        end
+        _events = ret
       end
       _events.to_enum
     end
