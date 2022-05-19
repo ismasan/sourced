@@ -33,7 +33,8 @@ module Sourced
   module Types
     include Dry.Types()
     UUID = String.constrained(format: /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/.freeze)
-    EventTime = Types.Constructor(ComparableTime){|v| ComparableTime.wrap(v) }.default { ComparableTime.utc }
+    DateTime = Types.Constructor(ComparableTime) { |v| ComparableTime.wrap(v) }
+    EventTime = DateTime.default { ComparableTime.utc }
   end
 
   class Event < Dry::Struct
