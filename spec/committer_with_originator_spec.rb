@@ -4,10 +4,10 @@ require 'spec_helper'
 require 'sourced/committer_with_originator'
 
 RSpec.describe Sourced::CommitterWithOriginator do
-  let(:stage) { double('Committable', events: events, entity: {}) }
+  let(:stage) { instance_double(Sourced::Stage, events: events, last_committed_seq: 2, entity: {}) }
   let(:eid) { Sourced.uuid }
-  let(:e1) { Sourced::UserDomain::NameChanged.new(stream_id: eid, seq: 1, payload: { name: 'Ismael' }) }
-  let(:e2) { Sourced::UserDomain::AgeChanged.new(stream_id: eid, seq: 2, payload: { age: 42 }) }
+  let(:e1) { Sourced::UserDomain::NameChanged.new(stream_id: eid, seq: 3, payload: { name: 'Ismael' }) }
+  let(:e2) { Sourced::UserDomain::AgeChanged.new(stream_id: eid, seq: 4, payload: { age: 42 }) }
   let(:events) { [e1, e2] }
   let(:cmd) do
     Sourced::UserDomain::UpdateUser.new(stream_id: eid, payload: {
@@ -39,6 +39,18 @@ RSpec.describe Sourced::CommitterWithOriginator do
         cmd.id
       ]
     end
+
+    context 'when no events' do
+      let(:events) { [] }
+
+      it 'produces an array with just the originator event' do
+
+        list = described_class.new(cmd, stage)
+        expect(list.to_a.map(&:class)).to eq [
+          Sourced::UserDomain::UpdateUser
+        ]
+      end
+    end
   end
 
   describe '#commit' do
@@ -57,9 +69,9 @@ RSpec.describe Sourced::CommitterWithOriginator do
           cmd.id
         ]
         expect(evts.map(&:seq)).to eq [
-          1,
-          2,
-          3
+          3,
+          4,
+          5
         ]
         expect(entity).to eq(stage.entity)
       end

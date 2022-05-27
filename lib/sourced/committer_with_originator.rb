@@ -19,7 +19,7 @@ module Sourced
       @to_a ||= (
         evts = @committable.events
         [
-          @originator.copy(seq: evts.first.seq),
+          @originator.copy(seq: @committable.last_committed_seq + 1),
           *evts.map do |evt|
             evt.copy(originator_id: @originator.id, seq: evt.seq + 1)
           end
