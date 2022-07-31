@@ -136,14 +136,26 @@ RSpec.describe Sourced::Event do
     end
   end
 
+  describe '#as_json' do
+    it 'includes all keys, and preserved #created_at precision' do
+      uuid = Sourced.uuid
+      e1 = user_created.new(stream_id: uuid, payload: { name: 'Ismael', age: 40 })
+      data = e1.as_json
+      dump = JSON.dump(data)
+      new_data = JSON.parse(dump, symbolize_names: true)
+      expect(data[:created_at]).to eq(new_data[:created_at])
+      expect(data).to eq(new_data)
+    end
+  end
+
   context 'when loading from JSON' do
     it 'preserves equality' do
       uuid = Sourced.uuid
       e1 = user_created.new(stream_id: uuid, payload: { name: 'Ismael', age: 40 })
-      json = JSON.dump(e1.to_h)
+      json = JSON.dump(e1.as_json)
       data = JSON.parse(json, symbolize_names: true)
       e2 = user_created.new(data)
-      expect(e1).to eq(e2)
+      expect(e1.to_h).to eq(e2.to_h)
     end
   end
 end
