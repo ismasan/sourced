@@ -18,8 +18,8 @@ module Sourced
       expect(event.stream_id).not_to be_nil
     end
 
-    specify '#date' do
-      expect(event.date).not_to be_nil
+    specify '#created_at' do
+      expect(event.created_at).not_to be_nil
     end
 
     specify '#to_h' do
