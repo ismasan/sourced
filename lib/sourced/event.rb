@@ -52,7 +52,7 @@ module Sourced
     attribute :id, Types::UUID.default { SecureRandom.uuid }
     attribute? :stream_id, Types::String
     attribute :seq, Types::Integer.default(1)
-    attribute :date, Types::EventTime
+    attribute :created_at, Types::EventTime
     attribute? :originator_id, Types::String.optional
     attribute? :payload do
 

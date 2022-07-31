@@ -46,7 +46,7 @@ RSpec.describe Sourced::Event do
         expect(evt.topic).to eq 'users.created'
         expect(evt.payload.name).to eq 'Ismael'
         expect(evt.id).not_to be nil
-        expect(evt.date).not_to be nil
+        expect(evt.created_at).not_to be nil
         expect(evt.payload.age).to eq 40 # default
       end
 
