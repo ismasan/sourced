@@ -76,7 +76,7 @@ All Sourced events come with a basic data schema.
 topic # String, required. Ex. 'users.created'
 id # UUID, required, set on creation
 stream_id # UUID, required
-date # Time, set on creation
+created_at # Time, set on creation
 seq # Integer, usually set by stages (more on that below)
 originator_id # UUID, optional. The command or event that lead up to this event.
 payload # Object, your custom event attributes.
