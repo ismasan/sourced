@@ -4,37 +4,13 @@ require 'time'
 require 'dry-struct'
 
 module Sourced
-  # Time equality compares fractional seconds,
-  # but Time#to_s (used by JSON.dump) doesn't preserve fractions,
-  # so reconstituing an event with JSON.parse produces different times
-  class ComparableTime < SimpleDelegator
-    def self.utc
-      new(Time.now.utc)
-    end
-
-    def self.wrap(obj)
-      case obj
-      when String
-        new(Time.parse(obj))
-      when Time, DateTime
-        new(obj.to_time)
-      when ComparableTime
-        obj
-      else
-        raise ArgumentError, "#{obj.class} #{obj} cannot be coerced to Time"
-      end
-    end
-
-    def ==(time)
-      time.to_i == time.to_time.to_i
-    end
-  end
-
   module Types
     include Dry.Types()
     UUID = String.constrained(format: /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/.freeze)
-    DateTime = Types.Constructor(ComparableTime) { |v| ComparableTime.wrap(v) }
-    EventTime = DateTime.default { ComparableTime.utc }
+    # DateTime = Types.Constructor(ComparableTime) { |v| ComparableTime.wrap(v) }
+    # EventTime = DateTime.default { ComparableTime.utc }
+    # DateTime = Types::JSON::DateTime
+    EventTime = Types::JSON::Time.default { ::Time.now.utc }
   end
 
   class Event < Dry::Struct
@@ -112,7 +88,11 @@ module Sourced
     def hash_for_serialization
       self.class.schema.keys.map(&:name).each.with_object(to_h) do |k, ret|
         ret[k] = nil unless ret.key?(k)
-      end
+      end.merge(created_at: created_at&.iso8601(6))
+    end
+
+    def as_json(...)
+      to_h.merge(created_at: created_at.iso8601(6))
     end
   end
 end
