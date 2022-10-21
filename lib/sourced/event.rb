@@ -38,12 +38,13 @@ module Sourced
       @registry ||= {}
     end
 
-    def self.define(topic, &block)
+    def self.define(topic, class_metadata = {}, &block)
       klass = Class.new(self) do
         def self.name
           'Sourced::Event'
         end
       end
+      klass.define_singleton_method(:meta) { class_metadata.freeze }
       klass.define_singleton_method(:topic) { topic }
       klass.attribute :topic, Types.Value(topic).default(topic.freeze)
       if block_given?
