@@ -11,7 +11,7 @@ RSpec.describe Sourced::Event do
     end
   end
   let(:user_created) do
-    Sourced::Event.define('users.created') do
+    Sourced::Event.define('users.created', admin: true) do
       attribute :name, Sourced::Types::String
       attribute :age, Sourced::Types::Coercible::Integer.default(40)
     end
@@ -32,6 +32,14 @@ RSpec.describe Sourced::Event do
   context 'class-level' do
     it '.topic' do
       expect(user_created.topic).to eq 'users.created'
+    end
+
+    specify '.meta' do
+      expect(user_created.meta[:admin]).to be(true)
+      expect(create_user.meta).to eq({})
+      expect {
+        create_user.meta[:foo] = 'bar'
+      }.to raise_error(FrozenError)
     end
 
     describe '.new' do
