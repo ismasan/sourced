@@ -100,11 +100,11 @@ module Sourced
       %(<#{self.class.name}##{id} #{events.size} uncommitted events #{entity} >)
     end
 
-    def apply(event_or_class, attrs = {})
+    def apply(event_or_class, payload = {})
       event = if event_or_class.respond_to?(:copy)
         event_or_class.copy(decorate_event_attrs(event_or_class.to_h))
       else
-        event_or_class.new(decorate_event_attrs(attrs))
+        event_or_class.new(decorate_event_attrs(payload: payload))
       end
       @entity = projector.call(entity, event)
       @seq = seq_tracker.set(event.seq)

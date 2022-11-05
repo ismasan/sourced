@@ -51,8 +51,8 @@ RSpec.describe Sourced::Stage do
 
         user = stage_constructor.load(id, stream)
 
-        user.apply(Sourced::UserDomain::NameChanged, payload: { name: 'Ismael 2' })
-        user.apply(Sourced::UserDomain::AgeChanged, payload: { age: 43 })
+        user.apply(Sourced::UserDomain::NameChanged, name: 'Ismael 2')
+        user.apply(Sourced::UserDomain::AgeChanged, age: 43)
 
         expect(user.id).to eq id
         expect(user.last_committed_seq).to eq 3
@@ -119,8 +119,8 @@ RSpec.describe Sourced::Stage do
         # with event instance
         user.apply(Sourced::UserDomain::NameChanged.new(metadata: { year: 2022 }, payload: { name: 'Ismael 2' }))
         # with event constructor
-        user.apply(Sourced::UserDomain::AgeChanged, metadata: { lol: 'cats' }, payload: { age: 43 })
-        expect(user.events.map(&:metadata)).to eq([{ year: 2022, foo: 'bar' }, { lol: 'cats', foo: 'bar' }])
+        user.apply(Sourced::UserDomain::AgeChanged, age: 43)
+        expect(user.events.map(&:metadata)).to eq([{ year: 2022, foo: 'bar' }, { foo: 'bar' }])
       end
     end
 
@@ -137,7 +137,7 @@ RSpec.describe Sourced::Stage do
           .with_metadata(foo: 'bar')
           .following(causation_event)
 
-        user.apply(Sourced::UserDomain::AgeChanged, metadata: { lol: 'cats' }, payload: { age: 43 })
+        user.apply(Sourced::UserDomain::AgeChanged.new(metadata: { lol: 'cats' }, payload: { age: 43 }))
         # Other decorators are still applied
         expect(user.events[0].metadata[:foo]).to eq('bar')
         expect(user.events[0].metadata[:causation_id]).to eq(causation_event.id)
@@ -151,8 +151,8 @@ RSpec.describe Sourced::Stage do
 
         user = stage_constructor.load(id, stream)
 
-        user.apply(Sourced::UserDomain::NameChanged, payload: { name: 'Ismael 2' })
-        user.apply(Sourced::UserDomain::AgeChanged, payload: { age: 43 })
+        user.apply(Sourced::UserDomain::NameChanged, name: 'Ismael 2')
+        user.apply(Sourced::UserDomain::AgeChanged, age: 43)
 
         expect(user.seq).to eq 5
         expect(user.last_committed_seq).to eq 3
