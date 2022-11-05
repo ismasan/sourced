@@ -88,6 +88,10 @@ module Sourced
       with_event_decorator(MetadataEventDecorator.new(metadata))
     end
 
+    def following(causation_event)
+      with_metadata(causation_id: causation_event.id, correlation_id: causation_event.correlation_id)
+    end
+
     def ==(other)
       other.id == id && other.seq == seq
     end
