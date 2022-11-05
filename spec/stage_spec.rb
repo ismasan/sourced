@@ -111,6 +111,19 @@ RSpec.describe Sourced::Stage do
       end
     end
 
+    describe '#with_metadata' do
+      it 'adds metadata to all applied events' do
+        stream = [e1, e2, e3]
+
+        user = stage_constructor.load(id, stream).with_metadata(foo: 'bar')
+        # with event instance
+        user.apply(Sourced::UserDomain::NameChanged.new(metadata: { year: 2022 }, payload: { name: 'Ismael 2' }))
+        # with event constructor
+        user.apply(Sourced::UserDomain::AgeChanged, metadata: { lol: 'cats' }, payload: { age: 43 })
+        expect(user.events.map(&:metadata)).to eq([{ year: 2022, foo: 'bar' }, { lol: 'cats', foo: 'bar' }])
+      end
+    end
+
     describe '#commit' do
       it 'yields collected events and last committed seq, clears them from stage' do
         stream = [e1, e2, e3]
