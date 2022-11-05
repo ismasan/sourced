@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'sourced/committer_with_originator'
+require 'sourced/committer_with_prepended_events'
 
-RSpec.describe Sourced::CommitterWithOriginator do
+RSpec.describe Sourced::CommitterWithPrependedEvents do
   let(:stage) { instance_double(Sourced::Stage, events: events, last_committed_seq: 2, entity: {}) }
   let(:eid) { Sourced.uuid }
   let(:e1) { Sourced::UserDomain::NameChanged.new(stream_id: eid, seq: 3, payload: { name: 'Ismael' }) }
@@ -21,8 +21,8 @@ RSpec.describe Sourced::CommitterWithOriginator do
   end
 
   describe '#to_a' do
-    it 'produces new array with originator first, and adds #originator_id to all events' do
-      list = described_class.new(cmd, stage)
+    it 'produces new array with prepended events first, and shifts sequence numbers' do
+      list = described_class.new(stage, cmd)
       expect(list.to_a.map(&:class)).to eq [
         Sourced::UserDomain::UpdateUser,
         Sourced::UserDomain::NameChanged,
@@ -33,19 +33,15 @@ RSpec.describe Sourced::CommitterWithOriginator do
         e1.id,
         e2.id
       ]
-      expect(list.to_a.map(&:originator_id)).to eq [
-        nil,
-        cmd.id,
-        cmd.id
-      ]
+      expect(list.to_a.map(&:seq)).to eq [3, 4, 5]
     end
 
     context 'when no events' do
       let(:events) { [] }
 
-      it 'produces an array with just the originator event' do
+      it 'produces an array with just the prepended event' do
 
-        list = described_class.new(cmd, stage)
+        list = described_class.new(stage, cmd)
         expect(list.to_a.map(&:class)).to eq [
           Sourced::UserDomain::UpdateUser
         ]
@@ -54,19 +50,14 @@ RSpec.describe Sourced::CommitterWithOriginator do
   end
 
   describe '#commit' do
-    it 'commits stage and decorates events with originator' do
-      list = described_class.new(cmd, stage)
+    it 'commits stage and shifts sequence numbers' do
+      list = described_class.new(stage, cmd)
       evts = list.commit do |seq, evts, entity|
         expect(seq).to eq 2
         expect(evts.map(&:id)).to eq [
           cmd.id,
           e1.id,
           e2.id
-        ]
-        expect(evts.map(&:originator_id)).to eq [
-          nil,
-          cmd.id,
-          cmd.id
         ]
         expect(evts.map(&:seq)).to eq [
           3,
