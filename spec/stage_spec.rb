@@ -124,6 +124,27 @@ RSpec.describe Sourced::Stage do
       end
     end
 
+    describe '#following' do
+      it 'adds #causation_id and #correlation_id to all applied events' do
+        stream = [e1, e2, e3]
+        causation_event = Sourced::UserDomain::NameChanged.new(
+          metadata: { causation_id: 'aaa', correlation_id: 'bbb', something: 'else' },
+          payload: { name: 'Ismael 2' }
+        )
+
+        user = stage_constructor
+          .load(id, stream)
+          .with_metadata(foo: 'bar')
+          .following(causation_event)
+
+        user.apply(Sourced::UserDomain::AgeChanged, metadata: { lol: 'cats' }, payload: { age: 43 })
+        # Other decorators are still applied
+        expect(user.events[0].metadata[:foo]).to eq('bar')
+        expect(user.events[0].metadata[:causation_id]).to eq(causation_event.id)
+        expect(user.events[0].metadata[:correlation_id]).to eq('bbb')
+      end
+    end
+
     describe '#commit' do
       it 'yields collected events and last committed seq, clears them from stage' do
         stream = [e1, e2, e3]
