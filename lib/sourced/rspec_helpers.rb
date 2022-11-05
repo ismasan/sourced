@@ -22,6 +22,23 @@ module Sourced
       expect(event.created_at).not_to be_nil
     end
 
+    specify '#metadata' do
+      expect(event.metadata).to be_a(Hash)
+    end
+
+    describe '#causation_id and #correlation_id' do
+      it 'defaults to event id' do
+        event = event_constructor.new(attributes.except(:metadata))
+        expect(event.causation_id).to eq(event.id)
+        expect(event.correlation_id).to eq(event.id)
+      end
+
+      it 'is taken from metadata otherwise' do
+        expect(event.causation_id).to eq(event.metadata[:causation_id])
+        expect(event.correlation_id).to eq(event.metadata[:correlation_id])
+      end
+    end
+
     specify '#to_h' do
       hash = event.to_h
       expect(hash[:topic]).to eq(event_constructor.topic)

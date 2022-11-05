@@ -20,8 +20,9 @@ RSpec.describe Sourced::Event do
   it_behaves_like 'a valid Sourced event' do
     let(:event_constructor) { create_user }
     let(:attributes) do
-      attrs = {
+      {
         stream_id: Sourced.uuid,
+        metadata: { causation_id: 'causationid', correlation_id: 'corrid' },
         payload: {
           name: 'Ismael'
         }
@@ -89,13 +90,15 @@ RSpec.describe Sourced::Event do
     end
 
     describe '.follow' do
-      it 'produces another event with :originator_id set to origin event' do
+      it 'produces another event with :causation_id and :correlation_id set to follow origin event' do
         eid = Sourced.uuid
-        cmd = create_user.new(stream_id: eid, payload: { name: 'Ismael' })
+        cmd = create_user.new(stream_id: eid, metadata: { foo: 1 }, payload: { name: 'Ismael' })
 
         evt2 = user_created.follow(cmd, name: cmd.payload.name, age: 21)
-        expect(evt2.originator_id).to eq(cmd.id)
+        expect(evt2.causation_id).to eq(cmd.id)
+        expect(evt2.correlation_id).to eq(cmd.correlation_id)
         expect(evt2.stream_id).to eq(cmd.stream_id)
+        expect(evt2.metadata[:foo]).to eq(1)
         expect(evt2.payload.name).to eq(cmd.payload.name)
         expect(evt2.payload.age).to eq(21)
       end
@@ -115,16 +118,15 @@ RSpec.describe Sourced::Event do
     describe '#copy' do
       it 'produces copy of the same class, with optional new attributes' do
         aggrid = Sourced.uuid
-        originator_id = Sourced.uuid
-        evt1 = user_created.new(stream_id: aggrid, payload: { name: 'Ismael', age: 40 })
-        evt2 = evt1.copy(originator_id: originator_id)
+        evt1 = user_created.new(stream_id: aggrid, metadata: { foo: 1 }, payload: { name: 'Ismael', age: 40 })
+        evt2 = evt1.copy(stream_id: 'abc')
 
         expect(evt1.id).to eq evt2.id
         expect(evt1.stream_id).to eq aggrid
-        expect(evt1.stream_id).to eq evt2.stream_id
         expect(evt1.payload.name).to eq evt2.payload.name
-        expect(evt1.originator_id).to be nil
-        expect(evt2.originator_id).to eq originator_id
+        expect(evt2.stream_id).to eq 'abc'
+        expect(evt2.metadata[:foo]).to eq(1)
+        expect(evt2.payload.name).to eq('Ismael')
       end
     end
 
@@ -133,12 +135,13 @@ RSpec.describe Sourced::Event do
         id = Sourced.uuid
         evt1 = user_created.new(
           stream_id: id,
+          metadata: { foo: 1 },
           payload: { name: 'Ismael', age: 40 }
         )
         hash = evt1.hash_for_serialization
         expect(hash[:id]).not_to be(nil)
         expect(hash[:stream_id]).to eq(id)
-        expect(hash.key?(:originator_id)).to be(true)
+        expect(hash[:metadata][:foo]).to eq(1)
         expect(hash[:payload]).to eq(name: 'Ismael', age: 40)
       end
     end
