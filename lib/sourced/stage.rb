@@ -69,6 +69,20 @@ module Sourced
       @event_decorators << @seq_tracker unless @event_decorators.any?
     end
 
+    def with_event_decorator(decorator = nil, &block)
+      decorator ||= block
+
+      self.class.new(
+        id,
+        entity: entity,
+        projector: projector,
+        seq: seq,
+        last_committed_seq: last_committed_seq,
+        events: events,
+        event_decorators: event_decorators + [decorator]
+      )
+    end
+
     def ==(other)
       other.id == id && other.seq == seq
     end
