@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
 module Sourced
-  class CommitterWithOriginator
-    def initialize(originator, committable)
-      @originator = originator
+  class CommitterWithPrependedEvents
+    def initialize(committable, *events_to_prepend)
       @committable = committable
+      @events_to_prepend = events_to_prepend
     end
 
     def commit(&_block)
@@ -18,12 +18,10 @@ module Sourced
     def to_a
       @to_a ||= (
         evts = @committable.events
-        [
-          @originator.copy(seq: @committable.last_committed_seq + 1),
-          *evts.map do |evt|
-            evt.copy(originator_id: @originator.id, seq: evt.seq + 1)
-          end
-        ]
+        seq = @committable.last_committed_seq
+        (@events_to_prepend + evts).map do |evt|
+          evt.copy(seq: seq += 1)
+        end
       )
     end
   end
