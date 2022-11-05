@@ -35,15 +35,38 @@ module Sourced
       new(id, entity: _entity, projector: projector, seq: seq)
     end
 
+    # An event decorator that tracks and adds next seq number and stream_id to
+    # new events
+    class SeqTracker
+      def initialize(id, seq)
+        @id, @seq = id, seq
+      end
+
+      def set(new_seq)
+        @seq = new_seq
+      end
+
+      # The EventAttributeDecorator interface
+      def call(attrs)
+        attrs.merge(
+          stream_id: @id,
+          seq: @seq + 1,
+        )
+      end
+    end
+
     attr_reader :id, :entity, :events, :seq, :last_committed_seq
 
-    def initialize(id, entity:, projector:, seq: 0)
+    def initialize(id, entity:, projector:, seq: 0, last_committed_seq: nil, events: [], event_decorators: [])
       @id = id
       @entity = entity
       @projector = projector
       @seq = seq
-      @last_committed_seq = seq
-      @events = []
+      @last_committed_seq = last_committed_seq || seq
+      @events = events
+      @event_decorators = event_decorators
+      @seq_tracker = SeqTracker.new(id, seq)
+      @event_decorators << @seq_tracker unless @event_decorators.any?
     end
 
     def ==(other)
@@ -55,14 +78,15 @@ module Sourced
     end
 
     def apply(event_or_class, attrs = {})
-      attrs = next_event_attrs.merge(attrs)
+      # attrs = next_event_attrs.merge(attrs)
+      attrs = decorate_event_attrs(attrs)
       event = if event_or_class.respond_to?(:new)
         event_or_class.new(attrs)
       else
         event_or_class.copy(attrs)
       end
       @entity = projector.call(entity, event)
-      @seq = event.seq
+      @seq = seq_tracker.set(event.seq)
       events << event
       self
     end
@@ -80,13 +104,10 @@ module Sourced
 
     private
 
-    attr_reader :projector
+    attr_reader :projector, :seq_tracker, :event_decorators
 
-    def next_event_attrs
-      {
-        stream_id: id,
-        seq: seq + 1,
-      }
+    def decorate_event_attrs(attrs)
+      event_decorators.reduce(attrs) { |hash, dec| dec.call(hash) }
     end
   end
 end
