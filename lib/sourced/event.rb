@@ -14,6 +14,8 @@ module Sourced
   end
 
   class Event < Dry::Struct
+    EMPTY_HASH = Hash.new.freeze
+
     class BasePayload < Dry::Struct
       def self.name
         'Sourced::Event::Payload'
@@ -29,7 +31,8 @@ module Sourced
     attribute? :stream_id, Types::String
     attribute :seq, Types::Integer.default(1)
     attribute :created_at, Types::EventTime
-    attribute? :originator_id, Types::String.optional
+    attribute :metadata, Types::Hash.default(EMPTY_HASH)
+    # attribute? :originator_id, Types::String.optional
     attribute? :payload do
 
     end
@@ -68,14 +71,20 @@ module Sourced
       klass.new(data)
     end
 
-    # ToDO: events should have a #metadata object
-    # extensible by users, which would be copied when following.
     def self.follow(evt, payload = {})
       new(
         stream_id: evt.stream_id,
-        originator_id: evt.id,
+        metadata: evt.metadata.merge(causation_id: evt.id, correlation_id: evt.correlation_id),
         payload: payload
       )
+    end
+
+    def causation_id
+      metadata.key?(:causation_id) ? metadata[:causation_id] : id
+    end
+
+    def correlation_id
+      metadata.key?(:correlation_id) ? metadata[:correlation_id] : id
     end
 
     def copy(new_attrs = {})
