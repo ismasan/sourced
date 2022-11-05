@@ -90,6 +90,27 @@ RSpec.describe Sourced::Stage do
       end
     end
 
+    describe '#with_event_decorator' do
+      it 'returns copy with new event decorator in decorator chain' do
+        stream = [e1, e2, e3]
+
+        user = stage_constructor.load(id, stream)
+
+        user.apply(Sourced::UserDomain::NameChanged.new(payload: { name: 'Ismael 2' }))
+
+        decorator = ->(attrs) { attrs.merge(metadata: { foo: 'bar' })}
+        user = user.with_event_decorator(decorator)
+        user.apply(Sourced::UserDomain::AgeChanged.new(payload: { age: 43 }))
+        expect(user.events.map(&:metadata)).to eq([{}, { foo: 'bar' }])
+        expect(user.events.map(&:seq)).to eq([4, 5])
+        expect(user.id).to eq id
+        expect(user.last_committed_seq).to eq 3
+        expect(user.seq).to eq 5
+        expect(user.entity[:name]).to eq 'Ismael 2'
+        expect(user.entity[:age]).to eq 43
+      end
+    end
+
     describe '#commit' do
       it 'yields collected events and last committed seq, clears them from stage' do
         stream = [e1, e2, e3]
