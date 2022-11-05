@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'sourced/projector'
+require 'sourced/metadata_event_decorator'
 
 module Sourced
   class Stage
@@ -83,6 +84,10 @@ module Sourced
       )
     end
 
+    def with_metadata(metadata = {})
+      with_event_decorator(MetadataEventDecorator.new(metadata))
+    end
+
     def ==(other)
       other.id == id && other.seq == seq
     end
@@ -92,12 +97,10 @@ module Sourced
     end
 
     def apply(event_or_class, attrs = {})
-      # attrs = next_event_attrs.merge(attrs)
-      attrs = decorate_event_attrs(attrs)
-      event = if event_or_class.respond_to?(:new)
-        event_or_class.new(attrs)
+      event = if event_or_class.respond_to?(:copy)
+        event_or_class.copy(decorate_event_attrs(event_or_class.to_h))
       else
-        event_or_class.copy(attrs)
+        event_or_class.new(decorate_event_attrs(attrs))
       end
       @entity = projector.call(entity, event)
       @seq = seq_tracker.set(event.seq)
