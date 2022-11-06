@@ -101,7 +101,12 @@ RSpec.describe Sourced::Stage do
         decorator = ->(attrs) { attrs.merge(metadata: { foo: 'bar' })}
         user = user.with_event_decorator(decorator)
         user.apply(Sourced::UserDomain::AgeChanged.new(payload: { age: 43 }))
-        expect(user.events.map(&:metadata)).to eq([{}, { foo: 'bar' }])
+        user.events[0].tap do |evt|
+          expect(evt.metadata.key?(:foo)).to be(false)
+        end
+        user.events[1].tap do |evt|
+          expect(evt.metadata[:foo]).to eq('bar')
+        end
         expect(user.events.map(&:seq)).to eq([4, 5])
         expect(user.id).to eq id
         expect(user.last_committed_seq).to eq 3
@@ -120,7 +125,14 @@ RSpec.describe Sourced::Stage do
         user.apply(Sourced::UserDomain::NameChanged.new(metadata: { year: 2022 }, payload: { name: 'Ismael 2' }))
         # with event constructor
         user.apply(Sourced::UserDomain::AgeChanged, age: 43)
-        expect(user.events.map(&:metadata)).to eq([{ year: 2022, foo: 'bar' }, { foo: 'bar' }])
+        expect(user.events.size).to eq(2)
+        user.events[0].tap do |evt|
+          expect(evt.metadata[:year]).to eq(2022)
+          expect(evt.metadata[:foo]).to eq('bar')
+        end
+        user.events[1].tap do |evt|
+          expect(evt.metadata[:foo]).to eq('bar')
+        end
       end
     end
 
