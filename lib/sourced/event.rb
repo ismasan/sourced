@@ -32,7 +32,6 @@ module Sourced
     attribute :seq, Types::Integer.default(1)
     attribute :created_at, Types::EventTime
     attribute :metadata, Types::Hash.default(EMPTY_HASH)
-    # attribute? :originator_id, Types::String.optional
     attribute? :payload do
 
     end
@@ -90,6 +89,13 @@ module Sourced
     def copy(new_attrs = {})
       data = to_h.merge(new_attrs)
       self.class.new(data)
+    end
+
+    def to_h
+      super.tap do |hash|
+        hash[:metadata][:causation_id] ||= id
+        hash[:metadata][:correlation_id] ||= id
+      end
     end
 
     # Like #to_h

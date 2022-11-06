@@ -31,6 +31,8 @@ module Sourced
         event = event_constructor.new(attributes.except(:metadata))
         expect(event.causation_id).to eq(event.id)
         expect(event.correlation_id).to eq(event.id)
+        expect(event.to_h[:metadata][:causation_id]).to eq(event.id)
+        expect(event.to_h[:metadata][:causation_id]).to eq(event.id)
       end
 
       it 'is taken from metadata otherwise' do
