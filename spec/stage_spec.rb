@@ -127,10 +127,12 @@ RSpec.describe Sourced::Stage do
         user.apply(Sourced::UserDomain::AgeChanged, age: 43)
         expect(user.events.size).to eq(2)
         user.events[0].tap do |evt|
+          expect(evt.seq).to eq(4)
           expect(evt.metadata[:year]).to eq(2022)
           expect(evt.metadata[:foo]).to eq('bar')
         end
         user.events[1].tap do |evt|
+          expect(evt.seq).to eq(5)
           expect(evt.metadata[:foo]).to eq('bar')
         end
       end

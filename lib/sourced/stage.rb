@@ -66,8 +66,12 @@ module Sourced
       @last_committed_seq = last_committed_seq || seq
       @events = events
       @event_decorators = event_decorators
-      @seq_tracker = SeqTracker.new(id, seq)
-      @event_decorators << @seq_tracker unless @event_decorators.any?
+      if (seq_tracker = @event_decorators.find { |d| d.is_a?(SeqTracker) })
+        @seq_tracker = seq_tracker
+      else
+        @seq_tracker = SeqTracker.new(id, seq)
+        @event_decorators << @seq_tracker
+      end
     end
 
     def with_event_decorator(decorator = nil, &block)
