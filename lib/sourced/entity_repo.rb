@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require 'sourced/committer_with_originator'
+require 'sourced/committer_with_prepended_events'
 
 module Sourced
   class EntityRepo
@@ -28,8 +28,8 @@ module Sourced
       end
     end
 
-    def persist_with_originator(stage, originator_event, &block)
-      persist(CommitterWithOriginator.new(originator_event, stage), &block)
+    def persist_with_prepended_events(stage, *events_to_prepend, &block)
+      persist(CommitterWithPrependedEvents.new(stage, *events_to_prepend), &block)
     end
 
     def persist_events(events, expected_seq: nil)
