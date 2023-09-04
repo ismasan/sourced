@@ -51,8 +51,8 @@ RSpec.describe Sourced::Stage do
 
         user = stage_constructor.load(id, stream)
 
-        user.apply(Sourced::UserDomain::NameChanged, payload: { name: 'Ismael 2' })
-        user.apply(Sourced::UserDomain::AgeChanged, payload: { age: 43 })
+        user.apply(Sourced::UserDomain::NameChanged, name: 'Ismael 2')
+        user.apply(Sourced::UserDomain::AgeChanged, age: 43)
 
         expect(user.id).to eq id
         expect(user.last_committed_seq).to eq 3
@@ -90,14 +90,83 @@ RSpec.describe Sourced::Stage do
       end
     end
 
+    describe '#with_event_decorator' do
+      it 'returns copy with new event decorator in decorator chain' do
+        stream = [e1, e2, e3]
+
+        user = stage_constructor.load(id, stream)
+
+        user.apply(Sourced::UserDomain::NameChanged.new(payload: { name: 'Ismael 2' }))
+
+        decorator = ->(attrs) { attrs.merge(metadata: { foo: 'bar' })}
+        user = user.with_event_decorator(decorator)
+        user.apply(Sourced::UserDomain::AgeChanged.new(payload: { age: 43 }))
+        user.events[0].tap do |evt|
+          expect(evt.metadata.key?(:foo)).to be(false)
+        end
+        user.events[1].tap do |evt|
+          expect(evt.metadata[:foo]).to eq('bar')
+        end
+        expect(user.events.map(&:seq)).to eq([4, 5])
+        expect(user.id).to eq id
+        expect(user.last_committed_seq).to eq 3
+        expect(user.seq).to eq 5
+        expect(user.entity[:name]).to eq 'Ismael 2'
+        expect(user.entity[:age]).to eq 43
+      end
+    end
+
+    describe '#with_metadata' do
+      it 'adds metadata to all applied events' do
+        stream = [e1, e2, e3]
+
+        user = stage_constructor.load(id, stream).with_metadata(foo: 'bar')
+        # with event instance
+        user.apply(Sourced::UserDomain::NameChanged.new(metadata: { year: 2022 }, payload: { name: 'Ismael 2' }))
+        # with event constructor
+        user.apply(Sourced::UserDomain::AgeChanged, age: 43)
+        expect(user.events.size).to eq(2)
+        user.events[0].tap do |evt|
+          expect(evt.seq).to eq(4)
+          expect(evt.metadata[:year]).to eq(2022)
+          expect(evt.metadata[:foo]).to eq('bar')
+        end
+        user.events[1].tap do |evt|
+          expect(evt.seq).to eq(5)
+          expect(evt.metadata[:foo]).to eq('bar')
+        end
+      end
+    end
+
+    describe '#following' do
+      it 'adds #causation_id and #correlation_id to all applied events' do
+        stream = [e1, e2, e3]
+        causation_event = Sourced::UserDomain::NameChanged.new(
+          metadata: { causation_id: 'aaa', correlation_id: 'bbb', something: 'else' },
+          payload: { name: 'Ismael 2' }
+        )
+
+        user = stage_constructor
+          .load(id, stream)
+          .with_metadata(foo: 'bar')
+          .following(causation_event)
+
+        user.apply(Sourced::UserDomain::AgeChanged.new(metadata: { lol: 'cats' }, payload: { age: 43 }))
+        # Other decorators are still applied
+        expect(user.events[0].metadata[:foo]).to eq('bar')
+        expect(user.events[0].metadata[:causation_id]).to eq(causation_event.id)
+        expect(user.events[0].metadata[:correlation_id]).to eq('bbb')
+      end
+    end
+
     describe '#commit' do
       it 'yields collected events and last committed seq, clears them from stage' do
         stream = [e1, e2, e3]
 
         user = stage_constructor.load(id, stream)
 
-        user.apply(Sourced::UserDomain::NameChanged, payload: { name: 'Ismael 2' })
-        user.apply(Sourced::UserDomain::AgeChanged, payload: { age: 43 })
+        user.apply(Sourced::UserDomain::NameChanged, name: 'Ismael 2')
+        user.apply(Sourced::UserDomain::AgeChanged, age: 43)
 
         expect(user.seq).to eq 5
         expect(user.last_committed_seq).to eq 3

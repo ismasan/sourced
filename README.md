@@ -78,7 +78,9 @@ id # UUID, required, set on creation
 stream_id # UUID, required
 created_at # Time, set on creation
 seq # Integer, usually set by stages (more on that below)
-originator_id # UUID, optional. The command or event that lead up to this event.
+metadata # Hash, custom event metadata, normally including:
+  causation_id # UUID, id of the event or command that directly caused this event
+  correlation_id # UUID, id of the event that initiated a thread or conversation.
 payload # Object, your custom event attributes.
 ```
 
