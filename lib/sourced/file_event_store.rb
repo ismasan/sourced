@@ -35,7 +35,7 @@ module Sourced
     attr_reader :mutex, :event_registry
 
     def events
-      if File.exists?(@file_name)
+      if File.exist?(@file_name)
         f = File.new(@file_name)
         f.each_line.map do |line|
           data = JSON.parse(line, symbolize_names: true)
@@ -59,7 +59,7 @@ module Sourced
 
     def create_file
       FileUtils.mkdir_p @dir
-      FileUtils.touch(@file_name) unless File.exists?(@file_name)
+      FileUtils.touch(@file_name) unless File.exist?(@file_name)
     end
   end
 end
