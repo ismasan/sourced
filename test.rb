@@ -136,6 +136,7 @@ COMMANDS = Commander.new(DB)
 # p DB[:commands].first[:data]
 require_relative 'machine'
 require_relative 'message'
+require_relative 'event_store'
 
 class CartMachine < Machine
   self.scheduler = COMMANDS
@@ -161,8 +162,14 @@ class CartMachine < Machine
     cart
   end
 
-  persist do |cart, command, events|
+  # persist do |cart, command, events|
+  #   puts "Persisting #{cart}, #{command}, #{events}"
+  #   event_store.append([command, *events])
+  # end
+
+  def persist(cart, command, events)
     puts "Persisting #{cart}, #{command}, #{events}"
+    event_store.append([command, *events])
   end
 
   react ItemAdded do |event|
@@ -184,6 +191,14 @@ class CartMachine < Machine
   decide PlaceOrder do |cart, command|
     command.follow(OrderPlaced)
   end
+
+  attr_reader :event_store
+
+  def initialize(event_store)
+    super()
+    @event_store = event_store
+  end
 end
 
-Router.register_machine(CartMachine)
+ES = EventStore.new(DB)
+Router.register_machine(CartMachine.new(ES))
