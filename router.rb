@@ -45,7 +45,7 @@ class Router
 
   def handle(command)
     machine = @machines.fetch(command.class)
-    machine.new.handle(command)
+    machine.handle(command)
   end
 
   def reactors_for(events)

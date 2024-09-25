@@ -67,6 +67,10 @@ class Machine
   def initialize
   end
 
+  def handled_commands = self.class.handled_commands
+  def handled_events = self.class.handled_events
+  def reactor = self.class.reactor
+
   def handle(command)
     puts "Handling #{command.type}"
     state = load_state(command)
