@@ -74,9 +74,9 @@ class Machine
   def handle(command)
     puts "Handling #{command.type}"
     state = load_state(command)
-    events = handle_command(state, command)
-    state = handle_events(state, events)
-    commands = handle_reactions(state, events)
+    events = decide(state, command)
+    state = evolve(state, events)
+    commands = react(state, events)
     transaction do
       persist(state, command, events)
       schedule_commands(commands)
@@ -90,12 +90,12 @@ class Machine
     self.class.loader.call(command)
   end
 
-  def handle_command(state, command)
+  def decide(state, command)
     events = send(self.class.message_method_name(command.class.name), state, command)
     [ events ].flatten.compact
   end
 
-  def handle_events(state, events)
+  def evolve(state, events)
     events.each do |event|
       method_name = self.class.message_method_name(event.class.name)
       send(method_name, state, event) if respond_to?(method_name)
@@ -104,7 +104,7 @@ class Machine
     state
   end
 
-  def handle_reactions(_state, events)
+  def react(_state, events)
     self.class.reactor.call(events)
   end
 
