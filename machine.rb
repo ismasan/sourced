@@ -2,6 +2,7 @@
 
 require_relative 'router'
 require_relative 'reactor'
+require_relative 'message'
 
 class Machine
   INLINE_SCHEDULER = proc do |commands|
@@ -76,10 +77,13 @@ class Machine
     state = load_state(command)
     events = decide(state, command)
     state = evolve(state, events)
-    commands = react(state, events)
     transaction do
       persist(state, command, events)
-      schedule_commands(commands)
+      # TODO: handle sync reactors here
+      # commands = react(state, events)
+      # Schedule a system command to handle this batch of events in the background
+      schedule_batch(command)
+      # schedule_commands(commands)
     end
     [ state, events ]
   end
@@ -110,6 +114,12 @@ class Machine
 
   def persist(state, command, events)
     self.class.persister.call(state, command, events)
+  end
+
+  ProcessBatch = Message.define('machine.batch.process')
+
+  def schedule_batch(command)
+    schedule_commands([command.follow(ProcessBatch)])
   end
 
   def schedule_commands(commands)

@@ -23,6 +23,10 @@ class Commander
 
   # Machine::Scheduler interface
   def call(commands)
+    return false if commands.empty?
+
+    # TODO: here we could use multi_insert
+    # for both streams and commands
     db.transaction do
       commands.each do |command|
         add(command.stream_id, command)
@@ -67,14 +71,16 @@ class Commander
       cmd
     end
 
-    yield Message.from(command[:data]) if command
+    if command
+      yield Message.from(command[:data])
+      # Only delete the command if processing didn't raise
+      db[:commands].where(id: command[:id]).delete
+    end
     command
   ensure
+    # Always unlock the stream
     if command
-      db.transaction do
-        db[:commands].where(id: command[:id]).delete
-        db[:streams].where(stream_id: command[:stream_id]).update(locked: false)
-      end
+      db[:streams].where(stream_id: command[:stream_id]).update(locked: false)
     end
   end
 
@@ -162,16 +168,6 @@ class CartMachine < Machine
     cart
   end
 
-  # persist do |cart, command, events|
-  #   puts "Persisting #{cart}, #{command}, #{events}"
-  #   event_store.append([command, *events])
-  # end
-
-  def persist(cart, command, events)
-    puts "Persisting #{cart}, #{command}, #{events}"
-    event_store.append([command, *events])
-  end
-
   react ItemAdded do |event|
     event.follow(SendEmail)
   end
@@ -198,7 +194,26 @@ class CartMachine < Machine
     super()
     @event_store = event_store
   end
+
+  def persist(cart, command, events)
+    puts "Persisting #{cart}, #{command}, #{events}"
+    event_store.append([command, *events])
+  end
 end
 
+class SalesReportSaga < Reactor
+  react CartMachine::ItemAdded do |event|
+    puts "Saga: Item added #{event.payload}"
+    []
+  end
+end
+
+# TODO: perhaps we can just Router.register(Thing)
+# Thing will be registered as Machine, Reactor, Projection, etc
+# (or many of them)
+# depending on the interfaces it implements
+# This way its easy to compose workflows that may involve handling commands, events or reactions.
+# Some may load an initial entity, some others may not.
 ES = EventStore.new(DB)
 Router.register_machine(CartMachine.new(ES))
+Router.register_reactor(SalesReportSaga)

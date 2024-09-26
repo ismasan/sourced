@@ -13,6 +13,12 @@ class EventStore
     db[:events].multi_insert(rows)
   end
 
+  def read_batch(causation_id)
+    db[:events].where(causation_id:).order(:global_seq).map do |row|
+      deserialize(row)
+    end
+  end
+
   def read_stream(stream_id)
     db[:events].where(stream_id:).order(:global_seq).map do |row|
       deserialize(row)
