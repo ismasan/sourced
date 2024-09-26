@@ -1,16 +1,45 @@
 require 'bundler/setup'
 require 'sequel'
+require 'async'
+require 'console' #  comes with Async
 require 'json'
 require 'digest/md5'
 
+# See Console docs https://socketry.github.io/console/guides/getting-started/index
 module Sequel
   def self.parse_json(json)
     JSON.parse(json, symbolize_names: true)
   end
 end
 
+Sequel.extension :fiber_concurrency
+
 DB = Sequel.postgres('decider')
 DB.extension :pg_json
+
+DB.create_table?(:events) do
+  column :id, :uuid, primary_key: true, unique: true
+  String :stream_id, null: false, index: true
+  String :type, null: false
+  Time :created_at, null: false
+  String :producer
+  column :causation_id, :uuid, index: true
+  column :correlation_id, :uuid
+  column :payload, :jsonb
+  Bignum :global_seq, default: Sequel.function(:nextval, 'events_global_seq')
+end
+
+DB.create_table?(:streams) do
+  String :stream_id, primary_key: true, unique: true
+  column :locked, :boolean, default: false, null: false
+end
+
+DB.create_table?(:commands) do
+  primary_key :id
+  foreign_key :stream_id, :streams, type: String, null: false
+  column :data, :jsonb, null: false
+  Time :scheduled_at, null: false, default: Sequel.function(:now)
+end
 
 class Commander
   attr_reader :name
@@ -51,9 +80,9 @@ class Commander
       # sleep 0.5 unless reserve_next(&)
       reserve_next(&)
       # This sleep seems to be necessary or workers in differet processes will not be able to get the lock
-      sleep 0.2
+      sleep 0.01
     end
-    puts "Worker #{name}: Polling stopped"
+    Console.info "Worker #{name}: Polling stopped"
   end
 
   def reserve_next(&)
@@ -196,14 +225,14 @@ class CartMachine < Machine
   end
 
   def persist(cart, command, events)
-    puts "Persisting #{cart}, #{command}, #{events}"
+    Console.info "Persisting #{cart}, #{command}, #{events}"
     event_store.append([command, *events])
   end
 end
 
 class SalesReportSaga < Reactor
   react CartMachine::ItemAdded do |event|
-    puts "Saga: Item added #{event.payload}"
+    Console.info "Saga: Item added #{event.payload}"
     []
   end
 end

@@ -2,6 +2,7 @@
 
 source 'https://rubygems.org'
 
+gem 'async'
 gem 'debug'
 gem 'pg'
 gem 'plumb', path: '/Users/ismasan/code/personal/gems/plumb'
