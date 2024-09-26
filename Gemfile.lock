@@ -31,6 +31,7 @@ GEM
       rdoc (>= 4.0.0)
       reline (>= 0.4.2)
     json (2.7.2)
+    mini_portile2 (2.8.7)
     pg (1.5.8)
     psych (5.1.2)
       stringio
@@ -40,6 +41,9 @@ GEM
       io-console (~> 0.5)
     sequel (5.84.0)
       bigdecimal
+    sqlite3 (2.1.0)
+      mini_portile2 (~> 2.8.0)
+    sqlite3 (2.1.0-arm64-darwin)
     stringio (3.1.1)
 
 PLATFORMS
@@ -52,6 +56,7 @@ DEPENDENCIES
   pg
   plumb!
   sequel
+  sqlite3
 
 BUNDLED WITH
    2.5.11

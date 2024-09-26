@@ -13,12 +13,24 @@ module Sequel
 end
 
 Sequel.extension :fiber_concurrency
+# DB_DRIVER = :sqlite
+DB_DRIVER = :postgres
 
-DB = Sequel.postgres('decider')
-DB.extension :pg_json
+if DB_DRIVER == :sqlite
+  DB = Sequel.sqlite('./decider.db')
+else
+  DB = Sequel.postgres('decider')
+  DB.extension :pg_json
+end
 
 DB.create_table?(:events) do
-  column :id, :uuid, primary_key: true, unique: true
+  if DB_DRIVER == :sqlite
+    # auto increment integer for sqlite
+    Bignum :global_seq, type: 'INTEGER PRIMARY KEY AUTOINCREMENT'
+  else
+    Bignum :global_seq, primary_key: true, default: Sequel.function(:nextval, 'events_global_seq')
+  end
+  column :id, :uuid, unique: true
   String :stream_id, null: false, index: true
   String :type, null: false
   Time :created_at, null: false
@@ -26,7 +38,6 @@ DB.create_table?(:events) do
   column :causation_id, :uuid, index: true
   column :correlation_id, :uuid
   column :payload, :jsonb
-  Bignum :global_seq, default: Sequel.function(:nextval, 'events_global_seq')
 end
 
 DB.create_table?(:streams) do
@@ -38,7 +49,11 @@ DB.create_table?(:commands) do
   primary_key :id
   foreign_key :stream_id, :streams, type: String, null: false
   column :data, :jsonb, null: false
-  Time :scheduled_at, null: false, default: Sequel.function(:now)
+  if DB_DRIVER == :sqlite
+    Time :scheduled_at, null: false, type: 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
+  else
+    Time :scheduled_at, null: false, default: Sequel.function(:now)
+  end
 end
 
 class Commander
@@ -101,7 +116,11 @@ class Commander
     end
 
     if command
-      yield Message.from(command[:data])
+      data = command[:data]
+      # Support SQlite
+      # TODO: figure out how to handle this in a better way
+      data = Sequel.parse_json(data) if data.is_a?(String)
+      yield Message.from(data)
       # Only delete the command if processing didn't raise
       db[:commands].where(id: command[:id]).delete
     end
