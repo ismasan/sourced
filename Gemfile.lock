@@ -1,7 +1,7 @@
 PATH
   remote: /Users/ismasan/code/personal/gems/plumb
   specs:
-    plumb (0.0.6)
+    plumb (0.0.7)
       bigdecimal
       concurrent-ruby
 
