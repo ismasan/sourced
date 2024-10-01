@@ -2,6 +2,7 @@
 
 require 'sors'
 require 'debug'
+require_relative './shared_examples/backend_examples'
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
@@ -13,4 +14,6 @@ RSpec.configure do |config|
   config.expect_with :rspec do |c|
     c.syntax = :expect
   end
+
+  config.include BackendExamples, type: :backend
 end
