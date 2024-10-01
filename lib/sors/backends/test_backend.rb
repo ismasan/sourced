@@ -64,6 +64,7 @@ module Sors
       end
 
       def read_event_stream(stream_id)
+        @events.select { |e| e.stream_id == stream_id }
       end
     end
   end

@@ -77,4 +77,16 @@ RSpec.describe Sors::Backends::TestBackend do
       expect(events).to eq([evt1, evt2])
     end
   end
+
+  describe '#read_event_stream' do
+    it 'reads full event stream in order' do
+      cmd1 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
+      evt1 = cmd1.follow(Tests::SomethingHappened1)
+      evt2 = cmd1.follow(Tests::SomethingHappened1)
+      evt3 = Tests::SomethingHappened1.parse(stream_id: 's2')
+      expect(backend.append_events([evt1, evt2, evt3])).to be(true)
+      events = backend.read_event_stream('s1')
+      expect(events).to eq([evt1, evt2])
+    end
+  end
 end
