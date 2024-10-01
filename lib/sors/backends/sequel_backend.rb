@@ -171,6 +171,7 @@ module Sors
       end
 
       def deserialize_event(row)
+        row[:payload] = parse_json(row[:payload]) if row[:payload]
         Message.from(row)
       end
 

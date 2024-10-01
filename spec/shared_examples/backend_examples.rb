@@ -5,7 +5,9 @@ module BackendExamples
     DoSomething = Sors::Message.define('tests.do_something') do
       attribute :account_id, Integer
     end
-    SomethingHappened1 = Sors::Message.define('tests.something_happened1')
+    SomethingHappened1 = Sors::Message.define('tests.something_happened1') do
+      attribute :account_id, Integer
+    end
   end
 
   RSpec.shared_examples 'a backend' do
@@ -64,9 +66,9 @@ module BackendExamples
     describe '#append_events, #read_event_batch' do
       it 'reads event batch by causation_id' do
         cmd1 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        evt1 = cmd1.follow(Tests::SomethingHappened1)
-        evt2 = cmd1.follow(Tests::SomethingHappened1)
-        evt3 = Tests::SomethingHappened1.parse(stream_id: 's1')
+        evt1 = cmd1.follow(Tests::SomethingHappened1, account_id: cmd1.payload.account_id)
+        evt2 = cmd1.follow(Tests::SomethingHappened1, account_id: cmd1.payload.account_id)
+        evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 1 })
         expect(backend.append_events([evt1, evt2, evt3])).to be(true)
 
         events = backend.read_event_batch(cmd1.id)
@@ -77,9 +79,9 @@ module BackendExamples
     describe '#read_event_stream' do
       it 'reads full event stream in order' do
         cmd1 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        evt1 = cmd1.follow(Tests::SomethingHappened1)
-        evt2 = cmd1.follow(Tests::SomethingHappened1)
-        evt3 = Tests::SomethingHappened1.parse(stream_id: 's2')
+        evt1 = cmd1.follow(Tests::SomethingHappened1, account_id: cmd1.payload.account_id)
+        evt2 = cmd1.follow(Tests::SomethingHappened1, account_id: cmd1.payload.account_id)
+        evt3 = Tests::SomethingHappened1.parse(stream_id: 's2', payload: { account_id: 1 })
         expect(backend.append_events([evt1, evt2, evt3])).to be(true)
         events = backend.read_event_stream('s1')
         expect(events).to eq([evt1, evt2])
