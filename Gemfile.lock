@@ -1,3 +1,11 @@
+GIT
+  remote: https://github.com/ismasan/plumb.git
+  revision: b0fc6b2a4a15171a6f031de761295fb4408468b5
+  specs:
+    plumb (0.0.7)
+      bigdecimal
+      concurrent-ruby
+
 PATH
   remote: .
   specs:
@@ -34,9 +42,6 @@ GEM
     json (2.7.2)
     mini_portile2 (2.8.7)
     pg (1.5.8)
-    plumb (0.0.7)
-      bigdecimal
-      concurrent-ruby
     psych (5.1.2)
       stringio
     rake (13.2.1)
@@ -71,6 +76,7 @@ PLATFORMS
 DEPENDENCIES
   debug
   pg
+  plumb!
   rake (~> 13.0)
   rspec (~> 3.0)
   sequel
