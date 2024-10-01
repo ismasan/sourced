@@ -6,18 +6,19 @@ require 'sors/worker'
 
 module Sors
   class Supervisor
-    def initialize(backend:, count: 2)
+    def initialize(backend: Sors.config.backend, logger: Sors.config.logger, count: 2)
       @backend = backend
+      @logger = logger
       @count = count
       @workers = []
       @tasks = []
     end
 
     def start
-      Console.info("Starting sync supervisor with #{@count} workers")
+      logger.info("Starting sync supervisor with #{@count} workers")
       set_signal_handlers
       @workers = @count.times.map do |i|
-        Worker.new(@backend, name: "worker-#{i}")
+        Worker.new(@backend, logger:, name: "worker-#{i}")
       end
       Sync do
         @tasks = @workers.map do |wrk|
@@ -26,7 +27,7 @@ module Sors
           end
         end
       end
-      Console.info('All workers stopped')
+      logger.info('All workers stopped')
     end
 
     def wait
@@ -34,7 +35,7 @@ module Sors
     end
 
     def stop
-      Console.info("Stopping #{@workers.size} workers")
+      logger.info("Stopping #{@workers.size} workers")
       @workers.each(&:stop)
       wait
     end
@@ -43,5 +44,9 @@ module Sors
       Signal.trap('INT') { stop }
       Signal.trap('TERM') { stop }
     end
+
+    private
+
+    attr_reader :logger
   end
 end

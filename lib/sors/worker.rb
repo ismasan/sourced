@@ -8,8 +8,9 @@ module Sors
   class Worker
     attr_reader :name
 
-    def initialize(backend, name: SecureRandom.hex(4), poll_interval: 0.01)
+    def initialize(backend, logger:, name: SecureRandom.hex(4), poll_interval: 0.01)
       @backend = backend
+      @logger = logger
       @running = false
       @name = [Process.pid, name].join('-')
       @poll_interval = poll_interval
@@ -27,13 +28,13 @@ module Sors
         # This sleep seems to be necessary or workers in differet processes will not be able to get the lock
         sleep @poll_interval
       end
-      Console.info "Worker #{name}: Polling stopped"
+      logger.info "Worker #{name}: Polling stopped"
     end
 
     def work(command)
       case command
       when Machine::ProcessBatch
-        Console.warn "BATCH #{name} received command: #{command.type}"
+        logger.warn "BATCH #{name} received command: #{command.type}"
         batch = @backend.read_event_batch(command.causation_id)
         reactors = Router.reactors_for(batch)
         # TODO: reactors should work concurrently
@@ -51,16 +52,20 @@ module Sors
         runs = reactors.map { |reactor| Async { reactor.call(batch) } }
         # Reactors return new commands
         commands = runs.flat_map(&:wait)
-        Console.info "BATCH #{name} schedulling commands: #{commands.map(&:type).inspect}"
+        logger.info "BATCH #{name} schedulling commands: #{commands.map(&:type).inspect}"
 
         commands = commands.map { |c| c.with(producer: "worker #{name}") }
         # Put the new commands back in the queue
         @backend.schedule_commands(commands)
       else
-        Console.info "Worker #{name} received command: #{command.type}"
+        logger.info "Worker #{name} received command: #{command.type}"
         Router.handle(command)
       end
     end
+
+    private
+
+    attr_reader :logger
   end
 end
 

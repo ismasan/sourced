@@ -3,7 +3,6 @@
 require 'sequel'
 require 'async'
 require 'json'
-require 'console' #  comes with Async
 require 'sors/message'
 
 Sequel.extension :fiber_concurrency
@@ -12,13 +11,14 @@ Sequel.extension :pg_json if defined?(PG)
 module Sors
   module Backends
     class SequelBackend
-      def initialize(db, prefix: 'sors')
+      def initialize(db, logger: Sors.config.logger, prefix: 'sors')
         @db = connect(db)
+        @logger = logger
         @prefix = prefix
         @events_table = table_name(:events)
         @streams_table = table_name(:streams)
         @commands_table = table_name(:commands)
-        Console.info("Connected to #{@db}")
+        logger.info("Connected to #{@db}")
       end
 
       def installed?
@@ -126,13 +126,13 @@ module Sors
           column :correlation_id, :uuid
           column :payload, :jsonb
         end
-        Console.info("Created table #{events_table}")
+        logger.info("Created table #{events_table}")
 
         db.create_table?(streams_table) do
           String :stream_id, primary_key: true, unique: true
           column :locked, :boolean, default: false, null: false
         end
-        Console.info("Created table #{streams_table}")
+        logger.info("Created table #{streams_table}")
 
         # Define in local scope so that it can be used in the block
         _streams_table = streams_table
@@ -146,13 +146,13 @@ module Sors
             Time :scheduled_at, null: false, default: Sequel.function(:now)
           end
         end
-        Console.info("Created table #{commands_table}")
+        logger.info("Created table #{commands_table}")
         self
       end
 
       private
 
-      attr_reader :db, :prefix, :events_table, :streams_table, :commands_table
+      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :commands_table
 
       def table_name(name)
         [prefix, name].join('_').to_sym

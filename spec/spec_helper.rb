@@ -2,9 +2,14 @@
 
 require 'sors'
 require 'debug'
+require 'logger'
 require_relative './shared_examples/backend_examples'
 
 ENV['ENVIRONMENT'] = 'test'
+
+Sors.configure do |config|
+  config.logger = Logger.new(STDOUT)
+end
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure

@@ -30,7 +30,7 @@ module Sors
       end
 
       def persister
-        @persister ||= ->(state, command, events) { Rails.logger.info("Persisting #{state}, #{command}, #{events}") }
+        @persister ||= ->(state, command, events) { logger.info("Persisting #{state}, #{command}, #{events}") }
       end
 
       def loader
@@ -68,7 +68,8 @@ module Sors
       end
     end
 
-    def initialize
+    def initialize(logger: Sors.config.logger)
+      @logger = logger
     end
 
     def backend = self.class.backend
@@ -77,7 +78,7 @@ module Sors
     def reactor = self.class.reactor
 
     def handle(command)
-      puts "Handling #{command.type}"
+      logger.info "Handling #{command.type}"
       state = load_state(command)
       events = decide(state, command)
       state = evolve(state, events)
@@ -93,6 +94,8 @@ module Sors
     end
 
     private
+
+    attr_reader :logger
 
     def load_state(command)
       self.class.loader.call(command)
