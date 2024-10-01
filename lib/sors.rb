@@ -14,8 +14,15 @@ module Sors
     config.freeze
     config
   end
+
+  def self.message_method_name(prefix, name)
+    "__handle_#{prefix}_#{name.split('::').map(&:downcase).join('_')}"
+  end
 end
 
+require 'sors/decide'
+require 'sors/evolve'
+require 'sors/react'
 require 'sors/configuration'
 require 'sors/machine'
 require 'sors/router'

@@ -39,9 +39,9 @@ module Sors
           @machines[cmd_type] = thing
         end
       end
-      return unless thing.respond_to?(:handled_events)
+      return unless thing.respond_to?(:handled_reactions)
 
-      thing.handled_events.each do |event_type|
+      thing.handled_reactions.each do |event_type|
         @reactors[event_type] ||= []
         @reactors[event_type] << thing
       end
