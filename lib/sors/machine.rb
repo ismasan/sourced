@@ -61,6 +61,14 @@ module Sors
       @backend = backend
     end
 
+    def inspect
+      %(<#{self.class}#{object_id} backend:#{backend.inspect}>)
+    end
+
+    def ==(other)
+      other.is_a?(self.class) && other.backend == backend
+    end
+
     def handled_commands = self.class.handled_commands
     def handled_events = self.class.handled_events
     def reactor = self.class.reactor

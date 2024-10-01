@@ -7,6 +7,10 @@ module Sors
     include Singleton
 
     class << self
+      def register(...)
+        instance.register(...)
+      end
+
       def register_machine(...)
         instance.register_machine(...)
       end
@@ -27,6 +31,20 @@ module Sors
     def initialize
       @machines = {}
       @reactors = {}
+    end
+
+    def register(thing)
+      if thing.respond_to?(:handled_commands)
+        thing.handled_commands.each do |cmd_type|
+          @machines[cmd_type] = thing
+        end
+      end
+      return unless thing.respond_to?(:handled_events)
+
+      thing.handled_events.each do |event_type|
+        @reactors[event_type] ||= []
+        @reactors[event_type] << thing
+      end
     end
 
     def register_machine(machine)
