@@ -60,16 +60,18 @@ module Sors
           cmd
         end
 
+        cmd = nil
         if command
           data = command[:data]
           # Support SQlite
           # TODO: figure out how to handle this in a better way
           data = parse_json(data)
-          yield Message.from(data)
+          cmd = Message.from(data)
+          yield cmd
           # Only delete the command if processing didn't raise
           db[commands_table].where(id: command[:id]).delete
         end
-        command
+        cmd
       ensure
         # Always unlock the stream
         if command

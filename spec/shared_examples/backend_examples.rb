@@ -18,10 +18,11 @@ module BackendExamples
         expect(backend.schedule_commands([cmd1, cmd2])).to be(true)
 
         streams = []
-        backend.reserve_next do |cmd|
+        reserved_command = backend.reserve_next do |cmd|
           streams << cmd.stream_id
         end
 
+        expect(reserved_command.id).to eq(cmd1.id)
         expect(streams).to eq(%w[s1])
 
         backend.reserve_next do |cmd|
@@ -35,6 +36,12 @@ module BackendExamples
         end
 
         expect(streams).to eq(%w[s1 s2])
+      end
+
+      it 'returns nil if no more commands to reserve' do
+        reserved_command = backend.reserve_next do |cmd|
+        end
+        expect(reserved_command).to be(nil)
       end
 
       it 'does not reserve a command if the stream is locked' do

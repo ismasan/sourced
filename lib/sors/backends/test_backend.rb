@@ -25,8 +25,13 @@ module Sors
           cmd = @commands.shift
           yield cmd if cmd
           @locked = false
+          cmd
         end
       end
+
+      # These are not part of the Backend interface
+      # but are convenient to inspect the TestBackend
+      attr_reader :command_streams, :events
 
       def initialize
         @command_streams = Hash.new { |h, k| h[k] = Stream.new(k) }
