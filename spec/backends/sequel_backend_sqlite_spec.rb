@@ -3,8 +3,8 @@
 require 'spec_helper'
 require 'sors/backends/sequel_backend'
 
-RSpec.describe Sors::Backends::SequelBackend, type: :backend do
-  subject(:backend) { described_class.new(db) }
+RSpec.describe 'Sors::Backends::SequelBackend with sqlite', type: :backend do
+  subject(:backend) { Sors::Backends::SequelBackend.new(db) }
 
   let(:db) do
     Sequel.sqlite

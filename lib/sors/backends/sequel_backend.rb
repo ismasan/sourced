@@ -99,6 +99,15 @@ module Sors
         end
       end
 
+      # For tests only
+      def clear!
+        raise 'Not in test environment' unless ENV['ENVIRONMENT'] == 'test'
+
+        db[events_table].delete
+        db[streams_table].delete
+        db[commands_table].delete
+      end
+
       def install
         db.create_table?(events_table) do
           # @db is the local @ivar in Sequel::Generator
@@ -106,7 +115,7 @@ module Sors
             # auto increment integer for sqlite
             Bignum :global_seq, type: 'INTEGER PRIMARY KEY AUTOINCREMENT'
           else
-            Bignum :global_seq, primary_key: true, default: Sequel.function(:nextval, 'events_global_seq')
+            primary_key :global_seq, type: :Bignum
           end
           column :id, :uuid, unique: true
           String :stream_id, null: false, index: true
