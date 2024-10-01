@@ -6,21 +6,7 @@ require 'sors/message'
 
 module Sors
   class Machine
-    module InlineBackend
-      def self.schedule_commands(commands)
-        commands.each { |cmd| Router.handle(cmd) }
-      end
-    end
-
     class << self
-      def backend
-        @backend ||= InlineBackend
-      end
-
-      def backend=(bc)
-        @backend = bc
-      end
-
       def handled_commands
         @handled_commands ||= []
       end
@@ -68,11 +54,13 @@ module Sors
       end
     end
 
-    def initialize(logger: Sors.config.logger)
+    attr_reader :backend
+
+    def initialize(logger: Sors.config.logger, backend: Sors.config.backend)
       @logger = logger
+      @backend = backend
     end
 
-    def backend = self.class.backend
     def handled_commands = self.class.handled_commands
     def handled_events = self.class.handled_events
     def reactor = self.class.reactor
