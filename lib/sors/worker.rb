@@ -6,14 +6,29 @@ require 'sors/router' #  comes with Async
 
 module Sors
   class Worker
+    def self.drain
+      new(async: false).drain
+    end
+
+    def self.tick
+      new(async: false).tick
+    end
+
     attr_reader :name
 
-    def initialize(backend, logger:, name: SecureRandom.hex(4), poll_interval: 0.01)
+    def initialize(
+      backend: Sors.config.backend,
+      logger: Sors.config.logger,
+      name: SecureRandom.hex(4),
+      poll_interval: 0.01,
+      async: true
+    )
       @backend = backend
       @logger = logger
       @running = false
       @name = [Process.pid, name].join('-')
       @poll_interval = poll_interval
+      @run_reactors_method = async ? :run_reactors_async : :run_reactors_sync
     end
 
     def stop
@@ -29,6 +44,18 @@ module Sors
         sleep @poll_interval
       end
       logger.info "Worker #{name}: Polling stopped"
+    end
+
+    def tick
+      @backend.reserve_next(&method(:work))
+    end
+
+    def drain
+      meth = method(:work)
+      loop do
+        cmd = @backend.reserve_next(&meth)
+        break unless cmd
+      end
     end
 
     def work(command)
@@ -49,9 +76,7 @@ module Sors
         # that are interested in them
         # Each reactor runs in a separate Fiber
         # TODO: handle reactor errors
-        runs = reactors.map { |reactor| Async { reactor.call(batch) } }
-        # Reactors return new commands
-        commands = runs.flat_map(&:wait)
+        commands = run_reactors(reactors, batch)
         logger.info "BATCH #{name} schedulling commands: #{commands.map(&:type).inspect}"
 
         commands = commands.map { |c| c.with(producer: "worker #{name}") }
@@ -66,6 +91,22 @@ module Sors
     private
 
     attr_reader :logger
+
+    def run_reactors(reactors, batch)
+      send(@run_reactors_method, reactors, batch)
+    end
+
+    def run_reactors_sync(reactors, batch)
+      reactors.flat_map do |reactor|
+        reactor.react(batch)
+      end
+    end
+
+    def run_reactors_async(reactors, batch)
+      runs = reactors.map { |reactor| Async { reactor.react(batch) } }
+      # Reactors return new commands
+      runs.flat_map(&:wait)
+    end
   end
 end
 

@@ -18,7 +18,7 @@ module Sors
       logger.info("Starting sync supervisor with #{@count} workers")
       set_signal_handlers
       @workers = @count.times.map do |i|
-        Worker.new(@backend, logger:, name: "worker-#{i}")
+        Worker.new(backend: @backend, logger:, name: "worker-#{i}")
       end
       Sync do
         @tasks = @workers.map do |wrk|

@@ -21,5 +21,28 @@ RSpec.describe Sors::Machine do
     expect(events.first.causation_id).to eq(cmd.id)
     expect(events.first.payload.product_id).to eq(1)
     expect(events.first.payload.product_name).to eq('Apple')
+
+    # Test that initial events were appended to the store synchronously
+    events = Sors.config.backend.read_event_stream('cart-1')
+    expect(events.map(&:class)).to eq([
+                                        TestDomain::Carts::AddItem,
+                                        TestDomain::Carts::ItemAdded
+                                      ])
+
+    # Run reactors synchronously and test that they produce new events
+    # Normally these reactors run in background fibers or processes
+    # (or both)
+    Sors::Worker.drain
+
+    # debugger
+    events = Sors.config.backend.read_event_stream('cart-1')
+    expect(events.map(&:class)).to eq([
+                                        TestDomain::Carts::AddItem,
+                                        TestDomain::Carts::ItemAdded,
+                                        TestDomain::Carts::SendEmail,
+                                        TestDomain::Carts::EmailSent,
+                                        TestDomain::Carts::PlaceOrder,
+                                        TestDomain::Carts::OrderPlaced
+                                      ])
   end
 end

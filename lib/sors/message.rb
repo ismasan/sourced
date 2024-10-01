@@ -45,7 +45,7 @@ module Sors
     attribute :created_at, Types::Any[Time].default { Time.now } #Types::JSON::AutoUTCTime
     attribute? :causation_id, Types::UUID::V4
     attribute? :correlation_id, Types::UUID::V4
-    attribute? :producer, Types::String
+    attribute? :producer, Types::String.nullable
     attribute :payload, Types::Static[nil]
 
     def self.registry

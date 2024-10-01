@@ -62,7 +62,7 @@ module Sors
     end
 
     def inspect
-      %(<#{self.class}#{object_id} backend:#{backend.inspect}>)
+      %(<#{self.class}:#{object_id} backend:#{backend.inspect}>)
     end
 
     def ==(other)
@@ -89,6 +89,8 @@ module Sors
       [ state, events ]
     end
 
+    def react(...) = reactor.call(...)
+
     private
 
     attr_reader :logger
@@ -109,10 +111,6 @@ module Sors
       end
 
       state
-    end
-
-    def react(_state, events)
-      self.class.reactor.call(events)
     end
 
     def persist(state, command, events)
