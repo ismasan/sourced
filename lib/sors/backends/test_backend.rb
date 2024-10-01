@@ -1,10 +1,13 @@
 # frozen_string_literal: true
 
+require 'thread'
+
 module Sors
   module Backends
     class TestBackend
       class Stream
         attr_reader :stream_id, :commands, :locked
+
         def initialize(stream_id)
           @stream_id = stream_id
           @commands = []
@@ -29,13 +32,17 @@ module Sors
         @command_streams = Hash.new { |h, k| h[k] = Stream.new(k) }
         @events = []
         @events_by_causation_id = Hash.new { |h, k| h[k] = [] }
+        @mutex = Mutex.new
+        @in_tx = false
       end
 
       def schedule_commands(commands)
-        commands.each do |cmd|
-          schedule_command(cmd.stream_id, cmd)
+        transaction do
+          commands.each do |cmd|
+            schedule_command(cmd.stream_id, cmd)
+          end
+          true
         end
-        true
       end
 
       def schedule_command(stream_id, command)
@@ -43,18 +50,31 @@ module Sors
       end
 
       def reserve_next(&)
-        stream = @command_streams.values.find(&:available?)
-        stream&.reserve(&)
+        transaction do
+          stream = @command_streams.values.find(&:available?)
+          stream&.reserve(&)
+        end
       end
 
       def transaction(&)
-        yield
+        if @in_tx
+          yield
+        else
+          @mutex.synchronize do
+            @in_tx = true
+            result = yield
+            @in_tx = false
+            result
+          end
+        end
       end
 
       def append_events(events)
-        @events.concat(events)
-        events.each do |event|
-          @events_by_causation_id[event.causation_id] << event
+        transaction do
+          @events.concat(events)
+          events.each do |event|
+            @events_by_causation_id[event.causation_id] << event
+          end
         end
         true
       end
