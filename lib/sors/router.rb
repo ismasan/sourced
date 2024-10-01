@@ -47,21 +47,6 @@ module Sors
       end
     end
 
-    def register_machine(machine)
-      machine.handled_commands.each do |cmd_type|
-        @machines[cmd_type] = machine
-      end
-
-      register_reactor(machine.reactor)
-    end
-
-    def register_reactor(reactor)
-      reactor.handled_events.each do |event_type|
-        @reactors[event_type] ||= []
-        @reactors[event_type] << reactor
-      end
-    end
-
     def handle(command)
       machine = @machines.fetch(command.class)
       machine.handle(command)
@@ -73,19 +58,6 @@ module Sors
         reactors = @reactors[event.class] || []
         list.concat(reactors)
       end.flatten.uniq
-    end
-
-    def react_to(events)
-      events.each do |event|
-        reactors = @reactors[event.class]
-        next unless reactors
-
-        # Should schedule each reactor in its own thread
-        # or worker
-        reactors.each do |reactor|
-          cmds = reactor.handle(event)
-        end
-      end
     end
   end
 end
