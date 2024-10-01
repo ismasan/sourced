@@ -27,10 +27,13 @@ module TestDomain
       Item = Sors::Types::Data[product_id: Integer, quantity: Integer, product_name: String, price: Integer]
 
       attr_reader :items, :id
+      attr_accessor :email_sent, :status
 
       def initialize(id)
         @id = id
         @items = {}
+        @email_sent = false
+        @status = :open
       end
 
       def total
@@ -65,6 +68,10 @@ module TestDomain
     PlaceOrder = Sors::Message.define('carts.place')
     OrderPlaced = Sors::Message.define('carts.placed')
 
+    # Just here to test inheritance
+    RandomCommand = Sors::Message.define('carts.random_command')
+    RandomEvent = Sors::Message.define('carts.random_event')
+
     load do |command|
       EntityStore.instance.load(command.stream_id) || Cart.new(command.stream_id)
     end
@@ -91,7 +98,7 @@ module TestDomain
     end
 
     evolve EmailSent do |cart, _event|
-      cart
+      cart.email_sent = true
     end
 
     react EmailSent do |event|
@@ -102,8 +109,12 @@ module TestDomain
       command.follow(OrderPlaced)
     end
 
+    evolve OrderPlaced do |cart, _event|
+      cart.status = :placed
+    end
+
     def persist(cart, command, events)
-      Sors.config.logger.info "Persisting #{cart}, #{command}, #{events}"
+      Sors.config.logger.info "Persisting #{cart}, #{command}, #{events} to #{backend.inspect}"
       backend.append_events([command, *events])
       EntityStore.instance.save(cart)
     end

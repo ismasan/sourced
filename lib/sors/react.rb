@@ -24,6 +24,13 @@ module Sors
     end
 
     module ClassMethods
+      def inherited(subclass)
+        super
+        handled_reactions.each do |evt_type|
+          subclass.handled_reactions << evt_type
+        end
+      end
+
       def handled_reactions
         @handled_reactions ||= []
       end

@@ -45,4 +45,22 @@ RSpec.describe Sors::Machine do
                                         TestDomain::Carts::OrderPlaced
                                       ])
   end
+
+  specify 'inheritance' do
+    machine = Class.new(TestDomain::Carts) do
+      decide TestDomain::Carts::RandomCommand do |_, _|
+        []
+      end
+
+      evolve TestDomain::Carts::RandomEvent do |_, _|
+      end
+
+      react TestDomain::Carts::RandomEvent do
+      end
+    end
+
+    expect(machine.handled_commands).to eq([*TestDomain::Carts.handled_commands, TestDomain::Carts::RandomCommand])
+    expect(machine.handled_events).to eq([*TestDomain::Carts.handled_events, TestDomain::Carts::RandomEvent])
+    expect(machine.handled_reactions).to eq([*TestDomain::Carts.handled_reactions, TestDomain::Carts::RandomEvent])
+  end
 end

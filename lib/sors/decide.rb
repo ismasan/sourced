@@ -17,6 +17,13 @@ module Sors
     end
 
     module ClassMethods
+      def inherited(subclass)
+        super
+        handled_commands.each do |cmd_type|
+          subclass.handled_commands << cmd_type
+        end
+      end
+
       def handled_commands
         @handled_commands ||= []
       end
