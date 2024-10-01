@@ -27,6 +27,8 @@ module Sors
 
       def initialize
         @command_streams = Hash.new { |h, k| h[k] = Stream.new(k) }
+        @events = []
+        @events_by_causation_id = Hash.new { |h, k| h[k] = [] }
       end
 
       def schedule_commands(commands)
@@ -50,9 +52,15 @@ module Sors
       end
 
       def append_events(events)
+        @events.concat(events)
+        events.each do |event|
+          @events_by_causation_id[event.causation_id] << event
+        end
+        true
       end
 
       def read_event_batch(causation_id)
+        @events_by_causation_id[causation_id]
       end
 
       def read_event_stream(stream_id)

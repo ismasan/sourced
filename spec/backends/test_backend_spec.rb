@@ -7,6 +7,7 @@ module Tests
   DoSomething = Sors::Message.define('tests.do_something') do
     attribute :account_id, Integer
   end
+  SomethingHappened1 = Sors::Message.define('tests.something_happened1')
 end
 
 RSpec.describe Sors::Backends::TestBackend do
@@ -61,6 +62,19 @@ RSpec.describe Sors::Backends::TestBackend do
       end
 
       expect(cmds).to eq([cmd1.id, cmd3.id, cmd2.id])
+    end
+  end
+
+  describe '#append_events, #read_event_batch' do
+    it 'reads event batch by causation_id' do
+      cmd1 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
+      evt1 = cmd1.follow(Tests::SomethingHappened1)
+      evt2 = cmd1.follow(Tests::SomethingHappened1)
+      evt3 = Tests::SomethingHappened1.parse(stream_id: 's1')
+      expect(backend.append_events([evt1, evt2, evt3])).to be(true)
+
+      events = backend.read_event_batch(cmd1.id)
+      expect(events).to eq([evt1, evt2])
     end
   end
 end
