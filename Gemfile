@@ -2,9 +2,16 @@
 
 source 'https://rubygems.org'
 
-gem 'async'
+# Specify your gem's dependencies in sors.gemspec
+gemspec
+
+gem 'rake', '~> 13.0'
+
 gem 'debug'
-gem 'pg'
-gem 'plumb', path: '/Users/ismasan/code/personal/gems/plumb'
-gem 'sequel'
-gem 'sqlite3'
+gem 'rspec', '~> 3.0'
+
+group :test do
+  gem 'pg'
+  gem 'sequel'
+  gem 'sqlite3'
+end

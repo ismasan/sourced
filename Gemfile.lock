@@ -1,9 +1,9 @@
 PATH
-  remote: /Users/ismasan/code/personal/gems/plumb
+  remote: .
   specs:
-    plumb (0.0.7)
-      bigdecimal
-      concurrent-ruby
+    sors (0.1.0)
+      async
+      plumb
 
 GEM
   remote: https://rubygems.org/
@@ -21,6 +21,7 @@ GEM
     debug (1.9.2)
       irb (~> 1.10)
       reline (>= 0.3.8)
+    diff-lcs (1.5.1)
     fiber-annotation (0.2.0)
     fiber-local (1.1.0)
       fiber-storage
@@ -33,12 +34,29 @@ GEM
     json (2.7.2)
     mini_portile2 (2.8.7)
     pg (1.5.8)
+    plumb (0.0.7)
+      bigdecimal
+      concurrent-ruby
     psych (5.1.2)
       stringio
+    rake (13.2.1)
     rdoc (6.7.0)
       psych (>= 4.0.0)
     reline (0.5.10)
       io-console (~> 0.5)
+    rspec (3.13.0)
+      rspec-core (~> 3.13.0)
+      rspec-expectations (~> 3.13.0)
+      rspec-mocks (~> 3.13.0)
+    rspec-core (3.13.1)
+      rspec-support (~> 3.13.0)
+    rspec-expectations (3.13.3)
+      diff-lcs (>= 1.2.0, < 2.0)
+      rspec-support (~> 3.13.0)
+    rspec-mocks (3.13.1)
+      diff-lcs (>= 1.2.0, < 2.0)
+      rspec-support (~> 3.13.0)
+    rspec-support (3.13.1)
     sequel (5.84.0)
       bigdecimal
     sqlite3 (2.1.0)
@@ -51,11 +69,12 @@ PLATFORMS
   ruby
 
 DEPENDENCIES
-  async
   debug
   pg
-  plumb!
+  rake (~> 13.0)
+  rspec (~> 3.0)
   sequel
+  sors!
   sqlite3
 
 BUNDLED WITH

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative 'types'
+require 'sors/types'
 
 # A superclass and registry to define event types
 # for example for an event-driven or event-sourced system.
@@ -37,57 +37,59 @@ require_relative 'types'
 #
 #   Message.registry.values.map(&:to_json_schema)
 #
-class Message < Types::Data
-  attribute :id, Types::AutoUUID
-  attribute :stream_id, Types::String.present
-  attribute :type, Types::String
-  attribute :created_at, Types::JSON::AutoUTCTime
-  attribute? :causation_id, Types::UUID::V4
-  attribute? :correlation_id, Types::UUID::V4
-  attribute? :producer, Types::String
-  attribute :payload, Types::Static[nil]
+module Sors
+  class Message < Types::Data
+    attribute :id, Types::AutoUUID
+    attribute :stream_id, Types::String.present
+    attribute :type, Types::String
+    attribute :created_at, Types::JSON::AutoUTCTime
+    attribute? :causation_id, Types::UUID::V4
+    attribute? :correlation_id, Types::UUID::V4
+    attribute? :producer, Types::String
+    attribute :payload, Types::Static[nil]
 
-  def self.registry
-    @registry ||= {}
-  end
-
-  # Custom node_name to trigger specialiesed JSON Schema visitor handler.
-  def self.node_name = :event
-
-  def self.define(type_str, &payload_block)
-    type_str.freeze unless type_str.frozen?
-    raise ArgumentError, "message '#{type_str}' already defined" if registry[type_str]
-
-    registry[type_str] = Class.new(self) do
-      def self.node_name = :data
-
-      attribute :type, Types::Static[type_str]
-      attribute :payload, &payload_block if block_given?
+    def self.registry
+      @registry ||= {}
     end
-  end
 
-  def self.from(attrs)
-    klass = registry[attrs[:type]]
-    raise ArgumentError, "Unknown event type: #{attrs[:type]}" unless klass
+    # Custom node_name to trigger specialiesed JSON Schema visitor handler.
+    def self.node_name = :event
 
-    klass.new(attrs)
-  end
+    def self.define(type_str, &payload_block)
+      type_str.freeze unless type_str.frozen?
+      raise ArgumentError, "message '#{type_str}' already defined" if registry[type_str]
 
-  def follow(event_class, payload_attrs = nil)
-    attrs = { stream_id:, causation_id: id, correlation_id:, producer: }
-    attrs[:payload] = payload_attrs if payload_attrs
-    event_class.new(attrs)
-  end
+      registry[type_str] = Class.new(self) do
+        def self.node_name = :data
 
-  def to_json(*)
-    to_h.to_json(*)
-  end
+        attribute :type, Types::Static[type_str]
+        attribute :payload, &payload_block if block_given?
+      end
+    end
 
-  private
+    def self.from(attrs)
+      klass = registry[attrs[:type]]
+      raise ArgumentError, "Unknown event type: #{attrs[:type]}" unless klass
 
-  def prepare_attributes(attrs)
-    attrs[:correlation_id] = attrs[:id] unless attrs[:correlation_id]
-    attrs[:causation_id] = attrs[:id] unless attrs[:causation_id]
-    attrs
+      klass.new(attrs)
+    end
+
+    def follow(event_class, payload_attrs = nil)
+      attrs = { stream_id:, causation_id: id, correlation_id:, producer: }
+      attrs[:payload] = payload_attrs if payload_attrs
+      event_class.new(attrs)
+    end
+
+    def to_json(*)
+      to_h.to_json(*)
+    end
+
+    private
+
+    def prepare_attributes(attrs)
+      attrs[:correlation_id] = attrs[:id] unless attrs[:correlation_id]
+      attrs[:causation_id] = attrs[:id] unless attrs[:causation_id]
+      attrs
+    end
   end
 end
