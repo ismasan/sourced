@@ -45,11 +45,18 @@ module TestDomain
       def add_item(product_id:, quantity:, product_name:, price:)
         items[product_id] = Item.parse(product_id:, quantity:, product_name:, price:)
       end
+
+      def remove_item(product_id)
+        items.delete(product_id)
+      end
     end
 
     AddItem = Sors::Message.define('carts.items.add') do
       attribute :product_id, Integer
       attribute :quantity, Sors::Types::Integer.default(1)
+    end
+    RemoveItem = Sors::Message.define('carts.items.remove') do
+      attribute :product_id, Integer
     end
 
     SendEmail = Sors::Message.define('carts.send_email')
@@ -63,6 +70,9 @@ module TestDomain
     NoItemAdded = Sors::Message.define('carts.items.not_added') do
       attribute :product_id, Integer
     end
+    ItemRemoved = Sors::Message.define('carts.items.removed') do
+      attribute :product_id, Integer
+    end
 
     EmailSent = Sors::Message.define('carts.email_sent')
     PlaceOrder = Sors::Message.define('carts.place')
@@ -71,10 +81,6 @@ module TestDomain
     # Just here to test inheritance
     RandomCommand = Sors::Message.define('carts.random_command')
     RandomEvent = Sors::Message.define('carts.random_event')
-
-    load do |command|
-      EntityStore.instance.load(command.stream_id) || Cart.new(command.stream_id)
-    end
 
     decide AddItem do |_cart, cmd|
       product = CATALOG[cmd.payload.product_id]
@@ -85,8 +91,20 @@ module TestDomain
       end
     end
 
+    decide RemoveItem do |cart, cmd|
+      if cart.items[cmd.payload.product_id]
+        cmd.follow(ItemRemoved, cmd.payload.to_h)
+      else
+        raise 'Item not found'
+      end
+    end
+
     evolve ItemAdded do |cart, event|
       cart.add_item(**event.payload.to_h)
+    end
+
+    evolve ItemRemoved do |cart, event|
+      cart.remove_item(event.payload.product_id)
     end
 
     react ItemAdded do |event|
@@ -113,12 +131,43 @@ module TestDomain
       cart.status = :placed
     end
 
-    def persist(cart, command, events)
+    # ==== State-stored version ==================
+    # load cart from DB, or instantiate a new one
+    # def load(command)
+    #   Cart.find(command.stream_id) || Cart.new(command.stream_id)
+    # end
+
+    # Save updated cart to DB, optionally save new events
+    # for full audit trail
+    # def save(cart, command, events)
+    #   backend.append_events([command, *events])
+    #   cart.save!
+    # end
+
+    # ==== Event-sourced version ==================
+    # Initialize a new cart and apply all previous events
+    # to get current state.
+    def load(command)
+      cart = Cart.new(command.stream_id)
+      events = backend.read_event_stream(command.stream_id)
+      evolve(cart, events)
+    end
+
+    # Save new events to the event store
+    def save(cart, command, events)
       Sors.config.logger.info "Persisting #{cart}, #{command}, #{events} to #{backend.inspect}"
       backend.append_events([command, *events])
       EntityStore.instance.save(cart)
+    end
+
+    def replay(stream_id)
+      cart = Cart.new(stream_id)
+      events = backend.read_event_stream(stream_id)
+      cart = evolve(cart, events)
+      cart
     end
   end
 
   Sors::Router.register(Carts.new)
 end
+

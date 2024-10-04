@@ -12,24 +12,6 @@ module Sors
 
     ProcessBatch = Message.define('machine.batch.process')
 
-    class << self
-      def persister
-        @persister ||= ->(state, command, events) { logger.info("Persisting #{state}, #{command}, #{events}") }
-      end
-
-      def loader
-        @loader ||= ->(command) { raise NotImplementedError.new("No loader defined for #{self}") }
-      end
-
-      def load(loader = nil, &block)
-        @loader = loader || block
-      end
-
-      def persist(&block)
-        @persister = block
-      end
-    end
-
     attr_reader :backend
 
     def initialize(logger: Sors.config.logger, backend: Sors.config.backend)
@@ -47,11 +29,11 @@ module Sors
 
     def handle(command)
       logger.info "Handling #{command.type}"
-      state = load_state(command)
+      state = load(command)
       events = decide(state, command)
       state = evolve(state, events)
       transaction do
-        persist(state, command, events)
+        save(state, command, events)
         # TODO: handle sync reactors here
         # commands = react(state, events)
         # Schedule a system command to handle this batch of events in the background
@@ -65,12 +47,12 @@ module Sors
 
     attr_reader :logger
 
-    def load_state(command)
-      self.class.loader.call(command)
+    def load(command)
+      raise NotImplementedError, 'implement a #load(command) => state'
     end
 
-    def persist(state, command, events)
-      self.class.persister.call(state, command, events)
+    def save(state, command, events)
+      raise NotImplementedError, 'implement a #save(state, command, events) method'
     end
 
     def schedule_batch(command)
