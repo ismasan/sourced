@@ -9,6 +9,7 @@ module Sors
     include Decide
     include Evolve
     include React
+    include ReactSync
 
     ProcessBatch = Message.define('machine.batch.process')
 
@@ -34,10 +35,10 @@ module Sors
       state = evolve(state, events)
       transaction do
         save(state, command, events)
-        # TODO: handle sync reactors here
-        # commands = react(state, events)
+        # handle sync reactors here
+        commands = react_sync(state, events)
         # Schedule a system command to handle this batch of events in the background
-        schedule_batch(command)
+        schedule_batch(command, commands)
         # schedule_commands(commands)
       end
       [ state, events ]
@@ -55,8 +56,8 @@ module Sors
       raise NotImplementedError, 'implement a #save(state, command, events) method'
     end
 
-    def schedule_batch(command)
-      schedule_commands([command.follow(ProcessBatch)])
+    def schedule_batch(command, commands)
+      schedule_commands([command.follow(ProcessBatch), *commands])
     end
 
     def schedule_commands(commands)

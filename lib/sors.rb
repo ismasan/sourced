@@ -23,6 +23,7 @@ end
 require 'sors/decide'
 require 'sors/evolve'
 require 'sors/react'
+require 'sors/react_sync'
 require 'sors/configuration'
 require 'sors/machine'
 require 'sors/router'

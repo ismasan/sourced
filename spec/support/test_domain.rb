@@ -17,6 +17,22 @@ module TestDomain
     end
   end
 
+  class ItemCounter
+    include Singleton
+    def self.inc
+      instance.inc
+    end
+
+    attr_reader :count
+    def initialize
+      @count = 0
+    end
+
+    def inc
+      @count += 1
+    end
+  end
+
   CATALOG = {
     1 => { product_name: 'Apple', price: 100 },
     2 => { product_name: 'Banana', price: 50 },
@@ -109,6 +125,11 @@ module TestDomain
 
     react ItemAdded do |event|
       event.follow(SendEmail)
+    end
+
+    react_sync ItemAdded do |_cart, event|
+      ItemCounter.inc
+      nil
     end
 
     decide SendEmail do |_cart, command|

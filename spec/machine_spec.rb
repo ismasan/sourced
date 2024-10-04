@@ -29,6 +29,9 @@ RSpec.describe Sors::Machine do
                                         TestDomain::Carts::ItemAdded
                                       ])
 
+    # react_sync blocks must have run by now
+    expect(TestDomain::ItemCounter.instance.count).to eq(1)
+
     # Run reactors synchronously and test that they produce new events
     # Normally these reactors run in background fibers or processes
     # (or both)
