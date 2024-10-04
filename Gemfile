@@ -12,6 +12,7 @@ gem 'plumb', github: 'ismasan/plumb'
 gem 'rspec', '~> 3.0'
 
 group :test do
+  gem 'activerecord', require: false
   gem 'pg'
   gem 'sequel'
   gem 'sqlite3'

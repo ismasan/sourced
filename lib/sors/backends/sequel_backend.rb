@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'sequel'
-require 'async'
 require 'json'
 require 'sors/message'
 
