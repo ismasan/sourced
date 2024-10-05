@@ -28,3 +28,4 @@ require 'sors/configuration'
 require 'sors/machine'
 require 'sors/router'
 require 'sors/supervisor'
+require 'sors/rails/railtie' if defined?(Rails::Railtie)

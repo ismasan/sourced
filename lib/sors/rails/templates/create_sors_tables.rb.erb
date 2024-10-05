@@ -1,0 +1,51 @@
+# frozen_string_literal: true
+
+class CreateSorsTables < ActiveRecord::Migration<%= migration_version %>
+  def change
+    # Uncomment for Postgres v12 or earlier to enable gen_random_uuid() support
+    # enable_extension 'pgcrypto'
+
+    if connection.class.name == 'ActiveRecord::ConnectionAdapters::SQLite3Adapter'
+      create_table :<%= table_prefix %>_events, id: false do |t|
+        t.string :id, null: false, primary_key: true
+        t.bigint :global_seq, :serial, index: true
+        t.string :stream_id, null: false, index: true
+        t.string :type, null: false
+        t.datetime :created_at
+        t.string :producer
+        t.string :causation_id, index: true
+        t.string :correlation_id
+        t.text :payload
+      end
+    else
+      create_table :<%= table_prefix %>_events, id: :uuid do |t|
+        t.bigint :global_seq, :serial, index: true
+        t.string :stream_id, null: false, index: true
+        t.string :type, null: false
+        t.datetime :created_at
+        t.string :producer
+        t.uuid :causation_id, index: true
+        t.uuid :correlation_id
+        t.jsonb :payload
+      end
+    end
+
+    create_table :<%= table_prefix %>_streams do |t|
+      t.text :stream_id, null: false, index: { unique: true }
+      t.boolean :locked, default: false, null: false
+    end
+
+    create_table :<%= table_prefix %>_commands do |t|
+      t.string :stream_id, null: false
+      if t.class.name == 'ActiveRecord::ConnectionAdapters::SQLite3::TableDefinition'
+        t.text :data, null: false
+        t.datetime :scheduled_at, null: false, default: -> { 'CURRENT_TIMESTAMP' }
+      else
+        t.jsonb :data, null: false
+        t.datetime :scheduled_at, null: false, default: -> { 'NOW()' }
+      end
+    end
+
+    add_foreign_key :<%= table_prefix %>_commands, :<%= table_prefix %>_streams, column: :stream_id, primary_key: :stream_id
+  end
+end
