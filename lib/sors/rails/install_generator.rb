@@ -13,7 +13,25 @@ module Sors
       class_option :prefix, type: :string, default: 'sors'
 
       def copy_initializer_file
-        copy_file 'initializer.rb', 'config/initializers/sors.rb'
+        create_file 'config/initializers/sors.rb' do
+          <<~CONTENT
+            # frozen_string_literal: true
+
+            require 'sors'
+            require 'sors/backends/active_record_backend'
+
+            # This table prefix is used to generate the initial database migrations.
+            # If you change the table prefix here,
+            # make sure to migrate your database to the new table names.
+            Sors::Backends::ActiveRecordBackend.table_prefix = '#{table_prefix}'
+
+            # Configure Sors to use the ActiveRecord backend
+            Sors.configure do |config|
+              config.backend = Sors::Backends::ActiveRecordBackend.new
+              config.logger = Rails.logger
+            end
+          CONTENT
+        end
       end
 
       def create_migration_file
