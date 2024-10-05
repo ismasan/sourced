@@ -8,6 +8,7 @@ module Sors
   class Configuration
     #  Backends must expose these methods
     BackendInterface = Types::Interface[
+      :installed?,
       :schedule_commands,
       :reserve_next,
       :append_events,

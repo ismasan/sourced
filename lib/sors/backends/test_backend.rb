@@ -41,6 +41,8 @@ module Sors
         @in_tx = false
       end
 
+      def installed? = true
+
       def schedule_commands(commands)
         transaction do
           commands.each do |cmd|

@@ -11,6 +11,16 @@ module BackendExamples
   end
 
   RSpec.shared_examples 'a backend' do
+    it 'is installed' do
+      expect(backend.installed?).to be(true)
+    end
+
+    it 'supports the Backend interface' do
+      expect do
+        Sors::Configuration::BackendInterface.parse(backend)
+      end.not_to raise_error(Plumb::ParseError)
+    end
+
     describe '#schedule_commands and #reserve_next' do
       it 'schedules commands and reserves them in order of arrival' do
         cmd1 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })

@@ -56,6 +56,8 @@ module Sors
         end
       end
 
+      def installed? = self.class.installed?
+
       def clear!
         raise 'Not in test environment' unless ENV['ENVIRONMENT'] == 'test'
 
