@@ -34,6 +34,11 @@ module Sors
         end
       end
 
+      def copy_bin_file
+        copy_file 'bin_sors', 'bin/sors'
+        chmod 'bin/sors', 0o755
+      end
+
       def create_migration_file
         migration_template 'create_sors_tables.rb.erb', File.join(db_migrate_path, 'create_sors_tables.rb')
       end
