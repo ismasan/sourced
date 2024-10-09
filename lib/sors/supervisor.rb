@@ -6,12 +6,15 @@ require 'sors/worker'
 
 module Sors
   class Supervisor
+    def self.start(...)
+      new(...).start
+    end
+
     def initialize(backend: Sors.config.backend, logger: Sors.config.logger, count: 2)
       @backend = backend
       @logger = logger
       @count = count
       @workers = []
-      @tasks = []
     end
 
     def start
@@ -20,24 +23,19 @@ module Sors
       @workers = @count.times.map do |i|
         Worker.new(backend: @backend, logger:, name: "worker-#{i}")
       end
-      Sync do
-        @tasks = @workers.map do |wrk|
-          Async do
+      Sync do |task|
+        @workers.each do |wrk|
+          task.async do
             wrk.poll
           end
         end
       end
-      logger.info('All workers stopped')
-    end
-
-    def wait
-      @tasks.map(&:wait)
     end
 
     def stop
       logger.info("Stopping #{@workers.size} workers")
       @workers.each(&:stop)
-      wait
+      logger.info('All workers stopped')
     end
 
     def set_signal_handlers
