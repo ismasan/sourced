@@ -28,6 +28,10 @@ module Sors
         end
       end
 
+      def handle_evolve(state, events)
+        new.evolve(state, events)
+      end
+
       def handled_events
         @handled_events ||= []
       end

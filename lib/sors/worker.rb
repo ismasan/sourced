@@ -98,12 +98,12 @@ module Sors
 
     def run_reactors_sync(reactors, batch)
       reactors.flat_map do |reactor|
-        reactor.react(batch)
+        reactor.handle_react(batch)
       end
     end
 
     def run_reactors_async(reactors, batch)
-      runs = reactors.map { |reactor| Async { reactor.react(batch) } }
+      runs = reactors.map { |reactor| Async { reactor.handle_react(batch) } }
       # Reactors return new commands
       runs.flat_map(&:wait)
     end

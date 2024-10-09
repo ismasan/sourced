@@ -15,6 +15,10 @@ module Sors
 
     attr_reader :backend
 
+    def self.handle(command)
+      new.handle(command)
+    end
+
     def initialize(logger: Sors.config.logger, backend: Sors.config.backend)
       @logger = logger
       @backend = backend

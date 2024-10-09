@@ -31,6 +31,10 @@ module Sors
         end
       end
 
+      def handle_react(events)
+        new.react(events)
+      end
+
       def handled_reactions
         @handled_reactions ||= []
       end

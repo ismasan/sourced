@@ -189,6 +189,6 @@ module TestDomain
     end
   end
 
-  Sors::Router.register(Carts.new)
+  Sors::Router.register(Carts)
 end
 

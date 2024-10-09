@@ -24,6 +24,10 @@ module Sors
         end
       end
 
+      def handle_decide(state, command)
+        new.decide(state, command)
+      end
+
       def handled_commands
         @handled_commands ||= []
       end

@@ -6,7 +6,7 @@ require_relative './support/test_domain'
 RSpec.describe Sors::Machine do
   specify 'Router.reactors_for' do
     evt = TestDomain::Carts::ItemAdded.new(stram_id: '1', data: { item_id: '1', quantity: 1 })
-    expect(Sors::Router.reactors_for([evt])).to eq([TestDomain::Carts.new])
+    expect(Sors::Router.reactors_for([evt])).to eq([TestDomain::Carts])
   end
 
   specify 'handling commands, producing events, scheduling reactors' do
