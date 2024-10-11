@@ -13,10 +13,15 @@ module Sors
 
     def evolve(state, events)
       events.each do |event|
-        method_name = Sors.message_method_name(PREFIX, event.class.name)
+        __handle_evolution_any(state, event)
+        method_name = Sors.message_method_name(PREFIX, event.class.to_s)
         send(method_name, state, event) if respond_to?(method_name)
       end
 
+      state
+    end
+
+    private def handle_evolution_any(state, _event)
       state
     end
 
@@ -38,7 +43,7 @@ module Sors
 
       def evolve(event_type, &block)
         handled_events << event_type
-        define_method(Sors.message_method_name(PREFIX, event_type.name), &block)
+        define_method(Sors.message_method_name(PREFIX, event_type.to_s), &block)
       end
     end
   end

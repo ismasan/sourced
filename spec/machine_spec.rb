@@ -16,6 +16,7 @@ RSpec.describe Sors::Machine do
     )
     cart, events = Sors::Router.handle(cmd)
     expect(cart.total).to eq(200)
+    expect(cart.event_count).to eq(1)
     expect(events.size).to eq(1)
     expect(events.first).to be_a(TestDomain::Carts::ItemAdded)
     expect(events.first.causation_id).to eq(cmd.id)

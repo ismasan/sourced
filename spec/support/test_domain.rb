@@ -43,13 +43,14 @@ module TestDomain
       Item = Sors::Types::Data[product_id: Integer, quantity: Integer, product_name: String, price: Integer]
 
       attr_reader :items, :id
-      attr_accessor :email_sent, :status
+      attr_accessor :email_sent, :status, :event_count
 
       def initialize(id)
         @id = id
         @items = {}
         @email_sent = false
         @status = :open
+        @event_count = 0
       end
 
       def total
@@ -113,6 +114,10 @@ module TestDomain
       else
         raise 'Item not found'
       end
+    end
+
+    evolve :any do |cart, event|
+      cart.event_count += 1
     end
 
     evolve ItemAdded do |cart, event|
