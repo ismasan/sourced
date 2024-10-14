@@ -42,7 +42,7 @@ module Sors
       end
 
       def evolve(event_type, &block)
-        handled_events << event_type
+        handled_events << event_type unless event_type.is_a?(Symbol)
         define_method(Sors.message_method_name(PREFIX, event_type.to_s), &block)
       end
     end

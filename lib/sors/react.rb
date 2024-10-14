@@ -16,7 +16,7 @@ module Sors
     end
 
     def __handle_reaction(event)
-      method_name = Sors.message_method_name(PREFIX, event.class.name)
+      method_name = Sors.message_method_name(PREFIX, event.class.to_s)
       return [] unless respond_to?(method_name)
 
       cmds = send(method_name, event)
@@ -32,7 +32,7 @@ module Sors
       end
 
       def handle_react(events)
-        new.react(events)
+        new(runner: :worker).react(events)
       end
 
       def handled_reactions
@@ -40,8 +40,8 @@ module Sors
       end
 
       def react(event_type, &block)
-        handled_reactions << event_type
-        define_method(Sors.message_method_name(PREFIX, event_type.name), &block) if block_given?
+        handled_reactions << event_type unless event_type.is_a?(Symbol)
+        define_method(Sors.message_method_name(PREFIX, event_type.to_s), &block) if block_given?
       end
     end
   end
