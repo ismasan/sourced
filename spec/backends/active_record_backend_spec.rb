@@ -25,7 +25,17 @@ RSpec.describe Sors::Backends::ActiveRecordBackend, type: :backend do
     backend.clear!
   end
 
-  it_behaves_like 'a backend'
+  it_behaves_like 'a backend' do
+    specify 'auto-incrementing global_seq' do
+      cmd1 = BackendExamples::Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
+      evt1 = cmd1.follow(BackendExamples::Tests::SomethingHappened1, account_id: cmd1.payload.account_id)
+      evt2 = cmd1.follow(BackendExamples::Tests::SomethingHappened1, account_id: cmd1.payload.account_id)
+      evt3 = BackendExamples::Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 1 })
+      backend.append_events([evt1, evt2, evt3])
+      expect(Sors::Backends::ActiveRecordBackend::EventRecord.order(global_seq: :asc).pluck(:global_seq))
+        .to eq([1, 2, 3])
+    end
+  end
 
   class Migrator
     attr_reader :migration_version, :table_prefix

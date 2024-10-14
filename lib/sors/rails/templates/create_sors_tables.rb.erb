@@ -7,8 +7,8 @@ class CreateSorsTables < ActiveRecord::Migration<%= migration_version %>
 
     if connection.class.name == 'ActiveRecord::ConnectionAdapters::SQLite3Adapter'
       create_table :<%= table_prefix %>_events, id: false do |t|
-        t.string :id, null: false, primary_key: true
-        t.bigint :global_seq, :serial, index: true
+        t.string :id, null: false, index: { unique: true }
+        t.bigint :global_seq, primary_key: true
         t.string :stream_id, null: false, index: true
         t.string :type, null: false
         t.datetime :created_at
@@ -19,7 +19,7 @@ class CreateSorsTables < ActiveRecord::Migration<%= migration_version %>
       end
     else
       create_table :<%= table_prefix %>_events, id: :uuid do |t|
-        t.bigint :global_seq, :serial, index: true
+        t.bigserial :global_seq, index: true
         t.string :stream_id, null: false, index: true
         t.string :type, null: false
         t.datetime :created_at
