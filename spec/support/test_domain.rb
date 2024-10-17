@@ -17,6 +17,18 @@ module TestDomain
     end
   end
 
+  def WebhookReceiver
+    include Singleton
+
+    def initialize
+      @webhooks = []
+    end
+
+    def post(webhook)
+      @webhooks << webhook
+    end
+  end
+
   class ItemCounter
     include Singleton
     def self.inc
@@ -43,12 +55,12 @@ module TestDomain
       Item = Sors::Types::Data[product_id: Integer, quantity: Integer, product_name: String, price: Integer]
 
       attr_reader :items, :id
-      attr_accessor :email_sent, :status, :event_count
+      attr_accessor :webhooks_sent, :status, :event_count
 
       def initialize(id)
         @id = id
         @items = {}
-        @email_sent = false
+        @webhooks_sent = 0
         @status = :open
         @event_count = 0
       end
@@ -76,7 +88,9 @@ module TestDomain
       attribute :product_id, Integer
     end
 
-    SendEmail = Sors::Message.define('carts.send_email')
+    SendItemAddedWebhook = Sors::Message.define('carts.send_item_added_webhook') do
+      attribute :product_id, Integer
+    end
 
     ItemAdded = Sors::Message.define('carts.items.added') do
       attribute :product_id, Integer
@@ -91,7 +105,7 @@ module TestDomain
       attribute :product_id, Integer
     end
 
-    EmailSent = Sors::Message.define('carts.email_sent')
+    ItemAddedWebhookSent = Sors::Message.define('carts.item_added_webhook_sent')
     PlaceOrder = Sors::Message.define('carts.place')
     OrderPlaced = Sors::Message.define('carts.placed')
 
@@ -129,7 +143,7 @@ module TestDomain
     end
 
     react ItemAdded do |event|
-      event.follow(SendEmail)
+      event.follow(SendItemAddedWebhook, product_id: event.payload.product_id)
     end
 
     react_sync ItemAdded do |_cart, event|
@@ -137,25 +151,25 @@ module TestDomain
       nil
     end
 
-    decide SendEmail do |_cart, command|
-      [command.follow(EmailSent)]
+    decide SendItemAddedWebhook do |_cart, command|
+      [command.follow(ItemAddedWebhookSent)]
     end
 
-    evolve EmailSent do |cart, _event|
-      cart.email_sent = true
+    evolve ItemAddedWebhookSent do |cart, _event|
+      cart.webhooks_sent += 1
     end
 
-    react EmailSent do |event|
-      event.follow(PlaceOrder)
-    end
-
-    decide PlaceOrder do |_cart, command|
-      command.follow(OrderPlaced)
-    end
-
-    evolve OrderPlaced do |cart, _event|
-      cart.status = :placed
-    end
+    # react EmailSent do |event|
+    #   event.follow(PlaceOrder)
+    # end
+    #
+    # decide PlaceOrder do |_cart, command|
+    #   command.follow(OrderPlaced)
+    # end
+    #
+    # evolve OrderPlaced do |cart, _event|
+    #   cart.status = :placed
+    # end
 
     # ==== State-stored version ==================
     # load cart from DB, or instantiate a new one
@@ -186,11 +200,12 @@ module TestDomain
       EntityStore.instance.save(cart)
     end
 
+    def self.replay(stream_id) = new.replay(stream_id)
+
     def replay(stream_id)
       cart = Cart.new(stream_id)
       events = backend.read_event_stream(stream_id)
-      cart = evolve(cart, events)
-      cart
+      evolve(cart, events)
     end
   end
 

@@ -38,16 +38,16 @@ RSpec.describe Sors::Machine do
     # (or both)
     Sors::Worker.drain
 
-    # debugger
     events = Sors.config.backend.read_event_stream('cart-1')
     expect(events.map(&:class)).to eq([
                                         TestDomain::Carts::AddItem,
                                         TestDomain::Carts::ItemAdded,
-                                        TestDomain::Carts::SendEmail,
-                                        TestDomain::Carts::EmailSent,
-                                        TestDomain::Carts::PlaceOrder,
-                                        TestDomain::Carts::OrderPlaced
+                                        TestDomain::Carts::SendItemAddedWebhook,
+                                        TestDomain::Carts::ItemAddedWebhookSent
                                       ])
+
+    cart = TestDomain::Carts.replay('cart-1')
+    expect(cart.webhooks_sent).to eq(1)
   end
 
   specify 'inheritance' do
