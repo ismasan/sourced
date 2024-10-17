@@ -57,7 +57,9 @@ module Sors
 
     def self.define(type_str, &payload_block)
       type_str.freeze unless type_str.frozen?
-      raise ArgumentError, "message '#{type_str}' already defined" if registry[type_str]
+      if registry[type_str]
+        Sors.config.logger.warn("Message '#{type_str}' already defined")
+      end
 
       registry[type_str] = Class.new(self) do
         def self.node_name = :data
