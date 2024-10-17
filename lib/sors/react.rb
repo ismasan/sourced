@@ -32,7 +32,7 @@ module Sors
       end
 
       def handle_react(events)
-        new(runner: :worker).react(events)
+        new.react(events)
       end
 
       def handled_reactions
