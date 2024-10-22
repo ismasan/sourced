@@ -9,12 +9,10 @@ module Sors
       base.extend ClassMethods
     end
 
-    def handled_events = self.class.handled_events
-
     def evolve(state, events)
       events.each do |event|
         __handle_evolution_any(state, event)
-        method_name = Sors.message_method_name(PREFIX, event.class.to_s)
+        method_name = Sors.message_method_name(Evolve::PREFIX, event.class.to_s)
         send(method_name, state, event) if respond_to?(method_name)
       end
 
@@ -28,22 +26,22 @@ module Sors
     module ClassMethods
       def inherited(subclass)
         super
-        handled_events.each do |evt_type|
-          subclass.handled_events << evt_type
+        handled_events_for_evolve.each do |evt_type|
+          subclass.handled_events_for_evolve << evt_type
         end
       end
 
-      def handle_evolve(state, events)
-        new.evolve(state, events)
+      def handle_events(_events)
+        raise NoMethodError, "implement .handle_events(Array<Event>) in #{self}"
       end
 
-      def handled_events
-        @handled_events ||= []
+      def handled_events_for_evolve
+        @handled_events_for_evolve ||= []
       end
 
       def evolve(event_type, &block)
-        handled_events << event_type unless event_type.is_a?(Symbol)
-        define_method(Sors.message_method_name(PREFIX, event_type.to_s), &block)
+        handled_events_for_evolve << event_type unless event_type.is_a?(Symbol)
+        define_method(Sors.message_method_name(Evolve::PREFIX, event_type.to_s), &block)
       end
     end
   end

@@ -17,8 +17,10 @@ module TestDomain
     end
   end
 
-  def WebhookReceiver
+  class WebhookReceiver
     include Singleton
+
+    attr_reader :webhooks
 
     def initialize
       @webhooks = []
@@ -89,6 +91,7 @@ module TestDomain
     end
 
     SendItemAddedWebhook = Sors::Message.define('carts.send_item_added_webhook') do
+      attribute :cart_total, Integer
       attribute :product_id, Integer
     end
 
@@ -142,8 +145,8 @@ module TestDomain
       cart.remove_item(event.payload.product_id)
     end
 
-    react ItemAdded do |event|
-      event.follow(SendItemAddedWebhook, product_id: event.payload.product_id)
+    react ItemAdded do |cart, event|
+      event.follow(SendItemAddedWebhook, cart_total: cart.total, product_id: event.payload.product_id)
     end
 
     react_sync ItemAdded do |_cart, event|
@@ -152,6 +155,7 @@ module TestDomain
     end
 
     decide SendItemAddedWebhook do |_cart, command|
+      WebhookReceiver.instance.post(command)
       [command.follow(ItemAddedWebhookSent)]
     end
 

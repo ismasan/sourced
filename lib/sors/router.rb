@@ -6,20 +6,12 @@ module Sors
   class Router
     include Singleton
 
-    DeciderInterface = Types::Interface[:handled_commands, :handle_decide]
-    ReactorInterface = Types::Interface[:handled_reactions, :handle_react]
+    DeciderInterface = Types::Interface[:handled_commands, :handle_command]
+    ReactorInterface = Types::Interface[:handled_events, :handle_events]
 
     class << self
       def register(...)
         instance.register(...)
-      end
-
-      def register_machine(...)
-        instance.register_machine(...)
-      end
-
-      def register_reactor(...)
-        instance.register_reactor(...)
       end
 
       def handle(command)
@@ -45,7 +37,7 @@ module Sors
 
       return unless ReactorInterface === thing
 
-      thing.handled_reactions.each do |event_type|
+      thing.handled_events.each do |event_type|
         @reactors[event_type] ||= []
         @reactors[event_type] << thing
       end
@@ -53,7 +45,7 @@ module Sors
 
     def handle(command)
       machine = @machines.fetch(command.class)
-      machine.handle(command)
+      machine.handle_command(command)
     end
 
     def reactors_for(events)

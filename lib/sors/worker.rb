@@ -76,12 +76,9 @@ module Sors
         # that are interested in them
         # Each reactor runs in a separate Fiber
         # TODO: handle reactor errors
-        commands = run_reactors(reactors, batch)
-        logger.info "BATCH #{name} schedulling commands: #{commands.map(&:type).inspect}"
-
-        commands = commands.map { |c| c.with(producer: "worker #{name}") }
-        # Put the new commands back in the queue
-        @backend.schedule_commands(commands)
+        run_reactors(reactors, batch) do |cmd|
+          cmd.with(producer: "worker #{name}")
+        end
       else
         logger.info "Worker #{name} received command: #{command.type}"
         Router.handle(command)
@@ -92,18 +89,18 @@ module Sors
 
     attr_reader :logger
 
-    def run_reactors(reactors, batch)
-      send(@run_reactors_method, reactors, batch)
+    def run_reactors(reactors, batch, &)
+      send(@run_reactors_method, reactors, batch, &)
     end
 
-    def run_reactors_sync(reactors, batch)
+    def run_reactors_sync(reactors, batch, &)
       reactors.flat_map do |reactor|
-        reactor.handle_react(batch)
+        reactor.handle_events(batch, &)
       end
     end
 
-    def run_reactors_async(reactors, batch)
-      runs = reactors.map { |reactor| Async { reactor.handle_react(batch) } }
+    def run_reactors_async(reactors, batch, &)
+      runs = reactors.map { |reactor| Async { reactor.handle_events(batch, &) } }
       # Reactors return new commands
       runs.flat_map(&:wait)
     end

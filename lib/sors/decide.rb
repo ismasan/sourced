@@ -9,8 +9,6 @@ module Sors
       base.extend ClassMethods
     end
 
-    def handled_commands = self.class.handled_commands
-
     def decide(state, command)
       events = send(Sors.message_method_name(PREFIX, command.class.name), state, command)
       [events].flatten.compact
@@ -24,8 +22,8 @@ module Sors
         end
       end
 
-      def handle_decide(state, command)
-        new.decide(state, command)
+      def handle_command(_command)
+        raise NoMethodError, "implement .handle_command(Command) in #{self}"
       end
 
       def handled_commands

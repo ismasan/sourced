@@ -15,8 +15,16 @@ module Sors
 
     attr_reader :backend
 
-    def self.handle(command)
-      new.handle(command)
+    class << self
+      def handled_events = self.handled_events_for_react
+
+      def handle_command(command)
+        new.handle_command(command)
+      end
+
+      def handle_events(events)
+        new.handle_events(events)
+      end
     end
 
     def initialize(logger: Sors.config.logger, backend: Sors.config.backend)
@@ -32,7 +40,7 @@ module Sors
       other.is_a?(self.class) && other.backend == backend
     end
 
-    def handle(command)
+    def handle_command(command)
       logger.info "Handling #{command.type}"
       state = load(command)
       events = decide(state, command)
@@ -46,6 +54,14 @@ module Sors
         # schedule_commands(commands)
       end
       [ state, events ]
+    end
+
+    # Reactor interface
+    def handle_events(events, &map_commands)
+      state = load(events.first)
+      commands = react(state, events)
+      commands = commands.map(&map_commands) if map_commands
+      schedule_commands(commands)
     end
 
     private

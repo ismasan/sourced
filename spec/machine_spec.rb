@@ -48,6 +48,8 @@ RSpec.describe Sors::Machine do
 
     cart = TestDomain::Carts.replay('cart-1')
     expect(cart.webhooks_sent).to eq(1)
+    totals = TestDomain::WebhookReceiver.instance.webhooks.map(&:payload).map(&:cart_total)
+    expect(totals).to eq([200])
   end
 
   specify 'inheritance' do
@@ -64,7 +66,9 @@ RSpec.describe Sors::Machine do
     end
 
     expect(machine.handled_commands).to eq([*TestDomain::Carts.handled_commands, TestDomain::Carts::RandomCommand])
-    expect(machine.handled_events).to eq([*TestDomain::Carts.handled_events, TestDomain::Carts::RandomEvent])
-    expect(machine.handled_reactions).to eq([*TestDomain::Carts.handled_reactions, TestDomain::Carts::RandomEvent])
+    expect(machine.handled_events_for_evolve).to eq([*TestDomain::Carts.handled_events_for_evolve,
+                                                     TestDomain::Carts::RandomEvent])
+    expect(machine.handled_events_for_react).to eq([*TestDomain::Carts.handled_events_for_react,
+                                                    TestDomain::Carts::RandomEvent])
   end
 end
