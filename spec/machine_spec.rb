@@ -16,17 +16,20 @@ RSpec.describe Sors::Machine do
     )
     cart, events = Sors::Router.handle(cmd)
     expect(cart.total).to eq(200)
-    expect(cart.event_count).to eq(1)
-    expect(events.size).to eq(1)
-    expect(events.first).to be_a(TestDomain::Carts::ItemAdded)
+    expect(cart.event_count).to eq(2)
+    expect(cart.status).to eq(:open)
+    expect(events.size).to eq(2)
+    expect(events[0]).to be_a(TestDomain::Carts::CartStarted)
+    expect(events[1]).to be_a(TestDomain::Carts::ItemAdded)
     expect(events.first.causation_id).to eq(cmd.id)
-    expect(events.first.payload.product_id).to eq(1)
-    expect(events.first.payload.product_name).to eq('Apple')
+    expect(events[1].payload.product_id).to eq(1)
+    expect(events[1].payload.product_name).to eq('Apple')
 
     # Test that initial events were appended to the store synchronously
     events = Sors.config.backend.read_event_stream('cart-1')
     expect(events.map(&:class)).to eq([
                                         TestDomain::Carts::AddItem,
+                                        TestDomain::Carts::CartStarted,
                                         TestDomain::Carts::ItemAdded
                                       ])
 
@@ -41,6 +44,7 @@ RSpec.describe Sors::Machine do
     events = Sors.config.backend.read_event_stream('cart-1')
     expect(events.map(&:class)).to eq([
                                         TestDomain::Carts::AddItem,
+                                        TestDomain::Carts::CartStarted,
                                         TestDomain::Carts::ItemAdded,
                                         TestDomain::Carts::SendItemAddedWebhook,
                                         TestDomain::Carts::ItemAddedWebhookSent

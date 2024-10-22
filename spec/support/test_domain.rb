@@ -63,7 +63,7 @@ module TestDomain
         @id = id
         @items = {}
         @webhooks_sent = 0
-        @status = :open
+        @status = :new
         @event_count = 0
       end
 
@@ -95,6 +95,8 @@ module TestDomain
       attribute :product_id, Integer
     end
 
+    CartStarted = Sors::Message.define('carts.started')
+
     ItemAdded = Sors::Message.define('carts.items.added') do
       attribute :product_id, Integer
       attribute :quantity, Sors::Types::Integer.default(1)
@@ -116,13 +118,19 @@ module TestDomain
     RandomCommand = Sors::Message.define('carts.random_command')
     RandomEvent = Sors::Message.define('carts.random_event')
 
-    decide AddItem do |_cart, cmd|
+    decide AddItem do |cart, cmd|
       product = CATALOG[cmd.payload.product_id]
-      if product
-        cmd.follow(ItemAdded, cmd.payload.to_h.merge(product))
-      else
-        cmd.follow(NoItemAdded, product_id: cmd.payload.product_id)
+      events = []
+      if cart.status == :new
+        events << cmd.follow(CartStarted)
       end
+
+      if product
+        events << cmd.follow(ItemAdded, cmd.payload.to_h.merge(product))
+      else
+        events << cmd.follow(NoItemAdded, product_id: cmd.payload.product_id)
+      end
+      events
     end
 
     decide RemoveItem do |cart, cmd|
@@ -135,6 +143,10 @@ module TestDomain
 
     evolve :any do |cart, event|
       cart.event_count += 1
+    end
+
+    evolve CartStarted do |cart, event|
+      cart.status = :open
     end
 
     evolve ItemAdded do |cart, event|
