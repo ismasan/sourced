@@ -159,18 +159,6 @@ module TestDomain
       cart.webhooks_sent += 1
     end
 
-    # react EmailSent do |event|
-    #   event.follow(PlaceOrder)
-    # end
-    #
-    # decide PlaceOrder do |_cart, command|
-    #   command.follow(OrderPlaced)
-    # end
-    #
-    # evolve OrderPlaced do |cart, _event|
-    #   cart.status = :placed
-    # end
-
     # ==== State-stored version ==================
     # load cart from DB, or instantiate a new one
     # def load(command)
