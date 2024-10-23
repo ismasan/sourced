@@ -9,8 +9,19 @@ module Sors
       base.extend ClassMethods
     end
 
-    def decide(state, command)
-      events = send(Sors.message_method_name(PREFIX, command.class.name), state, command)
+    # Run command handler methods
+    # defined with the .decide(Command, &) macro
+    # The signature will depend on how the command handler is defined
+    # Example:
+    #   decide(state, command)
+    #   decide(command)
+    def decide(*args)
+      events = case args
+               in [command]
+                 send(Sors.message_method_name(PREFIX, command.class.name), command)
+               in [state, command]
+                 send(Sors.message_method_name(PREFIX, command.class.name), state, command)
+               end
       [events].flatten.compact
     end
 

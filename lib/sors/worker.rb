@@ -60,7 +60,7 @@ module Sors
 
     def work(command)
       case command
-      when Machine::ProcessBatch
+      when Sors::ProcessBatch
         logger.warn "BATCH #{name} received command: #{command.type}"
         batch = @backend.read_event_batch(command.causation_id)
         reactors = Router.reactors_for(batch)
@@ -121,7 +121,7 @@ end
 #     Async do
 #       worker.poll do |command|
 #         case command
-#         when Machine::ProcessBatch
+#         when Sors::ProcessBatch
 #           Console.warn "BATCH #{worker.name} received command: #{command.inspect}"
 #           batch = ES.read_batch(command.causation_id)
 #           reactors = Router.reactors_for(batch)
