@@ -9,17 +9,29 @@ module Sors
       base.extend ClassMethods
     end
 
-    def evolve(state, events)
-      events.each do |event|
-        __handle_evolution_any(state, event)
-        method_name = Sors.message_method_name(Evolve::PREFIX, event.class.to_s)
-        send(method_name, state, event) if respond_to?(method_name)
+    def evolve(*args)
+      state = self
+
+      case args
+      in [events]
+        events.each do |event|
+          __handle_evolution_any(state, event)
+          method_name = Sors.message_method_name(Evolve::PREFIX, event.class.to_s)
+          send(method_name, event) if respond_to?(method_name)
+        end
+      in [obj, events]
+        state = obj
+        events.each do |event|
+          __handle_evolution_any(state, event)
+          method_name = Sors.message_method_name(Evolve::PREFIX, event.class.to_s)
+          send(method_name, state, event) if respond_to?(method_name)
+        end
       end
 
       state
     end
 
-    private def handle_evolution_any(state, _event)
+    private def __handle_evolution_any(state, _event)
       state
     end
 

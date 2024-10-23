@@ -1,16 +1,11 @@
 # frozen_string_literal: true
 
-require 'sors/router'
-require 'sors/message'
-
 module Sors
   class Machine
     include Decide
     include Evolve
     include React
     include ReactSync
-
-    ProcessBatch = Message.define('machine.batch.process')
 
     attr_reader :backend
 

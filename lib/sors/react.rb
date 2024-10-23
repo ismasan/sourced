@@ -9,15 +9,30 @@ module Sors
       base.extend ClassMethods
     end
 
-    def react(state, events)
-      events.flat_map { |event| __handle_reaction(state, event) }
+    def react(*args)
+      case args
+      in [state, events]
+        events.flat_map { |event| __handle_reaction_with_state(state, event) }
+      in [events]
+        events.flat_map { |event| __handle_reaction_with_self(event) }
+      end
     end
 
-    private def __handle_reaction(state, event)
+    private
+
+    def __handle_reaction_with_state(state, event)
       method_name = Sors.message_method_name(React::PREFIX, event.class.to_s)
       return [] unless respond_to?(method_name)
 
       cmds = send(method_name, state, event)
+      [cmds].flatten.compact
+    end
+
+    def __handle_reaction_with_self(event)
+      method_name = Sors.message_method_name(React::PREFIX, event.class.to_s)
+      return [] unless respond_to?(method_name)
+
+      cmds = send(method_name, event)
       [cmds].flatten.compact
     end
 
