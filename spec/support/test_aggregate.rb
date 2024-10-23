@@ -37,15 +37,15 @@ module TestAggregate
     # and a method to invoke it
     # Example:
     #   list.add(name: 'Buy milk')
-    # command :add do
-    #   payload do
-    #     attribute :name, String
-    #   end
-    #   run do |cmd|
-    #     item_id = SecureRandom.uuid
-    #     cmd.follow(ItemAdded, item_id:, name: cmd.payload.name)
-    #   end
-    # end
+    command :add do
+      payload do
+        attribute :name, String
+      end
+      run do |cmd|
+        item_id = SecureRandom.uuid
+        cmd.follow(ItemAdded, item_id:, name: cmd.payload.name)
+      end
+    end
 
     decide AddItem do |cmd|
       item_id = SecureRandom.uuid
@@ -80,9 +80,9 @@ module TestAggregate
       @email_sent = true
     end
 
-    def add(name)
-      command AddItem, name:
-    end
+    # def add(name)
+    #   command AddItem, name:
+    # end
 
     def mark_done(item_id)
       command MarkDone, item_id:

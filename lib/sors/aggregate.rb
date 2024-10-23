@@ -9,6 +9,25 @@ module Sors
     include Evolve
     include React
 
+    class CommandSpec
+      attr_reader :payload_spec, :run_spec
+
+      def initialize(&block)
+        @payload_spec = -> {}
+        @run_spec = -> {}
+        instance_eval(&block)
+        freeze
+      end
+
+      def payload(&block)
+        @payload_spec = block
+      end
+
+      def run(&block)
+        @run_spec = block
+      end
+    end
+
     class << self
       def handled_events = self.handled_events_for_react
 
@@ -27,6 +46,19 @@ module Sors
 
       def load(id)
         new(id).load
+      end
+
+      def command(cmd_name, message_type = nil, &block)
+        segments = name.split('::').map(&:downcase)
+        spec = CommandSpec.new(&block)
+        message_type ||= [*segments, cmd_name].join('.')
+        klass_name = cmd_name.to_s.split('_').map(&:capitalize).join
+        cmd_class = Message.define(message_type, &spec.payload_spec)
+        const_set(klass_name, cmd_class)
+        decide cmd_class, &spec.run_spec
+        define_method(cmd_name) do |**args|
+          command cmd_class, args
+        end
       end
     end
 
