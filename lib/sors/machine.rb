@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'sors/router'
-require 'sors/reactor'
 require 'sors/message'
 
 module Sors
