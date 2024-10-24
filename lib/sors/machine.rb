@@ -12,6 +12,21 @@ module Sors
     class << self
       attr_reader :state_factory
 
+      # Register as a Reactor
+      def handled_events = self.handled_events_for_react
+
+      # The Reactor interface
+      # @param events [Array<Message>]
+      def handle_events(events)
+        new.handle_events(events)
+      end
+
+      # The Decider interface
+      # @param cmd [Message]
+      def handle_command(cmd)
+        new.handle_command(cmd)
+      end
+
       # Define a factory for initial state
       # Example:
       #   state { |stream_id| MyState.new(stream_id) }
@@ -23,22 +38,6 @@ module Sors
         raise ArgumentError, 'state must be a callable' unless st.respond_to?(:call)
 
         @state_factory = st
-      end
-
-      # Register as a Reactor
-      # @return [Array<Message>]
-      def handled_events = self.handled_events_for_react
-
-      # The Decider interface
-      # @param cmd [Message]
-      def handle_command(cmd)
-        new.handle_command(cmd)
-      end
-
-      # The Reactor interface
-      # @param events [Array<Message>]
-      def handle_events(events)
-        new.handle_events(events)
       end
     end
 
