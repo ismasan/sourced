@@ -10,7 +10,7 @@ module TestAggregate
     SendEmail = Sors::Message.define('todos.emails.send')
 
     ItemAdded = Sors::Message.define('todos.items.added') do
-      attribute :item_id, Integer
+      attribute :item_id, String
       attribute :name, String
     end
     ItemDone = Sors::Message.define('todos.items.done') do
