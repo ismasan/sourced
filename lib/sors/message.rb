@@ -42,7 +42,7 @@ module Sors
     attribute :id, Types::AutoUUID
     attribute :stream_id, Types::String.present
     attribute :type, Types::String.present
-    attribute :created_at, Types::Any[Time].default { Time.now } #Types::JSON::AutoUTCTime
+    attribute :created_at, Types::Forms::Time.default { Time.now } #Types::JSON::AutoUTCTime
     attribute? :causation_id, Types::UUID::V4
     attribute? :correlation_id, Types::UUID::V4
     attribute? :producer, Types::String.nullable
