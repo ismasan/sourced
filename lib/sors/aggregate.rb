@@ -34,7 +34,6 @@ module Sors
 
     def initialize(id)
       @id = id
-      # TODO: per-stream sequence
       @seq = 0
       @logger = Sors.config.logger
       @backend = Sors.config.backend
@@ -49,7 +48,7 @@ module Sors
       events = decide(command)
       evolve(events)
       transaction do
-        save(command, events)
+        events = save(command, events)
         # Schedule a system command to handle this batch of events in the background
         schedule_batch(command)
       end
@@ -65,12 +64,20 @@ module Sors
 
     def load
       events = backend.read_event_stream(id)
+      @seq = events.last&.seq || 0
       evolve(events)
       self
     end
 
     def save(command, events)
-      backend.append_events([command, *events])
+      # Update :seq for each event based on seq
+      # TODO: we do the same in Machine#save. DRY this up
+      events = [command, *events].map do |event|
+        @seq += 1
+        event.with(seq: @seq)
+      end
+      backend.append_events(events)
+      events
     end
 
     private

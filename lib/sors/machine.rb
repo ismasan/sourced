@@ -30,10 +30,12 @@ module Sors
       end
     end
 
+    attr_reader :seq
+
     def initialize(logger: Sors.config.logger, backend: Sors.config.backend, state_factory: self.class.state_factory)
       @logger = logger
       @backend = backend
-      @last_seq = 0
+      @seq = 0
       @state_factory = state_factory
       raise ArgumentError, 'state_factory must be a callable' unless @state_factory.respond_to?(:call)
     end
@@ -81,15 +83,16 @@ module Sors
     def load(command)
       state = new_state(command.stream_id)
       events = backend.read_event_stream(command.stream_id)
-      @last_seq = events.last&.seq || 0
+      @seq = events.last&.seq || 0
       evolve(state, events)
     end
 
     def save(state, command, events)
-      # Update :seq for each event based on last_seq
+      # Update :seq for each event based on seq
+      # TODO: we do the same in Aggregate#save. DRY this up
       events = [command, *events].map do |event|
-        @last_seq += 1
-        event.with(seq: @last_seq)
+        @seq += 1
+        event.with(seq: @seq)
       end
       Sors.config.logger.info "Persisting #{state}, #{events} to #{backend.inspect}"
       backend.append_events(events)
