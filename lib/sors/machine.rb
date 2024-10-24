@@ -12,6 +12,12 @@ module Sors
     class << self
       attr_reader :state_factory
 
+      # Define a factory for initial state
+      # Example:
+      #   state { |stream_id| MyState.new(stream_id) }
+      #
+      # @param callable [#call, nil] a callable that returns a new state
+      # @yieldparam stream_id [String] the stream id
       def state(callable = nil, &block)
         st = callable || block
         raise ArgumentError, 'state must be a callable' unless st.respond_to?(:call)
@@ -19,12 +25,18 @@ module Sors
         @state_factory = st
       end
 
+      # Register as a Reactor
+      # @return [Array<Message>]
       def handled_events = self.handled_events_for_react
 
-      def handle_command(command)
-        new.handle_command(command)
+      # The Decider interface
+      # @param cmd [Message]
+      def handle_command(cmd)
+        new.handle_command(cmd)
       end
 
+      # The Reactor interface
+      # @param events [Array<Message>]
       def handle_events(events)
         new.handle_events(events)
       end
@@ -54,7 +66,7 @@ module Sors
 
     def handle_command(command)
       logger.info "Handling #{command.type}"
-      state = load(command)
+      state = load(command.stream_id)
       events = decide(state, command)
       state = evolve(state, events)
       transaction do
@@ -70,7 +82,7 @@ module Sors
 
     # Reactor interface
     def handle_events(events, &map_commands)
-      state = load(events.first)
+      state = load(events.first.stream_id)
       commands = react(state, events)
       commands = commands.map(&map_commands) if map_commands
       schedule_commands(commands)
@@ -80,9 +92,9 @@ module Sors
 
     attr_reader :logger
 
-    def load(command)
-      state = new_state(command.stream_id)
-      events = backend.read_event_stream(command.stream_id)
+    def load(stream_id)
+      state = new_state(stream_id)
+      events = backend.read_event_stream(stream_id)
       @seq = events.last&.seq || 0
       evolve(state, events)
     end

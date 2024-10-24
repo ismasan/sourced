@@ -10,23 +10,35 @@ module Sors
     include React
 
     class << self
+      # Register as a Reactor
       def handled_events = self.handled_events_for_react
 
-      # The Decider interface
-      def handle_command(cmd)
-        load(cmd.stream_id).handle_command(cmd)
-      end
-
+      # The Reactor interface
+      # @param events [Array<Message>]
       def handle_events(events)
         load(events.first.stream_id).handle_events(events)
       end
 
-      def create
-        new(SecureRandom.uuid)
+      # The Decider interface
+      # @param cmd [Message]
+      def handle_command(cmd)
+        load(cmd.stream_id).handle_command(cmd)
       end
 
-      def load(id)
-        new(id).load
+      # Create a new Aggregate instance
+      #
+      # @param stream_id [String] the stream id
+      # @return [Aggregate]
+      def create(stream_id = SecureRandom.uuid)
+        new(stream_id)
+      end
+
+      # Load an Aggregate from event history
+      #
+      # @param stream_id [String] the stream id
+      # @return [Aggregate]
+      def load(stream_id)
+        new(stream_id).load
       end
     end
 
