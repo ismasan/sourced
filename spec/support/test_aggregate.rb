@@ -22,8 +22,7 @@ module TestAggregate
 
     attr_reader :email_sent
 
-    def initialize(id)
-      super(id)
+    def setup(id)
       @email_sent = false
       @items = {}
     end

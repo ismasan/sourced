@@ -100,6 +100,10 @@ module Sors
       @seq = 0
       @logger = Sors.config.logger
       @backend = Sors.config.backend
+      setup(id)
+    end
+
+    private def setup(id)
     end
 
     def ==(other)
