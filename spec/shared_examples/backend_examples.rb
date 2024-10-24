@@ -32,10 +32,10 @@ module BackendExamples
 
     it_behaves_like 'a backend' do
       specify 'auto-incrementing global_seq' do
-        cmd1 = BackendExamples::Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        evt1 = cmd1.follow(BackendExamples::Tests::SomethingHappened1, account_id: cmd1.payload.account_id)
-        evt2 = cmd1.follow(BackendExamples::Tests::SomethingHappened1, account_id: cmd1.payload.account_id)
-        evt3 = BackendExamples::Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 1 })
+        cmd1 = BackendExamples::Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt1 = cmd1.follow_with_seq(BackendExamples::Tests::SomethingHappened1, 2, account_id: cmd1.payload.account_id)
+        evt2 = cmd1.follow_with_seq(BackendExamples::Tests::SomethingHappened1, 3, account_id: cmd1.payload.account_id)
+        evt3 = BackendExamples::Tests::SomethingHappened1.parse(stream_id: 's1', seq: 4, payload: { account_id: 1 })
         backend.append_events([evt1, evt2, evt3])
         expect(Sors::Backends::ActiveRecordBackend::EventRecord.order(global_seq: :asc).pluck(:global_seq))
           .to eq([1, 2, 3])
@@ -115,23 +115,33 @@ module BackendExamples
 
     describe '#append_events, #read_event_batch' do
       it 'reads event batch by causation_id' do
-        cmd1 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        evt1 = cmd1.follow(Tests::SomethingHappened1, account_id: cmd1.payload.account_id)
-        evt2 = cmd1.follow(Tests::SomethingHappened1, account_id: cmd1.payload.account_id)
-        evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 1 })
+        cmd1 = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt1 = cmd1.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd1.payload.account_id)
+        evt2 = cmd1.follow_with_seq(Tests::SomethingHappened1, 3, account_id: cmd1.payload.account_id)
+        evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 4, payload: { account_id: 1 })
         expect(backend.append_events([evt1, evt2, evt3])).to be(true)
 
         events = backend.read_event_batch(cmd1.id)
         expect(events).to eq([evt1, evt2])
       end
+
+      it 'fails if duplicate [stream_id, seq]' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        backend.append_events([evt1])
+
+        expect do
+          backend.append_events([evt2])
+        end.to raise_error(Sors::ConcurrentAppendError)
+      end
     end
 
     describe '#read_event_stream' do
       it 'reads full event stream in order' do
-        cmd1 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        evt1 = cmd1.follow(Tests::SomethingHappened1, account_id: cmd1.payload.account_id)
-        evt2 = cmd1.follow(Tests::SomethingHappened1, account_id: cmd1.payload.account_id)
-        evt3 = Tests::SomethingHappened1.parse(stream_id: 's2', payload: { account_id: 1 })
+        cmd1 = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt1 = cmd1.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd1.payload.account_id)
+        evt2 = cmd1.follow_with_seq(Tests::SomethingHappened1, 3, account_id: cmd1.payload.account_id)
+        evt3 = Tests::SomethingHappened1.parse(stream_id: 's2', seq: 4, payload: { account_id: 1 })
         expect(backend.append_events([evt1, evt2, evt3])).to be(true)
         events = backend.read_event_stream('s1')
         expect(events).to eq([evt1, evt2])

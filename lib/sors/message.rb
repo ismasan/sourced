@@ -46,6 +46,7 @@ module Sors
     attribute? :causation_id, Types::UUID::V4
     attribute? :correlation_id, Types::UUID::V4
     attribute? :producer, Types::String.nullable
+    attribute :seq, Types::Integer.default(1)
     attribute :payload, Types::Static[nil]
 
     def self.registry
@@ -78,6 +79,12 @@ module Sors
 
     def follow(event_class, payload_attrs = nil)
       attrs = { stream_id:, causation_id: id, correlation_id:, producer: }
+      attrs[:payload] = payload_attrs if payload_attrs
+      event_class.new(attrs)
+    end
+
+    def follow_with_seq(event_class, seq, payload_attrs = nil)
+      attrs = { stream_id:, causation_id: id, seq:, correlation_id:, producer: }
       attrs[:payload] = payload_attrs if payload_attrs
       event_class.new(attrs)
     end

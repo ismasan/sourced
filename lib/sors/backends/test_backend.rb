@@ -37,6 +37,7 @@ module Sors
         @command_streams = Hash.new { |h, k| h[k] = Stream.new(k) }
         @events = []
         @events_by_causation_id = Hash.new { |h, k| h[k] = [] }
+        @stream_id_seq_index = {}
         @mutex = Mutex.new
         @in_tx = false
       end
@@ -78,9 +79,12 @@ module Sors
 
       def append_events(events)
         transaction do
-          @events.concat(events)
+          check_unique_seq!(events)
+
           events.each do |event|
             @events_by_causation_id[event.causation_id] << event
+            @events << event
+            @stream_id_seq_index[seq_key(event)] = true
           end
         end
         true
@@ -92,6 +96,21 @@ module Sors
 
       def read_event_stream(stream_id)
         @events.select { |e| e.stream_id == stream_id }
+      end
+
+      private
+
+      def check_unique_seq!(events)
+        duplicate = events.find do |event|
+          @stream_id_seq_index[seq_key(event)]
+        end
+        if duplicate
+          raise Sors::ConcurrentAppendError, "Duplicate stream_id/seq: #{duplicate.stream_id}/#{duplicate.seq}"
+        end
+      end
+
+      def seq_key(event)
+        [event.stream_id, event.seq]
       end
     end
   end

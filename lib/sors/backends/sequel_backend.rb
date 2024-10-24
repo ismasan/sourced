@@ -86,6 +86,8 @@ module Sors
         rows = events.map { |e| serialize_event(e) }
         db[events_table].multi_insert(rows)
         true
+      rescue Sequel::UniqueConstraintViolation => e
+        raise Sors::ConcurrentAppendError, e.message
       end
 
       def read_event_batch(causation_id)
@@ -120,12 +122,14 @@ module Sors
           end
           column :id, :uuid, unique: true
           String :stream_id, null: false, index: true
+          Bignum :seq, null: false
           String :type, null: false
           Time :created_at, null: false
           String :producer
           column :causation_id, :uuid, index: true
           column :correlation_id, :uuid
           column :payload, :jsonb
+          index %i[stream_id seq], unique: true
         end
         logger.info("Created table #{events_table}")
 

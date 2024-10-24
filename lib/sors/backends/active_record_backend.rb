@@ -129,8 +129,10 @@ module Sors
 
       def append_events(events)
         rows = events.map { |e| serialize_event(e) }
-        EventRecord.insert_all(rows)
+        EventRecord.insert_all!(rows)
         true
+      rescue ActiveRecord::RecordNotUnique => e
+        raise Sors::ConcurrentAppendError, e.message
       end
 
       def read_event_batch(causation_id)

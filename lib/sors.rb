@@ -4,6 +4,7 @@ require_relative 'sors/version'
 
 module Sors
   class Error < StandardError; end
+  ConcurrentAppendError = Class.new(Error)
   
   def self.config
     @config ||= Configuration.new
