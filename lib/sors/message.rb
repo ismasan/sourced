@@ -56,7 +56,7 @@ module Sors
     # Custom node_name to trigger specialiesed JSON Schema visitor handler.
     def self.node_name = :event
 
-    def self.define(type_str, &payload_block)
+    def self.define(type_str, payload_schema: nil, &payload_block)
       type_str.freeze unless type_str.frozen?
       if registry[type_str]
         Sors.config.logger.warn("Message '#{type_str}' already defined")
@@ -66,7 +66,11 @@ module Sors
         def self.node_name = :data
 
         attribute :type, Types::Static[type_str]
-        attribute :payload, &payload_block if block_given?
+        if payload_schema
+          attribute :payload, Types::Data[payload_schema]
+        elsif block_given?
+          attribute :payload, &payload_block if block_given?
+        end
       end
     end
 
