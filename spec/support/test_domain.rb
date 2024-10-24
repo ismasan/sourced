@@ -122,12 +122,15 @@ module TestDomain
       product = CATALOG[cmd.payload.product_id]
       events = []
       if cart.status == :new
+        # apply(CartStarted)
         events << cmd.follow(CartStarted)
       end
 
       if product
+        # apply ItemAdded, cmd.payload.to_h.merge(product)
         events << cmd.follow(ItemAdded, cmd.payload.to_h.merge(product))
       else
+        # apply NoItemAdded, product_id: cmd.payload.product_id
         events << cmd.follow(NoItemAdded, product_id: cmd.payload.product_id)
       end
       events
@@ -135,6 +138,11 @@ module TestDomain
 
     decide RemoveItem do |cart, cmd|
       if cart.items[cmd.payload.product_id]
+        # TODO: we could optionally pass payload object
+        # apply ItemRemoved, cmd.payload
+        # In this case, ItemRemoved could automatically take matching attributes
+        # from payload struct
+        # apply ItemRemoved, cmd.payload.to_h
         cmd.follow(ItemRemoved, cmd.payload.to_h)
       else
         raise 'Item not found'
@@ -168,6 +176,7 @@ module TestDomain
 
     decide SendItemAddedWebhook do |_cart, command|
       WebhookReceiver.instance.post(command)
+      # apply ItemAddedWebWebhookSent
       [command.follow(ItemAddedWebhookSent)]
     end
 
@@ -191,17 +200,18 @@ module TestDomain
     # ==== Event-sourced version ==================
     # Initialize a new cart and apply all previous events
     # to get current state.
-    def load(command)
-      cart = Cart.new(command.stream_id)
-      events = backend.read_event_stream(command.stream_id)
-      evolve(cart, events)
+    state do |stream_id|
+      Cart.new(stream_id)
     end
 
     # Save new events to the event store
+    # TODO: we could have after_append callbacks
+    # to persist anything else here
+    # or a react_sync_all
     def save(cart, command, events)
-      Sors.config.logger.info "Persisting #{cart}, #{command}, #{events} to #{backend.inspect}"
-      backend.append_events([command, *events])
-      EntityStore.instance.save(cart)
+      super.tap do
+        EntityStore.instance.save(cart)
+      end
     end
 
     def self.replay(stream_id) = new.replay(stream_id)
