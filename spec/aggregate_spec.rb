@@ -4,11 +4,21 @@ require 'spec_helper'
 require_relative './support/test_aggregate'
 
 RSpec.describe Sors::Aggregate do
+  specify 'invalid commands' do
+    list = TestAggregate::TodoList.create
+    cmd = list.add(name: 10)
+    expect(cmd.valid?).to be(false)
+    expect(list.items.size).to eq(0)
+  end
+
   specify 'handling commands' do
     list = TestAggregate::TodoList.create
-    list.add(name: 'Buy milk')
+    cmd = list.add(name: 'Buy milk')
+    expect(cmd.valid?).to be(true)
+
     list.add(name: 'Buy bread')
-    list.mark_done(list.items.first.id)
+    cmd = list.mark_done(list.items.first.id)
+    expect(cmd.valid?).to be(true)
 
     expect(list.items.size).to eq(2)
     expect(list.items.filter(&:done).size).to eq(1)

@@ -4,20 +4,17 @@ require 'sors/aggregate'
 
 module TestAggregate
   class TodoList < Sors::Aggregate
-    AddItem = Sors::Message.define('todos.items.add') do
-      attribute :name, String
-    end
     MarkDone = Sors::Message.define('todos.items.mark_done') do
-      attribute :item_id, Integer
+      attribute :item_id, String
     end
     SendEmail = Sors::Message.define('todos.emails.send')
 
     ItemAdded = Sors::Message.define('todos.items.added') do
-      attribute :item_id, Integer
+      attribute :item_id, String
       attribute :name, String
     end
     ItemDone = Sors::Message.define('todos.items.done') do
-      attribute :item_id, Integer
+      attribute :item_id, String
     end
     EmailSent = Sors::Message.define('todos.emails.sent')
 
@@ -37,17 +34,7 @@ module TestAggregate
     # and a method to invoke it
     # Example:
     #   list.add(name: 'Buy milk')
-    command :add do
-      payload do
-        attribute :name, String
-      end
-      run do |cmd|
-        item_id = SecureRandom.uuid
-        cmd.follow(ItemAdded, item_id:, name: cmd.payload.name)
-      end
-    end
-
-    decide AddItem do |cmd|
+    command :add, name: String do |cmd|
       item_id = SecureRandom.uuid
       cmd.follow(ItemAdded, item_id:, name: cmd.payload.name)
     end
@@ -80,12 +67,8 @@ module TestAggregate
       @email_sent = true
     end
 
-    # def add(name)
-    #   command AddItem, name:
-    # end
-
     def mark_done(item_id)
-      command MarkDone, item_id:
+      issue_command MarkDone, item_id:
     end
 
     def all_items_done?
