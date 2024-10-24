@@ -107,7 +107,9 @@ module Sors
     end
 
     def handle_command(command)
-      raise "invalid command #{command.inspect}" unless command.valid?
+      # TODO: this might raise an exception from a worker
+      # Think what to do with invalid commands here
+      raise "invalid command #{command.inspect} #{command.errors.inspect}" unless command.valid?
       logger.info "Handling #{command.type}"
       events = decide(command)
       evolve(events)
