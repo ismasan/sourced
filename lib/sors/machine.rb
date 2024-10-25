@@ -10,8 +10,6 @@ module Sors
     attr_reader :backend
 
     class << self
-      attr_reader :state_factory
-
       # Register as a Reactor
       def handled_events = self.handled_events_for_react
 
@@ -26,29 +24,14 @@ module Sors
       def handle_command(cmd)
         new.handle_command(cmd)
       end
-
-      # Define a factory for initial state
-      # Example:
-      #   state { |stream_id| MyState.new(stream_id) }
-      #
-      # @param callable [#call, nil] a callable that returns a new state
-      # @yieldparam stream_id [String] the stream id
-      def state(callable = nil, &block)
-        st = callable || block
-        raise ArgumentError, 'state must be a callable' unless st.respond_to?(:call)
-
-        @state_factory = st
-      end
     end
 
     attr_reader :seq
 
-    def initialize(logger: Sors.config.logger, backend: Sors.config.backend, state_factory: self.class.state_factory)
+    def initialize(logger: Sors.config.logger, backend: Sors.config.backend)
       @logger = logger
       @backend = backend
       @seq = 0
-      @state_factory = state_factory
-      raise ArgumentError, 'state_factory must be a callable' unless @state_factory.respond_to?(:call)
     end
 
     def inspect
@@ -59,8 +42,22 @@ module Sors
       other.is_a?(self.class) && other.backend == backend
     end
 
-    def new_state(stream_id)
-      @state_factory.call(stream_id)
+    # TODO: perhaps the only difference between a Machine and an Aggregate
+    # is how they initialise state
+    # Machine returns a single state object
+    # Aggregate sets up internal @ivars
+    # They could be a single class that choses how to initialise state
+    # depending on what method it implements.
+    # Ex.
+    #   def init_state(stream_id)
+    #     Cart.new(stream_id)
+    #   end
+    #
+    #   def setup_state(stream_id)
+    #     @items = {}
+    #   end
+    def init_state(stream_id)
+      raise NotImplementedError, "implement #init_state(stream_id) => Object in #{self.class}"
     end
 
     def handle_command(command)
@@ -91,7 +88,7 @@ module Sors
     attr_reader :logger
 
     def load(stream_id)
-      state = new_state(stream_id)
+      state = init_state(stream_id)
       events = backend.read_event_stream(stream_id)
       @seq = events.last&.seq || 0
       evolve(state, events)
