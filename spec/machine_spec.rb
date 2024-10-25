@@ -54,8 +54,6 @@ RSpec.describe Sors::Machine do
 
     cart = TestDomain::Carts.replay('cart-1')
     expect(cart.webhooks_sent).to eq(1)
-    totals = TestDomain::WebhookReceiver.instance.webhooks.map(&:payload).map(&:cart_total)
-    expect(totals).to eq([200])
   end
 
   specify 'inheritance' do

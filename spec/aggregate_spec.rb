@@ -35,10 +35,11 @@ RSpec.describe Sors::Aggregate do
 
     list.mark_done(list.items.first.id)
     list.mark_done(list.items.last.id)
+    expect(list.email_sent).to be(false)
 
     Sors::Worker.drain
 
-    list = TestAggregate::TodoList.load(list.id)
+    list.catch_up
     expect(list.email_sent).to be(true)
   end
 

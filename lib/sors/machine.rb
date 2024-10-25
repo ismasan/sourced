@@ -81,8 +81,7 @@ module Sors
 
     # Reactor interface
     def handle_events(events, &map_commands)
-      state = load(events.first.stream_id)
-      commands = react(state, events)
+      commands = react(events)
       commands = commands.map(&map_commands) if map_commands
       schedule_commands(commands)
     end
