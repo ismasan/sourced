@@ -54,6 +54,12 @@ RSpec.describe Sors::Aggregate do
     expect(older.items.map(&:name)).to eq(%w[milk bread])
     expect(older.seq).to eq(4)
     expect(older.events.map(&:seq)).to eq([1, 2, 3, 4])
+    expect(older.events.map(&:type)).to eq(%w[
+                                             todos.items.add
+                                             todos.items.added
+                                             todos.items.add
+                                             todos.items.added
+                                           ])
 
     older.catch_up
     expect(older.items.map(&:name)).to eq(%w[milk bread apples])

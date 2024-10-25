@@ -51,6 +51,9 @@ module Sors
       # # The exmaple above will define a command class `AddItem` in the current namespace:
       # AddItem = Message.define('namespace.add_item', payload_schema: { name: String })
       #
+      # # Optionally you can pass an explicit command type string:
+      #   command :add_item, 'todos.items.add', name: String do |cmd|
+      #
       # # It will also register the command handler:
       # decide AddItem do |cmd|
       #   cmd.follow(ItemAdded, item_id: SecureRandom.uuid, name: cmd.payload.name)
@@ -80,9 +83,20 @@ module Sors
       # @param payload_schema [Hash] A Plumb Hash schema. example: { name: String }
       # @param block [Proc] The command handling code
       # @return [Message] the command instance, which can be #valid? or not
-      def command(cmd_name, payload_schema = {}, &block)
-        segments = name.split('::').map(&:downcase)
-        message_type ||= [*segments, cmd_name].join('.')
+      def command(*args, &block)
+        message_type = nil
+        cmd_name = nil
+        payload_schema = {}
+
+        case args
+          in [cmd_name, Hash => payload_schema]
+            segments = name.split('::').map(&:downcase)
+            message_type = [*segments, cmd_name].join('.')
+          in [cmd_name, String => message_type, Hash => payload_schema]
+        else
+          raise ArgumentError, 'Invalid arguments for Aggregate.command'
+        end
+
         klass_name = cmd_name.to_s.split('_').map(&:capitalize).join
         cmd_class = Message.define(message_type, payload_schema:)
         const_set(klass_name, cmd_class)

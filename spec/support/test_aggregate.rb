@@ -29,7 +29,7 @@ module TestAggregate
 
     def items = @items.values
 
-    command :add, name: String do |cmd|
+    command :add, 'todos.items.add', name: String do |cmd|
       item_id = SecureRandom.uuid
       cmd.follow(ItemAdded, item_id:, name: cmd.payload.name)
     end
