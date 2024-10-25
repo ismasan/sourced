@@ -94,8 +94,11 @@ module Sors
         @events_by_causation_id[causation_id]
       end
 
-      def read_event_stream(stream_id)
-        @events.select { |e| e.stream_id == stream_id }
+      def read_event_stream(stream_id, after: nil, upto: nil)
+        events = @events.select { |e| e.stream_id == stream_id }
+        events = events.select { |e| e.seq > after } if after
+        events = events.select { |e| e.seq <= upto } if upto
+        events
       end
 
       private

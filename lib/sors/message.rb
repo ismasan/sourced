@@ -45,7 +45,7 @@ module Sors
     attribute :created_at, Types::Forms::Time.default { Time.now } #Types::JSON::AutoUTCTime
     attribute? :causation_id, Types::UUID::V4
     attribute? :correlation_id, Types::UUID::V4
-    attribute? :producer, Types::String.nullable
+    attribute :producer, Types::String.nullable.default(nil)
     attribute :seq, Types::Integer.default(1)
     attribute :payload, Types::Static[nil]
 

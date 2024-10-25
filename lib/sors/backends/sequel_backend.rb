@@ -96,8 +96,11 @@ module Sors
         end
       end
 
-      def read_event_stream(stream_id)
-        db[events_table].where(stream_id:).order(:global_seq).map do |row|
+      def read_event_stream(stream_id, after: nil, upto: nil)
+        query = db[events_table].where(stream_id:)
+        query = query.where { seq > after } if after
+        query = query.where { seq <= upto } if upto
+        query.order(:global_seq).map do |row|
           deserialize_event(row)
         end
       end

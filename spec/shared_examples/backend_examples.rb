@@ -146,6 +146,18 @@ module BackendExamples
         events = backend.read_event_stream('s1')
         expect(events).to eq([evt1, evt2])
       end
+
+      it ':upto and :after' do
+        e1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        e2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        e3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 2 })
+        expect(backend.append_events([e1, e2, e3])).to be(true)
+        events = backend.read_event_stream('s1', upto: 2)
+        expect(events).to eq([e1, e2])
+
+        events = backend.read_event_stream('s1', after: 1)
+        expect(events).to eq([e2, e3])
+      end
     end
   end
 
