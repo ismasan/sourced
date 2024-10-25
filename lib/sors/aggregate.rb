@@ -29,7 +29,7 @@ module Sors
       #
       # @param stream_id [String] the stream id
       # @return [Aggregate]
-      def create(stream_id = SecureRandom.uuid)
+      def build(stream_id = SecureRandom.uuid)
         new(stream_id)
       end
 
@@ -37,8 +37,8 @@ module Sors
       #
       # @param stream_id [String] the stream id
       # @return [Aggregate]
-      def load(stream_id)
-        new(stream_id).load
+      def load(stream_id, upto: nil)
+        new(stream_id).load(upto:)
       end
 
       # Define a command class, register a command handler
@@ -125,6 +125,7 @@ module Sors
       [ self, events ]
     end
 
+    # TODO: idempotent event and command handling
     # Reactor interface
     def handle_events(events, &map_commands)
       commands = react(events)
@@ -132,11 +133,21 @@ module Sors
       schedule_commands(commands)
     end
 
-    def load
-      events = backend.read_event_stream(id)
-      @seq = events.last&.seq || 0
-      evolve(events)
+    def load(after: nil, upto: nil)
+      events = backend.read_event_stream(id, after:, upto:)
+      if events.any?
+        @seq = events.last.seq 
+        evolve(events)
+      end
       self
+    end
+
+    def catch_up
+      load(after: seq)
+    end
+
+    def events
+      backend.read_event_stream(id, upto: seq)
     end
 
     def save(command, events)
