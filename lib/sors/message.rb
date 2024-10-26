@@ -93,6 +93,12 @@ module Sors
       event_class.new(attrs)
     end
 
+    def follow_with_stream_id(event_class, stream_id, payload_attrs = nil)
+      attrs = { stream_id:, causation_id: id, correlation_id:, producer: }
+      attrs[:payload] = payload_attrs if payload_attrs
+      event_class.new(attrs)
+    end
+
     def to_json(*)
       to_h.to_json(*)
     end

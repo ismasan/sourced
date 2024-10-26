@@ -93,6 +93,7 @@ module Sors
             segments = name.split('::').map(&:downcase)
             message_type = [*segments, cmd_name].join('.')
           in [cmd_name, String => message_type, Hash => payload_schema]
+          in [cmd_name, String => message_type]
         else
           raise ArgumentError, 'Invalid arguments for Aggregate.command'
         end

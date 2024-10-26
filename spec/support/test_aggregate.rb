@@ -34,6 +34,13 @@ module TestAggregate
       cmd.follow(ItemAdded, item_id:, name: cmd.payload.name)
     end
 
+    command :complete_by_name, 'todos.items.complete_by_name', name: String do |cmd|
+      item = items.find { |it| it.name == cmd.payload.name  }
+      if item && !item.done
+        cmd.follow(ItemDone, item_id: item.id)
+      end
+    end
+
     decide MarkDone do |cmd|
       raise 'no item with that id' unless @items.key?(cmd.payload.item_id)
       cmd.follow(ItemDone, item_id: cmd.payload.item_id)
