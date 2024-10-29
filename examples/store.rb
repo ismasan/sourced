@@ -6,14 +6,34 @@ Bundler.setup(:test)
 require 'sors'
 require 'sequel'
 
+Sequel.extension :fiber_concurrency
 DB = Sequel.postgres('event_store')
 # DB.logger = Logger.new($stdout)
 
 class Store
+  CONSUMER_STATS_SQL = <<~SQL
+    SELECT 
+        group_id,
+        min(global_seq) as oldest_processed,
+        max(global_seq) as newest_processed,
+        count(*) as stream_count
+    FROM offsets
+    GROUP BY group_id;
+  SQL
+
   attr :db
 
   def initialize(db)
     @db = db
+  end
+
+  ConsumerStats = Data.define(:stream_count, :max_global_seq, :groups)
+
+  def consumer_stats
+    stream_count = db[:streams].count
+    max_global_seq = db[:events].max(:global_seq)
+    groups = db.fetch(CONSUMER_STATS_SQL).all
+    ConsumerStats.new(stream_count, max_global_seq, groups)
   end
 
   def append_to_stream(stream_id, events)
@@ -33,103 +53,6 @@ class Store
   end
 
   RESERVE_SQL = <<~SQL
-    WITH next_event AS (
-        SELECT
-            e.global_seq,
-            s.id AS stream_id_fk,
-            s.stream_id,
-            e.id,
-            e.seq,
-            e.type,
-            e.created_at,
-            e.producer,
-            e.causation_id,
-            e.correlation_id,
-            e.payload,
-            o.id AS offset_id
-        FROM
-            events e
-        JOIN
-            streams s ON e.stream_id = s.id
-        LEFT JOIN
-            offsets o ON o.stream_id = e.stream_id AND o.group_id = ?
-        WHERE
-            -- Only select events with a higher sequence number than the last processed
-            (o.global_seq IS NULL OR e.global_seq > o.global_seq)
-        ORDER BY
-            e.global_seq
-        LIMIT 1
-    )
-    SELECT *
-    FROM next_event
-  SQL
-
-  RESERVE2_SQL = <<~SQL
-      SELECT 
-          e.global_seq,
-          e.id,
-          s.id as stream_id_fk,
-          s.stream_id,
-          e.seq,
-          e.type,
-          e.payload,
-          e.created_at
-      FROM events e
-      JOIN
-          streams s ON e.stream_id = s.id
-      WHERE e.global_seq > COALESCE(
-          (SELECT o.global_seq 
-          FROM offsets o 
-          WHERE o.group_id = ?
-          AND o.stream_id = s.id
-          FOR UPDATE SKIP LOCKED),
-          0
-      )
-      ORDER BY e.global_seq
-      LIMIT 1
-  SQL
-
-  RESERVE3_SQL = <<~SQL
-    WITH available_offsets AS (
-        SELECT o.stream_id, o.global_seq
-        FROM offsets o
-        WHERE o.group_id = ?
-        FOR UPDATE SKIP LOCKED
-    ),
-    next_event AS (
-        SELECT 
-            e.global_seq,
-            e.id,
-            s.id as stream_id_fk,
-            s.stream_id,
-            e.seq,
-            e.type,
-            e.causation_id,
-            e.correlation_id,
-            e.payload,
-            e.created_at
-        FROM events e
-        JOIN streams s ON e.stream_id = s.id
-        LEFT JOIN available_offsets a ON s.id = a.stream_id
-        WHERE e.global_seq > COALESCE(a.global_seq, 0)
-        ORDER BY e.global_seq
-        LIMIT 1
-    )
-    SELECT 
-        ne.global_seq,
-        ne.id,
-        ne.stream_id,
-        ne.stream_id_fk,
-        ne.seq,
-        ne.type,
-        ne.causation_id,
-        ne.correlation_id,
-        ne.payload,
-        ne.created_at
-    FROM next_event ne;
-  SQL
-
-  RESERVE4_SQL = <<~SQL
     WITH candidate_events AS (
         SELECT 
             e.global_seq,
@@ -176,7 +99,7 @@ class Store
 
   def reserve_next_for(group_id, &)
     db.transaction do
-      row = db.fetch(RESERVE4_SQL, group_id, group_id, group_id).first
+      row = db.fetch(RESERVE_SQL, group_id, group_id, group_id).first
       return unless row
 
       event = Sors::Message.from(row)
@@ -234,3 +157,67 @@ streams = %w[stream1 stream2 stream3 stream4 stream5]
 #   end
 #   STORE.append_to_stream(cmd.stream_id, events)
 # end
+class Worker
+  attr_reader :name
+
+  def initialize(name, store)
+    @name = name
+    @store = store
+    @running = false
+  end
+
+  def stop
+    @running = false
+  end
+
+  def poll(&)
+    @running = true
+    while @running
+      @store.reserve_next_for(name, &)
+      sleep 0.01
+    end
+  end
+end
+
+class Reactor
+  class << self
+    def registry
+      @registry ||= {}
+    end
+
+    def reactor_name = name
+
+    def register(klass)
+      registry[klass.reactor_name] = klass
+    end
+
+    def handle_event(event)
+      puts "Worker #{self.reactor_name} processing #{event.stream_id} #{event.seq}"
+    end
+  end
+end
+
+class SalesReport < Reactor
+end
+
+class Listings < Reactor
+end
+
+Reactor.register(SalesReport)
+Reactor.register(Listings)
+
+WORKERS = 10.times.map { |i| Worker.new("worker-#{i}", STORE) }
+
+trap('INT') { WORKERS.each(&:stop) }
+
+Sync do |task|
+  WORKERS.each do |w|
+    task.async do
+      w.poll do |event|
+        puts "Worker #{w.name} processing #{event.stream_id} #{event.seq}"
+      end
+    end
+  end
+end
+
+puts 'bye'
