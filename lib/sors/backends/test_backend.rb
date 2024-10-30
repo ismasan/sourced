@@ -51,10 +51,11 @@ module Sors
           end
 
           if evt
-            if yield(evt)
-              offset.locked = false
+            if block_given?
+              yield(evt)
               offset.index = index
             end
+            offset.locked = false
           end
           evt
         end

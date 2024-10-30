@@ -82,7 +82,8 @@ module Sors
 
           event = deserialize_event(row)
 
-          if block_given? && yield(event)
+          if block_given?
+            yield(event)
             db[offsets_table].where(id: row[:offset_id]).update(global_seq: row[:global_seq])
           end
 
@@ -244,8 +245,7 @@ module Sors
               max(global_seq) as newest_processed,
               count(*) as stream_count
           FROM #{offsets_table}
-          GROUP BY group_id
-          HAVING min(global_seq) > 0;
+          GROUP BY group_id;
         SQL
       end
 

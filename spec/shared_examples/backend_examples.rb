@@ -74,13 +74,11 @@ module BackendExamples
             backend.reserve_next_for('group1') do |msg|
               sleep 0.01
               group1_messages << msg
-              true
             end
           end
           task.async do
             backend.reserve_next_for('group1') do |msg|
               group1_messages << msg
-              true
             end
           end
         end
@@ -90,15 +88,12 @@ module BackendExamples
         # Test that separate groups have their own cursors on streams
         backend.reserve_next_for('group2') do |msg|
           group2_messages << msg
-          true
         end
 
         expect(group2_messages).to eq([cmd1])
 
-        # Test that returning false does not advance the cursor
-        backend.reserve_next_for('group3') do |_msg|
-          false
-        end
+        # Test that NOOP handlers still advance the cursor
+        backend.reserve_next_for('group3') { |_msg| }
 
         # Verify state of groups with stats
         stats = backend.stats
@@ -106,11 +101,10 @@ module BackendExamples
         expect(stats.stream_count).to eq(2)
         expect(stats.max_global_seq).to eq(4)
         expect(stats.groups).to match_array([
-                                              { group_id: 'group2', oldest_processed: 1, newest_processed: 1,
-                                                stream_count: 1 },
-                                              { group_id: 'group1', oldest_processed: 1, newest_processed: 3,
-                                                stream_count: 2 }
-                                            ])
+          { group_id: 'group2', oldest_processed: 1, newest_processed: 1, stream_count: 1 },
+          { group_id: 'group3', oldest_processed: 1, newest_processed: 1, stream_count: 1 },
+          { group_id: 'group1', oldest_processed: 1, newest_processed: 3, stream_count: 2 }
+        ])
 
         #  Test that #reserve_next_for returns next event, or nil
         evt = backend.reserve_next_for('group1') { true }
