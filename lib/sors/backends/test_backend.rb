@@ -50,13 +50,6 @@ module Sors
             end
           end
 
-          unless evt
-            evt = backend.events.first
-            index = 0
-            offset = Offset.new(evt.stream_id, index, true)
-            @offsets[evt.stream_id] = offset
-          end
-
           if evt
             if yield(evt)
               offset.locked = false

@@ -86,7 +86,7 @@ module Sors
             db[offsets_table].where(id: row[:offset_id]).update(global_seq: row[:global_seq])
           end
 
-          [row[:offset_id], row[:stream_id], row[:global_seq]]
+          event
         end
       end
 

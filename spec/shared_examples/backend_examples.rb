@@ -59,7 +59,7 @@ module BackendExamples
         cmd1 = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         cmd2 = Tests::DoSomething.parse(stream_id: 's2', seq: 1, payload: { account_id: 2 })
         evt1 = cmd1.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd1.payload.account_id)
-        evt2 = cmd2.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd1.payload.account_id)
+        evt2 = cmd2.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd2.payload.account_id)
 
         expect(backend.append_to_stream('s1', [cmd1, evt1])).to be(true)
         expect(backend.append_to_stream('s2', [cmd2, evt2])).to be(true)
@@ -111,6 +111,16 @@ module BackendExamples
                                               { group_id: 'group1', oldest_processed: 1, newest_processed: 3,
                                                 stream_count: 2 }
                                             ])
+
+        #  Test that #reserve_next_for returns next event, or nil
+        evt = backend.reserve_next_for('group1') { true }
+        expect(evt).to eq(evt1)
+
+        evt = backend.reserve_next_for('group1') { true }
+        expect(evt).to eq(evt2)
+
+        evt = backend.reserve_next_for('group1') { true }
+        expect(evt).to be(nil)
       end
     end
 
