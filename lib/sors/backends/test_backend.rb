@@ -5,38 +5,81 @@ require 'thread'
 module Sors
   module Backends
     class TestBackend
-      class Stream
-        attr_reader :stream_id, :commands, :locked
+      class Group
+        attr_reader :group_id
 
-        def initialize(stream_id)
-          @stream_id = stream_id
-          @commands = []
-          @locked = false
+        Offset = Struct.new(:stream_id, :index, :locked)
+
+        def initialize(group_id, backend)
+          @group_id = group_id
+          @backend = backend
+          @offsets = {}
+          reindex
         end
 
-        def available? = !@locked && !@commands.empty?
+        def to_h
+          active_offsets = @offsets.values.select { |o| o.index >= 0 }
+          oldest_processed = (active_offsets.min_by(&:index)&.index || -1) + 1
+          newest_processed = (active_offsets.max_by(&:index)&.index || -1) + 1
+          stream_count = active_offsets.size
 
-        def <<(command)
-          @commands << command
+          { group_id:, oldest_processed:, newest_processed:, stream_count: }
         end
 
-        def reserve(&)
-          @locked = true
-          cmd = @commands.shift
-          yield cmd if cmd
-          @locked = false
-          cmd
+        def reindex
+          backend.events.each.with_index do |e, idx|
+            @offsets[e.stream_id] ||= Offset.new(e.stream_id, -1, false)
+          end
         end
+
+        def reserve_next(&)
+          evt = nil
+          offset = nil
+          index = -1
+
+          backend.events.each.with_index do |e, idx|
+            offset = @offsets[e.stream_id]
+            if offset.locked # stream locked by another consumer in the group
+              next
+            elsif idx > offset.index # new event for the stream
+              evt = e
+              offset.locked = true
+              index = idx
+              break
+            else # event already consumed
+            end
+          end
+
+          unless evt
+            evt = backend.events.first
+            index = 0
+            offset = Offset.new(evt.stream_id, index, true)
+            @offsets[evt.stream_id] = offset
+          end
+
+          if evt
+            if yield(evt)
+              offset.locked = false
+              offset.index = index
+            end
+          end
+          evt
+        end
+
+        private
+
+        attr_reader :backend
       end
 
       # These are not part of the Backend interface
       # but are convenient to inspect the TestBackend
-      attr_reader :command_streams, :events
+      attr_reader :events
 
       def initialize
-        @command_streams = Hash.new { |h, k| h[k] = Stream.new(k) }
         @events = []
+        @groups = Hash.new { |h, k| h[k] = Group.new(k, self) }
         @events_by_causation_id = Hash.new { |h, k| h[k] = [] }
+        @events_by_stream_id = Hash.new { |h, k| h[k] = [] }
         @stream_id_seq_index = {}
         @mutex = Mutex.new
         @in_tx = false
@@ -44,24 +87,20 @@ module Sors
 
       def installed? = true
 
-      def schedule_commands(commands)
+      def reserve_next_for(group_id, &)
         transaction do
-          commands.each do |cmd|
-            schedule_command(cmd.stream_id, cmd)
-          end
-          true
+          group = @groups[group_id]
+          group.reserve_next(&)
         end
       end
 
-      def schedule_command(stream_id, command)
-        @command_streams[stream_id] << command
-      end
+      Stats = Data.define(:stream_count, :max_global_seq, :groups)
 
-      def reserve_next(&)
-        transaction do
-          stream = @command_streams.values.find(&:available?)
-          stream&.reserve(&)
-        end
+      def stats
+        stream_count = @events_by_stream_id.size
+        max_global_seq = events.size
+        groups = @groups.values.map(&:to_h).filter { |g| g[:stream_count] > 0 }
+        Stats.new(stream_count, max_global_seq, groups)
       end
 
       def transaction(&)
@@ -77,16 +116,18 @@ module Sors
         end
       end
 
-      def append_events(events)
+      def append_to_stream(stream_id, events)
         transaction do
           check_unique_seq!(events)
 
           events.each do |event|
             @events_by_causation_id[event.causation_id] << event
+            @events_by_stream_id[stream_id] << event
             @events << event
-            @stream_id_seq_index[seq_key(event)] = true
+            @stream_id_seq_index[seq_key(stream_id, event)] = true
           end
         end
+        @groups.each_value(&:reindex)
         true
       end
 
@@ -95,7 +136,7 @@ module Sors
       end
 
       def read_event_stream(stream_id, after: nil, upto: nil)
-        events = @events.select { |e| e.stream_id == stream_id }
+        events = @events_by_stream_id[stream_id]
         events = events.select { |e| e.seq > after } if after
         events = events.select { |e| e.seq <= upto } if upto
         events
@@ -105,15 +146,15 @@ module Sors
 
       def check_unique_seq!(events)
         duplicate = events.find do |event|
-          @stream_id_seq_index[seq_key(event)]
+          @stream_id_seq_index[seq_key(event.stream_id, event)]
         end
         if duplicate
           raise Sors::ConcurrentAppendError, "Duplicate stream_id/seq: #{duplicate.stream_id}/#{duplicate.seq}"
         end
       end
 
-      def seq_key(event)
-        [event.stream_id, event.seq]
+      def seq_key(stream_id, event)
+        [stream_id, event.seq]
       end
     end
   end

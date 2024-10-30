@@ -14,14 +14,14 @@ module Sors
         @db = connect(db)
         @logger = logger
         @prefix = prefix
-        @events_table = table_name(:events)
         @streams_table = table_name(:streams)
-        @commands_table = table_name(:commands)
+        @offsets_table = table_name(:offsets)
+        @events_table = table_name(:events)
         logger.info("Connected to #{@db}")
       end
 
       def installed?
-        db.table_exists?(events_table) && db.table_exists?(streams_table) && db.table_exists?(commands_table)
+        db.table_exists?(events_table) && db.table_exists?(streams_table) && db.table_exists?(offsets_table)
       end
 
       def schedule_commands(commands)
@@ -44,63 +44,87 @@ module Sors
         end
       end
 
-      def reserve_next(&)
-        command = db.transaction do
-          cmd = db[commands_table]
-            .join(streams_table, stream_id: :stream_id)
-            .where(Sequel[streams_table][:locked] => false)
-            .order(Sequel[commands_table][:id])
-            .for_update
-            .first
+      Stats = Data.define(:stream_count, :max_global_seq, :groups)
 
-          if cmd
-            db[streams_table].where(stream_id: cmd[:stream_id]).update(locked: true)
-          end
-          cmd
-        end
-
-        cmd = nil
-        if command
-          data = command[:data]
-          # Support SQlite
-          # TODO: figure out how to handle this in a better way
-          data = parse_json(data)
-          cmd = Message.from(data)
-          yield cmd
-          # Only delete the command if processing didn't raise
-          db[commands_table].where(id: command[:id]).delete
-        end
-        cmd
-      ensure
-        # Always unlock the stream
-        if command
-          db[streams_table].where(stream_id: command[:stream_id]).update(locked: false)
-        end
+      def stats
+        stream_count = db[streams_table].count
+        max_global_seq = db[events_table].max(:global_seq)
+        groups = db.fetch(sql_for_consumer_stats).all
+        Stats.new(stream_count, max_global_seq, groups)
       end
 
       def transaction(&)
         db.transaction(&)
       end
 
-      def append_events(events)
-        rows = events.map { |e| serialize_event(e) }
-        db[events_table].multi_insert(rows)
+      def append_to_stream(stream_id, events)
+        return if events.empty?
+
+        if events.map(&:stream_id).uniq.size > 1
+          raise ArgumentError, 'Events must all belong to the same stream'
+        end
+
+        db.transaction do
+          seq = events.last.seq
+          id = db[streams_table].insert_conflict(target: :stream_id, update: { seq:, updated_at: Time.now }).insert(stream_id:, seq:)
+          rows = events.map { |e| serialize_event(e, id) }
+          db[events_table].multi_insert(rows)
+        end
         true
       rescue Sequel::UniqueConstraintViolation => e
         raise Sors::ConcurrentAppendError, e.message
       end
 
+      def reserve_next_for(group_id, &)
+        db.transaction do
+          row = db.fetch(sql_for_reserve_next, group_id, group_id, group_id).first
+          return unless row
+
+          event = deserialize_event(row)
+
+          if block_given? && yield(event)
+            db[offsets_table].where(id: row[:offset_id]).update(global_seq: row[:global_seq])
+          end
+
+          [row[:offset_id], row[:stream_id], row[:global_seq]]
+        end
+      end
+
+      private def base_events_query
+        db[events_table]
+          .select(
+            Sequel[events_table][:id],
+            Sequel[streams_table][:stream_id],
+            Sequel[events_table][:seq],
+            Sequel[events_table][:global_seq],
+            Sequel[events_table][:type],
+            Sequel[events_table][:created_at],
+            Sequel[events_table][:producer],
+            Sequel[events_table][:causation_id],
+            Sequel[events_table][:correlation_id],
+            Sequel[events_table][:payload],
+          )
+          .join(streams_table, id: :stream_id)
+      end
+
       def read_event_batch(causation_id)
-        db[events_table].where(causation_id:).order(:global_seq).map do |row|
+        query = base_events_query
+          .where(Sequel[events_table][:causation_id] => causation_id)
+          .order(Sequel[events_table][:global_seq])
+
+        query.map do |row|
           deserialize_event(row)
         end
       end
 
       def read_event_stream(stream_id, after: nil, upto: nil)
-        query = db[events_table].where(stream_id:)
-        query = query.where { seq > after } if after
-        query = query.where { seq <= upto } if upto
-        query.order(:global_seq).map do |row|
+        _events_table = events_table # need local variable for Sequel block
+
+        query = base_events_query.where(Sequel[streams_table][:stream_id] => stream_id)
+
+        query = query.where { Sequel[_events_table][:seq] > after } if after
+        query = query.where { Sequel[_events_table][:seq] <= upto } if upto
+        query.order(Sequel[_events_table][:global_seq]).map do |row|
           deserialize_event(row)
         end
       end
@@ -108,23 +132,44 @@ module Sors
       # For tests only
       def clear!
         raise 'Not in test environment' unless ENV['ENVIRONMENT'] == 'test'
-
+        # Truncate and restart global_seq increment first
+        db[events_table].truncate(cascade: true, only: true, restart: true)
         db[events_table].delete
+        db[offsets_table].delete
         db[streams_table].delete
-        db[commands_table].delete
       end
 
       def install
+        if @db.class.name == 'Sequel::SQLite::Database'
+          raise 'no SQLite support yet'
+        end
+
+        _streams_table = streams_table
+
+        db.create_table?(streams_table) do
+          primary_key :id
+          String :stream_id, null: false, unique: true
+          Time :updated_at, null: false, default: Sequel.function(:now)
+          Bignum :seq, null: false
+        end
+
+        logger.info("Created table #{streams_table}")
+
+        db.create_table?(offsets_table) do
+          primary_key :id
+          foreign_key :stream_id, _streams_table
+          String :group_id, null: false, index: true
+          Bignum :global_seq, null: false
+          Time :created_at, null: false, default: Sequel.function(:now)
+          index %i[group_id stream_id], unique: true
+        end
+
+        logger.info("Created table #{offsets_table}")
+
         db.create_table?(events_table) do
-          # @db is the local @ivar in Sequel::Generator
-          if @db.class.name == 'Sequel::SQLite::Database'
-            # auto increment integer for sqlite
-            Bignum :global_seq, type: 'INTEGER PRIMARY KEY AUTOINCREMENT'
-          else
-            primary_key :global_seq, type: :Bignum
-          end
+          primary_key :global_seq, type: :Bignum
           column :id, :uuid, unique: true
-          String :stream_id, null: false, index: true
+          foreign_key :stream_id, _streams_table
           Bignum :seq, null: false
           String :type, null: false
           Time :created_at, null: false
@@ -134,33 +179,75 @@ module Sors
           column :payload, :jsonb
           index %i[stream_id seq], unique: true
         end
+
         logger.info("Created table #{events_table}")
 
-        db.create_table?(streams_table) do
-          String :stream_id, primary_key: true, unique: true
-          column :locked, :boolean, default: false, null: false
-        end
-        logger.info("Created table #{streams_table}")
-
-        # Define in local scope so that it can be used in the block
-        _streams_table = streams_table
-        db.create_table?(commands_table) do
-          primary_key :id
-          foreign_key :stream_id, _streams_table, type: String, null: false
-          column :data, :jsonb, null: false
-          if @db.class.name == 'Sequel::SQLite::Database'
-            Time :scheduled_at, null: false, type: 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
-          else
-            Time :scheduled_at, null: false, default: Sequel.function(:now)
-          end
-        end
-        logger.info("Created table #{commands_table}")
         self
       end
 
       private
 
-      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :commands_table
+      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table
+
+      def sql_for_reserve_next
+        @sql_for_reserve_next ||= <<~SQL
+          WITH candidate_events AS (
+              SELECT 
+                  e.global_seq,
+                  e.id,
+                  e.stream_id AS stream_id_fk,
+                  s.stream_id,
+                  e.seq,
+                  e.type,
+                  e.causation_id,
+                  e.correlation_id,
+                  e.payload,
+                  e.created_at,
+                  pg_try_advisory_xact_lock(hashtext(?::text), hashtext(s.id::text)) as lock_obtained
+              FROM #{events_table} e
+              JOIN #{streams_table} s ON e.stream_id = s.id
+              LEFT JOIN #{offsets_table} o ON o.stream_id = e.stream_id 
+                  AND o.group_id = ?
+              WHERE e.global_seq > COALESCE(o.global_seq, 0)
+              ORDER BY e.global_seq
+          ),
+          next_event AS (
+              SELECT *
+              FROM candidate_events
+              WHERE lock_obtained = true
+              LIMIT 1
+          ),
+          locked_offset AS (
+              INSERT INTO #{offsets_table} (stream_id, group_id, global_seq)
+              SELECT 
+                  ne.stream_id_fk,
+                  ?,
+                  0
+              FROM next_event ne
+              ON CONFLICT (group_id, stream_id) DO UPDATE 
+              SET global_seq = #{offsets_table}.global_seq
+              RETURNING id, stream_id, global_seq
+          )
+          SELECT 
+              ne.*,
+              lo.id AS offset_id
+          FROM next_event ne
+          JOIN locked_offset lo ON ne.stream_id_fk = lo.stream_id;
+        SQL
+      end
+
+      def sql_for_consumer_stats
+        @sql_for_consumer_stats ||= <<~SQL
+          SELECT 
+              group_id,
+              min(global_seq) as oldest_processed,
+              max(global_seq) as newest_processed,
+              count(*) as stream_count
+          FROM #{offsets_table}
+          GROUP BY group_id
+          HAVING min(global_seq) > 0;
+        SQL
+      end
 
       def table_name(name)
         [prefix, name].join('_').to_sym
@@ -172,8 +259,9 @@ module Sors
         JSON.parse(json, symbolize_names: true)
       end
 
-      def serialize_event(event)
+      def serialize_event(event, stream_id)
         row = event.to_h
+        row[:stream_id] = stream_id
         row[:payload] = JSON.dump(row[:payload]) if row[:payload]
         row
       end

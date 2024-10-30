@@ -18,9 +18,8 @@ RSpec.describe Sors::Configuration do
     it 'accepts anything with the Backend interface' do
       backend = Struct.new(
         :installed?,
-        :schedule_commands,
-        :reserve_next,
-        :append_events,
+        :reserve_next_for,
+        :append_to_stream,
         :read_event_batch,
         :read_event_stream,
         :transaction

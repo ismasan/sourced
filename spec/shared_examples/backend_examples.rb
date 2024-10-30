@@ -36,7 +36,7 @@ module BackendExamples
         evt1 = cmd1.follow_with_seq(BackendExamples::Tests::SomethingHappened1, 2, account_id: cmd1.payload.account_id)
         evt2 = cmd1.follow_with_seq(BackendExamples::Tests::SomethingHappened1, 3, account_id: cmd1.payload.account_id)
         evt3 = BackendExamples::Tests::SomethingHappened1.parse(stream_id: 's1', seq: 4, payload: { account_id: 1 })
-        backend.append_events([evt1, evt2, evt3])
+        backend.append_to_stream(cmd1.stream_id, [evt1, evt2, evt3])
         expect(Sors::Backends::ActiveRecordBackend::EventRecord.order(global_seq: :asc).pluck(:global_seq))
           .to eq([1, 2, 3])
       end
@@ -54,72 +54,73 @@ module BackendExamples
       end.not_to raise_error
     end
 
-    describe '#schedule_commands and #reserve_next' do
-      it 'schedules commands and reserves them in order of arrival' do
-        cmd1 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        cmd2 = Tests::DoSomething.parse(stream_id: 's2', payload: { account_id: 1 })
-        expect(backend.schedule_commands([cmd1, cmd2])).to be(true)
+    describe '#append_to_stream and #reserve_next_for' do
+      it 'schedules messages and reserves them in order of arrival' do
+        cmd1 = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        cmd2 = Tests::DoSomething.parse(stream_id: 's2', seq: 1, payload: { account_id: 2 })
+        evt1 = cmd1.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd1.payload.account_id)
+        evt2 = cmd2.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd1.payload.account_id)
 
-        streams = []
-        reserved_command = backend.reserve_next do |cmd|
-          streams << cmd.stream_id
-        end
+        expect(backend.append_to_stream('s1', [cmd1, evt1])).to be(true)
+        expect(backend.append_to_stream('s2', [cmd2, evt2])).to be(true)
 
-        expect(reserved_command.id).to eq(cmd1.id)
-        expect(streams).to eq(%w[s1])
+        group1_messages = []
+        group2_messages = []
 
-        backend.reserve_next do |cmd|
-          streams << cmd.stream_id
-        end
-
-        expect(streams).to eq(%w[s1 s2])
-
-        backend.reserve_next do |cmd|
-          streams << cmd.stream_id
-        end
-
-        expect(streams).to eq(%w[s1 s2])
-      end
-
-      it 'returns nil if no more commands to reserve' do
-        reserved_command = backend.reserve_next do |cmd|
-        end
-        expect(reserved_command).to be(nil)
-      end
-
-      it 'does not reserve a command if the stream is locked' do
-        cmd1 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        cmd2 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        cmd3 = Tests::DoSomething.parse(stream_id: 's3', payload: { account_id: 1 })
-        backend.schedule_commands([cmd1, cmd2, cmd3])
-
-        # Test that commands won't be reserved
-        # while a previous command for the same stream is being worked on
-        # #reserve_next should instead find a command for the next unlocked stream
-        cmds = []
-        backend.reserve_next do |cmd|
-          cmds << cmd.id
-          backend.reserve_next do |cmd|
-            cmds << cmd.id
+        #  Test that concurrent consumers for the same group
+        #  never process events for the same stream
+        Sync do |task|
+          task.async do
+            backend.reserve_next_for('group1') do |msg|
+              sleep 0.01
+              group1_messages << msg
+              true
+            end
+          end
+          task.async do
+            backend.reserve_next_for('group1') do |msg|
+              group1_messages << msg
+              true
+            end
           end
         end
-        expect(cmds).to eq([cmd1.id, cmd3.id])
 
-        backend.reserve_next do |cmd|
-          cmds << cmd.id
+        expect(group1_messages).to eq([cmd2, cmd1])
+
+        # Test that separate groups have their own cursors on streams
+        backend.reserve_next_for('group2') do |msg|
+          group2_messages << msg
+          true
         end
 
-        expect(cmds).to eq([cmd1.id, cmd3.id, cmd2.id])
+        expect(group2_messages).to eq([cmd1])
+
+        # Test that returning false does not advance the cursor
+        backend.reserve_next_for('group3') do |_msg|
+          false
+        end
+
+        # Verify state of groups with stats
+        stats = backend.stats
+
+        expect(stats.stream_count).to eq(2)
+        expect(stats.max_global_seq).to eq(4)
+        expect(stats.groups).to match_array([
+                                              { group_id: 'group2', oldest_processed: 1, newest_processed: 1,
+                                                stream_count: 1 },
+                                              { group_id: 'group1', oldest_processed: 1, newest_processed: 3,
+                                                stream_count: 2 }
+                                            ])
       end
     end
 
-    describe '#append_events, #read_event_batch' do
+    describe '#append_to_stream, #read_event_batch' do
       it 'reads event batch by causation_id' do
         cmd1 = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         evt1 = cmd1.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd1.payload.account_id)
         evt2 = cmd1.follow_with_seq(Tests::SomethingHappened1, 3, account_id: cmd1.payload.account_id)
         evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 4, payload: { account_id: 1 })
-        expect(backend.append_events([evt1, evt2, evt3])).to be(true)
+        expect(backend.append_to_stream('s1', [evt1, evt2, evt3])).to be(true)
 
         events = backend.read_event_batch(cmd1.id)
         expect(events).to eq([evt1, evt2])
@@ -128,10 +129,10 @@ module BackendExamples
       it 'fails if duplicate [stream_id, seq]' do
         evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
-        backend.append_events([evt1])
+        backend.append_to_stream('s1', [evt1])
 
         expect do
-          backend.append_events([evt2])
+          backend.append_to_stream('s1', [evt2])
         end.to raise_error(Sors::ConcurrentAppendError)
       end
     end
@@ -142,7 +143,8 @@ module BackendExamples
         evt1 = cmd1.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd1.payload.account_id)
         evt2 = cmd1.follow_with_seq(Tests::SomethingHappened1, 3, account_id: cmd1.payload.account_id)
         evt3 = Tests::SomethingHappened1.parse(stream_id: 's2', seq: 4, payload: { account_id: 1 })
-        expect(backend.append_events([evt1, evt2, evt3])).to be(true)
+        expect(backend.append_to_stream('s1', [evt1, evt2])).to be(true)
+        expect(backend.append_to_stream('s2', [evt3])).to be(true)
         events = backend.read_event_stream('s1')
         expect(events).to eq([evt1, evt2])
       end
@@ -151,7 +153,7 @@ module BackendExamples
         e1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         e2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
         e3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 2 })
-        expect(backend.append_events([e1, e2, e3])).to be(true)
+        expect(backend.append_to_stream('s1', [e1, e2, e3])).to be(true)
         events = backend.read_event_stream('s1', upto: 2)
         expect(events).to eq([e1, e2])
 

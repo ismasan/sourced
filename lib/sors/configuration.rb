@@ -9,9 +9,8 @@ module Sors
     #  Backends must expose these methods
     BackendInterface = Types::Interface[
       :installed?,
-      :schedule_commands,
-      :reserve_next,
-      :append_events,
+      :reserve_next_for,
+      :append_to_stream,
       :read_event_batch,
       :read_event_stream,
       :transaction
