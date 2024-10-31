@@ -77,18 +77,28 @@ module Sors
 
       def reserve_next_for(group_id, &)
         db.transaction do
-          row = db.fetch(sql_for_reserve_next, group_id, group_id, group_id).first
+          row = db.fetch(sql_for_reserve_next, group_id, group_id).first
           return unless row
 
           event = deserialize_event(row)
 
           if block_given?
             yield(event)
-            db[offsets_table].where(id: row[:offset_id]).update(global_seq: row[:global_seq])
+            # ACK
+            ack_event(group_id, row[:stream_id_fk], row[:global_seq])
           end
 
           event
         end
+      end
+
+      private def ack_event(group_id, stream_id, global_seq)
+        db[offsets_table]
+          .insert_conflict(
+            target: [:group_id, :stream_id],
+            update: { global_seq: Sequel[:excluded][:global_seq] }
+          )
+          .insert(stream_id:, group_id:, global_seq:)
       end
 
       private def base_events_query
@@ -211,29 +221,11 @@ module Sors
                   AND o.group_id = ?
               WHERE e.global_seq > COALESCE(o.global_seq, 0)
               ORDER BY e.global_seq
-          ),
-          next_event AS (
-              SELECT *
-              FROM candidate_events
-              WHERE lock_obtained = true
-              LIMIT 1
-          ),
-          locked_offset AS (
-              INSERT INTO #{offsets_table} (stream_id, group_id, global_seq)
-              SELECT 
-                  ne.stream_id_fk,
-                  ?,
-                  0
-              FROM next_event ne
-              ON CONFLICT (group_id, stream_id) DO UPDATE 
-              SET global_seq = #{offsets_table}.global_seq
-              RETURNING id, stream_id, global_seq
           )
-          SELECT 
-              ne.*,
-              lo.id AS offset_id
-          FROM next_event ne
-          JOIN locked_offset lo ON ne.stream_id_fk = lo.stream_id;
+          SELECT *
+          FROM candidate_events
+          WHERE lock_obtained = true
+          LIMIT 1;
         SQL
       end
 
