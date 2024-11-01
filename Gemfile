@@ -12,6 +12,7 @@ gem 'plumb'
 gem 'rspec', '~> 3.0'
 
 group :test do
+  gem 'dotenv'
   gem 'activerecord', require: false
   gem 'pg'
   gem 'sequel'

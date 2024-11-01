@@ -41,6 +41,7 @@ GEM
       irb (~> 1.10)
       reline (>= 0.3.8)
     diff-lcs (1.5.1)
+    dotenv (3.1.4)
     drb (2.2.1)
     fiber-annotation (0.2.0)
     fiber-local (1.1.0)
@@ -99,6 +100,7 @@ PLATFORMS
 DEPENDENCIES
   activerecord
   debug
+  dotenv
   pg
   plumb
   rake (~> 13.0)

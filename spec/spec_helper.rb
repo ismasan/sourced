@@ -1,14 +1,20 @@
 # frozen_string_literal: true
 
+require 'dotenv/load'
 require 'sors'
 require 'debug'
 require 'logger'
 require_relative './shared_examples/backend_examples'
 
-ENV['ENVIRONMENT'] = 'test'
+ENV['ENVIRONMENT'] ||= 'test'
 
 Sors.configure do |config|
-  config.logger = Logger.new(STDOUT)
+  if ENV['LOGS_DIR']
+    FileUtils.mkdir_p(ENV['LOGS_DIR'])
+    config.logger = Logger.new(File.join(ENV['LOGS_DIR'], 'test.log'))
+  else
+    config.logger = Logger.new(STDOUT)
+  end
 end
 
 RSpec.configure do |config|
