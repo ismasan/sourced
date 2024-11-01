@@ -7,7 +7,7 @@ module Sors
     include Singleton
 
     DeciderInterface = Types::Interface[:handled_commands, :handle_command]
-    ReactorInterface = Types::Interface[:handled_events, :handle_events]
+    ReactorInterface = Types::Interface[:consumer_info, :handled_events, :handle_events]
 
     class << self
       def register(...)
@@ -18,42 +18,40 @@ module Sors
         instance.handle(command)
       end
 
-      def reactors_for(...)
-        instance.reactors_for(...)
+      def reactors
+        instance.reactors
       end
     end
 
+    attr_reader :reactors
+
     def initialize
-      @machines = {}
-      @reactors = {}
+      @decider_lookup = {}
+      @reactor_lookup = {}
+      @reactors = Set.new
     end
 
     def register(thing)
       if DeciderInterface === thing
         thing.handled_commands.each do |cmd_type|
-          @machines[cmd_type] = thing
+          @decider_lookup[cmd_type] = thing
         end
       end
 
       return unless ReactorInterface === thing
 
+      # TODO: we're not using this
       thing.handled_events.each do |event_type|
-        @reactors[event_type] ||= []
-        @reactors[event_type] << thing
+        @reactor_lookup[event_type] ||= []
+        @reactor_lookup[event_type] << thing
       end
+
+      @reactors << thing
     end
 
     def handle(command)
-      machine = @machines.fetch(command.class)
-      machine.handle_command(command)
-    end
-
-    def reactors_for(events)
-      # test Array<Reactor>.uniq works
-      events.each.with_object([]) do |event, list|
-        reactors = @reactors[event.class] || []
-        list.concat(reactors)
-      end.flatten.uniq
+      decider = @decider_lookup.fetch(command.class)
+      decider.handle_command(command)
     end
   end
 end

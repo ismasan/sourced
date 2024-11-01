@@ -1,10 +1,8 @@
 # frozen_string_literal: true
 
-require 'sors/router'
-require 'sors/message'
-
 module Sors
   class Aggregate
+    extend Consumer
     include Decide
     include Evolve
     include React
@@ -118,6 +116,10 @@ module Sors
       setup(id)
     end
 
+    def inspect
+      %(<#{self.class} id:#{id} seq:#{seq}>)
+    end
+
     private def setup(id)
     end
 
@@ -129,23 +131,29 @@ module Sors
       # TODO: this might raise an exception from a worker
       # Think what to do with invalid commands here
       raise "invalid command #{command.inspect} #{command.errors.inspect}" unless command.valid?
-      logger.info "Handling #{command.type}"
+      logger.info "#{self.inspect} Handling #{command.type}"
       events = decide(command)
       evolve(events)
       transaction do
+        # Append events to backend
+        # This will cause other reactors to process these events
+        # asynchronously
         events = save(command, events)
         # Schedule a system command to handle this batch of events in the background
-        schedule_batch(command)
+        # schedule_batch(command)
       end
       [ self, events ]
     end
 
     # TODO: idempotent event and command handling
     # Reactor interface
+    # Handle events, return new commands
+    # Workers will handle route these commands
+    # to their target Deciders
     def handle_events(events, &map_commands)
       commands = react(events)
       commands = commands.map(&map_commands) if map_commands
-      schedule_commands(commands)
+      commands
     end
 
     def load(after: nil, upto: nil)
@@ -158,7 +166,9 @@ module Sors
     end
 
     def catch_up
-      load(after: seq)
+      seq_was = seq
+      load(after: seq_was)
+      [seq_was, seq]
     end
 
     def events
@@ -172,7 +182,7 @@ module Sors
         @seq += 1
         event.with(seq: @seq)
       end
-      backend.append_events(events)
+      backend.append_to_stream(command.stream_id, events)
       events
     end
 
@@ -188,13 +198,13 @@ module Sors
       cmd
     end
 
-    def schedule_batch(command, commands = [])
-      schedule_commands([command.follow(ProcessBatch), *commands])
-    end
-
-    def schedule_commands(commands)
-      backend.schedule_commands(commands)
-    end
+    # def schedule_batch(command, commands = [])
+    #   schedule_commands([command.follow(ProcessBatch), *commands])
+    # end
+    #
+    # def schedule_commands(commands)
+    #   backend.schedule_commands(commands)
+    # end
 
     def transaction(&)
       backend.transaction(&)

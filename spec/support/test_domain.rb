@@ -17,22 +17,6 @@ module TestDomain
     end
   end
 
-  class ItemCounter
-    include Singleton
-    def self.inc
-      instance.inc
-    end
-
-    attr_reader :count
-    def initialize
-      @count = 0
-    end
-
-    def inc
-      @count += 1
-    end
-  end
-
   CATALOG = {
     1 => { product_name: 'Apple', price: 100 },
     2 => { product_name: 'Banana', price: 50 },
@@ -43,14 +27,13 @@ module TestDomain
       Item = Sors::Types::Data[product_id: Integer, quantity: Integer, product_name: String, price: Integer]
 
       attr_reader :items, :id
-      attr_accessor :webhooks_sent, :status, :event_count
+      attr_accessor :webhooks_sent, :status
 
       def initialize(id)
         @id = id
         @items = {}
         @webhooks_sent = 0
         @status = :new
-        @event_count = 0
       end
 
       def total
@@ -134,10 +117,6 @@ module TestDomain
       end
     end
 
-    evolve :any do |cart, event|
-      cart.event_count += 1
-    end
-
     evolve CartStarted do |cart, event|
       cart.status = :open
     end
@@ -152,11 +131,6 @@ module TestDomain
 
     react ItemAdded do |event|
       event.follow(SendItemAddedWebhook, product_id: event.payload.product_id)
-    end
-
-    react_sync ItemAdded do |_cart, event|
-      ItemCounter.inc
-      nil
     end
 
     decide SendItemAddedWebhook do |_cart, command|

@@ -4,11 +4,6 @@ require 'spec_helper'
 require_relative './support/test_domain'
 
 RSpec.describe Sors::Machine do
-  specify 'Router.reactors_for' do
-    evt = TestDomain::Carts::ItemAdded.new(stram_id: '1', data: { item_id: '1', quantity: 1 })
-    expect(Sors::Router.reactors_for([evt])).to eq([TestDomain::Carts])
-  end
-
   specify 'handling commands, producing events, scheduling reactors' do
     cmd = TestDomain::Carts::AddItem.parse(
       stream_id: 'cart-1',
@@ -16,7 +11,6 @@ RSpec.describe Sors::Machine do
     )
     cart, events = Sors::Router.handle(cmd)
     expect(cart.total).to eq(200)
-    expect(cart.event_count).to eq(2)
     expect(cart.status).to eq(:open)
     expect(events.size).to eq(3)
     expect(events[0]).to be_a(TestDomain::Carts::AddItem)
@@ -34,9 +28,6 @@ RSpec.describe Sors::Machine do
                                         TestDomain::Carts::CartStarted,
                                         TestDomain::Carts::ItemAdded
                                       ])
-
-    # react_sync blocks must have run by now
-    expect(TestDomain::ItemCounter.instance.count).to eq(1)
 
     # Run reactors synchronously and test that they produce new events
     # Normally these reactors run in background fibers or processes

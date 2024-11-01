@@ -2,10 +2,10 @@
 
 module Sors
   class Machine
+    extend Consumer
     include Decide
     include Evolve
     include React
-    include ReactSync
 
     attr_reader :backend
 
@@ -61,16 +61,19 @@ module Sors
     end
 
     def handle_command(command)
-      logger.info "Handling #{command.type}"
+      # TODO: this might raise an exception from a worker
+      # Think what to do with invalid commands here
+      raise "invalid command #{command.inspect} #{command.errors.inspect}" unless command.valid?
+      logger.info "#{self.class} Handling #{command.type}"
       state = load(command.stream_id)
       events = decide(state, command)
       state = evolve(state, events)
       transaction do
         events = save(state, command, events)
         # handle sync reactors here
-        commands = react_sync(state, events)
+        # commands = react_sync(state, events)
         # Schedule a system command to handle this batch of events in the background
-        schedule_batch(command, commands)
+        # schedule_batch(command, commands)
         # schedule_commands(commands)
       end
       [ state, events ]
@@ -80,7 +83,7 @@ module Sors
     def handle_events(events, &map_commands)
       commands = react(events)
       commands = commands.map(&map_commands) if map_commands
-      schedule_commands(commands)
+      commands
     end
 
     private
@@ -102,17 +105,17 @@ module Sors
         event.with(seq: @seq)
       end
       Sors.config.logger.info "Persisting #{state}, #{events} to #{backend.inspect}"
-      backend.append_events(events)
+      backend.append_to_stream(command.stream_id, events)
       events
     end
 
-    def schedule_batch(command, commands)
-      schedule_commands([command.follow(ProcessBatch), *commands])
-    end
-
-    def schedule_commands(commands)
-      backend.schedule_commands(commands)
-    end
+    # def schedule_batch(command, commands)
+    #   schedule_commands([command.follow(ProcessBatch), *commands])
+    # end
+    #
+    # def schedule_commands(commands)
+    #   backend.schedule_commands(commands)
+    # end
 
     def transaction(&)
       backend.transaction(&)

@@ -25,12 +25,13 @@ module Sors
   ProcessBatch = Message.define('sors.batch.process')
 end
 
+require 'sors/consumer'
 require 'sors/decide'
 require 'sors/evolve'
 require 'sors/react'
-require 'sors/react_sync'
 require 'sors/configuration'
 require 'sors/router'
+require 'sors/message'
 require 'sors/machine'
 require 'sors/supervisor'
 require 'sors/rails/railtie' if defined?(Rails::Railtie)

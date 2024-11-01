@@ -64,6 +64,7 @@ module Sors
 
       registry[type_str] = Class.new(self) do
         def self.node_name = :data
+        define_singleton_method(:type) { type_str }
 
         attribute :type, Types::Static[type_str]
         if payload_schema
