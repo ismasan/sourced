@@ -32,7 +32,7 @@ module Sors
           end
         end
 
-        def reserve_next(&)
+        def reserve_next(handled_events, &)
           evt = nil
           offset = nil
           index = -1
@@ -41,7 +41,7 @@ module Sors
             offset = @offsets[e.stream_id]
             if offset.locked # stream locked by another consumer in the group
               next
-            elsif idx > offset.index # new event for the stream
+            elsif idx > offset.index && handled_events.include?(e.class) # new event for the stream
               evt = e
               offset.locked = true
               index = idx
@@ -70,21 +70,30 @@ module Sors
       attr_reader :events
 
       def initialize
+        clear!
+        @mutex = Mutex.new
+        @in_tx = false
+      end
+
+      def inspect
+        %(<#{self.class} events:#{events.size} streams:#{@events_by_stream_id.size}>)
+      end
+
+      def clear!
         @events = []
         @groups = Hash.new { |h, k| h[k] = Group.new(k, self) }
         @events_by_causation_id = Hash.new { |h, k| h[k] = [] }
         @events_by_stream_id = Hash.new { |h, k| h[k] = [] }
         @stream_id_seq_index = {}
-        @mutex = Mutex.new
-        @in_tx = false
       end
 
       def installed? = true
 
-      def reserve_next_for(group_id, &)
+      def reserve_next_for_reactor(reactor, &)
+        group_id = reactor.consumer_info.group_id
         transaction do
           group = @groups[group_id]
-          group.reserve_next(&)
+          group.reserve_next(reactor.handled_events, &)
         end
       end
 

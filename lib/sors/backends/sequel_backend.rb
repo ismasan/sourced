@@ -75,9 +75,13 @@ module Sors
         raise Sors::ConcurrentAppendError, e.message
       end
 
-      def reserve_next_for(group_id, &)
+      # @param reactor [Sors::Router::ReactorInterface]
+      def reserve_next_for_reactor(reactor, &)
+        group_id = reactor.consumer_info.group_id
+        handled_events = reactor.handled_events.map(&:type)
+
         db.transaction do
-          row = db.fetch(sql_for_reserve_next, group_id, group_id).first
+          row = db.fetch(sql_for_reserve_next_with_events(handled_events), group_id, group_id).first
           return unless row
 
           event = deserialize_event(row)
@@ -200,8 +204,17 @@ module Sors
 
       attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table
 
-      def sql_for_reserve_next
-        @sql_for_reserve_next ||= <<~SQL
+      def sql_for_reserve_next_with_events(handled_events)
+        # This code is ony called for reactors where .handles_any_event? is true
+        # which means reactors that have some .handled_events
+        # OR .evolves_any_event? for projections
+        # If we have handed_events, filter by those.
+        # If handled_events is empty, it means that reactor handles :any event
+        # so we should include all events in this query
+        event_types = handled_events.map { |e| "'#{e}'" }
+        event_types_sql = event_types.any? ? " AND e.type IN(#{event_types.join(',')})" : ''
+
+        <<~SQL
           WITH candidate_events AS (
               SELECT 
                   e.global_seq,
@@ -219,7 +232,7 @@ module Sors
               JOIN #{streams_table} s ON e.stream_id = s.id
               LEFT JOIN #{offsets_table} o ON o.stream_id = e.stream_id 
                   AND o.group_id = ?
-              WHERE e.global_seq > COALESCE(o.global_seq, 0)
+              WHERE e.global_seq > COALESCE(o.global_seq, 0)#{event_types_sql}
               ORDER BY e.global_seq
           )
           SELECT *

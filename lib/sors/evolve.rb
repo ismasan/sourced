@@ -43,6 +43,8 @@ module Sors
         end
       end
 
+      # These two are the Reactor interface
+      # expected by Worker
       def handle_events(_events)
         raise NoMethodError, "implement .handle_events(Array<Event>) in #{self}"
       end

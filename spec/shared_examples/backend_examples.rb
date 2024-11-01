@@ -8,6 +8,9 @@ module BackendExamples
     SomethingHappened1 = Sors::Message.define('tests.something_happened1') do
       attribute :account_id, Integer
     end
+    SomethingHappened2 = Sors::Message.define('tests.something_happened2') do
+      attribute :account_id, Integer
+    end
   end
 
   RSpec.shared_examples 'an ActiveRecord backend' do |_database_config|
@@ -54,15 +57,36 @@ module BackendExamples
       end.not_to raise_error
     end
 
-    describe '#append_to_stream and #reserve_next_for' do
+    describe '#append_to_stream and #reserve_next_for_reactor' do
       it 'schedules messages and reserves them in order of arrival' do
-        cmd1 = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
-        cmd2 = Tests::DoSomething.parse(stream_id: 's2', seq: 1, payload: { account_id: 2 })
-        evt1 = cmd1.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd1.payload.account_id)
-        evt2 = cmd2.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd2.payload.account_id)
+        cmd_a = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        cmd_b = Tests::DoSomething.parse(stream_id: 's2', seq: 1, payload: { account_id: 2 })
+        evt_a1 = cmd_a.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd_a.payload.account_id)
+        evt_a2 = cmd_a.follow_with_seq(Tests::SomethingHappened1, 3, account_id: cmd_a.payload.account_id)
+        evt_b1 = cmd_b.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd_b.payload.account_id)
 
-        expect(backend.append_to_stream('s1', [cmd1, evt1])).to be(true)
-        expect(backend.append_to_stream('s2', [cmd2, evt2])).to be(true)
+        reactor1 = Class.new do
+          def self.consumer_info
+            Sors::Consumer::ConsumerInfo.new(group_id: 'group1')
+          end
+
+          def self.handled_events
+            [Tests::SomethingHappened1]
+          end
+        end
+
+        reactor2 = Class.new do
+          def self.consumer_info
+            Sors::Consumer::ConsumerInfo.new(group_id: 'group2')
+          end
+
+          def self.handled_events
+            [Tests::SomethingHappened1]
+          end
+        end
+
+        expect(backend.append_to_stream('s1', [cmd_a, evt_a1, evt_a2])).to be(true)
+        expect(backend.append_to_stream('s2', [cmd_b, evt_b1])).to be(true)
 
         group1_messages = []
         group2_messages = []
@@ -71,49 +95,85 @@ module BackendExamples
         #  never process events for the same stream
         Sync do |task|
           task.async do
-            backend.reserve_next_for('group1') do |msg|
+            backend.reserve_next_for_reactor(reactor1) do |msg|
               sleep 0.01
               group1_messages << msg
             end
           end
           task.async do
-            backend.reserve_next_for('group1') do |msg|
+            backend.reserve_next_for_reactor(reactor1) do |msg|
               group1_messages << msg
             end
           end
         end
 
-        expect(group1_messages).to eq([cmd2, cmd1])
+        expect(group1_messages).to eq([evt_b1, evt_a1])
 
         # Test that separate groups have their own cursors on streams
-        backend.reserve_next_for('group2') do |msg|
+        backend.reserve_next_for_reactor(reactor2) do |msg|
           group2_messages << msg
         end
 
-        expect(group2_messages).to eq([cmd1])
+        expect(group2_messages).to eq([evt_a1])
 
         # Test that NOOP handlers still advance the cursor
-        backend.reserve_next_for('group3') { |_msg| }
-
+        backend.reserve_next_for_reactor(reactor2) { |_msg| }
+        #
         # Verify state of groups with stats
         stats = backend.stats
 
         expect(stats.stream_count).to eq(2)
-        expect(stats.max_global_seq).to eq(4)
+        expect(stats.max_global_seq).to eq(5)
         expect(stats.groups).to match_array([
-          { group_id: 'group2', oldest_processed: 1, newest_processed: 1, stream_count: 1 },
-          { group_id: 'group3', oldest_processed: 1, newest_processed: 1, stream_count: 1 },
-          { group_id: 'group1', oldest_processed: 1, newest_processed: 3, stream_count: 2 }
+          { group_id: 'group2', oldest_processed: 3, newest_processed: 3, stream_count: 1 },
+          { group_id: 'group1', oldest_processed: 2, newest_processed: 5, stream_count: 2 }
+        ])
+
+        # Test that reactors with events not in the stream do not advance the cursor
+        reactor3 = Class.new do
+          def self.consumer_info
+            Sors::Consumer::ConsumerInfo.new(group_id: 'group3')
+          end
+
+          def self.handled_events
+            [Tests::SomethingHappened2]
+          end
+        end
+
+        group3_messages = []
+
+        backend.reserve_next_for_reactor(reactor3) do |msg|
+          group3_messages << msg
+        end
+
+        expect(group3_messages).to eq([])
+
+        expect(backend.stats.groups).to match_array([
+          { group_id: 'group2', oldest_processed: 3, newest_processed: 3, stream_count: 1 },
+          { group_id: 'group1', oldest_processed: 2, newest_processed: 5, stream_count: 2 }
+        ])
+
+        # Now append an event that Reactor3 cares about
+        evt_a3 = cmd_a.follow_with_seq(Tests::SomethingHappened2, 4, account_id: cmd_a.payload.account_id)
+        backend.append_to_stream('s1', [evt_a3])
+
+        backend.reserve_next_for_reactor(reactor3) do |msg|
+          group3_messages << msg
+        end
+
+        expect(group3_messages).to eq([evt_a3])
+
+        expect(backend.stats.groups).to match_array([
+          { group_id: 'group1', oldest_processed: 2, newest_processed: 5, stream_count: 2 },
+          { group_id: 'group2', oldest_processed: 3, newest_processed: 3, stream_count: 1 },
+          { group_id: 'group3', oldest_processed: 6, newest_processed: 6, stream_count: 1 },
         ])
 
         #  Test that #reserve_next_for returns next event, or nil
-        evt = backend.reserve_next_for('group1') { true }
-        expect(evt).to eq(evt1)
+        evt = backend.reserve_next_for_reactor(reactor2) { true }
+        expect(evt).to eq(evt_b1)
 
-        evt = backend.reserve_next_for('group1') { true }
-        expect(evt).to eq(evt2)
-
-        evt = backend.reserve_next_for('group1') { true }
+        evt = backend.reserve_next_for_reactor(reactor2) { true }
         expect(evt).to be(nil)
       end
     end
