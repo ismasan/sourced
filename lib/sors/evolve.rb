@@ -3,6 +3,7 @@
 module Sors
   module Evolve
     PREFIX = 'evolution'
+    NOOP_HANDLER = ->(*_) { nil }
 
     def self.included(base)
       super
@@ -49,6 +50,7 @@ module Sors
 
       def evolve(event_type, &block)
         handled_events_for_evolve << event_type unless event_type.is_a?(Symbol)
+        block = NOOP_HANDLER unless block_given?
         define_method(Sors.message_method_name(Evolve::PREFIX, event_type.to_s), &block)
       end
     end
