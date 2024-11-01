@@ -151,7 +151,7 @@ class CartListings < Sors::Aggregate
   end
 
   def setup(id)
-    @cart = { id:, items: [], status: :open, seq: 0, seqs: [] }
+    @cart = { id:, items: [], status: :open, seq: 0 }
     FileUtils.mkdir_p('examples/carts')
   end
 
