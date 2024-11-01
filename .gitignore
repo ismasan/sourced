@@ -1,3 +1,4 @@
 .rspec_status
 .env
 examples/carts
+logs/
