@@ -24,10 +24,10 @@ RSpec.describe Sors::Machine do
     # Test that initial events were appended to the store synchronously
     events = Sors.config.backend.read_event_stream('cart-1')
     expect(events.map(&:class)).to eq([
-                                        TestDomain::Carts::AddItem,
-                                        TestDomain::Carts::CartStarted,
-                                        TestDomain::Carts::ItemAdded
-                                      ])
+      TestDomain::Carts::AddItem,
+      TestDomain::Carts::CartStarted,
+      TestDomain::Carts::ItemAdded
+    ])
 
     # Run reactors synchronously and test that they produce new events
     # Normally these reactors run in background fibers or processes
@@ -36,12 +36,12 @@ RSpec.describe Sors::Machine do
 
     events = Sors.config.backend.read_event_stream('cart-1')
     expect(events.map(&:class)).to eq([
-                                        TestDomain::Carts::AddItem,
-                                        TestDomain::Carts::CartStarted,
-                                        TestDomain::Carts::ItemAdded,
-                                        TestDomain::Carts::SendItemAddedWebhook,
-                                        TestDomain::Carts::ItemAddedWebhookSent
-                                      ])
+      TestDomain::Carts::AddItem,
+      TestDomain::Carts::CartStarted,
+      TestDomain::Carts::ItemAdded,
+      TestDomain::Carts::SendItemAddedWebhook,
+      TestDomain::Carts::ItemAddedWebhookSent
+    ])
 
     cart = TestDomain::Carts.replay('cart-1')
     expect(cart.webhooks_sent).to eq(1)
@@ -61,9 +61,13 @@ RSpec.describe Sors::Machine do
     end
 
     expect(machine.handled_commands).to eq([*TestDomain::Carts.handled_commands, TestDomain::Carts::RandomCommand])
-    expect(machine.handled_events_for_evolve).to eq([*TestDomain::Carts.handled_events_for_evolve,
-                                                     TestDomain::Carts::RandomEvent])
-    expect(machine.handled_events_for_react).to eq([*TestDomain::Carts.handled_events_for_react,
-                                                    TestDomain::Carts::RandomEvent])
+    expect(machine.handled_events_for_evolve).to eq([
+      *TestDomain::Carts.handled_events_for_evolve,
+      TestDomain::Carts::RandomEvent
+    ])
+    expect(machine.handled_events_for_react).to eq([
+      *TestDomain::Carts.handled_events_for_react,
+      TestDomain::Carts::RandomEvent
+    ])
   end
 end
