@@ -4,6 +4,10 @@ require 'spec_helper'
 require_relative './support/test_domain'
 
 RSpec.describe Sors::Machine do
+  before do
+    Sors.config.backend.clear!
+  end
+
   specify 'handling commands, producing events, scheduling reactors' do
     cmd = TestDomain::Carts::AddItem.parse(
       stream_id: 'cart-1',

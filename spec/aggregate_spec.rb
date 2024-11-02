@@ -27,6 +27,7 @@ end
 RSpec.describe Sors::Aggregate do
   describe '.sync' do
     before do
+      Sors.config.backend.clear!
       allow(TestAggregate::Listener).to receive(:call)
     end
 
