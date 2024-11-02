@@ -8,6 +8,7 @@ module EvolveTest
 
     Event1 = Sors::Message.define('evolvetest.reactor.event1')
     Event2 = Sors::Message.define('evolvetest.reactor.event2')
+    Event3 = Sors::Message.define('evolvetest.reactor.event3')
 
     evolve Event1 do |state, event|
       state << event
@@ -38,6 +39,12 @@ module EvolveTest
 
     evolve_all Reactor do |state, event|
       state << event
+    end
+  end
+
+  class WithBefore < EvolveAll
+    before_evolve do |state, event|
+      state << event.seq
     end
   end
 end
@@ -73,5 +80,15 @@ RSpec.describe Sors::Evolve do
     state = []
     new_state = EvolveTest::EvolveAll.new.evolve(state.dup, [evt1, evt2])
     expect(new_state).to eq([evt1, evt2])
+  end
+
+  specify '.before_evolve' do
+    evt1 = EvolveTest::Reactor::Event1.new(stream_id: '1', seq: 1)
+    evt2 = EvolveTest::Reactor::Event2.new(stream_id: '1', seq: 2)
+    # evt3 is not handled by the reactor
+    evt3 = EvolveTest::Reactor::Event3.new(stream_id: '1', seq: 3)
+    state = []
+    new_state = EvolveTest::WithBefore.new.evolve(state.dup, [evt1, evt2, evt3])
+    expect(new_state).to eq([1, evt1, 2, evt2])
   end
 end

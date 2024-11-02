@@ -17,17 +17,27 @@ module Sors
       in [events]
         events.each do |event|
           method_name = Sors.message_method_name(Evolve::PREFIX, event.class.to_s)
-          send(method_name, event) if respond_to?(method_name)
+          if respond_to?(method_name)
+            before_evolve(event)
+            send(method_name, event) 
+        end
         end
       in [obj, events]
         state = obj
         events.each do |event|
           method_name = Sors.message_method_name(Evolve::PREFIX, event.class.to_s)
-          send(method_name, state, event) if respond_to?(method_name)
+          if respond_to?(method_name)
+            before_evolve(state, event)
+            send(method_name, state, event)
+          end
         end
       end
 
       state
+    end
+
+    private def before_evolve(*_)
+      nil
     end
 
     module ClassMethods
@@ -58,6 +68,15 @@ module Sors
         handled_events_for_evolve << event_type unless event_type.is_a?(Symbol)
         block = NOOP_HANDLER unless block_given?
         define_method(Sors.message_method_name(Evolve::PREFIX, event_type.to_s), &block)
+      end
+
+      # Run this block before any of the registered event handlers
+      # Example:
+      #   before_evolve do |event|
+      #     @updated_at = event.created_at
+      #   end
+      def before_evolve(&block)
+        define_method(:before_evolve, &block)
       end
 
       # Example:
