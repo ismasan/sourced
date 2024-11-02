@@ -28,7 +28,6 @@ module Sors
       @running = false
       @name = [Process.pid, name].join('-')
       @poll_interval = poll_interval
-      @run_reactors_method = async ? :run_reactors_async : :run_reactors_sync
       # TODO: If reactors have a :weight, we can use that
       # to populate this array according to the weight
       # so that some reactors are picked more often than others
@@ -116,21 +115,5 @@ module Sors
     private
 
     attr_reader :logger
-
-    def run_reactors(reactors, batch, &)
-      send(@run_reactors_method, reactors, batch, &)
-    end
-
-    def run_reactors_sync(reactors, batch, &)
-      reactors.flat_map do |reactor|
-        reactor.handle_events(batch, &)
-      end
-    end
-
-    def run_reactors_async(reactors, batch, &)
-      runs = reactors.map { |reactor| Async { reactor.handle_events(batch, &) } }
-      # Reactors return new commands
-      runs.flat_map(&:wait)
-    end
   end
 end
