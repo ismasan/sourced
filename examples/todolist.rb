@@ -151,7 +151,7 @@ class CartListings < Sors::Aggregate
   end
 
   def setup(id)
-    @cart = { id:, items: [], status: :open, seq: 0 }
+    @cart = { id:, items: [], status: :open, seq: 0, seqs: [] }
     FileUtils.mkdir_p('examples/carts')
   end
 
@@ -159,18 +159,15 @@ class CartListings < Sors::Aggregate
     File.write("./examples/carts/#{@cart[:id]}.json", JSON.pretty_generate(@cart))
   end
 
-  # This is wrong.
-  # :any means this reactor will get ANY events from ANY AGGREGATE
-  # ie. Cart, Mailer
-  # Instead we want something like
-  # evolve_any_from Cart
-  # or
-  # evolve_any_from 'cart'
-  # evolve :any do |event|
-  #   puts "ANY EVENT: #{event.stream_id} #{event.type} #{event.seq}"
-  #   @cart[:seq] = event.seq
-  #   @cart[:seqs] << event.seq
-  # end
+  # Register all events from Cart
+  # So that before_evolve can work
+  evolve_all Cart.handled_commands
+  evolve_all Cart
+
+  before_evolve do |event|
+    @cart[:seq] = event.seq
+    @cart[:seqs] << event.seq
+  end
 
   evolve Cart::Placed do |event|
     @cart[:status] = :placed
@@ -178,10 +175,6 @@ class CartListings < Sors::Aggregate
 
   evolve Cart::ItemAdded do |event|
     @cart[:items] << event.payload.to_h
-  end
-
-  evolve Cart::Notified do |event|
-    @cart[:notified] = true
   end
 end
 
