@@ -12,10 +12,6 @@ module TestAggregate
   class WithSyncCallable < Sors::Aggregate
     ThingDone = Sors::Message.define('with_sync_block.thing_done')
 
-    def setup(id)
-      @state = []
-    end
-
     command :do_thing, 'with_sync_block.do_thing' do |cmd|
       cmd.follow(ThingDone)
     end
