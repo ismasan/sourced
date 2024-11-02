@@ -160,7 +160,7 @@ class CartListings < Sors::Aggregate
   end
 
   # Register all events from Cart
-  # So that before_evolve can work
+  # So that before_evolve runs before all cart events
   evolve_all Cart.handled_commands
   evolve_all Cart
 
