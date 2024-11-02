@@ -32,6 +32,14 @@ module EvolveTest
 
     evolve Reactor::Event1
   end
+
+  class EvolveAll
+    include Sors::Evolve
+
+    evolve_all Reactor do |state, event|
+      state << event
+    end
+  end
 end
 
 RSpec.describe Sors::Evolve do
@@ -57,5 +65,13 @@ RSpec.describe Sors::Evolve do
     state = []
     new_state = EvolveTest::Noop.new.evolve(state, [evt1])
     expect(new_state).to eq(state)
+  end
+
+  specify '.evolve_all' do
+    evt1 = EvolveTest::Reactor::Event1.new(stream_id: '1', seq: 1)
+    evt2 = EvolveTest::Reactor::Event2.new(stream_id: '1', seq: 2)
+    state = []
+    new_state = EvolveTest::EvolveAll.new.evolve(state.dup, [evt1, evt2])
+    expect(new_state).to eq([evt1, evt2])
   end
 end

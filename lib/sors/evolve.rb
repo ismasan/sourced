@@ -48,10 +48,35 @@ module Sors
         @handled_events_for_evolve ||= []
       end
 
+      # Example:
+      #   evolve :event_type do |event|
+      #     @updated_at = event.created_at
+      #   end
+      #
+      # @param event_type [Sors::Message]
       def evolve(event_type, &block)
         handled_events_for_evolve << event_type unless event_type.is_a?(Symbol)
         block = NOOP_HANDLER unless block_given?
         define_method(Sors.message_method_name(Evolve::PREFIX, event_type.to_s), &block)
+      end
+
+      # Example:
+      #   # With an Array of event types
+      #   evolve_all [:event_type1, :event_type2] do |event|
+      #     @updated_at = event.created_at
+      #   end
+      #
+      #   # From another Evolver that responds to #handled_events_for_evolve
+      #   evolve_all CartAggregate do |event|
+      #     @updated_at = event.created_at
+      #   end
+      #
+      # @param event_list [Array<Sors::Message>, #handled_events_for_evolve() {Array<Sors::Message>}]
+      def evolve_all(event_list, &block)
+        event_list = event_list.handled_events_for_evolve if event_list.respond_to?(:handled_events_for_evolve)
+        event_list.each do |event_type|
+          evolve(event_type, &block)
+        end
       end
     end
   end
