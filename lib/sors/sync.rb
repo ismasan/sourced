@@ -12,7 +12,7 @@ module Sors
         case blk
         when Proc
           if blk.arity == 2 # (command, events)
-            instance_exec(state, command, &blk)
+            instance_exec(command, events, &blk)
           else # (state, command, events)
             instance_exec(state, command, events, &blk)
           end

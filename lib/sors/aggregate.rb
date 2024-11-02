@@ -176,6 +176,11 @@ module Sors
       backend.read_event_stream(id, upto: seq)
     end
 
+    # Register a first sync block to append new events to backend
+    sync do |command, events|
+      backend.append_to_stream(command.stream_id, [command, *events])
+    end
+
     def save(command, events)
       # Update :seq for each event based on seq
       # TODO: we do the same in Machine#save. DRY this up
@@ -184,7 +189,6 @@ module Sors
         event.with(seq: @seq)
       end
       backend.transaction do
-        backend.append_to_stream(command.stream_id, events)
         run_sync_blocks(self, events[0], events[1..-1])
       end
       events

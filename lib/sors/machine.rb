@@ -6,6 +6,7 @@ module Sors
     include Decide
     include Evolve
     include React
+    include Sync
 
     attr_reader :backend
 
@@ -97,6 +98,11 @@ module Sors
       evolve(state, events)
     end
 
+    # Register a first sync block to append new events to backend
+    sync do |_state, command, events|
+      backend.append_to_stream(command.stream_id, [command, *events])
+    end
+
     def save(state, command, events)
       # Update :seq for each event based on seq
       # TODO: we do the same in Aggregate#save. DRY this up
@@ -104,8 +110,9 @@ module Sors
         @seq += 1
         event.with(seq: @seq)
       end
-      Sors.config.logger.info "Persisting #{state}, #{events} to #{backend.inspect}"
-      backend.append_to_stream(command.stream_id, events)
+      backend.transaction do
+        run_sync_blocks(state, events[0], events[1..-1])
+      end
       events
     end
 

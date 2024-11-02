@@ -42,6 +42,10 @@ RSpec.describe Sors::Aggregate do
     end
 
     specify 'raising an exception cancels append transaction' do
+      allow(TestAggregate::Listener).to receive(:call).and_raise('boom')
+      aggregate = TestAggregate::WithSyncBlock.build('id')
+      expect { aggregate.do_thing }.to raise_error('boom')
+      expect(Sors.config.backend.read_event_stream('id')).to be_empty
     end
   end
 
