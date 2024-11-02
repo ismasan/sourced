@@ -137,26 +137,25 @@ class CartListings < Sors::Aggregate
       # then apply "new" events
       # TODO: the current state already includes
       # the new events, so we need to load upto events.first.seq
-      puts "LOAD UPTO #{self.name} #{events.first.stream_id} #{events.first.seq - 1}"
       instance = load(events.first.stream_id, upto: events.first.seq - 1)
-      puts "HANDLE #{self.name} #{events.first.stream_id} #{events.first.seq}"
       instance.handle_events(events)
     end
   end
 
-  def handle_events(events, &map_commands)
+  def handle_events(events)
     evolve(events)
     save
     [] # no commands
   end
 
   def setup(id)
-    @cart = { id:, items: [], status: :open, seq: 0, seqs: [] }
     FileUtils.mkdir_p('examples/carts')
+    @path = "./examples/carts/#{id}.json"
+    @cart = { id:, items: [], status: :open, seq: 0, seqs: [] }
   end
 
   def save
-    File.write("./examples/carts/#{@cart[:id]}.json", JSON.pretty_generate(@cart))
+    File.write(@path, JSON.pretty_generate(@cart))
   end
 
   # Register all events from Cart
