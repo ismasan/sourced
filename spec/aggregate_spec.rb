@@ -9,7 +9,7 @@ module TestAggregate
     end
   end
 
-  class WithSyncBlock < Sors::Aggregate
+  class WithSyncCallable < Sors::Aggregate
     ThingDone = Sors::Message.define('with_sync_block.thing_done')
 
     def setup(id)
@@ -32,18 +32,18 @@ RSpec.describe Sors::Aggregate do
     end
 
     specify 'with a .call(state, command, events) interface' do
-      aggregate = TestAggregate::WithSyncBlock.build('id')
+      aggregate = TestAggregate::WithSyncCallable.build('id')
       aggregate.do_thing
       expect(TestAggregate::Listener).to have_received(:call) do |state, command, events|
         expect(state).to eq(aggregate)
-        expect(command).to be_a(TestAggregate::WithSyncBlock::DoThing)
-        expect(events.map(&:class)).to eq([TestAggregate::WithSyncBlock::ThingDone])
+        expect(command).to be_a(TestAggregate::WithSyncCallable::DoThing)
+        expect(events.map(&:class)).to eq([TestAggregate::WithSyncCallable::ThingDone])
       end
     end
 
     specify 'raising an exception cancels append transaction' do
       allow(TestAggregate::Listener).to receive(:call).and_raise('boom')
-      aggregate = TestAggregate::WithSyncBlock.build('id')
+      aggregate = TestAggregate::WithSyncCallable.build('id')
       expect { aggregate.do_thing }.to raise_error('boom')
       expect(Sors.config.backend.read_event_stream('id')).to be_empty
     end
