@@ -81,10 +81,8 @@ module Sors
     end
 
     # Reactor interface
-    def handle_events(events, &map_commands)
-      commands = react(events)
-      commands = commands.map(&map_commands) if map_commands
-      commands
+    def handle_events(events)
+      react(events)
     end
 
     private

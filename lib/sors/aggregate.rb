@@ -139,7 +139,7 @@ module Sors
         # Append events to backend
         # This will cause other reactors to process these events
         # asynchronously
-        events = save(command, events)
+        events = save(self, command, events)
         # Schedule a system command to handle this batch of events in the background
         # schedule_batch(command)
       end
@@ -151,10 +151,8 @@ module Sors
     # Handle events, return new commands
     # Workers will handle route these commands
     # to their target Deciders
-    def handle_events(events, &map_commands)
-      commands = react(events)
-      commands = commands.map(&map_commands) if map_commands
-      commands
+    def handle_events(events)
+      react(events)
     end
 
     def load(after: nil, upto: nil)
@@ -181,7 +179,7 @@ module Sors
       backend.append_to_stream(command.stream_id, [command, *events])
     end
 
-    def save(command, events)
+    def save(state, command, events)
       # Update :seq for each event based on seq
       # TODO: we do the same in Machine#save. DRY this up
       events = [command, *events].map do |event|
@@ -189,7 +187,7 @@ module Sors
         event.with(seq: @seq)
       end
       backend.transaction do
-        run_sync_blocks(self, events[0], events[1..-1])
+        run_sync_blocks(state, events[0], events[1..-1])
       end
       events
     end
