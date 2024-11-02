@@ -57,6 +57,19 @@ module BackendExamples
       end.not_to raise_error
     end
 
+    describe '#transaction' do
+      it 'resets append on error' do 
+        evt = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        expect do
+          backend.transaction do
+            backend.append_to_stream('s1', [evt])
+            raise 'boom'
+          end
+        end.to raise_error('boom')
+        expect(backend.read_event_stream('s1').any?).to be(false)
+      end
+    end
+
     describe '#append_to_stream and #reserve_next_for_reactor' do
       it 'schedules messages and reserves them in order of arrival' do
         cmd_a = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
