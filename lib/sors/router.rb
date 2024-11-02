@@ -6,9 +6,6 @@ module Sors
   class Router
     include Singleton
 
-    DeciderInterface = Types::Interface[:handled_commands, :handle_command]
-    ReactorInterface = Types::Interface[:consumer_info, :handled_events, :handle_events]
-
     class << self
       def register(...)
         instance.register(...)

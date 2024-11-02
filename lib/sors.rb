@@ -22,7 +22,8 @@ module Sors
     "__handle_#{prefix}_#{name.split('::').map(&:downcase).join('_')}"
   end
 
-  ProcessBatch = Message.define('sors.batch.process')
+  DeciderInterface = Types::Interface[:handled_commands, :handle_command]
+  ReactorInterface = Types::Interface[:consumer_info, :handled_events, :handle_events]
 end
 
 require 'sors/consumer'

@@ -42,13 +42,13 @@ module Sors
         when Proc
           raise ArgumentError, 'sync block must accept 2 or 3 arguments' unless (2..3).include?(callable.arity)
           callable
-        when Router::ReactorInterface
+        when ReactorInterface
           # Wrap reactors here
           callable
         when CallableInterface
           callable
         else
-          raise ArgumentError, 'sync block must be a Proc, Router::ReactorInterface or #call interface'
+          raise ArgumentError, 'sync block must be a Proc, Sors::ReactorInterface or #call interface'
         end
 
         sync_blocks << callable

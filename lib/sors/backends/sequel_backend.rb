@@ -75,7 +75,7 @@ module Sors
         raise Sors::ConcurrentAppendError, e.message
       end
 
-      # @param reactor [Sors::Router::ReactorInterface]
+      # @param reactor [Sors::ReactorInterface]
       def reserve_next_for_reactor(reactor, &)
         group_id = reactor.consumer_info.group_id
         handled_events = reactor.handled_events.map(&:type)
