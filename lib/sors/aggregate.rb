@@ -6,6 +6,7 @@ module Sors
     include Decide
     include Evolve
     include React
+    include Sync
 
     class << self
       # Register as a Reactor
@@ -182,7 +183,10 @@ module Sors
         @seq += 1
         event.with(seq: @seq)
       end
-      backend.append_to_stream(command.stream_id, events)
+      backend.transaction do
+        backend.append_to_stream(command.stream_id, events)
+        run_sync_blocks(self, events[0], events[1..-1])
+      end
       events
     end
 

@@ -3,7 +3,47 @@
 require 'spec_helper'
 require_relative './support/test_aggregate'
 
+module TestAggregate
+  class Listener
+    def self.call(state, command, events)
+    end
+  end
+
+  class WithSyncBlock < Sors::Aggregate
+    ThingDone = Sors::Message.define('with_sync_block.thing_done')
+
+    def setup(id)
+      @state = []
+    end
+
+    command :do_thing, 'with_sync_block.do_thing' do |cmd|
+      cmd.follow(ThingDone)
+    end
+
+    sync Listener
+  end
+end
+
 RSpec.describe Sors::Aggregate do
+  describe '.sync' do
+    before do
+      allow(TestAggregate::Listener).to receive(:call)
+    end
+
+    specify 'with a .call(state, command, events) interface' do
+      aggregate = TestAggregate::WithSyncBlock.build('id')
+      aggregate.do_thing
+      expect(TestAggregate::Listener).to have_received(:call) do |state, command, events|
+        expect(state).to eq(aggregate)
+        expect(command).to be_a(TestAggregate::WithSyncBlock::DoThing)
+        expect(events.map(&:class)).to eq([TestAggregate::WithSyncBlock::ThingDone])
+      end
+    end
+
+    specify 'raising an exception cancels append transaction' do
+    end
+  end
+
   specify 'invalid commands' do
     list = TestAggregate::TodoList.build
     cmd = list.add(name: 10)
