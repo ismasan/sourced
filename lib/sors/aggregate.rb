@@ -135,14 +135,10 @@ module Sors
       logger.info "#{self.inspect} Handling #{command.type}"
       events = decide(command)
       evolve(events)
-      transaction do
-        # Append events to backend
-        # This will cause other reactors to process these events
-        # asynchronously
-        events = save(self, command, events)
-        # Schedule a system command to handle this batch of events in the background
-        # schedule_batch(command)
-      end
+      # Append events to backend
+      # This will cause other reactors to process these events
+      # asynchronously
+      events = save(self, command, events)
       [ self, events ]
     end
 
@@ -202,18 +198,6 @@ module Sors
 
       handle_command cmd
       cmd
-    end
-
-    # def schedule_batch(command, commands = [])
-    #   schedule_commands([command.follow(ProcessBatch), *commands])
-    # end
-    #
-    # def schedule_commands(commands)
-    #   backend.schedule_commands(commands)
-    # end
-
-    def transaction(&)
-      backend.transaction(&)
     end
   end
 end

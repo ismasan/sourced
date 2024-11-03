@@ -69,14 +69,7 @@ module Sors
       state = load(command.stream_id)
       events = decide(state, command)
       state = evolve(state, events)
-      transaction do
-        events = save(state, command, events)
-        # handle sync reactors here
-        # commands = react_sync(state, events)
-        # Schedule a system command to handle this batch of events in the background
-        # schedule_batch(command, commands)
-        # schedule_commands(commands)
-      end
+      events = save(state, command, events)
       [ state, events ]
     end
 
@@ -112,18 +105,6 @@ module Sors
         run_sync_blocks(state, events[0], events[1..-1])
       end
       events
-    end
-
-    # def schedule_batch(command, commands)
-    #   schedule_commands([command.follow(ProcessBatch), *commands])
-    # end
-    #
-    # def schedule_commands(commands)
-    #   backend.schedule_commands(commands)
-    # end
-
-    def transaction(&)
-      backend.transaction(&)
     end
   end
 end
