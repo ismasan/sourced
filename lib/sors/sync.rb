@@ -44,7 +44,15 @@ module Sors
           callable
         when ReactorInterface
           # Wrap reactors here
-          callable
+          # TODO:
+          # If the sync reactor runs successfully
+          # A). we want to ACK processed events for it in the offsets table
+          # so that if the reactor is moved to async execution
+          # it doesn't reprocess the same events again
+          # B). The reactors .handle_events may return commands
+          # Do we want to dispatch those commands inline?
+          # Or is this another reason to have a separate async command bus
+          SyncReactor.new(callable)
         when CallableInterface
           callable
         else
