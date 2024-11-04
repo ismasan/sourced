@@ -24,6 +24,12 @@ module Sors
 
     CallableInterface = Sors::Types::Interface[:call]
 
+    class SyncReactor < SimpleDelegator
+      def call(_state, _command, events)
+        __getobj__.handle_events(events)
+      end
+    end
+
     module ClassMethods
       def inherited(subclass)
         super

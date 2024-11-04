@@ -9,14 +9,26 @@ module TestAggregate
     end
   end
 
-  class WithSyncCallable < Sors::Aggregate
-    ThingDone = Sors::Message.define('with_sync_block.thing_done')
+  class DummyProjector
+    extend Sors::Consumer
 
-    command :do_thing, 'with_sync_block.do_thing' do |cmd|
+    class << self
+      def handled_events = [WithSyncReactor::ThingDone]
+      def handle_events(events)
+        []
+      end
+    end
+  end
+
+  class WithSync < Sors::Aggregate
+    ThingDone = Sors::Message.define('with_sync_callable.thing_done')
+
+    command :do_thing, 'with_sync_callable.do_thing' do |cmd|
       cmd.follow(ThingDone)
     end
 
     sync Listener
+    sync DummyProjector
   end
 end
 
@@ -28,20 +40,30 @@ RSpec.describe Sors::Aggregate do
     end
 
     specify 'with a .call(state, command, events) interface' do
-      aggregate = TestAggregate::WithSyncCallable.build('id')
+      aggregate = TestAggregate::WithSync.build('id')
       aggregate.do_thing
       expect(TestAggregate::Listener).to have_received(:call) do |state, command, events|
         expect(state).to eq(aggregate)
-        expect(command).to be_a(TestAggregate::WithSyncCallable::DoThing)
-        expect(events.map(&:class)).to eq([TestAggregate::WithSyncCallable::ThingDone])
+        expect(command).to be_a(TestAggregate::WithSync::DoThing)
+        expect(events.map(&:class)).to eq([TestAggregate::WithSync::ThingDone])
       end
     end
 
     specify 'raising an exception cancels append transaction' do
       allow(TestAggregate::Listener).to receive(:call).and_raise('boom')
-      aggregate = TestAggregate::WithSyncCallable.build('id')
+      aggregate = TestAggregate::WithSync.build('id')
       expect { aggregate.do_thing }.to raise_error('boom')
       expect(Sors.config.backend.read_event_stream('id')).to be_empty
+    end
+
+    specify 'with a Reactor interface' do
+      allow(TestAggregate::DummyProjector).to receive(:handle_events)
+
+      aggregate = TestAggregate::WithSync.build('id')
+      aggregate.do_thing
+      expect(TestAggregate::DummyProjector).to have_received(:handle_events) do |events|
+        expect(events.map(&:class)).to eq([TestAggregate::WithSync::ThingDone])
+      end
     end
   end
 
