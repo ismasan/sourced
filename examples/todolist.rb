@@ -77,6 +77,10 @@ class Cart < Sors::Aggregate
     @notified = true
     @mailer_id = event.payload.mailer_id
   end
+
+  sync do |command, events|
+    puts "#{self.class.name} #{events.last.seq} SYNC"
+  end
 end
 
 class Mailer < Sors::Aggregate
@@ -177,8 +181,37 @@ class CartListings < Sors::Aggregate
   end
 end
 
-# Register the Cart Aggregate with the Router
-# This allows the Router to route commands to the Cart Aggregate
+class LoggingReactor
+  extend Sors::Consumer
+
+  class << self
+    # Register as a Reactor that cares about these events
+    # The workers will use this to fetch the right events
+    # and ACK offsets after processing
+    #
+    # @return [Array<Message>]
+    def handled_events = [Cart::Placed, Cart::ItemAdded]
+
+    # Workers pass available events to this method
+    # in order, with exactly-once semantics
+    # If a list of commands is returned,
+    # workers will send them to the router
+    # to be dispatched to the appropriate command handlers.
+    #
+    # @param events [Array<Message>]
+    # @return [Array<Message]
+    def handle_events(events)
+      puts "LoggingReactor received #{events}"
+      []
+    end
+  end
+end
+
+# Register Reactor interfaces with the Router
+# This allows the Router to route commands and events to reactors
+Sors::Router.register(LoggingReactor)
+
+
 Sors::Router.register(Cart)
 Sors::Router.register(Mailer)
 Sors::Router.register(CartEmailsSaga)
