@@ -205,12 +205,6 @@ module Sors
       attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table
 
       def sql_for_reserve_next_with_events(handled_events)
-        # This code is ony called for reactors where .handles_any_event? is true
-        # which means reactors that have some .handled_events
-        # OR .evolves_any_event? for projections
-        # If we have handed_events, filter by those.
-        # If handled_events is empty, it means that reactor handles :any event
-        # so we should include all events in this query
         event_types = handled_events.map { |e| "'#{e}'" }
         event_types_sql = event_types.any? ? " AND e.type IN(#{event_types.join(',')})" : ''
 
