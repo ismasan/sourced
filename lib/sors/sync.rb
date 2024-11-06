@@ -26,7 +26,20 @@ module Sors
 
     class SyncReactor < SimpleDelegator
       def call(_state, _command, events)
-        __getobj__.handle_events(events)
+        Sors.config.backend.ack_on(consumer_info.group_id, events.last.id) do
+          commands =  __getobj__.handle_events(events)
+          if commands && commands.any?
+            # TODO: Commands may or may not belong to he same stream as events
+            # if they belong to the same stream,
+            # hey need to be dispached in order to preserve per stream order
+            # If they belong to different streams, they can be dispatched in parallel
+            # or put in a command bus.
+            # TODO2: we also need to handle exceptions here
+            commands.each do |cmd|
+              Sors::Router.handle(cmd)
+            end
+          end
+        end
       end
     end
 

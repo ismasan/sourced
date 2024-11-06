@@ -56,7 +56,7 @@ RSpec.describe Sors::Aggregate do
       expect(Sors.config.backend.read_event_stream('id')).to be_empty
     end
 
-    specify 'with a Reactor interface' do
+    specify 'with a Reactor interface it calls #handle_events and ACKs group offsets' do
       allow(TestAggregate::DummyProjector).to receive(:handle_events)
 
       aggregate = TestAggregate::WithSync.build('id')
@@ -64,6 +64,11 @@ RSpec.describe Sors::Aggregate do
       expect(TestAggregate::DummyProjector).to have_received(:handle_events) do |events|
         expect(events.map(&:class)).to eq([TestAggregate::WithSync::ThingDone])
       end
+
+      group = Sors.config.backend.stats.groups.first
+      expect(group[:group_id]).to eq('TestAggregate::DummyProjector')
+      expect(group[:stream_count]).to eq(1)
+      expect(group[:oldest_processed]).to eq(2)
     end
   end
 
