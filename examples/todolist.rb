@@ -78,9 +78,18 @@ class Cart < Sors::Aggregate
     @mailer_id = event.payload.mailer_id
   end
 
+  # This block will run
+  # in the same transaction as appending
+  # new events to the store.
+  # So if either fails, eveything is rolled back.
+  # ergo, strong consistency.
   sync do |command, events|
     puts "#{self.class.name} #{events.last.seq} SYNC"
   end
+
+  # Or register a Reactor interface to react to events
+  # synchronously
+  sync CartListings
 end
 
 class Mailer < Sors::Aggregate
@@ -207,11 +216,11 @@ class LoggingReactor
   end
 end
 
+# Cart.sync CartListings
+
 # Register Reactor interfaces with the Router
 # This allows the Router to route commands and events to reactors
 Sors::Router.register(LoggingReactor)
-
-
 Sors::Router.register(Cart)
 Sors::Router.register(Mailer)
 Sors::Router.register(CartEmailsSaga)
