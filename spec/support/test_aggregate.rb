@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require 'sors/aggregate'
-
 module TestAggregate
   class TodoList < Sors::Aggregate
     MarkDone = Sors::Message.define('todos.items.mark_done') do
