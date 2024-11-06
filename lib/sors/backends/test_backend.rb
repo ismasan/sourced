@@ -32,6 +32,22 @@ module Sors
           end
         end
 
+        def ack_on(event_id, &)
+          global_seq = backend.events.find_index { |e| e.id == event_id }
+          return unless global_seq
+
+          evt = backend.events[global_seq]
+          offset = @offsets[evt.stream_id]
+          if offset.locked
+            raise Sors::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}" unless row
+          else
+            offset.locked = true
+            yield
+            offset.index = global_seq
+            offset.locked = false
+          end
+        end
+
         def reserve_next(handled_events, &)
           evt = nil
           offset = nil
@@ -124,6 +140,13 @@ module Sors
         transaction do
           group = @state.groups[group_id]
           group.reserve_next(reactor.handled_events, &)
+        end
+      end
+
+      def ack_on(group_id, event_id, &)
+        transaction do
+          group = @state.groups[group_id]
+          group.ack_on(event_id, &)
         end
       end
 

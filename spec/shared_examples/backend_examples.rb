@@ -191,6 +191,59 @@ module BackendExamples
       end
     end
 
+    describe '#ack_on' do
+      let(:reactor) do 
+        Class.new do
+          def self.consumer_info
+            Sors::Consumer::ConsumerInfo.new(group_id: 'group1')
+          end
+
+          def self.handled_events
+            [Tests::SomethingHappened1]
+          end
+        end
+      end
+
+      let(:evt1) { Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 }) }
+      let(:evt2) { Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 1 }) }
+
+      before do
+        backend.append_to_stream('s1', [evt1, evt2])
+      end
+
+      it 'advances a group_id/stream_id offset if not exception' do
+        backend.ack_on(reactor.consumer_info.group_id, evt1.id) { true }
+
+        backend.reserve_next_for_reactor(reactor) { true }
+
+        expect(backend.stats.groups.first[:oldest_processed]).to eq(2)
+      end
+
+      it 'does not advance offset if exception' do
+        begin
+          backend.ack_on(reactor.consumer_info.group_id, evt1.id) do
+            raise RuntimeError
+          end
+        rescue RuntimeError
+        end
+
+        expect(backend.stats.groups.size).to eq(0)
+      end
+
+      it 'raises exception if concurrently processed by the same group' do
+        expect do
+          Sync do |task|
+            task.async do
+              backend.ack_on(reactor.consumer_info.group_id, evt1.id) { sleep 0.01 }
+            end
+            task.async do
+              backend.ack_on(reactor.consumer_info.group_id, evt2.id) { true }
+            end
+          end.to raise_error(Sors::ConcurrentAckError)
+        end
+      end
+    end
+
     describe '#append_to_stream, #read_event_batch' do
       it 'reads event batch by causation_id' do
         cmd1 = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })

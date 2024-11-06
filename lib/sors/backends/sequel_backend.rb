@@ -96,6 +96,17 @@ module Sors
         end
       end
 
+      def ack_on(group_id, event_id, &)
+        db.transaction do
+          row = db.fetch(sql_for_ack_on, group_id, event_id).first
+          raise Sors::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}" unless row
+
+          yield if block_given?
+
+          ack_event(group_id, row[:stream_id_fk], row[:global_seq])
+        end
+      end
+
       private def ack_event(group_id, stream_id, global_seq)
         db[offsets_table]
           .insert_conflict(
@@ -231,6 +242,24 @@ module Sors
           )
           SELECT *
           FROM candidate_events
+          WHERE lock_obtained = true
+          LIMIT 1;
+        SQL
+      end
+
+      def sql_for_ack_on
+        <<~SQL
+          WITH candidate_rows AS (
+            SELECT 
+                e.global_seq,
+                e.stream_id AS stream_id_fk, 
+                pg_try_advisory_xact_lock(hashtext(?::text), hashtext(s.id::text)) as lock_obtained
+            FROM #{events_table} e
+            JOIN #{streams_table} s ON e.stream_id = s.id
+            WHERE e.id = ?
+          )
+          SELECT *
+          FROM candidate_rows
           WHERE lock_obtained = true
           LIMIT 1;
         SQL
