@@ -35,8 +35,6 @@ require 'sors/sync'
 require 'sors/configuration'
 require 'sors/router'
 require 'sors/message'
-require 'sors/machine'
-require 'sors/aggregate'
 require 'sors/decider'
 require 'sors/supervisor'
 require 'sors/rails/railtie' if defined?(Rails::Railtie)

@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'console' #  comes with Async
-require 'sors/machine' #  comes with Async
 require 'sors/router' #  comes with Async
 
 module Sors

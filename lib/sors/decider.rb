@@ -72,7 +72,7 @@ module Sors
       #   issue_command AddItem, name:
       # end
       #
-      # This method can be used on Aggregate instances:
+      # This method can be used on Decider instances:
       #   aggregate.add_item(name: 'Buy milk')
       #
       # Payload schema is a Plumb Hash schema.

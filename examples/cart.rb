@@ -26,7 +26,7 @@ end
 # which produces a Cart::Placed event
 class Cart < Sors::Decider
   State = Struct.new(:status, :notified, :items, :mailer_id) do
-    def total = items.sum(:price)
+    def total = items.sum(&:price)
   end
 
   def init_state(_id)
