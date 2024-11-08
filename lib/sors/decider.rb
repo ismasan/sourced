@@ -139,7 +139,7 @@ module Sors
     end
 
     def init_state(id)
-      raise NotImplementedError
+      nil
     end
 
     def load(after: nil, upto: nil)
@@ -182,8 +182,9 @@ module Sors
     end
 
     # Register a first sync block to append new events to backend
-    sync do |command, events|
-      backend.append_to_stream(command.stream_id, [command, *events])
+    sync do |_state, command, events|
+      messages = [command, *events]
+      backend.append_to_stream(id, messages) if messages.any?
     end
 
     def handle_command(command)
@@ -192,12 +193,7 @@ module Sors
       raise "invalid command #{command.inspect} #{command.errors.inspect}" unless command.valid?
       logger.info "#{self.inspect} Handling #{command.type}"
       decide(command)
-      events = commit do |messages|
-        backend.transaction do
-          run_sync_blocks(state, messages[0], messages[1..-1])
-        end
-      end
-      [ self, events ]
+      save
     end
 
     # TODO: idempotent event and command handling
@@ -212,6 +208,15 @@ module Sors
     private
 
     attr_reader :backend, :logger, :__current_command
+
+    def save
+      events = commit do |messages|
+        backend.transaction do
+          run_sync_blocks(state, messages[0], messages[1..-1])
+        end
+      end
+      [ self, events ]
+    end
 
     def __set_current_command(command)
       command.with(seq: __next_sequence).tap do |cmd|
