@@ -25,6 +25,10 @@ module Sors
       def handle_command(cmd)
         new.handle_command(cmd)
       end
+
+      def load(stream_id)
+        new.load(stream_id)
+      end
     end
 
     attr_reader :seq
@@ -78,16 +82,16 @@ module Sors
       react(events)
     end
 
-    private
-
-    attr_reader :logger
-
     def load(stream_id)
       state = init_state(stream_id)
       events = backend.read_event_stream(stream_id)
       @seq = events.last&.seq || 0
       evolve(state, events)
     end
+
+    private
+
+    attr_reader :logger
 
     # Register a first sync block to append new events to backend
     sync do |_state, command, events|
