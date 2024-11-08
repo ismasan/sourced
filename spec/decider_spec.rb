@@ -4,7 +4,7 @@ require 'spec_helper'
 require 'sors/decider'
 
 module TestDecider
-  TodoList = Struct.new(:id, :status, :items)
+  TodoList = Struct.new(:seq, :id, :status, :items)
 
   AddItem = Sors::Message.define('decider.todos.add') do
     attribute :name, String
@@ -20,7 +20,7 @@ module TestDecider
 
   class TodoListDecider < Sors::Decider
     def init_state(id)
-      TodoList.new(id, :new, [])
+      TodoList.new(0, id, :new, [])
     end
 
     decide AddItem do |list, cmd|
@@ -33,6 +33,10 @@ module TestDecider
     # Command DSL
     command :add_one, name: String do |list, cmd|
       apply ItemAdded, name: cmd.payload.name
+    end
+
+    before_evolve do |list, event|
+      list.seq = event.seq
     end
 
     evolve ListStarted do |list, event|
@@ -72,8 +76,9 @@ RSpec.describe Sors::Decider do
     end
 
     it 'increments #seq' do
-      decider.decide(cmd)
+      list, _ = decider.decide(cmd)
       expect(decider.seq).to eq(3)
+      expect(list.seq).to eq(3)
     end
 
     it 'tracks #uncommitted_events' do
@@ -150,5 +155,8 @@ RSpec.describe Sors::Decider do
     TestDecider::TodoListDecider.handle_command(cmd)
     expect(decider.events.map(&:seq)).to eq([1, 2])
     expect(decider.events(upto: nil).map(&:seq)).to eq([1, 2, 3, 4, 5])
+  end
+
+  specify '.sync' do
   end
 end
