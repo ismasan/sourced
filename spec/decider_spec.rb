@@ -4,7 +4,7 @@ require 'spec_helper'
 require 'sors/decider'
 
 module TestDecider
-  TodoList = Struct.new(:seq, :id, :status, :items)
+  TodoList = Struct.new(:archive_status, :seq, :id, :status, :items)
 
   AddItem = Sors::Message.define('decider.todos.add') do
     attribute :name, String
@@ -13,6 +13,9 @@ module TestDecider
   Notify = Sors::Message.define('decider.todos.notify')
 
   ListStarted = Sors::Message.define('decider.todos.started')
+  ArchiveRequested = Sors::Message.define('decider.todos.archive_requested')
+  ConfirmArchive = Sors::Message.define('decider.todos.archive_confirm')
+  ArchiveConfirmed = Sors::Message.define('decider.todos.archive_confirmed')
 
   ItemAdded = Sors::Message.define('decider.todos.added') do
     attribute :name, String
@@ -20,7 +23,7 @@ module TestDecider
 
   class TodoListDecider < Sors::Decider
     def init_state(id)
-      TodoList.new(0, id, :new, [])
+      TodoList.new(nil, 0, id, :new, [])
     end
 
     decide AddItem do |list, cmd|
@@ -33,6 +36,26 @@ module TestDecider
     # Command DSL
     command :add_one, name: String do |list, cmd|
       apply ItemAdded, name: cmd.payload.name
+    end
+
+    command :archive do |list, _cmd|
+      apply ArchiveRequested
+    end
+
+    react ArchiveRequested do |event|
+      event.follow(ConfirmArchive)
+    end
+
+    decide ConfirmArchive do |list, _cmd|
+      apply ArchiveConfirmed
+    end
+
+    evolve ArchiveRequested do |list, _event|
+      list.archive_status = :requested
+    end
+
+    evolve ArchiveConfirmed do |list, _event|
+      list.archive_status = :confirmed
     end
 
     before_evolve do |list, event|
@@ -50,7 +73,12 @@ module TestDecider
     react ItemAdded do |event|
       event.follow(Notify)
     end
+
+    decide Notify do |list, cmd|
+    end
   end
+
+  Sors::Router.register(TodoListDecider)
 
   class Listener
     def self.call(state, command, events)
@@ -140,12 +168,18 @@ RSpec.describe Sors::Decider do
   specify '.handled_commands' do
     expect(TestDecider::TodoListDecider.handled_commands).to eq([
       TestDecider::AddItem,
-      TestDecider::TodoListDecider::AddOne
+      TestDecider::TodoListDecider::AddOne,
+      TestDecider::TodoListDecider::Archive,
+      TestDecider::ConfirmArchive,
+      TestDecider::Notify
     ])
   end
 
   specify '.handled_events' do
-    expect(TestDecider::TodoListDecider.handled_events).to eq([TestDecider::ItemAdded])
+    expect(TestDecider::TodoListDecider.handled_events).to eq([
+      TestDecider::ArchiveRequested, 
+      TestDecider::ItemAdded
+    ])
   end
 
   specify '.handle_events' do
@@ -193,6 +227,20 @@ RSpec.describe Sors::Decider do
     TestDecider::TodoListDecider.handle_command(cmd)
     expect(decider.events.map(&:seq)).to eq([1, 2])
     expect(decider.events(upto: nil).map(&:seq)).to eq([1, 2, 3, 4, 5])
+  end
+
+  specify 'reacting to events' do
+    decider = TestDecider::TodoListDecider.new('list1')
+    decider.add_one(name: 'Buy milk')
+    decider.add_one(name: 'Buy bread')
+
+    decider.archive
+    expect(decider.state.archive_status).to eq(:requested)
+
+    Sors::Worker.drain
+
+    decider.catch_up
+    expect(decider.state.archive_status).to eq(:confirmed)
   end
 
   describe '.sync' do

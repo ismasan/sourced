@@ -97,15 +97,17 @@ module Sors
         message_type = nil
         cmd_name = nil
         payload_schema = {}
+        segments = name.split('::').map(&:downcase)
 
         case args
+          in [cmd_name]
+            message_type = [*segments, cmd_name].join('.')
           in [cmd_name, Hash => payload_schema]
-            segments = name.split('::').map(&:downcase)
             message_type = [*segments, cmd_name].join('.')
           in [cmd_name, String => message_type, Hash => payload_schema]
           in [cmd_name, String => message_type]
         else
-          raise ArgumentError, 'Invalid arguments for Aggregate.command'
+          raise ArgumentError, "Invalid arguments for #{self}.command"
         end
 
         klass_name = cmd_name.to_s.split('_').map(&:capitalize).join
