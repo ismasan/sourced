@@ -5,7 +5,6 @@ Bundler.setup(:test)
 
 require 'sors'
 require 'sequel'
-require_relative '../spec/support/test_aggregate'
 
 # ActiveRecord::Base.establish_connection(adapter: 'postgresql', database: 'decider')
 unless ENV['backend_configured']
@@ -18,25 +17,20 @@ end
 
 # A cart Actor/Aggregate
 # Example:
-#   cart = Cart.build('cart-1')
+#   cart = Cart.new('cart-1')
 #   cart.add_item(name: 'item1', price: 100)
 #   cart.place
 #   cart.events
 #
 # The above sends a Cart::Place command
 # which produces a Cart::Placed event
-class Cart < Sors::Aggregate
-  attr_reader :status, :notified, :items, :mailer_id
-
-  def setup(_id)
-    @status = :open
-    @notified = false
-    @items = []
-    @mailer_id = nil
+class Cart < Sors::Decider
+  State = Struct.new(:status, :notified, :items, :mailer_id) do
+    def total = items.sum(:price)
   end
 
-  def total
-    items.sum(&:price)
+  def init_state(_id)
+    State.new(:open, false, [], nil)
   end
 
   ItemAdded = Sors::Message.define('cart.item_added') do
@@ -50,32 +44,32 @@ class Cart < Sors::Aggregate
   end
 
   # Defines a Cart::AddItem command struct
-  command :add_item, 'cart.add_item', name: String, price: Integer do |cmd|
-    cmd.follow(ItemAdded, cmd.payload.to_h)
+  command :add_item, 'cart.add_item', name: String, price: Integer do |cart, cmd|
+    apply(ItemAdded, cmd.payload.to_h)
   end
 
   # Defines a Cart::Place command struct
-  command :place, 'cart.place' do |cmd|
-    cmd.follow(Placed)
+  command :place, 'cart.place' do |_, cmd|
+    apply(Placed)
   end
 
   # Defines a Cart::Notify command struct
-  command :notify, 'cart.notify', mailer_id: String do |cmd|
+  command :notify, 'cart.notify', mailer_id: String do |_, cmd|
     puts "#{self.class.name} #{cmd.stream_id} NOTIFY"
-    cmd.follow(Notified, mailer_id: cmd.payload.mailer_id)
+    apply(Notified, mailer_id: cmd.payload.mailer_id)
   end
 
-  evolve ItemAdded do |event|
-    @items << event.payload
+  evolve ItemAdded do |cart, event|
+    cart.items << event.payload
   end
 
-  evolve Placed do |_event|
-    @status = :placed
+  evolve Placed do |cart, _event|
+    cart.status = :placed
   end
 
-  evolve Notified do |event|
-    @notified = true
-    @mailer_id = event.payload.mailer_id
+  evolve Notified do |cart, event|
+    cart.notified = true
+    cart.mailer_id = event.payload.mailer_id
   end
 
   # This block will run
@@ -89,32 +83,30 @@ class Cart < Sors::Aggregate
 
   # Or register a Reactor interface to react to events
   # synchronously
-  sync CartListings
+  # sync CartListings
 end
 
-class Mailer < Sors::Aggregate
+class Mailer < Sors::Decider
   EmailSent = Sors::Message.define('mailer.email_sent') do
     attribute :cart_id, String
   end
 
-  attr_reader :sent
-
-  def setup(_id)
-    @sent = []
+  def init_state(_id)
+    []
   end
 
-  command :send_email, 'mailer.send_email', cart_id: String do |cmd|
+  command :send_email, 'mailer.send_email', cart_id: String do |_, cmd|
     # Send email here, emit EmailSent if successful
-    cmd.follow(EmailSent, cart_id: cmd.payload.cart_id)
+    apply(EmailSent, cart_id: cmd.payload.cart_id)
   end
 
-  evolve EmailSent do |event|
-    @sent << event
+  evolve EmailSent do |list, event|
+    list << event
   end
 end
 
 # A Saga that orchestrates the flow between Cart and Mailer
-class CartEmailsSaga < Sors::Machine
+class CartEmailsSaga < Sors::Decider
   # Listen for Cart::Placed events and
   # send command to Mailer
   react Cart::Placed do |event|
@@ -138,7 +130,7 @@ end
 
 # A projector
 # "reacts" to events registered with .evolve
-class CartListings < Sors::Aggregate
+class CartListings < Sors::Decider
   class << self
     def handled_events = self.handled_events_for_evolve
 
@@ -156,19 +148,29 @@ class CartListings < Sors::Aggregate
   end
 
   def handle_events(events)
-    evolve(events)
+    evolve(state, events)
     save
     [] # no commands
   end
 
-  def setup(id)
+  def initialize(id, **_args)
+    super
     FileUtils.mkdir_p('examples/carts')
     @path = "./examples/carts/#{id}.json"
-    @cart = { id:, items: [], status: :open, seq: 0, seqs: [] }
   end
 
-  def save
-    File.write(@path, JSON.pretty_generate(@cart))
+  private def save
+    backend.transaction do
+      run_sync_blocks(state, nil, [])
+    end
+  end
+
+  def init_state(id)
+    { id:, items: [], status: :open, seq: 0, seqs: [] }
+  end
+
+  sync do |cart, _command, _events|
+    File.write(@path, JSON.pretty_generate(cart))
   end
 
   # Register all events from Cart
@@ -176,17 +178,17 @@ class CartListings < Sors::Aggregate
   evolve_all Cart.handled_commands
   evolve_all Cart
 
-  before_evolve do |event|
-    @cart[:seq] = event.seq
-    @cart[:seqs] << event.seq
+  before_evolve do |cart, event|
+    cart[:seq] = event.seq
+    cart[:seqs] << event.seq
   end
 
-  evolve Cart::Placed do |event|
-    @cart[:status] = :placed
+  evolve Cart::Placed do |cart, event|
+    cart[:status] = :placed
   end
 
-  evolve Cart::ItemAdded do |event|
-    @cart[:items] << event.payload.to_h
+  evolve Cart::ItemAdded do |cart, event|
+    cart[:items] << event.payload.to_h
   end
 end
 
