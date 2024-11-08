@@ -51,6 +51,37 @@ module TestDecider
       event.follow(Notify)
     end
   end
+
+  class Listener
+    def self.call(state, command, events)
+    end
+  end
+
+  class DummyProjector
+    extend Sors::Consumer
+
+    class << self
+      def handled_events = [WithSyncReactor::ThingDone]
+      def handle_events(events)
+        []
+      end
+    end
+  end
+
+  class WithSync < Sors::Decider
+    ThingDone = Sors::Message.define('with_sync_callable.thing_done')
+
+    def init_state(id)
+      id
+    end
+
+    command :do_thing, 'with_sync_callable.do_thing' do |_, cmd|
+      apply(ThingDone)
+    end
+
+    sync Listener
+    sync DummyProjector
+  end
 end
 
 RSpec.describe Sors::Decider do
@@ -142,6 +173,13 @@ RSpec.describe Sors::Decider do
     expect(decider.seq).to eq(2)
   end
 
+  it 'returns if invalid command' do
+    decider = TestDecider::TodoListDecider.new('list1')
+    cmd = decider.add_one(name: 10)
+    expect(cmd.valid?).to be(false)
+    expect(decider.state.items.size).to eq(0)
+  end
+
   specify '#events' do
     decider = TestDecider::TodoListDecider.new('list1')
     decider.add_one(name: 'item1')
@@ -157,6 +195,41 @@ RSpec.describe Sors::Decider do
     expect(decider.events(upto: nil).map(&:seq)).to eq([1, 2, 3, 4, 5])
   end
 
-  specify '.sync' do
+  describe '.sync' do
+    before do
+      allow(TestDecider::Listener).to receive(:call)
+    end
+
+    specify 'with a .call(state, command, events) interface' do
+      aggregate = TestDecider::WithSync.new('id')
+      aggregate.do_thing
+      expect(TestDecider::Listener).to have_received(:call) do |state, command, events|
+        expect(state).to eq(aggregate.state)
+        expect(command).to be_a(TestDecider::WithSync::DoThing)
+        expect(events.map(&:class)).to eq([TestDecider::WithSync::ThingDone])
+      end
+    end
+
+    specify 'raising an exception cancels append transaction' do
+      allow(TestDecider::Listener).to receive(:call).and_raise('boom')
+      aggregate = TestDecider::WithSync.new('id')
+      expect { aggregate.do_thing }.to raise_error('boom')
+      expect(Sors.config.backend.read_event_stream('id')).to be_empty
+    end
+
+    specify 'with a Reactor interface it calls #handle_events and ACKs group offsets' do
+      allow(TestDecider::DummyProjector).to receive(:handle_events)
+
+      aggregate = TestDecider::WithSync.new('id')
+      aggregate.do_thing
+      expect(TestDecider::DummyProjector).to have_received(:handle_events) do |events|
+        expect(events.map(&:class)).to eq([TestDecider::WithSync::ThingDone])
+      end
+
+      group = Sors.config.backend.stats.groups.first
+      expect(group[:group_id]).to eq('TestDecider::DummyProjector')
+      expect(group[:stream_count]).to eq(1)
+      expect(group[:oldest_processed]).to eq(2)
+    end
   end
 end
