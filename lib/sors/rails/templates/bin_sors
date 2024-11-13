@@ -1,0 +1,8 @@
+#!/usr/bin/env ruby
+
+require_relative "../config/environment"
+require "sors"
+
+ActiveRecord::Base.logger = nil
+
+Sors::Supervisor.start
