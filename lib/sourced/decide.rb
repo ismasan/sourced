@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module Sors
+module Sourced
   module Decide
     PREFIX = 'command'
 
@@ -18,9 +18,9 @@ module Sors
     def decide(*args)
       events = case args
                in [command]
-                 send(Sors.message_method_name(PREFIX, command.class.name), command)
+                 send(Sourced.message_method_name(PREFIX, command.class.name), command)
                in [state, command]
-                 send(Sors.message_method_name(PREFIX, command.class.name), state, command)
+                 send(Sourced.message_method_name(PREFIX, command.class.name), state, command)
                end
       [events].flatten.compact
     end
@@ -43,7 +43,7 @@ module Sors
 
       def decide(cmd_type, &block)
         handled_commands << cmd_type
-        define_method(Sors.message_method_name(PREFIX, cmd_type.name), &block)
+        define_method(Sourced.message_method_name(PREFIX, cmd_type.name), &block)
       end
     end
   end

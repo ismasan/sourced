@@ -2,17 +2,17 @@
 
 require 'sequel'
 
-RSpec.describe Sors::Configuration do
+RSpec.describe Sourced::Configuration do
   subject(:config) { described_class.new }
 
   it 'has a test backend by default' do
-    expect(config.backend).to be_a(Sors::Backends::TestBackend)
+    expect(config.backend).to be_a(Sourced::Backends::TestBackend)
   end
 
   describe '#backend=' do
     it 'can configure backend with a Sequel database' do
       config.backend = Sequel.sqlite
-      expect(config.backend).to be_a(Sors::Backends::SequelBackend)
+      expect(config.backend).to be_a(Sourced::Backends::SequelBackend)
     end
 
     it 'accepts anything with the Backend interface' do

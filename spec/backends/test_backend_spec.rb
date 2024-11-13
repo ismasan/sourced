@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'sors/backends/test_backend'
+require 'sourced/backends/test_backend'
 
-RSpec.describe Sors::Backends::TestBackend, type: :backend do
+RSpec.describe Sourced::Backends::TestBackend, type: :backend do
   subject(:backend) { described_class.new }
 
   it_behaves_like 'a backend'

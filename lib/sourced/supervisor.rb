@@ -2,15 +2,15 @@
 
 require 'async'
 require 'console'
-require 'sors/worker'
+require 'sourced/worker'
 
-module Sors
+module Sourced
   class Supervisor
     def self.start(...)
       new(...).start
     end
 
-    def initialize(backend: Sors.config.backend, logger: Sors.config.logger, count: 2)
+    def initialize(backend: Sourced.config.backend, logger: Sourced.config.logger, count: 2)
       @backend = backend
       @logger = logger
       @count = count

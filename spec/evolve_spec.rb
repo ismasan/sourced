@@ -4,11 +4,11 @@ require 'spec_helper'
 
 module EvolveTest
   class Reactor
-    include Sors::Evolve
+    include Sourced::Evolve
 
-    Event1 = Sors::Message.define('evolvetest.reactor.event1')
-    Event2 = Sors::Message.define('evolvetest.reactor.event2')
-    Event3 = Sors::Message.define('evolvetest.reactor.event3')
+    Event1 = Sourced::Message.define('evolvetest.reactor.event1')
+    Event2 = Sourced::Message.define('evolvetest.reactor.event2')
+    Event3 = Sourced::Message.define('evolvetest.reactor.event3')
 
     evolve Event1 do |state, event|
       state << event
@@ -29,13 +29,13 @@ module EvolveTest
   end
 
   class Noop
-    include Sors::Evolve
+    include Sourced::Evolve
 
     evolve Reactor::Event1
   end
 
   class EvolveAll
-    include Sors::Evolve
+    include Sourced::Evolve
 
     evolve_all Reactor do |state, event|
       state << event
@@ -49,7 +49,7 @@ module EvolveTest
   end
 end
 
-RSpec.describe Sors::Evolve do
+RSpec.describe Sourced::Evolve do
   specify '.evolve' do
     evt1 = EvolveTest::Reactor::Event1.new(stream_id: '1', seq: 1)
     evt2 = EvolveTest::Reactor::Event2.new(stream_id: '1', seq: 2)

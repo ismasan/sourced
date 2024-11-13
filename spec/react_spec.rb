@@ -3,13 +3,13 @@
 require 'spec_helper'
 
 class ReactTestReactor
-  include Sors::React
+  include Sourced::React
 
-  Event1 = Sors::Message.define('reacttest.event1')
-  Event2 = Sors::Message.define('reacttest.event2')
-  Event3 = Sors::Message.define('reacttest.event3')
-  Cmd1 = Sors::Message.define('reacttest.cmd1')
-  Cmd2 = Sors::Message.define('reacttest.cmd2')
+  Event1 = Sourced::Message.define('reacttest.event1')
+  Event2 = Sourced::Message.define('reacttest.event2')
+  Event3 = Sourced::Message.define('reacttest.event3')
+  Cmd1 = Sourced::Message.define('reacttest.cmd1')
+  Cmd2 = Sourced::Message.define('reacttest.cmd2')
 
   react Event1 do |event|
     event.follow(Cmd1)
@@ -24,7 +24,7 @@ class ReactTestReactor
   end
 end
 
-RSpec.describe Sors::React do
+RSpec.describe Sourced::React do
   specify '.react returns commands' do
     evt1 = ReactTestReactor::Event1.new(stream_id: '1', seq: 1)
     evt2 = ReactTestReactor::Event2.new(stream_id: '1', seq: 2)

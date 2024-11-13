@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module Sors
+module Sourced
   module React
     PREFIX = 'reaction'
 
@@ -16,7 +16,7 @@ module Sors
     private
 
     def __handle_reaction(event)
-      method_name = Sors.message_method_name(React::PREFIX, event.class.to_s)
+      method_name = Sourced.message_method_name(React::PREFIX, event.class.to_s)
       return [] unless respond_to?(method_name)
 
       cmds = send(method_name, event)
@@ -43,7 +43,7 @@ module Sors
 
       def react(event_type, &block)
         handled_events_for_react << event_type unless event_type.is_a?(Symbol)
-        define_method(Sors.message_method_name(React::PREFIX, event_type.to_s), &block) if block_given?
+        define_method(Sourced.message_method_name(React::PREFIX, event_type.to_s), &block) if block_given?
       end
     end
   end

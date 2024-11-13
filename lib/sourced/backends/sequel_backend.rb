@@ -2,15 +2,15 @@
 
 require 'sequel'
 require 'json'
-require 'sors/message'
+require 'sourced/message'
 
 Sequel.extension :fiber_concurrency
 Sequel.extension :pg_json if defined?(PG)
 
-module Sors
+module Sourced
   module Backends
     class SequelBackend
-      def initialize(db, logger: Sors.config.logger, prefix: 'sors')
+      def initialize(db, logger: Sourced.config.logger, prefix: 'sourced')
         @db = connect(db)
         @logger = logger
         @prefix = prefix
@@ -72,10 +72,10 @@ module Sors
         end
         true
       rescue Sequel::UniqueConstraintViolation => e
-        raise Sors::ConcurrentAppendError, e.message
+        raise Sourced::ConcurrentAppendError, e.message
       end
 
-      # @param reactor [Sors::ReactorInterface]
+      # @param reactor [Sourced::ReactorInterface]
       def reserve_next_for_reactor(reactor, &)
         group_id = reactor.consumer_info.group_id
         handled_events = reactor.handled_events.map(&:type)
@@ -99,7 +99,7 @@ module Sors
       def ack_on(group_id, event_id, &)
         db.transaction do
           row = db.fetch(sql_for_ack_on, group_id, event_id).first
-          raise Sors::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}" unless row
+          raise Sourced::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}" unless row
 
           yield if block_given?
 

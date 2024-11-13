@@ -4,7 +4,7 @@ require 'plumb'
 require 'time'
 require 'securerandom'
 
-module Sors
+module Sourced
   module Types
     include Plumb::Types
 

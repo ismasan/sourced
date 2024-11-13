@@ -2,7 +2,7 @@
 
 require 'singleton'
 
-module Sors
+module Sourced
   class Router
     include Singleton
 

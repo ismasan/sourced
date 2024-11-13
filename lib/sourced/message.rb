@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require 'sors/types'
+require 'sourced/types'
 
 # A superclass and registry to define event types
 # for example for an event-driven or event-sourced system.
@@ -37,7 +37,7 @@ require 'sors/types'
 #
 #   Message.registry.values.map(&:to_json_schema)
 #
-module Sors
+module Sourced
   class Message < Types::Data
     attribute :id, Types::AutoUUID
     attribute :stream_id, Types::String.present
@@ -59,7 +59,7 @@ module Sors
     def self.define(type_str, payload_schema: nil, &payload_block)
       type_str.freeze unless type_str.frozen?
       if registry[type_str]
-        Sors.config.logger.warn("Message '#{type_str}' already defined")
+        Sourced.config.logger.warn("Message '#{type_str}' already defined")
       end
 
       registry[type_str] = Class.new(self) do

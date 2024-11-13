@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module Sors
+module Sourced
   class Decider
     extend Consumer
     include Evolve
@@ -46,7 +46,7 @@ module Sors
 
       def decide(cmd_type, &block)
         handled_commands << cmd_type
-        define_method(Sors.message_method_name(PREFIX, cmd_type.name), &block)
+        define_method(Sourced.message_method_name(PREFIX, cmd_type.name), &block)
       end
 
       # Define a command class, register a command handler
@@ -122,7 +122,7 @@ module Sors
 
     attr_reader :id, :seq, :state, :uncommitted_events
 
-    def initialize(id = SecureRandom.uuid, backend: Sors.config.backend, logger: Sors.config.logger)
+    def initialize(id = SecureRandom.uuid, backend: Sourced.config.backend, logger: Sourced.config.logger)
       @id = id
       @backend = backend
       @logger = logger
@@ -165,7 +165,7 @@ module Sors
 
     def decide(command)
       command = __set_current_command(command)
-      send(Sors.message_method_name(PREFIX, command.class.name), state, command)
+      send(Sourced.message_method_name(PREFIX, command.class.name), state, command)
       @__current_command = nil
       [state, uncommitted_events]
     end

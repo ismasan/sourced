@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
 require 'console' #  comes with async gem
-require 'sors/types'
-require 'sors/backends/test_backend'
+require 'sourced/types'
+require 'sourced/backends/test_backend'
 
-module Sors
+module Sourced
   class Configuration
     #  Backends must expose these methods
     BackendInterface = Types::Interface[
@@ -27,8 +27,8 @@ module Sors
     def backend=(bnd)
       @backend = case bnd.class.name
                  when 'Sequel::Postgres::Database', 'Sequel::SQLite::Database'
-                   require 'sors/backends/sequel_backend'
-                   Sors::Backends::SequelBackend.new(bnd)
+                   require 'sourced/backends/sequel_backend'
+                   Sourced::Backends::SequelBackend.new(bnd)
                  else
                    BackendInterface.parse(bnd)
                  end
