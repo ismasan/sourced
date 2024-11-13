@@ -1,27 +1,27 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'sors/decider'
+require 'sourced/decider'
 
 module TestDecider
   TodoList = Struct.new(:archive_status, :seq, :id, :status, :items)
 
-  AddItem = Sors::Message.define('decider.todos.add') do
+  AddItem = Sourced::Message.define('decider.todos.add') do
     attribute :name, String
   end
 
-  Notify = Sors::Message.define('decider.todos.notify')
+  Notify = Sourced::Message.define('decider.todos.notify')
 
-  ListStarted = Sors::Message.define('decider.todos.started')
-  ArchiveRequested = Sors::Message.define('decider.todos.archive_requested')
-  ConfirmArchive = Sors::Message.define('decider.todos.archive_confirm')
-  ArchiveConfirmed = Sors::Message.define('decider.todos.archive_confirmed')
+  ListStarted = Sourced::Message.define('decider.todos.started')
+  ArchiveRequested = Sourced::Message.define('decider.todos.archive_requested')
+  ConfirmArchive = Sourced::Message.define('decider.todos.archive_confirm')
+  ArchiveConfirmed = Sourced::Message.define('decider.todos.archive_confirmed')
 
-  ItemAdded = Sors::Message.define('decider.todos.added') do
+  ItemAdded = Sourced::Message.define('decider.todos.added') do
     attribute :name, String
   end
 
-  class TodoListDecider < Sors::Decider
+  class TodoListDecider < Sourced::Decider
     def init_state(id)
       TodoList.new(nil, 0, id, :new, [])
     end
@@ -78,7 +78,7 @@ module TestDecider
     end
   end
 
-  Sors::Router.register(TodoListDecider)
+  Sourced::Router.register(TodoListDecider)
 
   class Listener
     def self.call(state, command, events)
@@ -86,7 +86,7 @@ module TestDecider
   end
 
   class DummyProjector
-    extend Sors::Consumer
+    extend Sourced::Consumer
 
     class << self
       def handled_events = [WithSyncReactor::ThingDone]
@@ -96,8 +96,8 @@ module TestDecider
     end
   end
 
-  class WithSync < Sors::Decider
-    ThingDone = Sors::Message.define('with_sync_callable.thing_done')
+  class WithSync < Sourced::Decider
+    ThingDone = Sourced::Message.define('with_sync_callable.thing_done')
 
     def init_state(id)
       id
@@ -112,9 +112,9 @@ module TestDecider
   end
 end
 
-RSpec.describe Sors::Decider do
+RSpec.describe Sourced::Decider do
   before do
-    Sors.config.backend.clear!
+    Sourced.config.backend.clear!
   end
 
   let(:cmd) { TestDecider::AddItem.parse(stream_id: 'list1', payload: { name: 'item1' }) }
@@ -150,7 +150,7 @@ RSpec.describe Sors::Decider do
   describe '.handle_command' do
     it 'appends events to store' do
       TestDecider::TodoListDecider.handle_command(cmd)
-      events = Sors.config.backend.read_event_stream(cmd.stream_id)
+      events = Sourced.config.backend.read_event_stream(cmd.stream_id)
       expect(events.map(&:seq)).to eq([1, 2, 3])
       expect(events.map(&:type)).to eq(%w[decider.todos.add decider.todos.started decider.todos.added])
     end
@@ -237,7 +237,7 @@ RSpec.describe Sors::Decider do
     decider.archive
     expect(decider.state.archive_status).to eq(:requested)
 
-    Sors::Worker.drain
+    Sourced::Worker.drain
 
     decider.catch_up
     expect(decider.state.archive_status).to eq(:confirmed)
@@ -262,7 +262,7 @@ RSpec.describe Sors::Decider do
       allow(TestDecider::Listener).to receive(:call).and_raise('boom')
       aggregate = TestDecider::WithSync.new('id')
       expect { aggregate.do_thing }.to raise_error('boom')
-      expect(Sors.config.backend.read_event_stream('id')).to be_empty
+      expect(Sourced.config.backend.read_event_stream('id')).to be_empty
     end
 
     specify 'with a Reactor interface it calls #handle_events and ACKs group offsets' do
@@ -274,7 +274,7 @@ RSpec.describe Sors::Decider do
         expect(events.map(&:class)).to eq([TestDecider::WithSync::ThingDone])
       end
 
-      group = Sors.config.backend.stats.groups.first
+      group = Sourced.config.backend.stats.groups.first
       expect(group[:group_id]).to eq('TestDecider::DummyProjector')
       expect(group[:stream_count]).to eq(1)
       expect(group[:oldest_processed]).to eq(2)

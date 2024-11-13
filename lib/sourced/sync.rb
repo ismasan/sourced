@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module Sors
+module Sourced
   module Sync
     def self.included(base)
       super
@@ -22,11 +22,11 @@ module Sors
       end
     end
 
-    CallableInterface = Sors::Types::Interface[:call]
+    CallableInterface = Sourced::Types::Interface[:call]
 
     class SyncReactor < SimpleDelegator
       def call(_state, _command, events)
-        Sors.config.backend.ack_on(consumer_info.group_id, events.last.id) do
+        Sourced.config.backend.ack_on(consumer_info.group_id, events.last.id) do
           commands =  __getobj__.handle_events(events)
           if commands && commands.any?
             # TODO: Commands may or may not belong to he same stream as events
@@ -36,7 +36,7 @@ module Sors
             # or put in a command bus.
             # TODO2: we also need to handle exceptions here
             commands.each do |cmd|
-              Sors::Router.handle(cmd)
+              Sourced::Router.handle(cmd)
             end
           end
         end
@@ -75,7 +75,7 @@ module Sors
         when CallableInterface
           callable
         else
-          raise ArgumentError, 'sync block must be a Proc, Sors::ReactorInterface or #call interface'
+          raise ArgumentError, 'sync block must be a Proc, Sourced::ReactorInterface or #call interface'
         end
 
         sync_blocks << callable

@@ -2,4 +2,4 @@
 
 require_relative './cart'
 
-Sors::Supervisor.start
+Sourced::Supervisor.start

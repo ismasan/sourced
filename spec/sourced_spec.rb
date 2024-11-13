@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-RSpec.describe Sors do
+RSpec.describe Sourced do
   it 'has a version number' do
-    expect(Sors::VERSION).not_to be nil
+    expect(Sourced::VERSION).not_to be nil
   end
 end

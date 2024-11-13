@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
-require_relative 'sors/version'
+require_relative 'sourced/version'
 
-require 'sors/message'
+require 'sourced/message'
 
-module Sors
+module Sourced
   class Error < StandardError; end
   ConcurrentAppendError = Class.new(Error)
   ConcurrentAckError = Class.new(Error)
@@ -27,14 +27,14 @@ module Sors
   ReactorInterface = Types::Interface[:consumer_info, :handled_events, :handle_events]
 end
 
-require 'sors/consumer'
-require 'sors/decide'
-require 'sors/evolve'
-require 'sors/react'
-require 'sors/sync'
-require 'sors/configuration'
-require 'sors/router'
-require 'sors/message'
-require 'sors/decider'
-require 'sors/supervisor'
-require 'sors/rails/railtie' if defined?(Rails::Railtie)
+require 'sourced/consumer'
+require 'sourced/decide'
+require 'sourced/evolve'
+require 'sourced/react'
+require 'sourced/sync'
+require 'sourced/configuration'
+require 'sourced/router'
+require 'sourced/message'
+require 'sourced/decider'
+require 'sourced/supervisor'
+require 'sourced/rails/railtie' if defined?(Rails::Railtie)

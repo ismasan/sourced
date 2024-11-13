@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module Sors
+module Sourced
   module Consumer
     ConsumerInfo = Data.define(:group_id)
 

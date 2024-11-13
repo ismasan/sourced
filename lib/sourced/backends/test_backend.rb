@@ -2,7 +2,7 @@
 
 require 'thread'
 
-module Sors
+module Sourced
   module Backends
     class TestBackend
       class Group
@@ -39,7 +39,7 @@ module Sors
           evt = backend.events[global_seq]
           offset = @offsets[evt.stream_id]
           if offset.locked
-            raise Sors::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}" unless row
+            raise Sourced::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}" unless row
           else
             offset.locked = true
             yield
@@ -211,7 +211,7 @@ module Sors
           @state.stream_id_seq_index[seq_key(event.stream_id, event)]
         end
         if duplicate
-          raise Sors::ConcurrentAppendError, "Duplicate stream_id/seq: #{duplicate.stream_id}/#{duplicate.seq}"
+          raise Sourced::ConcurrentAppendError, "Duplicate stream_id/seq: #{duplicate.stream_id}/#{duplicate.seq}"
         end
       end
 

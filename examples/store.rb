@@ -3,7 +3,7 @@
 require 'bundler'
 Bundler.setup(:test)
 
-require 'sors'
+require 'sourced'
 require 'sequel'
 
 Sequel.extension :fiber_concurrency
@@ -102,7 +102,7 @@ class Store
       row = db.fetch(RESERVE_SQL, group_id, group_id, group_id).first
       return unless row
 
-      event = Sors::Message.from(row)
+      event = Sourced::Message.from(row)
       if block_given?
         yield event
 
@@ -122,7 +122,7 @@ class Store
 
   def deserialize_event(row)
     row[:payload] = parse_json(row[:payload]) if row[:payload]
-    Sors::Message.from(row)
+    Sourced::Message.from(row)
   end
 
   def parse_json(json)
@@ -132,11 +132,11 @@ class Store
   end
 end
 
-TestCommand = Sors::Message.define('test_command') do
+TestCommand = Sourced::Message.define('test_command') do
   attribute :number, Integer
 end
 
-TestEvent = Sors::Message.define('test_event') do
+TestEvent = Sourced::Message.define('test_event') do
   attribute :number, Integer
 end
 

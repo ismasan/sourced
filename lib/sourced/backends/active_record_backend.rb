@@ -2,12 +2,12 @@
 
 require 'active_record'
 require 'json'
-require 'sors/message'
+require 'sourced/message'
 
-module Sors
+module Sourced
   module Backends
     class ActiveRecordBackend
-      PREFIX = 'sors'
+      PREFIX = 'sourced'
 
       class EventRecord < ActiveRecord::Base
         self.inheritance_column = nil
@@ -132,7 +132,7 @@ module Sors
         EventRecord.insert_all!(rows)
         true
       rescue ActiveRecord::RecordNotUnique => e
-        raise Sors::ConcurrentAppendError, e.message
+        raise Sourced::ConcurrentAppendError, e.message
       end
 
       def read_event_batch(causation_id)

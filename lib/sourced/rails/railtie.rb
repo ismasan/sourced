@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module Sors
+module Sourced
   module Rails
     class Railtie < ::Rails::Railtie
       # TODO: review this.
@@ -9,7 +9,7 @@ module Sors
       # config.active_support.isolation_level = :fiber
 
       generators do
-        require 'sors/rails/install_generator'
+        require 'sourced/rails/install_generator'
       end
     end
   end

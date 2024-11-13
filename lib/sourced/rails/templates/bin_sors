@@ -1,8 +1,8 @@
 #!/usr/bin/env ruby
 
 require_relative "../config/environment"
-require "sors"
+require "sourced"
 
 ActiveRecord::Base.logger = nil
 
-Sors::Supervisor.start
+Sourced::Supervisor.start

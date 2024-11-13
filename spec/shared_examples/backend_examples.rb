@@ -2,13 +2,13 @@
 
 module BackendExamples
   module Tests
-    DoSomething = Sors::Message.define('tests.do_something') do
+    DoSomething = Sourced::Message.define('tests.do_something') do
       attribute :account_id, Integer
     end
-    SomethingHappened1 = Sors::Message.define('tests.something_happened1') do
+    SomethingHappened1 = Sourced::Message.define('tests.something_happened1') do
       attribute :account_id, Integer
     end
-    SomethingHappened2 = Sors::Message.define('tests.something_happened2') do
+    SomethingHappened2 = Sourced::Message.define('tests.something_happened2') do
       attribute :account_id, Integer
     end
   end
@@ -40,7 +40,7 @@ module BackendExamples
         evt2 = cmd1.follow_with_seq(BackendExamples::Tests::SomethingHappened1, 3, account_id: cmd1.payload.account_id)
         evt3 = BackendExamples::Tests::SomethingHappened1.parse(stream_id: 's1', seq: 4, payload: { account_id: 1 })
         backend.append_to_stream(cmd1.stream_id, [evt1, evt2, evt3])
-        expect(Sors::Backends::ActiveRecordBackend::EventRecord.order(global_seq: :asc).pluck(:global_seq))
+        expect(Sourced::Backends::ActiveRecordBackend::EventRecord.order(global_seq: :asc).pluck(:global_seq))
           .to eq([1, 2, 3])
       end
     end
@@ -53,7 +53,7 @@ module BackendExamples
 
     it 'supports the Backend interface' do
       expect do
-        Sors::Configuration::BackendInterface.parse(backend)
+        Sourced::Configuration::BackendInterface.parse(backend)
       end.not_to raise_error
     end
 
@@ -80,7 +80,7 @@ module BackendExamples
 
         reactor1 = Class.new do
           def self.consumer_info
-            Sors::Consumer::ConsumerInfo.new(group_id: 'group1')
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
           end
 
           def self.handled_events
@@ -90,7 +90,7 @@ module BackendExamples
 
         reactor2 = Class.new do
           def self.consumer_info
-            Sors::Consumer::ConsumerInfo.new(group_id: 'group2')
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group2')
           end
 
           def self.handled_events
@@ -145,7 +145,7 @@ module BackendExamples
         # Test that reactors with events not in the stream do not advance the cursor
         reactor3 = Class.new do
           def self.consumer_info
-            Sors::Consumer::ConsumerInfo.new(group_id: 'group3')
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group3')
           end
 
           def self.handled_events
@@ -195,7 +195,7 @@ module BackendExamples
       let(:reactor) do 
         Class.new do
           def self.consumer_info
-            Sors::Consumer::ConsumerInfo.new(group_id: 'group1')
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
           end
 
           def self.handled_events
@@ -239,7 +239,7 @@ module BackendExamples
             task.async do
               backend.ack_on(reactor.consumer_info.group_id, evt2.id) { true }
             end
-          end.to raise_error(Sors::ConcurrentAckError)
+          end.to raise_error(Sourced::ConcurrentAckError)
         end
       end
     end
@@ -263,7 +263,7 @@ module BackendExamples
 
         expect do
           backend.append_to_stream('s1', [evt2])
-        end.to raise_error(Sors::ConcurrentAppendError)
+        end.to raise_error(Sourced::ConcurrentAppendError)
       end
     end
 
@@ -305,7 +305,7 @@ module BackendExamples
     end
 
     def up
-      return if Sors::Backends::ActiveRecordBackend.installed?
+      return if Sourced::Backends::ActiveRecordBackend.installed?
 
       migfile = File.read(File.join(@root_dir, 'lib', 'sors', 'rails', 'templates', 'create_sors_tables.rb.erb'))
       migcontent = ERB.new(migfile).result(binding)
@@ -316,7 +316,7 @@ module BackendExamples
     end
 
     def down
-      Sors::Backends::ActiveRecordBackend.uninstall!
+      Sourced::Backends::ActiveRecordBackend.uninstall!
       File.delete(@migfilename) if File.exist?(@migfilename)
     end
   end

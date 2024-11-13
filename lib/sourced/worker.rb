@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 require 'console' #  comes with Async
-require 'sors/router' #  comes with Async
+require 'sourced/router' #  comes with Async
 
-module Sors
+module Sourced
   class Worker
     def self.drain
       new(async: false).drain
@@ -16,8 +16,8 @@ module Sors
     attr_reader :name
 
     def initialize(
-      backend: Sors.config.backend,
-      logger: Sors.config.logger,
+      backend: Sourced.config.backend,
+      logger: Sourced.config.logger,
       name: SecureRandom.hex(4),
       poll_interval: 0.01,
       async: true
@@ -89,7 +89,7 @@ module Sors
           # We want the durability of a command bus.
           # A command bus will also solve future and recurrent scheduled commands.
           log_event(' -> produced command', reactor, commands.first)
-          Sors::Router.handle(commands.first)
+          Sourced::Router.handle(commands.first)
         end
 
         event

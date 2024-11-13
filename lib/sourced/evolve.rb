@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module Sors
+module Sourced
   module Evolve
     PREFIX = 'evolution'
     NOOP_HANDLER = ->(*_) { nil }
@@ -16,7 +16,7 @@ module Sors
       case args
       in [events]
         events.each do |event|
-          method_name = Sors.message_method_name(Evolve::PREFIX, event.class.to_s)
+          method_name = Sourced.message_method_name(Evolve::PREFIX, event.class.to_s)
           if respond_to?(method_name)
             before_evolve(event)
             send(method_name, event) 
@@ -25,7 +25,7 @@ module Sors
       in [obj, events]
         state = obj
         events.each do |event|
-          method_name = Sors.message_method_name(Evolve::PREFIX, event.class.to_s)
+          method_name = Sourced.message_method_name(Evolve::PREFIX, event.class.to_s)
           if respond_to?(method_name)
             before_evolve(state, event)
             send(method_name, state, event)
@@ -63,11 +63,11 @@ module Sors
       #     @updated_at = event.created_at
       #   end
       #
-      # @param event_type [Sors::Message]
+      # @param event_type [Sourced::Message]
       def evolve(event_type, &block)
         handled_events_for_evolve << event_type unless event_type.is_a?(Symbol)
         block = NOOP_HANDLER unless block_given?
-        define_method(Sors.message_method_name(Evolve::PREFIX, event_type.to_s), &block)
+        define_method(Sourced.message_method_name(Evolve::PREFIX, event_type.to_s), &block)
       end
 
       # Run this block before any of the registered event handlers
@@ -90,7 +90,7 @@ module Sors
       #     @updated_at = event.created_at
       #   end
       #
-      # @param event_list [Array<Sors::Message>, #handled_events_for_evolve() {Array<Sors::Message>}]
+      # @param event_list [Array<Sourced::Message>, #handled_events_for_evolve() {Array<Sourced::Message>}]
       def evolve_all(event_list, &block)
         event_list = event_list.handled_events_for_evolve if event_list.respond_to?(:handled_events_for_evolve)
         event_list.each do |event_type|

@@ -1,14 +1,14 @@
 # frozen_string_literal: true
 
-require_relative 'lib/sors/version'
+require_relative 'lib/sourced/version'
 
 Gem::Specification.new do |spec|
-  spec.name = 'sors'
-  spec.version = Sors::VERSION
+  spec.name = 'sourced'
+  spec.version = Sourced::VERSION
   spec.authors = ['Ismael Celis']
   spec.email = ['ismaelct@gmail.com']
 
-  spec.homepage = 'https://github.com/ismaelcelis/sors'
+  spec.homepage = 'https://github.com/ismaelcelis/sourced'
   spec.summary = 'Decide, Evolve, React'
   spec.required_ruby_version = '>= 3.0.0'
 

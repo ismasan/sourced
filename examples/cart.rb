@@ -3,14 +3,14 @@
 require 'bundler'
 Bundler.setup(:test)
 
-require 'sors'
+require 'sourced'
 require 'sequel'
 
 # ActiveRecord::Base.establish_connection(adapter: 'postgresql', database: 'decider')
 unless ENV['backend_configured']
   puts 'aggregate config'
-  Sors.configure do |config|
-    config.backend = Sequel.postgres('decider')
+  Sourced.configure do |config|
+    config.backend = Sequel.postgres('sourced_development')
   end
   ENV['backend_configured'] = 'true'
 end
@@ -24,7 +24,7 @@ end
 #
 # The above sends a Cart::Place command
 # which produces a Cart::Placed event
-class Cart < Sors::Decider
+class Cart < Sourced::Decider
   State = Struct.new(:status, :notified, :items, :mailer_id) do
     def total = items.sum(&:price)
   end
@@ -33,13 +33,13 @@ class Cart < Sors::Decider
     State.new(:open, false, [], nil)
   end
 
-  ItemAdded = Sors::Message.define('cart.item_added') do
+  ItemAdded = Sourced::Message.define('cart.item_added') do
     attribute :name, String
     attribute :price, Integer
   end
 
-  Placed = Sors::Message.define('cart.placed')
-  Notified = Sors::Message.define('cart.notified') do
+  Placed = Sourced::Message.define('cart.placed')
+  Notified = Sourced::Message.define('cart.notified') do
     attribute :mailer_id, String
   end
 
@@ -86,8 +86,8 @@ class Cart < Sors::Decider
   # sync CartListings
 end
 
-class Mailer < Sors::Decider
-  EmailSent = Sors::Message.define('mailer.email_sent') do
+class Mailer < Sourced::Decider
+  EmailSent = Sourced::Message.define('mailer.email_sent') do
     attribute :cart_id, String
   end
 
@@ -106,7 +106,7 @@ class Mailer < Sors::Decider
 end
 
 # A Saga that orchestrates the flow between Cart and Mailer
-class CartEmailsSaga < Sors::Decider
+class CartEmailsSaga < Sourced::Decider
   # Listen for Cart::Placed events and
   # send command to Mailer
   react Cart::Placed do |event|
@@ -130,7 +130,7 @@ end
 
 # A projector
 # "reacts" to events registered with .evolve
-class CartListings < Sors::Decider
+class CartListings < Sourced::Decider
   class << self
     def handled_events = self.handled_events_for_evolve
 
@@ -193,7 +193,7 @@ class CartListings < Sors::Decider
 end
 
 class LoggingReactor
-  extend Sors::Consumer
+  extend Sourced::Consumer
 
   class << self
     # Register as a Reactor that cares about these events
@@ -222,8 +222,8 @@ end
 
 # Register Reactor interfaces with the Router
 # This allows the Router to route commands and events to reactors
-Sors::Router.register(LoggingReactor)
-Sors::Router.register(Cart)
-Sors::Router.register(Mailer)
-Sors::Router.register(CartEmailsSaga)
-Sors::Router.register(CartListings)
+Sourced::Router.register(LoggingReactor)
+Sourced::Router.register(Cart)
+Sourced::Router.register(Mailer)
+Sourced::Router.register(CartEmailsSaga)
+Sourced::Router.register(CartListings)

@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    sors (0.1.0)
+    sourced (0.1.0)
       async
       plumb (>= 0.0.8)
 
@@ -106,7 +106,7 @@ DEPENDENCIES
   rake (~> 13.0)
   rspec (~> 3.0)
   sequel
-  sors!
+  sourced!
   sqlite3
 
 BUNDLED WITH
