@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'sourced/decider'
 
 module TestDecider
   TodoList = Struct.new(:archive_status, :seq, :id, :status, :items)
@@ -27,18 +26,16 @@ module TestDecider
     end
 
     decide AddItem do |list, cmd|
-      if list.status == :new
-        apply ListStarted
-      end
+      apply ListStarted if list.status == :new
       apply ItemAdded, name: cmd.payload.name
     end
 
     # Command DSL
-    command :add_one, name: String do |list, cmd|
+    command :add_one, name: String do |_list, cmd|
       apply ItemAdded, name: cmd.payload.name
     end
 
-    command :archive do |list, _cmd|
+    command :archive do |_list, _cmd|
       apply ArchiveRequested
     end
 
@@ -46,7 +43,7 @@ module TestDecider
       event.follow(ConfirmArchive)
     end
 
-    decide ConfirmArchive do |list, _cmd|
+    decide ConfirmArchive do |_list, _cmd|
       apply ArchiveConfirmed
     end
 
@@ -62,7 +59,7 @@ module TestDecider
       list.seq = event.seq
     end
 
-    evolve ListStarted do |list, event|
+    evolve ListStarted do |list, _event|
       list.status = :open
     end
 
@@ -81,8 +78,7 @@ module TestDecider
   Sourced::Router.register(TodoListDecider)
 
   class Listener
-    def self.call(state, command, events)
-    end
+    def self.call(state, command, events); end
   end
 
   class DummyProjector
@@ -90,7 +86,8 @@ module TestDecider
 
     class << self
       def handled_events = [WithSyncReactor::ThingDone]
-      def handle_events(events)
+
+      def handle_events(_events)
         []
       end
     end
@@ -103,7 +100,7 @@ module TestDecider
       id
     end
 
-    command :do_thing, 'with_sync_callable.do_thing' do |_, cmd|
+    command :do_thing, 'with_sync_callable.do_thing' do |_, _cmd|
       apply(ThingDone)
     end
 
@@ -135,7 +132,7 @@ RSpec.describe Sourced::Decider do
     end
 
     it 'increments #seq' do
-      list, _ = decider.decide(cmd)
+      list, = decider.decide(cmd)
       expect(decider.seq).to eq(3)
       expect(list.seq).to eq(3)
     end
@@ -143,7 +140,8 @@ RSpec.describe Sourced::Decider do
     it 'tracks #uncommitted_events' do
       decider.decide(cmd)
       expect(decider.uncommitted_events.map(&:seq)).to eq([1, 2, 3])
-      expect(decider.uncommitted_events.map(&:type)).to eq(%w[decider.todos.add decider.todos.started decider.todos.added])
+      expect(decider.uncommitted_events.map(&:type)).to eq(%w[decider.todos.add decider.todos.started
+                                                              decider.todos.added])
     end
   end
 
@@ -167,19 +165,19 @@ RSpec.describe Sourced::Decider do
 
   specify '.handled_commands' do
     expect(TestDecider::TodoListDecider.handled_commands).to eq([
-      TestDecider::AddItem,
-      TestDecider::TodoListDecider::AddOne,
-      TestDecider::TodoListDecider::Archive,
-      TestDecider::ConfirmArchive,
-      TestDecider::Notify
-    ])
+                                                                  TestDecider::AddItem,
+                                                                  TestDecider::TodoListDecider::AddOne,
+                                                                  TestDecider::TodoListDecider::Archive,
+                                                                  TestDecider::ConfirmArchive,
+                                                                  TestDecider::Notify
+                                                                ])
   end
 
   specify '.handled_events' do
     expect(TestDecider::TodoListDecider.handled_events).to eq([
-      TestDecider::ArchiveRequested, 
-      TestDecider::ItemAdded
-    ])
+                                                                TestDecider::ArchiveRequested,
+                                                                TestDecider::ItemAdded
+                                                              ])
   end
 
   specify '.handle_events' do
@@ -220,9 +218,9 @@ RSpec.describe Sourced::Decider do
     events = decider.events
     expect(events.map(&:seq)).to eq([1, 2])
     expect(events.map(&:class)).to eq([
-      TestDecider::TodoListDecider::AddOne, 
-      TestDecider::ItemAdded
-    ])
+                                        TestDecider::TodoListDecider::AddOne,
+                                        TestDecider::ItemAdded
+                                      ])
 
     TestDecider::TodoListDecider.handle_command(cmd)
     expect(decider.events.map(&:seq)).to eq([1, 2])
