@@ -4,6 +4,7 @@ require 'dotenv/load'
 require 'sourced'
 require 'debug'
 require 'logger'
+require 'timecop'
 require_relative './shared_examples/backend_examples'
 
 ENV['ENVIRONMENT'] ||= 'test'

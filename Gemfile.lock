@@ -89,6 +89,7 @@ GEM
       mini_portile2 (~> 2.8.0)
     sqlite3 (2.1.0-arm64-darwin)
     stringio (3.1.1)
+    timecop (0.9.10)
     timeout (0.4.1)
     tzinfo (2.0.6)
       concurrent-ruby (~> 1.0)
@@ -108,6 +109,7 @@ DEPENDENCIES
   sequel
   sourced!
   sqlite3
+  timecop
 
 BUNDLED WITH
    2.5.11
