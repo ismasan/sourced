@@ -58,7 +58,7 @@ module BackendExamples
     end
 
     describe '#transaction' do
-      it 'resets append on error' do 
+      it 'resets append on error' do
         evt = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         expect do
           backend.transaction do
@@ -71,6 +71,46 @@ module BackendExamples
     end
 
     describe '#append_to_stream and #reserve_next_for_reactor' do
+      it 'supports a time window' do
+        now = Time.now
+        cmd_a = nil
+        evt_a1 = nil
+        evt_a2 = nil
+
+        Timecop.freeze(now - 60) do
+          cmd_a = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+          evt_a1 = cmd_a.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd_a.payload.account_id)
+        end
+        Timecop.freeze(now - 3) do
+          evt_a2 = cmd_a.follow_with_seq(Tests::SomethingHappened1, 3, account_id: cmd_a.payload.account_id)
+        end
+        backend.append_to_stream('s1', [cmd_a, evt_a1, evt_a2])
+
+        reactor1 = Class.new do
+          def self.consumer_info
+            Sourced::Consumer::ConsumerInfo.new(
+              group_id: 'group1',
+              start_from: -> { Time.now - 5 }
+            )
+          end
+
+          def self.handled_events
+            [Tests::SomethingHappened1]
+          end
+        end
+
+        messages = []
+
+        backend.reserve_next_for_reactor(reactor1) do |msg|
+          messages << msg
+        end
+        backend.reserve_next_for_reactor(reactor1) do |msg|
+          messages << msg
+        end
+
+        expect(messages).to eq([evt_a2])
+      end
+
       it 'schedules messages and reserves them in order of arrival' do
         cmd_a = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         cmd_b = Tests::DoSomething.parse(stream_id: 's2', seq: 1, payload: { account_id: 2 })
@@ -138,11 +178,13 @@ module BackendExamples
         expect(stats.stream_count).to eq(2)
         expect(stats.max_global_seq).to eq(5)
         expect(stats.groups).to match_array([
-          { group_id: 'group2', oldest_processed: 3, newest_processed: 3, stream_count: 1 },
-          { group_id: 'group1', oldest_processed: 2, newest_processed: 5, stream_count: 2 }
-        ])
+                                              { group_id: 'group2', oldest_processed: 3, newest_processed: 3,
+                                                stream_count: 1 },
+                                              { group_id: 'group1', oldest_processed: 2, newest_processed: 5,
+                                                stream_count: 2 }
+                                            ])
 
-        # Test that reactors with events not in the stream do not advance the cursor
+        #  Test that reactors with events not in the stream do not advance the cursor
         reactor3 = Class.new do
           def self.consumer_info
             Sourced::Consumer::ConsumerInfo.new(group_id: 'group3')
@@ -162,9 +204,11 @@ module BackendExamples
         expect(group3_messages).to eq([])
 
         expect(backend.stats.groups).to match_array([
-          { group_id: 'group2', oldest_processed: 3, newest_processed: 3, stream_count: 1 },
-          { group_id: 'group1', oldest_processed: 2, newest_processed: 5, stream_count: 2 }
-        ])
+                                                      { group_id: 'group2', oldest_processed: 3, newest_processed: 3,
+                                                        stream_count: 1 },
+                                                      { group_id: 'group1', oldest_processed: 2, newest_processed: 5,
+                                                        stream_count: 2 }
+                                                    ])
 
         # Now append an event that Reactor3 cares about
         evt_a3 = cmd_a.follow_with_seq(Tests::SomethingHappened2, 4, account_id: cmd_a.payload.account_id)
@@ -177,10 +221,13 @@ module BackendExamples
         expect(group3_messages).to eq([evt_a3])
 
         expect(backend.stats.groups).to match_array([
-          { group_id: 'group1', oldest_processed: 2, newest_processed: 5, stream_count: 2 },
-          { group_id: 'group2', oldest_processed: 3, newest_processed: 3, stream_count: 1 },
-          { group_id: 'group3', oldest_processed: 6, newest_processed: 6, stream_count: 1 },
-        ])
+                                                      { group_id: 'group1', oldest_processed: 2, newest_processed: 5,
+                                                        stream_count: 2 },
+                                                      { group_id: 'group2', oldest_processed: 3, newest_processed: 3,
+                                                        stream_count: 1 },
+                                                      { group_id: 'group3', oldest_processed: 6, newest_processed: 6,
+                                                        stream_count: 1 }
+                                                    ])
 
         #  Test that #reserve_next_for returns next event, or nil
         evt = backend.reserve_next_for_reactor(reactor2) { true }
@@ -192,7 +239,7 @@ module BackendExamples
     end
 
     describe '#ack_on' do
-      let(:reactor) do 
+      let(:reactor) do
         Class.new do
           def self.consumer_info
             Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')

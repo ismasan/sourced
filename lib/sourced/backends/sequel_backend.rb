@@ -81,7 +81,12 @@ module Sourced
         handled_events = reactor.handled_events.map(&:type)
 
         db.transaction do
-          row = db.fetch(sql_for_reserve_next_with_events(handled_events), group_id, group_id).first
+          start_from = reactor.consumer_info.start_from.call
+          row = if start_from.is_a?(Time)
+            db.fetch(sql_for_reserve_next_with_events(handled_events, true), group_id, group_id, start_from).first
+          else
+            db.fetch(sql_for_reserve_next_with_events(handled_events), group_id, group_id).first
+          end
           return unless row
 
           event = deserialize_event(row)
@@ -215,9 +220,10 @@ module Sourced
 
       attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table
 
-      def sql_for_reserve_next_with_events(handled_events)
+      def sql_for_reserve_next_with_events(handled_events, with_time_window = false)
         event_types = handled_events.map { |e| "'#{e}'" }
         event_types_sql = event_types.any? ? " AND e.type IN(#{event_types.join(',')})" : ''
+        time_window_sql = with_time_window ? ' AND e.created_at > ?' : ''
 
         <<~SQL
           WITH candidate_events AS (
@@ -237,7 +243,7 @@ module Sourced
               JOIN #{streams_table} s ON e.stream_id = s.id
               LEFT JOIN #{offsets_table} o ON o.stream_id = e.stream_id 
                   AND o.group_id = ?
-              WHERE e.global_seq > COALESCE(o.global_seq, 0)#{event_types_sql}
+              WHERE e.global_seq > COALESCE(o.global_seq, 0)#{event_types_sql}#{time_window_sql}
               ORDER BY e.global_seq
           )
           SELECT *
