@@ -28,8 +28,8 @@ RSpec.describe Sourced::Consumer do
   end
 
   describe '#start_from' do
-    specify 'default is :beginning' do
-      expect(TestConsumer::TestConsumer.consumer_info.start_from.call).to eq(:beginning)
+    specify 'default is nil' do
+      expect(TestConsumer::TestConsumer.consumer_info.start_from.call).to be_nil
     end
 
     it 'can be set to a proc that returns a Time' do
@@ -45,17 +45,20 @@ RSpec.describe Sourced::Consumer do
       expect(klass.consumer_info.start_from.call).to be_a(Time)
     end
 
-    it 'can be set to an Integer sequence number' do
+    it 'can be set to an :now which is a 5 second time window' do
       klass = Class.new do
         extend Sourced::Consumer
 
         consumer do |info|
           info.group_id = 'my-group'
-          info.start_from = 100
+          info.start_from = :now
         end
       end
 
-      expect(klass.consumer_info.start_from.call).to eq(100)
+      now = Time.now
+      Timecop.freeze(now) do
+        expect(klass.consumer_info.start_from.call).to eq(now - 5)
+      end
     end
   end
 end
