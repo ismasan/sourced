@@ -48,7 +48,10 @@ module Sourced
           end
         end
 
-        def reserve_next(handled_events, &)
+        NOOP_FILTER = ->(_) { true } 
+
+        def reserve_next(handled_events, time_window, &)
+          time_filter = time_window.is_a?(Time) ? ->(e) { e.created_at > time_window } : NOOP_FILTER
           evt = nil
           offset = nil
           index = -1
@@ -57,7 +60,7 @@ module Sourced
             offset = @offsets[e.stream_id]
             if offset.locked # stream locked by another consumer in the group
               next
-            elsif idx > offset.index && handled_events.include?(e.class) # new event for the stream
+            elsif idx > offset.index && handled_events.include?(e.class) && time_filter.call(e) # new event for the stream
               evt = e
               offset.locked = true
               index = idx
@@ -137,9 +140,10 @@ module Sourced
 
       def reserve_next_for_reactor(reactor, &)
         group_id = reactor.consumer_info.group_id
+        start_from = reactor.consumer_info.start_from.call
         transaction do
           group = @state.groups[group_id]
-          group.reserve_next(reactor.handled_events, &)
+          group.reserve_next(reactor.handled_events, start_from, &)
         end
       end
 
