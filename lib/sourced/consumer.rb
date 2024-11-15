@@ -14,6 +14,7 @@ module Sourced
 
       attribute :group_id, Types::String.present, writer: true
       attribute :start_from, StartFrom, writer: true
+      attribute :async, Types::Boolean.default(false), writer: true
     end
 
     def consumer_info
