@@ -35,8 +35,9 @@ module Sourced
             # If they belong to different streams, they can be dispatched in parallel
             # or put in a command bus.
             # TODO2: we also need to handle exceptions here
+            # TODO3: this is not tested
             commands.each do |cmd|
-              Sourced::Router.handle(cmd)
+              Sourced::Router.handle_command(cmd)
             end
           end
         end
