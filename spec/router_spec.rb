@@ -46,9 +46,7 @@ RSpec.describe Sourced::Router do
       router.register(RouterTest::DeciderReactor)
       cmd = RouterTest::AddItem.new
       expect(RouterTest::DeciderReactor).to receive(:handle_command).with(cmd)
-      # Change this to .handle_command
-      # So that Router quacks as a Decider
-      router.handle(cmd)
+      router.handle_command(cmd)
     end
 
     it 'registers Reactor interfaces' do
