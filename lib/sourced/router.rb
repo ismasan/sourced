@@ -13,8 +13,8 @@ module Sourced
         instance.register(...)
       end
 
-      def handle(command)
-        instance.handle(command)
+      def handle_command(command)
+        instance.handle_command(command)
       end
 
       def reactors
@@ -48,7 +48,7 @@ module Sourced
       @reactors << thing
     end
 
-    def handle(command)
+    def handle_command(command)
       decider = @decider_lookup.fetch(command.class)
       decider.handle_command(command)
     end

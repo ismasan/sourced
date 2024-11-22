@@ -89,7 +89,7 @@ module Sourced
           # We want the durability of a command bus.
           # A command bus will also solve future and recurrent scheduled commands.
           log_event(' -> produced command', reactor, commands.first)
-          Sourced::Router.handle(commands.first)
+          Sourced::Router.handle_command(commands.first)
         end
 
         event
