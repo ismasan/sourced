@@ -30,7 +30,7 @@ module Sourced
       # TODO: If reactors have a :weight, we can use that
       # to populate this array according to the weight
       # so that some reactors are picked more often than others
-      @reactors = Router.reactors.filter do |r|
+      @reactors = Router.async_reactors.filter do |r|
         r.handled_events.any?
       end.to_a.shuffle
       @reactor_index = 0

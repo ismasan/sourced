@@ -17,17 +17,17 @@ module Sourced
         instance.handle_command(command)
       end
 
-      def reactors
-        instance.reactors
+      def async_reactors
+        instance.async_reactors
       end
     end
 
-    attr_reader :reactors
+    attr_reader :async_reactors
 
     def initialize
       @decider_lookup = {}
       @reactor_lookup = {}
-      @reactors = Set.new
+      @async_reactors = Set.new
     end
 
     def register(thing)
@@ -45,7 +45,7 @@ module Sourced
       #   @reactor_lookup[event_type] << thing
       # end
 
-      @reactors << thing
+      @async_reactors << thing
     end
 
     def handle_command(command)

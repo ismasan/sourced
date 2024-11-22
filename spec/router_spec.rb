@@ -52,7 +52,7 @@ RSpec.describe Sourced::Router do
     it 'registers Reactor interfaces' do
       router.register(RouterTest::DeciderReactor)
       router.register(RouterTest::DeciderOnly)
-      expect(router.reactors.first).to eq(RouterTest::DeciderReactor)
+      expect(router.async_reactors.first).to eq(RouterTest::DeciderReactor)
     end
   end
 end
