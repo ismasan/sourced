@@ -7,6 +7,8 @@ module Sourced
     include Singleton
 
     class << self
+      public :new
+
       def register(...)
         instance.register(...)
       end
@@ -38,10 +40,10 @@ module Sourced
       return unless ReactorInterface === thing
 
       # TODO: we're not using this
-      thing.handled_events.each do |event_type|
-        @reactor_lookup[event_type] ||= []
-        @reactor_lookup[event_type] << thing
-      end
+      # thing.handled_events.each do |event_type|
+      #   @reactor_lookup[event_type] ||= []
+      #   @reactor_lookup[event_type] << thing
+      # end
 
       @reactors << thing
     end
