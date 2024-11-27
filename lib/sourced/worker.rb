@@ -6,11 +6,11 @@ require 'sourced/router' #  comes with Async
 module Sourced
   class Worker
     def self.drain
-      new(async: false).drain
+      new.drain
     end
 
     def self.tick
-      new(async: false).tick
+      new.tick
     end
 
     attr_reader :name
@@ -19,8 +19,7 @@ module Sourced
       backend: Sourced.config.backend,
       logger: Sourced.config.logger,
       name: SecureRandom.hex(4),
-      poll_interval: 0.01,
-      async: true
+      poll_interval: 0.01
     )
       @backend = backend
       @logger = logger
@@ -88,6 +87,7 @@ module Sourced
           # We can't just run the command in a separate Fiber.
           # We want the durability of a command bus.
           # A command bus will also solve future and recurrent scheduled commands.
+          # TODO3: we need to handle multiple commands here.
           log_event(' -> produced command', reactor, commands.first)
           Sourced::Router.handle_command(commands.first)
         end
