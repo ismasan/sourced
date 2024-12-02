@@ -171,7 +171,11 @@ module Sourced
     end
 
     def apply(event_class, payload = {})
-      evt = __current_command.follow_with_seq(event_class, __next_sequence, payload)
+      evt = __current_command.follow_with_attributes(
+        event_class, 
+        attrs: { seq: __next_sequence, producer: self.class.consumer_info.group_id }, 
+        payload:
+      )
       uncommitted_events << evt
       evolve(state, [evt])
     end
