@@ -83,21 +83,32 @@ module Sourced
     end
 
     def follow(event_class, payload_attrs = nil)
-      attrs = { stream_id:, causation_id: id, correlation_id:, producer: }
-      attrs[:payload] = payload_attrs if payload_attrs
-      event_class.new(attrs)
+      follow_with_attributes(
+        event_class,
+        payload: payload_attrs
+      )
     end
 
     def follow_with_seq(event_class, seq, payload_attrs = nil)
-      attrs = { stream_id:, causation_id: id, seq:, correlation_id:, producer: }
-      attrs[:payload] = payload_attrs if payload_attrs
-      event_class.new(attrs)
+      follow_with_attributes(
+        event_class,
+        attrs: { seq: },
+        payload: payload_attrs
+      )
     end
 
     def follow_with_stream_id(event_class, stream_id, payload_attrs = nil)
-      attrs = { stream_id:, causation_id: id, correlation_id:, producer: }
-      attrs[:payload] = payload_attrs if payload_attrs
-      event_class.new(attrs)
+      follow_with_attributes(
+        event_class,
+        attrs: { stream_id: },
+        payload: payload_attrs
+      )
+    end
+
+    def follow_with_attributes(event_class, attrs: {}, payload: nil)
+      attrs = { stream_id:, causation_id: id, correlation_id:, producer: }.merge(attrs)
+      attrs[:payload] = payload.to_h if payload
+      event_class.parse(attrs)
     end
 
     def to_json(*)
