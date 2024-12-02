@@ -187,7 +187,10 @@ module Sourced
     sync do |_state, command, events|
       messages = [command, *events]
       backend.append_to_stream(id, messages) if messages.any?
-      Sourced::Router.handle_events(messages)
+    end
+
+    sync do |_state, command, events|
+      Sourced::Router.handle_events(events)
     end
 
     def handle_command(command)
