@@ -61,6 +61,12 @@ RSpec.describe Sourced::Message do
       expect(added.causation_id).to eq(add.id)
       expect(added.correlation_id).to eq(add.id)
     end
+
+    it 'copies payload attributes' do
+      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
+      added = add.follow(TestMessages::Added, add.payload)
+      expect(added.payload.value).to eq(1)
+    end
   end
 
   describe '#follow_with_seq' do
