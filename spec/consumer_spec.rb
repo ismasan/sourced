@@ -73,7 +73,7 @@ RSpec.describe Sourced::Consumer do
 
         consumer do |info|
           info.group_id = 'my-group'
-          info.async = true
+          info.async!
         end
       end
 
