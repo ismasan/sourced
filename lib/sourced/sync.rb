@@ -25,21 +25,12 @@ module Sourced
     CallableInterface = Sourced::Types::Interface[:call]
 
     class SyncReactor < SimpleDelegator
+      def handle_events(events)
+        Router.handle_and_ack_events_for_reactor(__getobj__, events)
+      end
+
       def call(_state, _command, events)
-        Sourced.config.backend.ack_on(consumer_info.group_id, events.last.id) do
-          commands =  __getobj__.handle_events(events)
-          if commands && commands.any?
-            # TODO: Commands may or may not belong to he same stream as events
-            # if they belong to the same stream,
-            # hey need to be dispached in order to preserve per stream order
-            # If they belong to different streams, they can be dispatched in parallel
-            # or put in a command bus.
-            # TODO2: we also need to handle exceptions here
-            commands.each do |cmd|
-              Sourced::Router.handle(cmd)
-            end
-          end
-        end
+        handle_events(events)
       end
     end
 
@@ -58,25 +49,29 @@ module Sourced
       def sync(callable = nil, &block)
         callable ||= block
         callable = case callable
-        when Proc
-          raise ArgumentError, 'sync block must accept 2 or 3 arguments' unless (2..3).include?(callable.arity)
-          callable
-        when ReactorInterface
-          # Wrap reactors here
-          # TODO:
-          # If the sync reactor runs successfully
-          # A). we want to ACK processed events for it in the offsets table
-          # so that if the reactor is moved to async execution
-          # it doesn't reprocess the same events again
-          # B). The reactors .handle_events may return commands
-          # Do we want to dispatch those commands inline?
-          # Or is this another reason to have a separate async command bus
-          SyncReactor.new(callable)
-        when CallableInterface
-          callable
-        else
-          raise ArgumentError, 'sync block must be a Proc, Sourced::ReactorInterface or #call interface'
-        end
+                   when Proc
+                     unless (2..3).include?(callable.arity)
+                       raise ArgumentError,
+                             'sync block must accept 2 or 3 arguments'
+                     end
+
+                     callable
+                   when ReactorInterface
+                     # Wrap reactors here
+                     # TODO:
+                     # If the sync reactor runs successfully
+                     # A). we want to ACK processed events for it in the offsets table
+                     # so that if the reactor is moved to async execution
+                     # it doesn't reprocess the same events again
+                     # B). The reactors .handle_events may return commands
+                     # Do we want to dispatch those commands inline?
+                     # Or is this another reason to have a separate async command bus
+                     SyncReactor.new(callable)
+                   when CallableInterface
+                     callable
+                   else
+                     raise ArgumentError, 'sync block must be a Proc, Sourced::ReactorInterface or #call interface'
+                   end
 
         sync_blocks << callable
       end
