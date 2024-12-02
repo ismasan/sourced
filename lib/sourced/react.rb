@@ -20,7 +20,9 @@ module Sourced
       return [] unless respond_to?(method_name)
 
       cmds = send(method_name, event)
-      [cmds].flatten.compact
+      [cmds].flatten.compact.map do |cmd|
+        cmd.with(producer: self.class.consumer_info.group_id)
+      end
     end
 
     module ClassMethods
@@ -29,6 +31,11 @@ module Sourced
         handled_events_for_react.each do |evt_type|
           subclass.handled_events_for_react << evt_type
         end
+      end
+
+      # Override this with extend Sourced::Consumer
+      def consumer_info
+        Sourced::Consumer::ConsumerInfo.new(group_id: name)
       end
 
       # These two are the Reactor interface

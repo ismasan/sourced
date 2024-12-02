@@ -2,10 +2,10 @@
 
 module Sourced
   class Decider
-    extend Consumer
     include Evolve
     include React
     include Sync
+    extend Consumer
 
     PREFIX = 'decide'
 
