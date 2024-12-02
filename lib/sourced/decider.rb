@@ -189,6 +189,10 @@ module Sourced
       backend.append_to_stream(id, messages) if messages.any?
     end
 
+    sync do |_state, command, events|
+      Sourced::Router.handle_events(events)
+    end
+
     def handle_command(command)
       # TODO: this might raise an exception from a worker
       # Think what to do with invalid commands here
