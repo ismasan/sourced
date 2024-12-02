@@ -94,7 +94,7 @@ module Sourced
           # TODO2: this breaks the per-stream concurrency model.
           # Ex. if the current event belongs to a 'cart1' stream,
           # the DB is locked from processing any new events for 'cart1'
-          # until we exist this block.
+          # until we exit this block.
           # if ex. reactor is a Saga that produces a command for another stream
           # (ex. 'mailer-1'), by processing the command here inline, we're blocking
           # the 'cart1' stream unnecessarily
