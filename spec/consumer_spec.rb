@@ -63,21 +63,21 @@ RSpec.describe Sourced::Consumer do
   end
 
   describe '#async' do
-    specify 'default is false' do
-      expect(TestConsumer::TestConsumer.consumer_info.async).to be(false)
+    specify 'default is true' do
+      expect(TestConsumer::TestConsumer.consumer_info.async).to be(true)
     end
 
-    it 'can be set true' do
+    it 'can be set false' do
       klass = Class.new do
         extend Sourced::Consumer
 
         consumer do |info|
           info.group_id = 'my-group'
-          info.async!
+          info.sync!
         end
       end
 
-      expect(klass.consumer_info.async).to be(true)
+      expect(klass.consumer_info.async).to be(false)
     end
   end
 end
