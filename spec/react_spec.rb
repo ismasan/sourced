@@ -19,7 +19,7 @@ class ReactTestReactor
     event.follow(Cmd2)
   end
 
-  react Event3 do |event|
+  react Event3 do |_event|
     nil
   end
 end
@@ -31,13 +31,14 @@ RSpec.describe Sourced::React do
     evt3 = ReactTestReactor::Event3.new(stream_id: '1', seq: 3)
     commands = ReactTestReactor.new.react([evt1, evt2])
     expect(commands.map(&:class)).to eq([ReactTestReactor::Cmd1, ReactTestReactor::Cmd2])
+    expect(commands.map(&:producer)).to eq(%w[ReactTestReactor ReactTestReactor])
   end
 
   specify '.handled_events_for_react' do
     expect(ReactTestReactor.handled_events_for_react).to eq([
-      ReactTestReactor::Event1, 
-      ReactTestReactor::Event2,
-      ReactTestReactor::Event3,
-    ])
+                                                              ReactTestReactor::Event1,
+                                                              ReactTestReactor::Event2,
+                                                              ReactTestReactor::Event3
+                                                            ])
   end
 end
