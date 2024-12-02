@@ -10,8 +10,7 @@ module Sourced
       new(...).start
     end
 
-    def initialize(backend: Sourced.config.backend, logger: Sourced.config.logger, count: 2)
-      @backend = backend
+    def initialize(logger: Sourced.config.logger, count: 2)
       @logger = logger
       @count = count
       @workers = []
@@ -21,7 +20,7 @@ module Sourced
       logger.info("Starting sync supervisor with #{@count} workers")
       set_signal_handlers
       @workers = @count.times.map do |i|
-        Worker.new(backend: @backend, logger:, name: "worker-#{i}")
+        Worker.new(logger:, name: "worker-#{i}")
       end
       Sync do |task|
         @workers.each do |wrk|
