@@ -21,6 +21,10 @@ module TestDecider
   end
 
   class TodoListDecider < Sourced::Decider
+    consumer do |c|
+      c.async!
+    end
+
     def init_state(id)
       TodoList.new(nil, 0, id, :new, [])
     end
@@ -83,6 +87,10 @@ module TestDecider
 
   class DummyProjector
     extend Sourced::Consumer
+
+    consumer do |c|
+      c.async!
+    end
 
     class << self
       def handled_events = [WithSyncReactor::ThingDone]

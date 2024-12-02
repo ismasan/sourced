@@ -20,6 +20,10 @@ module RouterTest
   class DeciderReactor
     extend Sourced::Consumer
 
+    consumer do |c|
+      c.async!
+    end
+
     # The Decider interface
     def self.handled_commands
       [AddItem]
@@ -30,6 +34,40 @@ module RouterTest
     # The Reactor interface
     def self.handled_events
       [ItemAdded]
+    end
+
+    def self.handle_events(_evts)
+      []
+    end
+  end
+
+  class SyncReactor1
+    extend Sourced::Consumer
+
+    consumer do |c|
+      c.sync!
+    end
+
+    # The Reactor interface
+    def self.handled_events
+      [ItemAdded]
+    end
+
+    def self.handle_events(_evts)
+      []
+    end
+  end
+
+  class SyncReactor2
+    extend Sourced::Consumer
+
+    consumer do |c|
+      c.async = false
+    end
+
+    # The Reactor interface
+    def self.handled_events
+      []
     end
 
     def self.handle_events(_evts)
@@ -53,6 +91,16 @@ RSpec.describe Sourced::Router do
       router.register(RouterTest::DeciderReactor)
       router.register(RouterTest::DeciderOnly)
       expect(router.async_reactors.first).to eq(RouterTest::DeciderReactor)
+    end
+
+    it 'registers async reactors' do
+      router.register(RouterTest::SyncReactor1)
+      router.register(RouterTest::SyncReactor2)
+
+      evt = RouterTest::ItemAdded.new
+      expect(Sourced::Router).to receive(:handle_events_sync).with(RouterTest::SyncReactor1, [evt])
+      expect(Sourced::Router).not_to receive(:handle_events_sync).with(RouterTest::SyncReactor2, [evt])
+      router.handle_events([evt])
     end
   end
 end
