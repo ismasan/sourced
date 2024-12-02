@@ -57,7 +57,8 @@ RSpec.describe 'Immediate consistency' do
 
   it 'runs reactor immediately' do
     decider, _events = TestSetup::TodoListDecider.handle_command(cmd)
-    # expect(decider.state.notified).to be(true)
+    decider.catch_up
+    expect(decider.state.notified).to be(true)
     expect(TestSetup::TodoListDecider.load(decider.id).state.notified).to be(true)
   end
 end
