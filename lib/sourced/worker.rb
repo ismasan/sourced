@@ -40,6 +40,11 @@ module Sourced
     end
 
     def poll
+      if @reactors.empty?
+        logger.warn "Worker #{name}: No reactors to poll"
+        return false
+      end
+
       @running = true
       while @running
         tick
@@ -60,9 +65,6 @@ module Sourced
     end
 
     def tick(reactor = next_reactor)
-      # @backend.reserve_next_for(reactor.consumer_info.group_id) do |event|
-      # TODO: if reactor has empty .handled_events
-      # and it doesn't handle :any events, it should be skipped
       @backend.reserve_next_for_reactor(reactor) do |event|
         # We're dealing with one event at a time now
         # So reactors should return a single command, or nothing
