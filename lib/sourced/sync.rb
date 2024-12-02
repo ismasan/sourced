@@ -26,7 +26,7 @@ module Sourced
 
     class SyncReactor < SimpleDelegator
       def handle_events(events)
-        Router.handle_events_sync(__getobj__, events)
+        Router.handle_and_ack_events_for_reactor(__getobj__, events)
       end
 
       def call(_state, _command, events)
