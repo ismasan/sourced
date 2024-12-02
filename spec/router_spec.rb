@@ -98,8 +98,8 @@ RSpec.describe Sourced::Router do
       router.register(RouterTest::SyncReactor2)
 
       evt = RouterTest::ItemAdded.new
-      expect(Sourced::Router).to receive(:handle_events_sync).with(RouterTest::SyncReactor1, [evt])
-      expect(Sourced::Router).not_to receive(:handle_events_sync).with(RouterTest::SyncReactor2, [evt])
+      expect(Sourced::Router).to receive(:handle_and_ack_events_for_reactor).with(RouterTest::SyncReactor1, [evt])
+      expect(Sourced::Router).not_to receive(:handle_and_ack_events_for_reactor).with(RouterTest::SyncReactor2, [evt])
       router.handle_events([evt])
     end
   end

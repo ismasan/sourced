@@ -32,7 +32,7 @@ module Sourced
       # if they belong to different streams than the events,
       # but we need to make sure to raise exceptions in the main thread.
       # so that the transaction is rolled back.
-      def handle_events_sync(reactor, events)
+      def handle_and_ack_events_for_reactor(reactor, events)
         Sourced.config.backend.ack_on(reactor.consumer_info.group_id, events.last.id) do
           commands = reactor.handle_events(events)
           if commands && commands.any?
@@ -90,7 +90,7 @@ module Sourced
       # I need to think about how to best to handle this safely
       # Also this could potential lead to infinite recursion!
       reactors.each do |r|
-        Router.handle_events_sync(r, events)
+        Router.handle_and_ack_events_for_reactor(r, events)
       end
     end
   end
