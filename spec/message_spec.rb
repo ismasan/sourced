@@ -67,6 +67,12 @@ RSpec.describe Sourced::Message do
       added = add.follow(TestMessages::Added, add.payload)
       expect(added.payload.value).to eq(1)
     end
+
+    it 'copies metadata' do
+      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 }, metadata: { user_id: 10 })
+      added = add.follow(TestMessages::Added, add.payload)
+      expect(added.metadata[:user_id]).to eq(10)
+    end
   end
 
   describe '#follow_with_seq' do

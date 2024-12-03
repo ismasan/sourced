@@ -21,7 +21,7 @@ module Sourced
 
       cmds = send(method_name, event)
       [cmds].flatten.compact.map do |cmd|
-        cmd.with(producer: self.class.consumer_info.group_id)
+        cmd.with_metadata(producer: self.class.consumer_info.group_id)
       end
     end
 
