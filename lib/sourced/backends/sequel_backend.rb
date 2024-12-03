@@ -130,7 +130,6 @@ module Sourced
             Sequel[events_table][:global_seq],
             Sequel[events_table][:type],
             Sequel[events_table][:created_at],
-            Sequel[events_table][:producer],
             Sequel[events_table][:causation_id],
             Sequel[events_table][:correlation_id],
             Sequel[events_table][:metadata],
@@ -205,7 +204,6 @@ module Sourced
           Bignum :seq, null: false
           String :type, null: false
           Time :created_at, null: false
-          String :producer
           column :causation_id, :uuid, index: true
           column :correlation_id, :uuid
           column :metadata, :jsonb

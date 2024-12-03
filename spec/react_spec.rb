@@ -31,7 +31,7 @@ RSpec.describe Sourced::React do
     evt3 = ReactTestReactor::Event3.new(stream_id: '1', seq: 3)
     commands = ReactTestReactor.new.react([evt1, evt2])
     expect(commands.map(&:class)).to eq([ReactTestReactor::Cmd1, ReactTestReactor::Cmd2])
-    expect(commands.map(&:producer)).to eq(%w[ReactTestReactor ReactTestReactor])
+    expect(commands.map { |e| e.metadata[:producer] }).to eq(%w[ReactTestReactor ReactTestReactor])
   end
 
   specify '.handled_events_for_react' do
