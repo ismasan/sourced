@@ -45,8 +45,8 @@ module Sourced
     attribute :created_at, Types::Forms::Time.default { Time.now } #Types::JSON::AutoUTCTime
     attribute? :causation_id, Types::UUID::V4
     attribute? :correlation_id, Types::UUID::V4
-    attribute :producer, Types::String.nullable.default(nil)
     attribute :seq, Types::Integer.default(1)
+    attribute :metadata, Types::Hash.default(Plumb::BLANK_HASH)
     attribute :payload, Types::Static[nil]
 
     def self.registry
@@ -82,6 +82,13 @@ module Sourced
       klass.new(attrs)
     end
 
+    def with_metadata(meta = {})
+      return self if meta.empty?
+
+      attrs = metadata.merge(meta)
+      with(metadata: attrs)
+    end
+
     def follow(event_class, payload_attrs = nil)
       follow_with_attributes(
         event_class,
@@ -105,8 +112,10 @@ module Sourced
       )
     end
 
-    def follow_with_attributes(event_class, attrs: {}, payload: nil)
-      attrs = { stream_id:, causation_id: id, correlation_id:, producer: }.merge(attrs)
+    def follow_with_attributes(event_class, attrs: {}, payload: nil, metadata: nil)
+      meta = self.metadata
+      meta = meta.merge(metadata) if metadata
+      attrs = { stream_id:, causation_id: id, correlation_id:, metadata: meta }.merge(attrs)
       attrs[:payload] = payload.to_h if payload
       event_class.parse(attrs)
     end
