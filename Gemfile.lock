@@ -3,7 +3,7 @@ PATH
   specs:
     sourced (0.1.0)
       async
-      plumb (>= 0.0.8)
+      plumb (>= 0.0.9)
 
 GEM
   remote: https://rubygems.org/
@@ -59,7 +59,7 @@ GEM
     mini_portile2 (2.8.7)
     minitest (5.25.1)
     pg (1.5.8)
-    plumb (0.0.8)
+    plumb (0.0.9)
       bigdecimal
       concurrent-ruby
     psych (5.1.2)
