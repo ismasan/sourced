@@ -47,6 +47,7 @@ module Sourced
     attribute? :correlation_id, Types::UUID::V4
     attribute :producer, Types::String.nullable.default(nil)
     attribute :seq, Types::Integer.default(1)
+    attribute :metadata, Types::Hash.default(Plumb::BLANK_HASH)
     attribute :payload, Types::Static[nil]
 
     def self.registry

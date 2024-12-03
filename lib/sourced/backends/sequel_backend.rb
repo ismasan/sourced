@@ -133,6 +133,7 @@ module Sourced
             Sequel[events_table][:producer],
             Sequel[events_table][:causation_id],
             Sequel[events_table][:correlation_id],
+            Sequel[events_table][:metadata],
             Sequel[events_table][:payload],
           )
           .join(streams_table, id: :stream_id)
@@ -207,6 +208,7 @@ module Sourced
           String :producer
           column :causation_id, :uuid, index: true
           column :correlation_id, :uuid
+          column :metadata, :jsonb
           column :payload, :jsonb
           index %i[stream_id seq], unique: true
         end
@@ -236,6 +238,7 @@ module Sourced
                   e.type,
                   e.causation_id,
                   e.correlation_id,
+                  e.metadata,
                   e.payload,
                   e.created_at,
                   pg_try_advisory_xact_lock(hashtext(?::text), hashtext(s.id::text)) as lock_obtained
@@ -296,12 +299,14 @@ module Sourced
       def serialize_event(event, stream_id)
         row = event.to_h
         row[:stream_id] = stream_id
+        row[:metadata] = JSON.dump(row[:metadata]) if row[:metadata]
         row[:payload] = JSON.dump(row[:payload]) if row[:payload]
         row
       end
 
       def deserialize_event(row)
         row[:payload] = parse_json(row[:payload]) if row[:payload]
+        row[:metadata] = parse_json(row[:metadata]) if row[:metadata]
         Message.from(row)
       end
 
