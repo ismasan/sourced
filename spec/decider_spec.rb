@@ -159,11 +159,11 @@ RSpec.describe Sourced::Decider do
       events = Sourced.config.backend.read_event_stream(cmd.stream_id)
       expect(events.map(&:seq)).to eq([1, 2, 3])
       expect(events.map(&:type)).to eq(%w[decider.todos.add decider.todos.started decider.todos.added])
-      expect(events.map(&:producer)).to eq([
-                                             nil,
-                                             TestDecider::TodoListDecider.consumer_info.group_id,
-                                             TestDecider::TodoListDecider.consumer_info.group_id
-                                           ])
+      expect(events.map { |e| e.metadata[:producer] }).to eq([
+                                                               nil,
+                                                               TestDecider::TodoListDecider.consumer_info.group_id,
+                                                               TestDecider::TodoListDecider.consumer_info.group_id
+                                                             ])
     end
   end
 
