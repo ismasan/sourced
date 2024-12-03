@@ -32,10 +32,25 @@ require 'sourced/types'
 #  user_created.correlation_id == create_user.correlation_id
 #  user_created.stream_id == create_user.stream_id
 #
+# ## Message registries
+# Each Message class has its own registry of sub-classes.
+# You can use the top-level Sourced::Message.from(hash) to instantiate all message types.
+# You can also scope the lookup by sub-class.
+# 
+# @example
+#
+#   class PublicCommand < Sourced::Message; end
+#   
+#   DoSomething = PublicCommand.define('commands.do_something')
+#
+#   # Use .from scoped to PublicCommand subclass
+#   # to ensure that only PublicCommand subclasses are accessible.
+#   cmd = PublicCommand.from(type: 'commands.do_something', payload: { ... })
+#
 # ## JSON Schemas
 # Plumb data structs support `.to_json_schema`, so you can document all events in the registry with something like
 #
-#   Message.registry.values.map(&:to_json_schema)
+#   Message.subclasses.map(&:to_json_schema)
 #
 module Sourced
   class Message < Types::Data
@@ -49,12 +64,39 @@ module Sourced
     attribute :metadata, Types::Hash.default(Plumb::BLANK_HASH)
     attribute :payload, Types::Static[nil]
 
-    def self.registry
-      @registry ||= {}
+    class Registry
+      def initialize(message_class)
+        @message_class = message_class
+        @lookup = {}
+      end
+
+      def []=(key, klass)
+        @lookup[key] = klass
+      end
+
+      def [](key)
+        klass = lookup[key]
+        return klass if klass
+
+        message_class.subclasses.each do |c|
+          klass = c.registry[key]
+          return klass if klass
+        end
+        nil
+      end
+
+      def inspect
+        %(<#{self.class}:#{object_id} #{lookup.size} keys, #{children.size} child registries>)
+      end
+
+      private
+
+      attr_reader :lookup, :message_class
     end
 
-    # Custom node_name to trigger specialiesed JSON Schema visitor handler.
-    def self.node_name = :event
+    def self.registry
+      @registry ||= Registry.new(self)
+    end
 
     def self.define(type_str, payload_schema: nil, &payload_block)
       type_str.freeze unless type_str.frozen?
@@ -77,6 +119,7 @@ module Sourced
 
     def self.from(attrs)
       klass = registry[attrs[:type]]
+      # TODO: use custom exception here
       raise ArgumentError, "Unknown event type: #{attrs[:type]}" unless klass
 
       klass.new(attrs)
