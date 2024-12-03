@@ -46,6 +46,10 @@ RSpec.describe Sourced::Projector do
   end
 
   describe Sourced::Projector::StateStored do
+    it 'has consumer info' do
+      expect(ProjectorTest::StateStored.consumer_info.group_id).to eq('ProjectorTest::StateStored')
+    end
+
     specify 'with new state' do
       e1 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 10 })
       e2 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 5 })
@@ -68,6 +72,10 @@ RSpec.describe Sourced::Projector do
   end
 
   describe Sourced::Projector::EventSourced do
+    it 'has consumer info' do
+      expect(ProjectorTest::EventSourced.consumer_info.group_id).to eq('ProjectorTest::EventSourced')
+    end
+
     specify 'with no previous events' do
       e1 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 10 })
       e2 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 5 })
