@@ -53,6 +53,8 @@ require 'sourced/types'
 #   Message.subclasses.map(&:to_json_schema)
 #
 module Sourced
+  UnknownMessageError = Class.new(ArgumentError)
+
   class Message < Types::Data
     attribute :id, Types::AutoUUID
     attribute :stream_id, Types::String.present
@@ -119,8 +121,7 @@ module Sourced
 
     def self.from(attrs)
       klass = registry[attrs[:type]]
-      # TODO: use custom exception here
-      raise ArgumentError, "Unknown event type: #{attrs[:type]}" unless klass
+      raise UnknownMessageError, "Unknown event type: #{attrs[:type]}" unless klass
 
       klass.new(attrs)
     end
