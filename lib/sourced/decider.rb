@@ -111,7 +111,7 @@ module Sourced
         end
 
         klass_name = cmd_name.to_s.split('_').map(&:capitalize).join
-        cmd_class = Message.define(message_type, payload_schema:)
+        cmd_class = Command.define(message_type, payload_schema:)
         const_set(klass_name, cmd_class)
         decide cmd_class, &block
         define_method(cmd_name) do |**payload|
