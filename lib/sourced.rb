@@ -37,4 +37,5 @@ require 'sourced/router'
 require 'sourced/message'
 require 'sourced/decider'
 require 'sourced/supervisor'
+require 'sourced/command_context'
 require 'sourced/rails/railtie' if defined?(Rails::Railtie)
