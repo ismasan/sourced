@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 module Sourced
+  # Projectors react to events
+  # and update views of current state somewhere (a DB, files, etc)
   class Projector
     include Evolve
     include Sync
@@ -44,6 +46,28 @@ module Sourced
       end
     end
 
+    # A StateStored projector fetches initial state from
+    # storage somewhere (DB, files, API)
+    # And then after reacting to events and updating state,
+    # it can save it back to the same or different storage.
+    # @example
+    #
+    #  class CartListings < Sourced::Projector::StateStored
+    #    # Fetch listing record from DB, or new one.
+    #    def init_state(id)
+    #      CartListing.find_or_initialize(id)
+    #    end
+    #
+    #    # Evolve listing record from events
+    #    evolve Carts::ItemAdded do |listing, event|
+    #      listing.total += event.payload.price
+    #    end
+    #
+    #    # Sync listing record back to DB
+    #    sync do |listing, _, _|
+    #      listing.save!
+    #    end
+    #  end
     class StateStored < self
       class << self
         def handle_events(events)
@@ -53,6 +77,28 @@ module Sourced
       end
     end
 
+    # An EventSourced projector fetches initial state from
+    # past events in the event store.
+    # And then after reacting to events and updating state,
+    # it can save it to a DB table, a file, etc.
+    # @example
+    #
+    #  class CartListings < Sourced::Projector::EventSourced
+    #    # Initial in-memory state
+    #    def init_state(id)
+    #      { id:, total: 0 }
+    #    end
+    #
+    #    # Evolve listing record from events
+    #    evolve Carts::ItemAdded do |listing, event|
+    #      listing[:total] += event.payload.price
+    #    end
+    #
+    #    # Sync listing record to a file
+    #    sync do |listing, _, _|
+    #      File.write("/listings/#{listing[:id]}.json", JSON.dump(listing)) 
+    #    end
+    #  end
     class EventSourced < self
       class << self
         def handle_events(events)
