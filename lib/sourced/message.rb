@@ -106,8 +106,10 @@ module Sourced
       )
     end
 
-    def follow_with_attributes(event_class, attrs: {}, payload: nil)
-      attrs = { stream_id:, causation_id: id, correlation_id:, producer: }.merge(attrs)
+    def follow_with_attributes(event_class, attrs: {}, payload: nil, metadata: nil)
+      meta = self.metadata
+      meta = meta.merge(metadata) if metadata
+      attrs = { stream_id:, causation_id: id, correlation_id:, producer:, metadata: meta }.merge(attrs)
       attrs[:payload] = payload.to_h if payload
       event_class.parse(attrs)
     end
