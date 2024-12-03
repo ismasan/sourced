@@ -3,7 +3,9 @@
 require 'spec_helper'
 
 module TestMessages
-  Add = Sourced::Message.define('test.add') do
+  Command = Class.new(Sourced::Message)
+
+  Add = Command.define('test.add') do
     attribute :value, Integer
   end
 
@@ -50,7 +52,16 @@ RSpec.describe Sourced::Message do
     it 'raises a known exception if no type found' do
       expect do
         Sourced::Message.from(stream_id: '123', type: 'test.unknown', payload: { value: 1 })
-      end.to raise_error(ArgumentError, 'Unknown event type: test.unknown')
+      end.to raise_error(Sourced::UnknownMessageError, 'Unknown event type: test.unknown')
+    end
+
+    it 'scopes message registries by sub-class' do
+      msg = TestMessages::Command.from(stream_id: '123', type: 'test.add', payload: { value: 1 })
+      expect(msg).to be_a(TestMessages::Add)
+
+      expect do
+        TestMessages::Command.from(stream_id: '123', type: 'test.added', payload: { value: 1 })
+      end.to raise_error(Sourced::UnknownMessageError, 'Unknown event type: test.added')
     end
   end
 
