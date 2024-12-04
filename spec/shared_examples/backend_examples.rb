@@ -70,6 +70,15 @@ module BackendExamples
       end
     end
 
+    describe '#schedule_commands' do
+      it 'schedules command' do
+        cmd = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
+        backend.schedule_commands([cmd])
+        cmd2 = backend.next_command
+        expect(cmd2).to eq(cmd)
+      end
+    end
+
     describe '#append_to_stream and #reserve_next_for_reactor' do
       it 'supports a time window' do
         now = Time.now
