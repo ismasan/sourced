@@ -13,6 +13,7 @@ module Sourced
       :append_to_stream,
       :read_correlation_batch,
       :read_event_stream,
+      :schedule_commands,
       :transaction
     ]
 
