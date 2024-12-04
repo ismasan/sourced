@@ -105,4 +105,19 @@ RSpec.describe Sourced::Message do
       expect(added.correlation_id).to eq(add.id)
     end
   end
+
+  describe '#delay' do
+    it 'creates a message with a created_at date in the future' do
+      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
+      delayed = add.delay(add.created_at + 10)
+      expect(delayed.created_at).to eq(add.created_at + 10)
+    end
+
+    it 'does not allow setting a date lower than current' do
+      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
+      expect do
+        add.delay(add.created_at - 10)
+      end.to raise_error(Sourced::PastMessageDateError)
+    end
+  end
 end

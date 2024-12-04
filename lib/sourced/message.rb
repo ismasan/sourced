@@ -54,6 +54,7 @@ require 'sourced/types'
 #
 module Sourced
   UnknownMessageError = Class.new(ArgumentError)
+  PastMessageDateError = Class.new(ArgumentError)
 
   class Message < Types::Data
     attribute :id, Types::AutoUUID
@@ -162,6 +163,13 @@ module Sourced
       attrs = { stream_id:, causation_id: id, correlation_id:, metadata: meta }.merge(attrs)
       attrs[:payload] = payload.to_h if payload
       event_class.parse(attrs)
+    end
+
+    def delay(datetime)
+      if datetime < created_at
+        raise PastMessageDateError, "Message #{type} can't be delayed to a date in the past"
+      end
+      with(created_at: datetime)
     end
 
     def to_json(*)
