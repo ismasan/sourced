@@ -36,9 +36,22 @@ module Sourced
         true
       end
 
-      def next_command
-        row = db[commands_table].order(:created_at).first
-        row ? deserialize_event(row) : nil
+      def next_command(&reserve)
+        if block_given?
+          db.transaction do
+            row = db.fetch(sql_for_next_command, Time.now.utc).first
+            return unless row
+
+            cmd = deserialize_event(row)
+            yield cmd
+            cmd
+            # TODO: on failure, do we want to mark command as failed
+            # and put it in a dead-letter queue?
+          end
+        else
+          row = db[commands_table].order(:created_at).first
+          row ? deserialize_event(row) : nil
+        end
       end
 
       Stats = Data.define(:stream_count, :max_global_seq, :groups)
@@ -234,6 +247,31 @@ module Sourced
       private
 
       attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :commands_table
+
+      def sql_for_next_command
+        <<~SQL
+          WITH next_command AS (
+              SELECT 
+                  id,
+                  stream_id,
+                  stream_id,
+                  type,
+                  causation_id,
+                  correlation_id,
+                  metadata,
+                  payload,
+                  created_at
+              FROM #{commands_table}
+              WHERE created_at <= ? 
+              ORDER BY created_at
+              FOR UPDATE SKIP LOCKED
+              LIMIT 1
+          )
+          DELETE FROM #{commands_table}
+          WHERE id IN (SELECT id FROM next_command)
+          RETURNING *;
+        SQL
+      end
 
       def sql_for_reserve_next_with_events(handled_events, with_time_window = false)
         event_types = handled_events.map { |e| "'#{e}'" }
