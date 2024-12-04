@@ -70,13 +70,65 @@ module BackendExamples
       end
     end
 
-    describe '#schedule_commands' do
-      it 'schedules command' do
+    describe '#schedule_commands and #next_command' do
+      it 'schedules command and fetches it back' do
         cmd = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
         backend.schedule_commands([cmd])
         cmd2 = backend.next_command
         expect(cmd2).to eq(cmd)
       end
+
+      it 'schedules command and reserves it' do
+        cmd = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
+        backend.schedule_commands([cmd])
+        cmd2 = nil
+        backend.next_command do |c|
+          cmd2 = c
+        end
+        expect(cmd2).to eq(cmd)
+        expect(backend.next_command).to be(nil)
+      end
+
+      it 'blocks concurrent workers from processing the same command' do
+        now = Time.now - 10
+        cmd1 = Tests::DoSomething.parse(stream_id: 's1', created_at: now, payload: { account_id: 1 })
+        cmd2 = Tests::DoSomething.parse(stream_id: 's2', created_at: now + 5, payload: { account_id: 1 })
+        backend.schedule_commands([cmd1, cmd2])
+        results = []
+        backend.next_command do |c|
+          backend.next_command do |c|
+            results << c
+          end
+          results << c
+        end
+        expect(results).to eq([cmd2, cmd1])
+      end
+
+      it 'processes commands at a later time' do
+        now = Time.now
+        cmd1 = Tests::DoSomething.parse(stream_id: 's1', created_at: now - 1, payload: { account_id: 1 })
+        cmd2 = Tests::DoSomething.parse(stream_id: 's1', created_at: now + 10, payload: { account_id: 1 })
+        backend.schedule_commands([cmd1, cmd2])
+
+        results = []
+        backend.next_command do |c|
+          results << c
+        end
+        backend.next_command do |c|
+          results << c
+        end
+        expect(results).to eq([cmd1])
+
+        Timecop.freeze(now + 15) do
+          backend.next_command do |c|
+            results << c
+          end
+        end
+
+        expect(results).to eq([cmd1, cmd2])
+      end
+
+      it 'linearizes commands for the same stream'
     end
 
     describe '#append_to_stream and #reserve_next_for_reactor' do
