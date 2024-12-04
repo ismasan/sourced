@@ -23,6 +23,7 @@ RSpec.describe Sourced::Configuration do
         :read_correlation_batch,
         :read_event_stream,
         :schedule_commands,
+        :next_command,
         :transaction
       )
 
