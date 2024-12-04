@@ -254,7 +254,6 @@ module Sourced
               SELECT 
                   id,
                   stream_id,
-                  stream_id,
                   type,
                   causation_id,
                   correlation_id,
