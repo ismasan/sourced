@@ -89,6 +89,19 @@ module BackendExamples
         expect(backend.next_command).to be(nil)
       end
 
+      it 'does not delete command if processing raises' do
+        cmd = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
+        backend.schedule_commands([cmd])
+        begin
+          backend.next_command do |_c|
+            raise 'nope!'
+          end
+        rescue StandardError
+          nil
+        end
+        expect(backend.next_command).to eq(cmd)
+      end
+
       it 'blocks concurrent workers from processing the same command' do
         now = Time.now - 10
         cmd1 = Tests::DoSomething.parse(stream_id: 's1', created_at: now, payload: { account_id: 1 })
