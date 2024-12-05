@@ -291,6 +291,26 @@ module BackendExamples
       end
     end
 
+    describe '#read_correlation_batch' do
+      specify 'given an event ID, it returns the list of correlated events' do
+        cmd1 = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt1 = cmd1.follow_with_seq(Tests::SomethingHappened1, 2, cmd1.payload)
+        evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 1 })
+        evt2 = cmd1.follow_with_seq(Tests::SomethingHappened1, 4, cmd1.payload)
+
+        expect(backend.append_to_stream('s1', [cmd1, evt1, evt2, evt3])).to be(true)
+
+        events = backend.read_correlation_batch(evt2.id)
+        expect(events).to eq([cmd1, evt1, evt2])
+      end
+
+      it 'returns empty list if no event found' do
+        no = SecureRandom.uuid
+        events = backend.read_correlation_batch(no)
+        expect(events.empty?).to be(true)
+      end
+    end
+
     describe '#append_to_stream, #read_event_batch' do
       it 'reads event batch by causation_id' do
         cmd1 = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })

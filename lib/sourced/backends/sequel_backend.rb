@@ -138,6 +138,20 @@ module Sourced
           .join(streams_table, id: :stream_id)
       end
 
+      def read_correlation_batch(event_id)
+        correlation_subquery = db[events_table]
+          .select(:correlation_id)
+          .where(id: event_id)
+
+        query = base_events_query
+          .where(Sequel[events_table][:correlation_id] => correlation_subquery)
+          .order(Sequel[events_table][:global_seq])
+
+        query.map do |row|
+          deserialize_event(row)
+        end
+      end
+
       def read_event_batch(causation_id)
         query = base_events_query
           .where(Sequel[events_table][:causation_id] => causation_id)
