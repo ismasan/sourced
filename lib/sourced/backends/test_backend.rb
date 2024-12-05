@@ -98,12 +98,13 @@ module Sourced
       end
 
       class State
-        attr_reader :events, :groups, :events_by_causation_id, :events_by_stream_id, :stream_id_seq_index
+        attr_reader :events, :groups, :events_by_causation_id, :events_by_correlation_id, :events_by_stream_id, :stream_id_seq_index
 
         def initialize(
           events: [], 
           groups: Hash.new { |h, k| h[k] = Group.new(k, self) }, 
           events_by_causation_id: Hash.new { |h, k| h[k] = [] }, 
+          events_by_correlation_id: Hash.new { |h, k| h[k] = [] }, 
           events_by_stream_id: Hash.new { |h, k| h[k] = [] },
           stream_id_seq_index: {}
         )
@@ -111,6 +112,7 @@ module Sourced
           @events = events
           @groups = groups
           @events_by_causation_id = events_by_causation_id
+          @events_by_correlation_id = events_by_correlation_id
           @events_by_stream_id = events_by_stream_id
           @stream_id_seq_index = stream_id_seq_index
         end
@@ -120,6 +122,7 @@ module Sourced
             events: events.dup,
             groups: deep_dup(groups),
             events_by_causation_id: deep_dup(events_by_causation_id),
+            events_by_correlation_id: deep_dup(events_by_correlation_id),
             events_by_stream_id: deep_dup(events_by_stream_id),
             stream_id_seq_index: deep_dup(stream_id_seq_index)
           )
@@ -188,6 +191,7 @@ module Sourced
 
           events.each do |event|
             @state.events_by_causation_id[event.causation_id] << event
+            @state.events_by_correlation_id[event.correlation_id] << event
             @state.events_by_stream_id[stream_id] << event
             @state.events << event
             @state.stream_id_seq_index[seq_key(stream_id, event)] = true
@@ -199,6 +203,12 @@ module Sourced
 
       def read_event_batch(causation_id)
         @state.events_by_causation_id[causation_id]
+      end
+
+      def read_correlation_batch(event_id)
+        event = @state.events.find { |e| e.id == event_id }
+        return [] unless event
+        @state.events_by_correlation_id[event.correlation_id]
       end
 
       def read_event_stream(stream_id, after: nil, upto: nil)
