@@ -20,7 +20,7 @@ RSpec.describe Sourced::Configuration do
         :installed?,
         :reserve_next_for_reactor,
         :append_to_stream,
-        :read_event_batch,
+        :read_correlation_batch,
         :read_event_stream,
         :transaction
       )
