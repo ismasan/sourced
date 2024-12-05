@@ -36,6 +36,10 @@ module Sourced
         true
       end
 
+      # TODO: if the application raises an exception
+      # the command row is not deleted, so that it can be retried.
+      # However, if a command fails _permanently_ there's no point in keeping it in the queue,
+      # this ties with unresolved error handling in event handling, too.
       def next_command(&reserve)
         if block_given?
           db.transaction do
