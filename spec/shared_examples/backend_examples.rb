@@ -103,18 +103,21 @@ module BackendExamples
       end
 
       it 'blocks concurrent workers from processing the same command' do
+        # backend.send(:db)[:sourced_commands].delete
         now = Time.now - 10
-        cmd1 = Tests::DoSomething.parse(stream_id: 's1', created_at: now, payload: { account_id: 1 })
-        cmd2 = Tests::DoSomething.parse(stream_id: 's2', created_at: now + 5, payload: { account_id: 1 })
+        cmd1 = Tests::DoSomething.parse(stream_id: 'as1', created_at: now, payload: { account_id: 1 })
+        cmd2 = Tests::DoSomething.parse(stream_id: 'as2', created_at: now + 5, payload: { account_id: 1 })
         backend.schedule_commands([cmd1, cmd2])
-        results = []
-        backend.next_command do |c|
-          backend.next_command do |c|
-            results << c
+        results = Concurrent::Array.new
+        2.times.map do
+          Thread.new do
+            backend.next_command do |c|
+              sleep 0.01
+              results << c
+            end
           end
-          results << c
-        end
-        expect(results).to eq([cmd2, cmd1])
+        end.map(&:join)
+        expect(results).to match_array([cmd2, cmd1])
       end
 
       it 'processes commands at a later time' do
@@ -141,7 +144,30 @@ module BackendExamples
         expect(results).to eq([cmd1, cmd2])
       end
 
-      it 'linearizes commands for the same stream'
+      it 'linearizes commands for the same stream' do
+        now = Time.now
+        cmd1 = Tests::DoSomething.parse(stream_id: 'ss1', created_at: now - 10, payload: { account_id: 1 })
+        cmd2 = Tests::DoSomething.parse(stream_id: 'ss1', created_at: now - 10, payload: { account_id: 1 })
+        cmd3 = Tests::DoSomething.parse(stream_id: 'ss2', created_at: now - 5, payload: { account_id: 1 })
+        backend.schedule_commands([cmd1, cmd2, cmd3])
+        results = Concurrent::Array.new
+
+        2.times.map do
+          Thread.new do
+            backend.next_command do |c|
+              sleep 0.01
+              results << c
+            end
+          end
+        end.map(&:join)
+
+        expect(results).to match_array([cmd1, cmd3])
+
+        backend.next_command do |c|
+          results << c
+        end
+        expect(results).to match_array([cmd1, cmd3, cmd2])
+      end
     end
 
     describe '#append_to_stream and #reserve_next_for_reactor' do

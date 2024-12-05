@@ -48,6 +48,7 @@ module Sourced
 
             cmd = deserialize_event(row)
             yield cmd
+            db[commands_table].where(id: cmd.id).delete
             cmd
             # TODO: on failure, do we want to mark command as failed
             # and put it in a dead-letter queue?
@@ -263,16 +264,16 @@ module Sourced
                   correlation_id,
                   metadata,
                   payload,
-                  created_at
+                  created_at,
+                  pg_try_advisory_xact_lock(hashtext(stream_id::text)) AS lock_obtained
               FROM #{commands_table}
               WHERE created_at <= ? 
               ORDER BY created_at
-              FOR UPDATE SKIP LOCKED
-              LIMIT 1
           )
-          DELETE FROM #{commands_table}
-          WHERE id IN (SELECT id FROM next_command)
-          RETURNING *;
+          SELECT *
+          FROM next_command
+          WHERE lock_obtained = true
+          LIMIT 1;
         SQL
       end
 

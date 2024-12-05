@@ -113,6 +113,7 @@ module Sourced
           @groups = groups
           @events_by_correlation_id = events_by_correlation_id
           @commands = commands
+          @command_locks = {}
           @events_by_stream_id = events_by_stream_id
           @stream_id_seq_index = stream_id_seq_index
         end
@@ -126,9 +127,19 @@ module Sourced
 
           if block_given?
             return nil if @commands.empty?
-            return nil if @commands.first.created_at > now
-            cmd = @commands.shift
-            yield cmd
+            idx = @commands.index do |c|
+              !@command_locks[c.stream_id] && c.created_at <= now
+            end
+
+            return nil unless idx
+            cmd = @commands[idx]
+            @command_locks[cmd.stream_id] = true
+            begin
+              yield cmd
+              @commands.delete_at(idx)
+            ensure
+              @command_locks.delete(cmd.stream_id)
+            end
             cmd
           else
             @commands.first
