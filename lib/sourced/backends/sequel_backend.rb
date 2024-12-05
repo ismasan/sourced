@@ -152,16 +152,6 @@ module Sourced
         end
       end
 
-      def read_event_batch(causation_id)
-        query = base_events_query
-          .where(Sequel[events_table][:causation_id] => causation_id)
-          .order(Sequel[events_table][:global_seq])
-
-        query.map do |row|
-          deserialize_event(row)
-        end
-      end
-
       def read_event_stream(stream_id, after: nil, upto: nil)
         _events_table = events_table # need local variable for Sequel block
 
