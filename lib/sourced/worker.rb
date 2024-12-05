@@ -48,11 +48,15 @@ module Sourced
         tick
         # This sleep seems to be necessary or workers in differet processes will not be able to get the lock
         sleep @poll_interval
+        dispatch_next_command.tap do |c|
+          sleep @poll_interval if c
+        end
       end
       logger.info "Worker #{name}: Polling stopped"
     end
 
     # Drain all reactors
+    # And all scheduled commands
     def drain
       @reactors.each do |reactor|
         loop do
@@ -60,10 +64,19 @@ module Sourced
           break unless event
         end
       end
+
+      loop do
+        cmd = dispatch_next_command
+        break unless cmd
+      end
     end
 
     def tick(reactor = next_reactor)
       Router.handle_next_event_for_reactor(reactor, name)
+    end
+
+    def dispatch_next_command
+      Router.dispatch_next_command
     end
 
     def next_reactor

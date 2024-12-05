@@ -14,6 +14,7 @@ module Sourced
         @db = connect(db)
         @logger = logger
         @prefix = prefix
+        @commands_table = table_name(:commands)
         @streams_table = table_name(:streams)
         @offsets_table = table_name(:offsets)
         @events_table = table_name(:events)
@@ -21,26 +22,40 @@ module Sourced
       end
 
       def installed?
-        db.table_exists?(events_table) && db.table_exists?(streams_table) && db.table_exists?(offsets_table)
+        db.table_exists?(events_table) && db.table_exists?(streams_table) && db.table_exists?(offsets_table) && db.table_exists?(commands_table)
       end
 
       def schedule_commands(commands)
         return false if commands.empty?
 
-        # TODO: here we could use multi_insert
-        # for both streams and commands
+        rows = commands.map { |c| serialize_command(c) }
+
         db.transaction do
-          commands.each do |command|
-            schedule_command(command.stream_id, command)
-          end
+          db[commands_table].multi_insert(rows)
         end
         true
       end
 
-      def schedule_command(stream_id, command)
-        db.transaction do
-          db[streams_table].insert_conflict.insert(stream_id:)
-          db[commands_table].insert(stream_id:, data: command.to_json)
+      # TODO: if the application raises an exception
+      # the command row is not deleted, so that it can be retried.
+      # However, if a command fails _permanently_ there's no point in keeping it in the queue,
+      # this ties with unresolved error handling in event handling, too.
+      def next_command(&reserve)
+        if block_given?
+          db.transaction do
+            row = db.fetch(sql_for_next_command, Time.now.utc).first
+            return unless row
+
+            cmd = deserialize_event(row)
+            yield cmd
+            db[commands_table].where(id: cmd.id).delete
+            cmd
+            # TODO: on failure, do we want to mark command as failed
+            # and put it in a dead-letter queue?
+          end
+        else
+          row = db[commands_table].order(:created_at).first
+          row ? deserialize_event(row) : nil
         end
       end
 
@@ -170,6 +185,7 @@ module Sourced
         # Truncate and restart global_seq increment first
         db[events_table].truncate(cascade: true, only: true, restart: true)
         db[events_table].delete
+        db[commands_table].delete
         db[offsets_table].delete
         db[streams_table].delete
       end
@@ -217,12 +233,49 @@ module Sourced
 
         logger.info("Created table #{events_table}")
 
+        db.create_table?(commands_table) do
+          column :id, :uuid, unique: true
+          String :stream_id, null: false, index: true
+          String :type, null: false
+          Time :created_at, null: false, index: true
+          column :causation_id, :uuid
+          column :correlation_id, :uuid
+          column :metadata, :jsonb
+          column :payload, :jsonb
+        end
+
+        logger.info("Created table #{commands_table}")
+
         self
       end
 
       private
 
-      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table
+      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :commands_table
+
+      def sql_for_next_command
+        <<~SQL
+          WITH next_command AS (
+              SELECT 
+                  id,
+                  stream_id,
+                  type,
+                  causation_id,
+                  correlation_id,
+                  metadata,
+                  payload,
+                  created_at,
+                  pg_try_advisory_xact_lock(hashtext(stream_id::text)) AS lock_obtained
+              FROM #{commands_table}
+              WHERE created_at <= ? 
+              ORDER BY created_at
+          )
+          SELECT *
+          FROM next_command
+          WHERE lock_obtained = true
+          LIMIT 1;
+        SQL
+      end
 
       def sql_for_reserve_next_with_events(handled_events, with_time_window = false)
         event_types = handled_events.map { |e| "'#{e}'" }
@@ -296,6 +349,13 @@ module Sourced
         return json unless json.is_a?(String)
 
         JSON.parse(json, symbolize_names: true)
+      end
+
+      def serialize_command(cmd)
+        row = cmd.to_h.except(:seq)
+        row[:metadata] = JSON.dump(row[:metadata]) if row[:metadata]
+        row[:payload] = JSON.dump(row[:payload]) if row[:payload]
+        row
       end
 
       def serialize_event(event, stream_id)

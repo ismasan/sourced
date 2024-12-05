@@ -98,10 +98,11 @@ module Sourced
       end
 
       class State
-        attr_reader :events, :groups, :events_by_correlation_id, :events_by_stream_id, :stream_id_seq_index
+        attr_reader :events, :commands, :groups, :events_by_correlation_id, :events_by_stream_id, :stream_id_seq_index
 
         def initialize(
           events: [], 
+          commands: [],
           groups: Hash.new { |h, k| h[k] = Group.new(k, self) }, 
           events_by_correlation_id: Hash.new { |h, k| h[k] = [] }, 
           events_by_stream_id: Hash.new { |h, k| h[k] = [] },
@@ -111,13 +112,44 @@ module Sourced
           @events = events
           @groups = groups
           @events_by_correlation_id = events_by_correlation_id
+          @commands = commands
+          @command_locks = {}
           @events_by_stream_id = events_by_stream_id
           @stream_id_seq_index = stream_id_seq_index
+        end
+
+        def schedule_commands(commands)
+          @commands = (@commands + commands).sort_by(&:created_at)
+        end
+
+        def next_command(&reserve)
+          now = Time.now.utc
+
+          if block_given?
+            return nil if @commands.empty?
+            idx = @commands.index do |c|
+              !@command_locks[c.stream_id] && c.created_at <= now
+            end
+
+            return nil unless idx
+            cmd = @commands[idx]
+            @command_locks[cmd.stream_id] = true
+            begin
+              yield cmd
+              @commands.delete_at(idx)
+            ensure
+              @command_locks.delete(cmd.stream_id)
+            end
+            cmd
+          else
+            @commands.first
+          end
         end
 
         def copy
           self.class.new(
             events: events.dup,
+            commands: commands.dup,
             groups: deep_dup(groups),
             events_by_correlation_id: deep_dup(events_by_correlation_id),
             events_by_stream_id: deep_dup(events_by_stream_id),
@@ -151,6 +183,18 @@ module Sourced
         transaction do
           group = @state.groups[group_id]
           group.ack_on(event_id, &)
+        end
+      end
+
+      def schedule_commands(commands)
+        transaction do
+          @state.schedule_commands(commands)
+        end
+      end
+
+      def next_command(&)
+        transaction do
+          @state.next_command(&)
         end
       end
 
