@@ -19,6 +19,10 @@ module Sourced
         instance.handle_command(command)
       end
 
+      def dispatch_next_command
+        instance.dispatch_next_command
+      end
+
       def handle_events(events)
         instance.handle_events(events)
       end
@@ -91,25 +95,7 @@ module Sourced
           # This will run a new decider
           # which may be expensive, timeout, or raise an exception
           # TODO: handle decider errors
-          # TODO2: this breaks the per-stream concurrency model.
-          # Ex. if the current event belongs to a 'cart1' stream,
-          # the DB is locked from processing any new events for 'cart1'
-          # until we exit this block.
-          # if ex. reactor is a Saga that produces a command for another stream
-          # (ex. 'mailer-1'), by processing the command here inline, we're blocking
-          # the 'cart1' stream unnecessarily
-          # Instead, we can:
-          # if command.stream_id == event.stream_id
-          # * it's Ok to block, as we keep per-stream concurrency
-          # if command.stream_id != event.stream_id
-          # * we should schedule the command to be picked up later.
-          # We can't just run the command in a separate Fiber.
-          # We want the durability of a command bus.
-          # A command bus will also solve future and recurrent scheduled commands.
-          commands.each do |cmd|
-            log_event(' -> produced command', reactor, cmd, process_name)
-            handle_command(cmd)
-          end
+          backend.schedule_commands(commands)
         end
 
         event
@@ -139,6 +125,13 @@ module Sourced
             handle_command(cmd)
           end
         end
+      end
+    end
+
+    def dispatch_next_command
+      backend.next_command do |cmd|
+        #  TODO: error handling
+        handle_command(cmd)
       end
     end
 
