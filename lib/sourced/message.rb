@@ -101,6 +101,11 @@ module Sourced
       @registry ||= Registry.new(self)
     end
 
+    class Payload < Types::Data
+      def [](key) = attributes[key]
+      def fetch(...) = to_h.fetch(...)
+    end
+
     def self.define(type_str, payload_schema: nil, &payload_block)
       type_str.freeze unless type_str.frozen?
       if registry[type_str]
@@ -113,9 +118,9 @@ module Sourced
 
         attribute :type, Types::Static[type_str]
         if payload_schema
-          attribute :payload, Types::Data[payload_schema]
+          attribute :payload, Payload[payload_schema]
         elsif block_given?
-          attribute :payload, &payload_block if block_given?
+          attribute :payload, Payload, &payload_block if block_given?
         end
       end
     end
@@ -125,6 +130,13 @@ module Sourced
       raise UnknownMessageError, "Unknown event type: #{attrs[:type]}" unless klass
 
       klass.new(attrs)
+    end
+
+    def initialize(attrs = {})
+      unless attrs[:payload]
+        attrs = attrs.merge(payload: {})
+      end
+      super(attrs)
     end
 
     def with_metadata(meta = {})
