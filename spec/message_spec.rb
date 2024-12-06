@@ -30,6 +30,24 @@ RSpec.describe Sourced::Message do
     expect(msg.errors[:payload][:value]).not_to be(nil)
   end
 
+  it 'defines Payload#fetch and Payload#[]' do
+    msg = TestMessages::Add.new(stream_id: '123', payload: { value: 'aaa' })
+    expect(msg.payload[:value]).to eq('aaa')
+    expect(msg.payload.fetch(:value)).to eq('aaa')
+
+    msg = TestMessages::Add.new(stream_id: '123')
+    expect(msg.payload[:value]).to be(nil)
+    expect(msg.payload.fetch(:value)).to be(nil)
+    expect do
+      msg.payload.fetch(:nope)
+    end.to raise_error(KeyError)
+  end
+
+  it 'initializes an empty payload if the class defines one' do
+    msg = TestMessages::Add.new
+    expect(msg.payload).not_to be(nil)
+  end
+
   it 'sets #type' do
     msg = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
     expect(msg.type).to eq('test.add')
