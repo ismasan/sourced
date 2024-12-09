@@ -1,6 +1,27 @@
 # frozen_string_literal: true
 
 module Sourced
+  # This mixin provides consumer info configuration
+  # and a .consumer_info method to access it.
+  # @example
+  #
+  #  class MyConsumer
+  #    extend Sourced::Consumer
+  #
+  #    consumer do |c|
+  #      # consumer group
+  #      c.group_id = 'my-group'
+  #
+  #      # Start consuming events from the beginning of history
+  #      c.start_from = :beginning
+  #
+  #      # Consume events in the background (ie. eventually consistent)
+  #      c.async!
+  #    end
+  #  end
+  #
+  #  MyConsumer.consumer_info.group_id # => 'my-group'
+  #
   module Consumer
     class ConsumerInfo < Types::Data
       ToBlock = Types::Any.transform(Proc) { |v| -> { v } }
