@@ -59,6 +59,17 @@ This means that all events for a given reactor/stream are processed in order, bu
 
 Soon.
 
+## Sourced vs. ActiveJob
+
+ActiveJob is a great way to handle background jobs in Rails. It's simple and easy to use. However, it's not designed for event sourcing.
+ActiveJob backends (and other job queues) are optimised for parallel processing of jobs, this means that multiple jobs for the same business entity may be processed in parallel without any ordering guarantees.
+
+![job queue concurrency](docs/images/sourced-job-queue-diagram.png)
+
+Sourced's concurrency model is designed to process events for the same entity in order, while allowing for parallel processing of events for different entities.
+
+![job queue concurrency](docs/images/sourced-ordered-streams-diagram.png)
+
 ## Development
 
 After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake spec` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
