@@ -25,6 +25,8 @@ In your Gemfile:
 
 ## Usage
 
+If you're unfamiliar with Event Sourcing, you can read this first: [Event Sourcing from the ground up, with Ruby examples](https://ismaelcelis.com/posts/event-sourcing-ruby-examples)
+
 Define a module to hold your attribute types using [Plumb](https://github.com/ismasan/plumb)
 
 ```ruby
