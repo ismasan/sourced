@@ -103,7 +103,6 @@ DEPENDENCIES
   debug
   dotenv
   pg
-  plumb
   rake (~> 13.0)
   rspec (~> 3.0)
   sequel
