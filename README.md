@@ -1,6 +1,6 @@
 # sourced
 
-** WORK IN PROGRESS**
+**WORK IN PROGRESS**
 
 Event Sourcing / CQRS library for Ruby.
 There's many ES gems available already. The objectives here are:
@@ -8,6 +8,8 @@ There's many ES gems available already. The objectives here are:
 * Eventual consistency by default.
 * Built around the [Decide, Evolve, React pattern](https://ismaelcelis.com/posts/decide-evolve-react-pattern-in-ruby/)
 * Explore ES as a programming model for Ruby apps.
+
+![Decide, Evolve, React](https://ismaelcelis.com/images/2024/decide-evolve-react-pattern/diagram1.png)
 
 ## Installation
 
