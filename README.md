@@ -29,6 +29,19 @@ TODO: Write usage instructions here
 
 ## Setup
 
+Create a Postgres database.
+For now Sourced uses the Sequel gem. In future there'll be an ActiveRecord adapter with migrations support.
+
+Configure and migrate the database.
+
+```ruby
+Sourced.configure do |config|
+  config.backend = Sequel.connect(ENV.fetch('DATABASE_URL'))
+end
+
+Sourced.config.backend.install unless Sourced.config.backend.installed?
+```
+
 Register your Deciders and Reactors.
 
 ```ruby
