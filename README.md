@@ -6,6 +6,7 @@ Event Sourcing / CQRS library for Ruby.
 There's many ES gems available already. The objectives here are:
 * Cohesive and toy-like DX.
 * Eventual consistency by default.
+* Built around the [Decide, Evolve, React pattern](https://ismaelcelis.com/posts/decide-evolve-react-pattern-in-ruby/)
 * Explore ES as a programming model for Ruby apps.
 
 ## Installation
