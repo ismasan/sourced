@@ -1,6 +1,29 @@
 # frozen_string_literal: true
 
 module Sourced
+  # This mixin provides a .react macro to register
+  # event handlers for a class
+  # These event handlers are "reactions", ie. they react to
+  # events by producing new commands which will initiate new Decider flows.
+  # More here: https://ismaelcelis.com/posts/decide-evolve-react-pattern-in-ruby/#3-react
+  #
+  # From the outside, this mixin exposes the Reactor interface
+  #
+  #  .handle_events(Array<Sourced::Event>) Array<Sourced::Command>
+  #
+  # Example:
+  #
+  #  class Saga
+  #    include Sourced::React
+  #
+  #    # React to an event and return a new command.
+  #    # This command will be scheduled for processing by a Decider.
+  #    # Using Sourced::Event#follow copies over metadata from the event
+  #    # including causation and correlation IDs.
+  #    react SomethingHappened do |event|
+  #      event.follow(DoSomethingElse, field1: 'value1')
+  #    end
+  #  end
   module React
     PREFIX = 'reaction'
 
@@ -9,6 +32,8 @@ module Sourced
       base.extend ClassMethods
     end
 
+    # @param events [Array<Sourced::Event>]
+    # @return [Array<Sourced::Command>]
     def react(events)
       events.flat_map { |event| __handle_reaction(event) }
     end
