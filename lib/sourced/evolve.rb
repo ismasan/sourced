@@ -37,28 +37,15 @@ module Sourced
       base.extend ClassMethods
     end
 
-    def evolve(*args)
-      state = self
-
-      #  TODO: we don't use blocks with variable arguments now.
-      # Remove?
-      case args
-      in [events]
-        events.each do |event|
-          method_name = Sourced.message_method_name(Evolve::PREFIX, event.class.to_s)
-          if respond_to?(method_name)
-            before_evolve(event)
-            send(method_name, event)
-          end
-        end
-      in [obj, events]
-        state = obj
-        events.each do |event|
-          method_name = Sourced.message_method_name(Evolve::PREFIX, event.class.to_s)
-          if respond_to?(method_name)
-            before_evolve(state, event)
-            send(method_name, state, event)
-          end
+    # @param state [Object]
+    # @param events [Array<Sourced::Event>]
+    # @return [Object]
+    def evolve(state, events)
+      events.each do |event|
+        method_name = Sourced.message_method_name(Evolve::PREFIX, event.class.to_s)
+        if respond_to?(method_name)
+          before_evolve(state, event)
+          send(method_name, state, event)
         end
       end
 
