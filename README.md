@@ -7,6 +7,7 @@ There's many ES gems available already. The objectives here are:
 * Cohesive and toy-like DX.
 * Eventual consistency by default.
 * Built around the [Decide, Evolve, React pattern](https://ismaelcelis.com/posts/decide-evolve-react-pattern-in-ruby/)
+* Control concurrency by modeling.
 * Explore ES as a programming model for Ruby apps.
 
 ![Decide, Evolve, React](https://ismaelcelis.com/images/2024/decide-evolve-react-pattern/diagram1.png)
@@ -25,6 +26,36 @@ In your Gemfile:
 ## Usage
 
 TODO: Write usage instructions here
+
+## Setup
+
+Register your Deciders and Reactors.
+
+```ruby
+Sourced::Router.register(Leads::Decider)
+Sourced::Router.register(Leads::Listings)
+Sourced::Router.register(Webooks::Dispatcher)
+```
+
+Start background workers.
+
+```ruby
+# require your code here
+Sourced::Supervisor.start(count: 10) # 10 worker fibers
+```
+
+## Concurrency
+
+Workers process events and commands by acquiring locks on `[reactor group ID][stream ID]`.
+
+This means that all events for a given reactor/stream are processed in order, but events for different streams can be processed concurrently. You can define workflows where some work is done concurrently by modeling them as a collaboration of streams.
+
+## Scheduled commands
+
+
+## Rails integration
+
+Soon.
 
 ## Development
 
