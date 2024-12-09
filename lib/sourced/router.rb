@@ -51,19 +51,25 @@ module Sourced
     end
 
     def register(thing)
+      regs = 0
       if DeciderInterface === thing
+        regs += 1
         thing.handled_commands.each do |cmd_type|
           @decider_lookup[cmd_type] = thing
         end
       end
 
-      return unless ReactorInterface === thing
+      if ReactorInterface === thing
+        regs += 1
 
-      if thing.consumer_info.async
-        @async_reactors << thing
-      else
-        @sync_reactors << thing
+        if thing.consumer_info.async
+          @async_reactors << thing
+        else
+          @sync_reactors << thing
+        end
       end
+
+      raise InvalidReactorError, "#{thing.inspect} is not a valid Decider or Reactor interface" unless regs.positive?
     end
 
     def handle_command(command)

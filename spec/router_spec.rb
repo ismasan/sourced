@@ -102,5 +102,11 @@ RSpec.describe Sourced::Router do
       expect(router).not_to receive(:handle_and_ack_events_for_reactor).with(RouterTest::SyncReactor2, [evt])
       router.handle_events([evt])
     end
+
+    it 'raises if registering a non-compliant interface' do
+      expect do
+        router.register('nope')
+      end.to raise_error(Sourced::InvalidReactorError)
+    end
   end
 end
