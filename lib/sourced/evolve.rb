@@ -1,6 +1,25 @@
 # frozen_string_literal: true
 
 module Sourced
+  # This mixin provides an .evolve macro
+  # to register event handlers for a class
+  # Example:
+  #
+  #  class Projector
+  #    include Sourced::Evolve
+  #
+  #    evolve SomethingHappened do |state, event|
+  #      state[:status] = 'done'
+  #    end
+  #  end
+  #
+  #  pr = Projector.new
+  #  state = { status: 'new' }
+  #  state = pr.evolve(state, SomethingHappened.new)
+  #  state[:status] # => 'done'
+  #
+  # It also provides a .before_evolve and .evolve_all macros
+  # See comments in code for details.
   module Evolve
     PREFIX = 'evolution'
     NOOP_HANDLER = ->(*_) { nil }
@@ -13,14 +32,16 @@ module Sourced
     def evolve(*args)
       state = self
 
+      #  TODO: we don't use blocks with variable arguments now.
+      # Remove?
       case args
       in [events]
         events.each do |event|
           method_name = Sourced.message_method_name(Evolve::PREFIX, event.class.to_s)
           if respond_to?(method_name)
             before_evolve(event)
-            send(method_name, event) 
-        end
+            send(method_name, event)
+          end
         end
       in [obj, events]
         state = obj
@@ -48,7 +69,7 @@ module Sourced
         end
       end
 
-      # These two are the Reactor interface
+      # The Reactor interface
       # expected by Worker
       def handle_events(_events)
         raise NoMethodError, "implement .handle_events(Array<Event>) in #{self}"
@@ -58,11 +79,6 @@ module Sourced
         @handled_events_for_evolve ||= []
       end
 
-      # Example:
-      #   evolve :event_type do |event|
-      #     @updated_at = event.created_at
-      #   end
-      #
       # @param event_type [Sourced::Message]
       def evolve(event_type, &block)
         handled_events_for_evolve << event_type unless event_type.is_a?(Symbol)
@@ -72,8 +88,8 @@ module Sourced
 
       # Run this block before any of the registered event handlers
       # Example:
-      #   before_evolve do |event|
-      #     @updated_at = event.created_at
+      #   before_evolve do |state, event|
+      #     state.udpated_at = event.created_at
       #   end
       def before_evolve(&block)
         define_method(:before_evolve, &block)
@@ -81,16 +97,16 @@ module Sourced
 
       # Example:
       #   # With an Array of event types
-      #   evolve_all [:event_type1, :event_type2] do |event|
-      #     @updated_at = event.created_at
+      #   evolve_all [:event_type1, :event_type2] do |state, event|
+      #     state.updated_at = event.created_at
       #   end
       #
       #   # From another Evolver that responds to #handled_events_for_evolve
-      #   evolve_all CartAggregate do |event|
-      #     @updated_at = event.created_at
+      #   evolve_all CartAggregate do |state, event|
+      #     state.updated_at = event.created_at
       #   end
       #
-      # @param event_list [Array<Sourced::Message>, #handled_events_for_evolve() {Array<Sourced::Message>}]
+      # @param event_list [Array<Sourced::Message>, #handled_events_for_evolve() [Array<Sourced::Message>}]
       def evolve_all(event_list, &block)
         event_list = event_list.handled_events_for_evolve if event_list.respond_to?(:handled_events_for_evolve)
         event_list.each do |event_type|
