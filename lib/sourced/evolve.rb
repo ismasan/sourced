@@ -3,6 +3,14 @@
 module Sourced
   # This mixin provides an .evolve macro
   # to register event handlers for a class
+  # These event handlers are "evolvers", ie. they evolve
+  # a piece of state based on events.
+  # More here: https://ismaelcelis.com/posts/decide-evolve-react-pattern-in-ruby/#2-evolve
+  #
+  # From the outside, this mixin exposes the Reactor interface
+  #
+  #  .handle_events(Array<Sourced::Event>) Array<Sourced::Command>
+  #
   # Example:
   #
   #  class Projector
