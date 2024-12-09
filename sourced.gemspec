@@ -9,7 +9,7 @@ Gem::Specification.new do |spec|
   spec.email = ['ismaelct@gmail.com']
 
   spec.homepage = 'https://github.com/ismaelcelis/sourced'
-  spec.summary = 'Decide, Evolve, React'
+  spec.summary = 'Event Sourcing for Ruby built on Decide, Evolve, React'
   spec.required_ruby_version = '>= 3.0.0'
 
   spec.metadata['homepage_uri'] = spec.homepage
