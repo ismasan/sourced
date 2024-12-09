@@ -1,20 +1,23 @@
 # sourced
 
-TODO: Delete this and the text below, and describe your gem
+** WORK IN PROGRESS**
 
-Welcome to your new gem! In this directory, you'll find the files you need to be able to package up your Ruby library into a gem. Put your Ruby code in the file `lib/sourced`. To experiment with that code, run `bin/console` for an interactive prompt.
+Event Sourcing / CQRS library for Ruby.
+There's many ES gems available already. The objectives here are:
+* Cohesive and toy-like DX.
+* Eventual consistency by default.
+* Explore ES as a programming model for Ruby apps.
 
 ## Installation
 
-TODO: Replace `UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG` with your gem name right after releasing it to RubyGems.org. Please do not do it earlier due to security reasons. Alternatively, replace this section with instructions to install your gem from git if you don't plan to release to RubyGems.org.
-
 Install the gem and add to the application's Gemfile by executing:
 
-    $ bundle add UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
+    $ bundle add sourced
 
-If bundler is not being used to manage dependencies, install the gem by executing:
+**Note**: this gem is under active development, so you probably want to install from Github:
+In your Gemfile:
 
-    $ gem install UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
+    $ gem 'sourced', github: 'ismasan/sourced'
 
 ## Usage
 
