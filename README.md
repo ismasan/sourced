@@ -69,7 +69,26 @@ module Carts
 end
 ```
 
+### State
 
+Commands are intents, events are state changes. The "state" itself is whatever object you need to hold the current state of a part of the system.
+
+```ruby
+module Carts
+  # Commands and events ... etc
+  
+  # Define what cart state looks like.
+  # This is the initial state which will be updated
+  # by applying events.
+  # The state holds whatever data is relevant to decide how to handle a command.
+  # It can be any object you need. A custom class instance, a Hash, an Array, etc.
+  CartState = Struct.new(:id, :items) do
+    def total = items.sum { |it| it.price + item.quantity }
+  end
+    
+  CartItem = Struct.new(:product_id, :name, :price, :quantity)  
+end
+```
 
 ### Decide
 
@@ -81,17 +100,11 @@ Now define a _Decider_. A Decider is a class that encapsulates handling commands
 module Carts
   # commands and events ...
   class Cart < Sourced::Decider
-    # Define what cart state looks like.
-    # This is the initial state which will be updated
-    # by applying events.
-    # The state holds whatever data is relevant to decide how to handle a command.
-    # It can be any object you need. A custom class instance, a Hash, an Array, etc.
-    CartState = Struct.new(:id, :items) do
-      def total = items.sum { |it| it.price + item.quantity }
-    end
-    
-    CartItem = Struct.new(:product_id, :name, :price, :quantity)
-    
+    # Initialize state for this cart.
+    # This method is called to retrieve initial
+    # state right before handling a command.
+    # Past events stored in the backend will be used to
+    # update this object so that it represent the current state of a cart.
     def init_state(id)
       CartState.new(id, [])
     end
@@ -121,6 +134,7 @@ This gives us an object that can handle a command and return one or more events.
 
 ```ruby
 cart = Carts::Cart.new('test-cart')
+cart.state.total # => 0
 add_item = Carts::AddItem.new(stream_id: decider.id, payload: { product_id: 1, quantity: 2 })
 events = cart.decide(add_item)
 ```
