@@ -8,6 +8,7 @@ module Sourced
   class Error < StandardError; end
   ConcurrentAppendError = Class.new(Error)
   ConcurrentAckError = Class.new(Error)
+  InvalidReactorError = Class.new(Error)
   
   def self.config
     @config ||= Configuration.new
