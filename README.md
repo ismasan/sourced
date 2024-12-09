@@ -10,7 +10,7 @@ There's many ES gems available already. The objectives here are:
 * Control concurrency by modeling.
 * Explore ES as a programming model for Ruby apps.
 
-![Decide, Evolve, React](https://ismaelcelis.com/images/2024/decide-evolve-react-pattern/diagram1.png)
+<img alt="Decide, Evolve, React" src="https://ismaelcelis.com/images/2024/decide-evolve-react-pattern/diagram1.png" width="600" />
 
 ## Installation
 
