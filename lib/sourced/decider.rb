@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Sourced
-  # A "Decider" is a stateful object that handles commands and produces events.
+  # A "Decider" is an object that encapsulates the process of handling a command and updating system state via events.
   # This is the "controller" in a Sourced app.
   # All capabilities in an app are commands handled by Deciders.
   # The top-level API is:
