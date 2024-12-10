@@ -93,13 +93,9 @@ module Sourced
 
     def handle_next_event_for_reactor(reactor, process_name = nil)
       backend.reserve_next_for_reactor(reactor) do |event|
-        # We're dealing with one event at a time now
-        # So reactors should return a single command, or nothing
         log_event('handling event', reactor, event, process_name)
         commands = reactor.handle_events([event])
         if commands.any?
-          # This will run a new decider
-          # which may be expensive, timeout, or raise an exception
           # TODO: handle decider errors
           backend.schedule_commands(commands)
         end
@@ -119,13 +115,8 @@ module Sourced
       backend.ack_on(reactor.consumer_info.group_id, events.last.id) do
         commands = reactor.handle_events(events)
         if commands && commands.any?
-          # TODO: Commands may or may not belong to he same stream as events
-          # if they belong to the same stream,
-          # hey need to be dispached in order to preserve per stream order
-          # If they belong to different streams, they can be dispatched in parallel
-          # or put in a command bus.
-          # TODO2: we also need to handle exceptions here
-          # TODO3: this is not tested
+          # TODO: we also need to handle exceptions here
+          # TODO2: this is not tested
           commands.each do |cmd|
             log_event(' -> produced command', reactor, cmd)
             handle_command(cmd)
