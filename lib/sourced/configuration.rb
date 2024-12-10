@@ -5,6 +5,14 @@ require 'sourced/types'
 require 'sourced/backends/test_backend'
 
 module Sourced
+  # Configure a Sourced app.
+  # @example
+  #
+  #  Sourced.configure do |config|
+  #    config.backend = Sequel.Postgres('postgres://localhost/mydb')
+  #    config.logger = Logger.new(STDOUT)
+  #  end
+  #
   class Configuration
     #  Backends must expose these methods
     BackendInterface = Types::Interface[
@@ -26,6 +34,9 @@ module Sourced
       @backend = Backends::TestBackend.new
     end
 
+    # Configure the backend for the app.
+    # Defaults to in-memory TestBackend
+    # @param bnd [BackendInterface]
     def backend=(bnd)
       @backend = case bnd.class.name
                  when 'Sequel::Postgres::Database', 'Sequel::SQLite::Database'
