@@ -184,6 +184,14 @@ TODO
 
 ## Setup
 
+You'll need the `pg` and `sequel` gems.
+
+```ruby
+gem 'sourced', github: 'ismasan/sourced'
+gem 'pg'
+gem 'sequel'
+```
+
 Create a Postgres database.
 For now Sourced uses the Sequel gem. In future there'll be an ActiveRecord adapter with migrations support.
 
