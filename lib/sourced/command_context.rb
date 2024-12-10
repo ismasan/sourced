@@ -20,6 +20,16 @@ module Sourced
   #  cmd.stream_id # String
   #  cmd.metadata[:user_id] # == session[:user_id]
   #
+  # Passing a command subclass will scope command lookup to subclasses of that class.
+  # Useful for restricting clients to a specific set of commands.
+  #
+  # @example
+  #
+  #  ctx = Sourced::CommandContext.new(scope: PublicCommand)
+  #
+  #  cmd = ctx.build(type: 'do_something', payload: { foo: 'bar' })
+  #
+  # Attempting to build a command not in the scope will raise an error.
   class CommandContext
     # @option stream_id [String]
     # @option metadata [Hash] metadata to add to commands built by this context
