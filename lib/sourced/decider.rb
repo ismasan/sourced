@@ -18,6 +18,8 @@ module Sourced
   # 7. Run any synchronous blocks registered with the Decider in the same transaction.
   # 8. Return the updated state and new events.
   #
+  # command => Decider[init state, load events, evolve state, handle command, apply events, commit, sync blocks] => [new state, new events]
+  #
   # Sourced::Decider defines a DSL to define command handlers, event evolvers and "reactions".
   # See https://ismaelcelis.com/posts/decide-evolve-react-pattern-in-ruby/
   # But Sourced will accept anything that implements the top level Decider API:
