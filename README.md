@@ -8,6 +8,7 @@ There's many ES gems available already. The objectives here are:
 * Eventual consistency by default.
 * Built around the [Decide, Evolve, React pattern](https://ismaelcelis.com/posts/decide-evolve-react-pattern-in-ruby/)
 * Control concurrency by modeling.
+* Simple to operate: it should be as simple to run as most Ruby queuing systems.
 * Explore ES as a programming model for Ruby apps.
 
 <img alt="Decide, Evolve, React" src="https://ismaelcelis.com/images/2024/decide-evolve-react-pattern/diagram1.png" width="600" />
