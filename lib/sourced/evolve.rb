@@ -37,6 +37,10 @@ module Sourced
       base.extend ClassMethods
     end
 
+    # Apply a list of events to a piece of state
+    # by running event handlers registered in this class
+    # via the .event macro.
+    #
     # @param state [Object]
     # @param events [Array<Sourced::Event>]
     # @return [Object]
