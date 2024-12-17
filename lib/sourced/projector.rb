@@ -9,7 +9,22 @@ module Sourced
     extend Consumer
 
     class << self
+      # The Reactor interface
       def handled_events = handled_events_for_evolve
+
+      # Define an initial state factory for this decider.
+      # @example
+      #
+      #   state do |id|
+      #     { id: id, status: 'new' }
+      #   end
+      #
+      # TODO: this is duplicated in Decider.
+      def state(&blk)
+        define_method(:init_state) do |id|
+          blk.call(id)
+        end
+      end
     end
 
     attr_reader :id, :seq, :state
