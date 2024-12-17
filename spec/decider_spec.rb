@@ -75,6 +75,12 @@ module TestDecider
     end
   end
 
+  class ChildDecider < TodoListDecider
+    command :add_more, name: String do |_list, cmd|
+      event :item_added, name: cmd.payload.name
+    end
+  end
+
   Sourced::Router.register(TodoListDecider)
 
   class Listener
@@ -325,6 +331,23 @@ RSpec.describe Sourced::Decider do
       expect(group[:group_id]).to eq('TestDecider::DummyProjector')
       expect(group[:stream_count]).to eq(1)
       expect(group[:oldest_processed]).to eq(2)
+    end
+  end
+
+  describe 'inheritance' do
+    it 'copies over .handled_events' do
+      expect(TestDecider::ChildDecider.handled_events).to eq(TestDecider::TodoListDecider.handled_events)
+    end
+
+    it 'copies over .handled_commands and appends its own commands' do
+      expect(TestDecider::ChildDecider.handled_commands).to eq([
+                                                                 *TestDecider::TodoListDecider.handled_commands,
+                                                                 TestDecider::ChildDecider::AddMore
+                                                               ])
+    end
+
+    it 'has its own event registry' do
+      expect(TestDecider::ChildDecider[:add_more]).to eq(TestDecider::ChildDecider::AddMore)
     end
   end
 end
