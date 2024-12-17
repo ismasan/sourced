@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Sourced
-  # This mixin provides an .evolve macro
+  # This mixin provides an .event macro
   # to register event handlers for a class
   # These event handlers are "evolvers", ie. they evolve
   # a piece of state based on events.
@@ -16,14 +16,14 @@ module Sourced
   #  class Projector
   #    include Sourced::Evolve
   #
-  #    evolve SomethingHappened do |state, event|
+  #    event SomethingHappened do |state, event|
   #      state[:status] = 'done'
   #    end
   #  end
   #
   #  pr = Projector.new
   #  state = { status: 'new' }
-  #  state = pr.evolve(state, SomethingHappened.new)
+  #  state = pr.evolve(state, [SomethingHappened.new])
   #  state[:status] # => 'done'
   #
   # It also provides a .before_evolve and .evolve_all macros
@@ -37,6 +37,10 @@ module Sourced
       base.extend ClassMethods
     end
 
+    # Apply a list of events to a piece of state
+    # by running event handlers registered in this class
+    # via the .event macro.
+    #
     # @param state [Object]
     # @param events [Array<Sourced::Event>]
     # @return [Object]
@@ -74,11 +78,28 @@ module Sourced
         @handled_events_for_evolve ||= []
       end
 
-      # @param event_type [Sourced::Message]
-      def evolve(event_type, &block)
-        handled_events_for_evolve << event_type unless event_type.is_a?(Symbol)
+      # This module only accepts registering event handlers
+      # with qualified event classes
+      # Decider overrides this method to allow
+      # defining event handlers with symbols
+      # which are registered as Event classes in the decider namespace.
+      # @example
+      #
+      #   event SomethingHappened do |state, event|
+      #     state[:status] = 'done'
+      #   end
+      #
+      # @param event_class [Sourced::Message]
+      # @return [void]
+      def event(event_class, &block)
+        unless event_class.is_a?(Class) && event_class < Sourced::Message
+          raise ArgumentError,
+                "Invalid argument #{event_class.inspect} for #{self}.event"
+        end
+
+        handled_events_for_evolve << event_class
         block = NOOP_HANDLER unless block_given?
-        define_method(Sourced.message_method_name(Evolve::PREFIX, event_type.to_s), &block)
+        define_method(Sourced.message_method_name(Evolve::PREFIX, event_class.to_s), &block)
       end
 
       # Run this block before any of the registered event handlers
@@ -105,7 +126,7 @@ module Sourced
       def evolve_all(event_list, &block)
         event_list = event_list.handled_events_for_evolve if event_list.respond_to?(:handled_events_for_evolve)
         event_list.each do |event_type|
-          evolve(event_type, &block)
+          event(event_type, &block)
         end
       end
     end

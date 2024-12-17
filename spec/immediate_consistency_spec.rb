@@ -2,63 +2,50 @@
 
 require 'spec_helper'
 
-module TestSetup
+class SyncTodoListDecider < Sourced::Decider
   TodoList = Struct.new(:seq, :id, :items, :notified)
 
-  AddItem = Sourced::Message.define('imm.todos.add') do
-    attribute :name, String
+  consumer do |c|
+    c.sync!
   end
 
-  Notify = Sourced::Message.define('imm.todos.notify')
-  Notified = Sourced::Message.define('imm.todos.notified')
-
-  ItemAdded = Sourced::Message.define('imm.todos.added') do
-    attribute :name, String
+  state do |id|
+    TodoList.new(0, id, [], false)
   end
 
-  class TodoListDecider < Sourced::Decider
-    consumer do |c|
-      c.sync!
-    end
+  command :add_item, name: String do |_list, cmd|
+    event :item_added, name: cmd.payload.name
+  end
 
-    def init_state(id)
-      TodoList.new(0, id, [], false)
-    end
+  event :item_added, name: String do |list, event|
+    list.items << event.payload
+  end
 
-    decide AddItem do |_list, cmd|
-      apply ItemAdded, name: cmd.payload.name
-    end
+  react :item_added do |_event|
+    command :notify
+  end
 
-    evolve ItemAdded do |list, event|
-      list.items << event.payload
-    end
+  command :notify do |_list, _cmd|
+    event :notified
+  end
 
-    react ItemAdded do |event|
-      event.follow(Notify)
-    end
-
-    decide Notify do |_list, _cmd|
-      apply Notified
-    end
-
-    evolve Notified do |list, _event|
-      list.notified = true
-    end
+  event :notified do |list, _event|
+    list.notified = true
   end
 end
 
 RSpec.describe 'Immediate consistency' do
   before do
     Sourced.config.backend.clear!
-    Sourced::Router.register(TestSetup::TodoListDecider)
+    Sourced::Router.register(SyncTodoListDecider)
   end
 
-  let(:cmd) { TestSetup::AddItem.parse(stream_id: 'list1', payload: { name: 'item1' }) }
+  let(:cmd) { SyncTodoListDecider[:add_item].parse(stream_id: 'list1', payload: { name: 'item1' }) }
 
   it 'runs reactor immediately' do
-    decider, _events = TestSetup::TodoListDecider.handle_command(cmd)
+    decider, _events = SyncTodoListDecider.handle_command(cmd)
     decider.catch_up
     expect(decider.state.notified).to be(true)
-    expect(TestSetup::TodoListDecider.load(decider.id).state.notified).to be(true)
+    expect(SyncTodoListDecider.load(decider.id).state.notified).to be(true)
   end
 end
