@@ -177,6 +177,18 @@ TODO
 
 TODO
 
+### Orchestration and choreography
+
+TODO
+
+### Scheduled commands
+
+TODO
+
+### Replaying events
+
+TODO
+
 ## Interfaces
 
 TODO
@@ -228,10 +240,6 @@ Workers process events and commands by acquiring locks on `[reactor group ID][st
 This means that all events for a given reactor/stream are processed in order, but events for different streams can be processed concurrently. You can define workflows where some work is done concurrently by modeling them as a collaboration of streams.
 
 ![Concurrency lanes](docs/images/sourced-concurrency-lanes.png)
-
-## Scheduled commands
-
-TODO
 
 ### Custom attribute types and coercions.
 
