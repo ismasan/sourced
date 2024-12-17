@@ -12,11 +12,11 @@ module ProjectorTest
   end
 
   class StateStored < Sourced::Projector::StateStored
-    def init_state(id)
+    state do |id|
       STORE[id] || State.new(id, 0)
     end
 
-    evolve Added do |state, event|
+    event Added do |state, event|
       state.total += event.payload.amount
     end
 
@@ -26,11 +26,11 @@ module ProjectorTest
   end
 
   class EventSourced < Sourced::Projector::EventSourced
-    def init_state(id)
+    state do |id|
       State.new(id, 0)
     end
 
-    evolve Added do |state, event|
+    event Added do |state, event|
       state.total += event.payload.amount
     end
 

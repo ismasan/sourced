@@ -44,10 +44,24 @@ module Sourced
       method_name = Sourced.message_method_name(React::PREFIX, event.class.to_s)
       return [] unless respond_to?(method_name)
 
+      @__event_for_reaction = event
       cmds = send(method_name, event)
       [cmds].flatten.compact.map do |cmd|
         cmd.with_metadata(producer: self.class.consumer_info.group_id)
       end
+    end
+
+    # TODO:
+    # .react blocks should allow returning multiple commands
+    # just like using #event inside .command blocks
+    # ex.
+    #   react SomethingHappened do |event|
+    #     command(DoSomethingElse, field1: 'value1')
+    #     command(DoSomethingElse, field1: 'value2')
+    #   end
+    # TODO: Decider can do #command(:some_command)
+    def command(command_class, payload = {})
+      @__event_for_reaction.follow(command_class, payload)
     end
 
     module ClassMethods
@@ -73,9 +87,18 @@ module Sourced
         @handled_events_for_react ||= []
       end
 
-      def react(event_type, &block)
-        handled_events_for_react << event_type unless event_type.is_a?(Symbol)
-        define_method(Sourced.message_method_name(React::PREFIX, event_type.to_s), &block) if block_given?
+      # A standalone reactor doesn't have its own Event
+      # structs defined via .event(:event_name, payload_schema)
+      # So it can only take qualified event classes
+      # Decider can override this method to provide symbol-based event names
+      def react(event_class, &block)
+        unless event_class.is_a?(Class) && event_class < Sourced::Message
+          raise ArgumentError,
+                "Invalid argument #{event_class.inspect} for #{self}.react"
+        end
+
+        handled_events_for_react << event_class
+        define_method(Sourced.message_method_name(React::PREFIX, event_class.to_s), &block) if block_given?
       end
     end
   end

@@ -11,12 +11,12 @@ class ReactTestReactor
   Cmd1 = Sourced::Message.define('reacttest.cmd1')
   Cmd2 = Sourced::Message.define('reacttest.cmd2')
 
-  react Event1 do |event|
-    event.follow(Cmd1)
+  react Event1 do |_event|
+    command Cmd1
   end
 
-  react Event2 do |event|
-    event.follow(Cmd2)
+  react Event2 do |_event|
+    command Cmd2
   end
 
   react Event3 do |_event|
@@ -32,6 +32,8 @@ RSpec.describe Sourced::React do
     commands = ReactTestReactor.new.react([evt1, evt2])
     expect(commands.map(&:class)).to eq([ReactTestReactor::Cmd1, ReactTestReactor::Cmd2])
     expect(commands.map { |e| e.metadata[:producer] }).to eq(%w[ReactTestReactor ReactTestReactor])
+    expect(commands.first.causation_id).to eq(evt1.id)
+    expect(commands.last.causation_id).to eq(evt2.id)
   end
 
   specify '.handled_events_for_react' do

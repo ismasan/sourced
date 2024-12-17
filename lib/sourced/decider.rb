@@ -64,26 +64,26 @@ module Sourced
   #          }
   #        end
   #
-  #        # ====== DECIDE BLOCK =================
+  #        # ====== COMMAND BLOCK =================
   #        # Define a command handler for the Leads::CreateLead command
   #        # The command handler takes the current state of the lead
   #        # (which will be the initial state Hash when first creating the lead)
   #        # and the command instance coming from the client or UI or another workflow.
-  #        decide CreateLead do |state, cmd|
+  #        command CreateLead do |state, cmd|
   #          # Apply a LeadCreated event to the state
   #          # events applied here will be stored in the backend
-  #          apply LeadCreated, name: cmd.payload.name, email: cmd.payload.email
+  #          event LeadCreated, name: cmd.payload.name, email: cmd.payload.email
   #
   #          # If the command and event share the same payload attributes, you can just do:
-  #          apply LeadCreated, cmd.payload
+  #          event LeadCreated, cmd.payload
   #        end
   #
-  #        # ====== EVOLVE BLOCK =================
-  #        # .evolve blocks define how an event updates the state
+  #        # ====== EVENT BLOCK =================
+  #        # .event blocks define how an event updates the state
   #        # These blocks are run before running a .decide block
   #        # To update the state object from past events
   #        # They're also run within a .decide block when applying new events with `#apply`
-  #        evolve LeadCreated do |state, event|
+  #        event LeadCreated do |state, event|
   #          state[:status] = 'created'
   #          state[:name] = event.payload.name
   #          state[:email] = event.payload.email
@@ -99,21 +99,21 @@ module Sourced
   #        # In this example we listen to LeadCreated events
   #        # and schedule a new SendEmail command
   #        react LeadCreated do |event|
-  #          event.follow(SendEmail)
+  #          command SendEmail 
   #        end
   #
   #        # We now handle the SendEmail command and the cycle starts again.
-  #        decide SendEmail do |state, cmd|
+  #        command SendEmail do |state, cmd|
   #          raise 'Email already sent' if state[:email_sent]
   #
   #          if Mailer.deliver_to(state[:email], state)
-  #            apply EmailSent
+  #            event EmailSent
   #          else
-  #            apply EmailFailed
+  #            event EmailFailed
   #          end
   #        end
   #
-  #        evolve EmailSent do |state, event|
+  #        event EmailSent do |state, event|
   #          state[:email_sent] = true
   #        end
   #      end
@@ -126,11 +126,46 @@ module Sourced
 
     PREFIX = 'decide'
 
+    UndefinedMessageError = Class.new(KeyError)
+
+    # A Decider class has its own Command and Event
+    # subclasses that are used to define inine commands and events.
+    # These classes serve as message registry for the Decider's inline messages.
+    class Command < Sourced::Command; end
+    class Event < Sourced::Event; end
+
     class << self
       def inherited(subclass)
         super
+        subclass.const_set(:Command, Class.new(const_get(:Command)))
+        subclass.const_set(:Event, Class.new(const_get(:Event)))
         handled_commands.each do |cmd_type|
           subclass.handled_commands << cmd_type
+        end
+      end
+
+      # Access a Decider's Command or Event classes by name (e.g. :some_command or :some_event)
+      # @param message_name [Symbol]
+      # @return [Class]
+      # @raise [ArgumentError] if the message is not defined
+      def [](message_name)
+        message_type = __message_type(message_name)
+        msg_class = self::Event.registry[message_type] || self::Command.registry[message_type]
+
+        raise UndefinedMessageError, "Message not found: #{message_name}" unless msg_class
+        msg_class
+      end
+
+      # Define an initial state factory for this decider.
+      # @example
+      #
+      #   state do |id|
+      #     { id: id, status: 'new' }
+      #   end
+      #
+      def state(&blk)
+        define_method(:init_state) do |id|
+          blk.call(id)
         end
       end
 
@@ -184,20 +219,12 @@ module Sourced
       # Define a command class, register a command handler
       # and define a method to send the command
       # Example:
-      #   command :add_item, name: String do |cmd|
-      #     cmd.follow(ItemAdded, item_id: SecureRandom.uuid, name: cmd.payload.name)
+      #   command :add_item, name: String do |state, cmd|
+      #     event(ItemAdded, item_id: SecureRandom.uuid, name: cmd.payload.name)
       #   end
       #
       # # The exmaple above will define a command class `AddItem` in the current namespace:
       # AddItem = Message.define('namespace.add_item', payload_schema: { name: String })
-      #
-      # # Optionally you can pass an explicit command type string:
-      #   command :add_item, 'todos.items.add', name: String do |cmd|
-      #
-      # # It will also register the command handler:
-      # decide AddItem do |cmd|
-      #   cmd.follow(ItemAdded, item_id: SecureRandom.uuid, name: cmd.payload.name)
-      # end
       #
       # # And an :add_item method to send the command:
       # def add_item(name:)
@@ -219,36 +246,123 @@ module Sourced
       #   cmd.valid? # => false
       #   cmd.errors # => { name: 'must be a String' }
       #
-      # @param cmd_name [Symbol] example: :add_item
-      # @param payload_schema [Hash] A Plumb Hash schema. example: { name: String }
-      # @param block [Proc] The command handling code
       # @return [Message] the command instance, which can be #valid? or not
       def command(*args, &block)
         raise ArgumentError, 'command block expects signature (state, command)' unless block.arity == 2
 
-        message_type = nil
-        cmd_name = nil
-        payload_schema = {}
-        segments = name.split('::').map(&:downcase)
-
         case args
-          in [cmd_name]
-            message_type = [*segments, cmd_name].join('.')
-          in [cmd_name, Hash => payload_schema]
-            message_type = [*segments, cmd_name].join('.')
-          in [cmd_name, String => message_type, Hash => payload_schema]
-          in [cmd_name, String => message_type]
+          in [Symbol => cmd_name, Hash => payload_schema]
+            __register_named_command_handler(cmd_name, payload_schema, &block)
+          in [Symbol => cmd_name]
+            __register_named_command_handler(cmd_name, &block)
+          in [Class => cmd_type] if cmd_type < Sourced::Message
+            decide(cmd_type, &block)
         else
           raise ArgumentError, "Invalid arguments for #{self}.command"
         end
+      end
 
+      private def __register_named_command_handler(cmd_name, payload_schema = nil, &block)
+        cmd_class = self::Command.define(__message_type(cmd_name), payload_schema:)
         klass_name = cmd_name.to_s.split('_').map(&:capitalize).join
-        cmd_class = Command.define(message_type, payload_schema:)
         const_set(klass_name, cmd_class)
-        decide cmd_class, &block
+        decide(cmd_class, &block)
         define_method(cmd_name) do |**payload|
           issue_command cmd_class, payload
         end
+
+        define_method("#{cmd_name}_async") do |**payload|
+          cmd = cmd_class.new(stream_id: id, payload:)
+          cmd.tap do |c|
+            Sourced.config.backend.schedule_commands([c]) if c.valid?
+          end
+        end
+
+        define_method("#{cmd_name}_later") do |time, **payload|
+          cmd = cmd_class.new(stream_id: id, payload:).delay(time)
+          cmd.tap do |c|
+            Sourced.config.backend.schedule_commands([c]) if c.valid?
+          end
+        end
+      end
+
+      # Support defining event handlers with a symbol and a payload schema
+      # Or a class.
+      #
+      # @example
+      #
+      #   event SomethingHappened, field1: String do |state, event|
+      #     state[:status] = 'done'
+      #   end
+      #
+      #   event :something_happened, field1: String do |state, event|
+      #     state[:status] = 'done'
+      #   end
+      #
+      def event(*args, &block)
+        case args
+          in [Symbol => event_name, Hash => payload_schema]
+            __register_named_event_handler(event_name, payload_schema).tap do |event_class|
+              super(event_class, &block)
+            end
+          in [Symbol => event_name]
+            __register_named_event_handler(event_name).tap do |event_class|
+              super(event_class, &block)
+            end
+          in [Class => foo]
+            super
+          else
+            raise ArgumentError, "event expects a Symbol or Event class. Got: #{args.inspect}"
+        end
+      end
+
+      private def __register_named_event_handler(event_name, payload_schema = nil)
+        klass_name = event_name.to_s.split('_').map(&:capitalize).join
+        event_class = self::Event.define(__message_type(event_name), payload_schema:)
+        const_set(klass_name, event_class)
+      end
+
+      # Support defining event reactions with a symbol
+      # pointing to an event class defined locally with .event
+      # TODO: should this be defined in Evolve?
+      # @example
+      #   react :item_added do |event|
+      #   end
+      #
+      def react(event_name, &block)
+        if event_name.is_a?(Symbol)
+          event_class = self::Event.registry[__message_type(event_name)]
+          super(event_class, &block)
+        else
+          super
+        end
+      end
+
+      # Override the default namespace for commands and events
+      # defined inline
+      # @example
+      #
+      #   def message_namespace = 'my_app.messages.'
+      #
+      # @return [String]
+      def message_namespace
+        __string_to_message_type(name)
+      end
+
+      private def __message_type_prefix
+        @__message_type_prefix ||= message_namespace
+      end
+
+      def __message_type(msg_name)
+        [__message_type_prefix, msg_name].join('.').downcase
+      end
+
+      def __string_to_message_type(str)
+        str.gsub(/::/, '.')
+          .gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
+          .gsub(/([a-z\d])([A-Z])/, '\1_\2')
+          .tr("-", "_")
+          .downcase
       end
     end
 
@@ -323,6 +437,30 @@ module Sourced
       [state, uncommitted_events]
     end
 
+    # Apply an event from within a command handler
+    # @example
+    #
+    #  command DoSomething do |state, cmd|
+    #    event SomethingHappened, field1: 'foo', field2: 'bar'
+    #  end
+    #
+    # Or, with symbol pointing to an event class defined with .event
+    #   command DoSomething do |state, cmd|
+    #     event :something_happened, field1: 'foo', field2: 'bar'
+    #   end
+    #
+    # @param event_name [Symbol, Class] the event name or class
+    # @param payload [Hash] the event payload
+    # @return [Any] the
+    def event(event_name, payload = {})
+      return apply(event_name, payload) unless event_name.is_a?(Symbol)
+
+      event_class = Event.registry[self.class.__message_type(event_name)]
+      raise ArgumentError, "Event not found: #{event_name}" unless event_class
+
+      apply(event_class, payload)
+    end
+
     # Instantiate an event class and apply it to the state
     # by running registered evolve blocks.
     # Also store the event in the uncommitted events list,
@@ -335,7 +473,7 @@ module Sourced
     # @param event_class [Sourced::Event]
     # @param payload [Hash] the event payload
     # @return [Any] the new state
-    def apply(event_class, payload = {})
+    private def apply(event_class, payload = {})
       evt = __current_command.follow_with_attributes(
         event_class, 
         attrs: { seq: __next_sequence }, 
@@ -344,6 +482,24 @@ module Sourced
       )
       uncommitted_events << evt
       evolve(state, [evt])
+    end
+
+    # Dispatch a command from within a .react block
+    # Override React.command to allow resolving command classes from symbols
+    # @example
+    #
+    #  react SomethingHappened do |event|
+    #    command :do_something, field1: 'foo', field2: 'bar'
+    #  end
+    #
+    # TODO: test this
+    def command(command_name, payload = {})
+      return super unless command_name.is_a?(Symbol)
+
+      # Clean this up
+      command_class = self.class[command_name]
+
+      super(command_class, payload)
     end
 
     # Commit uncommitted events to the backend

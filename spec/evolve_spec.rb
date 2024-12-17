@@ -10,28 +10,19 @@ module EvolveTest
     Event2 = Sourced::Message.define('evolvetest.reactor.event2')
     Event3 = Sourced::Message.define('evolvetest.reactor.event3')
 
-    evolve Event1 do |state, event|
+    event Event1 do |state, event|
       state << event
     end
 
-    evolve Event2 do |state, event|
+    event Event2 do |state, event|
       state << event
     end
-
-    # TODO:This is never good
-    # We never want to evolve from any event belonging to any possible
-    # domain in the system
-    # we need to scope by domain or category.
-    # ex. evolve_from 'carts'
-    # evolve :any do |state, event|
-    #   state << event.seq
-    # end
   end
 
   class Noop
     include Sourced::Evolve
 
-    evolve Reactor::Event1
+    event Reactor::Event1
   end
 
   class EvolveAll
@@ -60,9 +51,9 @@ RSpec.describe Sourced::Evolve do
 
   specify '.handled_events_for_evolve' do
     expect(EvolveTest::Reactor.handled_events_for_evolve).to eq([
-      EvolveTest::Reactor::Event1, 
-      EvolveTest::Reactor::Event2
-    ])
+                                                                  EvolveTest::Reactor::Event1,
+                                                                  EvolveTest::Reactor::Event2
+                                                                ])
   end
 
   specify '.evolve handlers without a block' do
