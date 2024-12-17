@@ -12,6 +12,7 @@ unless ENV['backend_configured']
   Sourced.configure do |config|
     config.backend = Sequel.postgres('sourced_development')
   end
+  Sourced.config.backend.install
   ENV['backend_configured'] = 'true'
 end
 
@@ -29,7 +30,7 @@ class Cart < Sourced::Decider
     def total = items.sum(&:price)
   end
 
-  def init_state(_id)
+  state do |id|
     State.new(:open, false, [], nil)
   end
 
@@ -44,30 +45,30 @@ class Cart < Sourced::Decider
   end
 
   # Defines a Cart::AddItem command struct
-  command :add_item, 'cart.add_item', name: String, price: Integer do |cart, cmd|
-    apply(ItemAdded, cmd.payload.to_h)
+  command :add_item, name: String, price: Integer do |cart, cmd|
+    event(ItemAdded, cmd.payload.to_h)
   end
 
   # Defines a Cart::Place command struct
-  command :place, 'cart.place' do |_, cmd|
-    apply(Placed)
+  command :place do |_, cmd|
+    event(Placed)
   end
 
   # Defines a Cart::Notify command struct
-  command :notify, 'cart.notify', mailer_id: String do |_, cmd|
+  command :notify, mailer_id: String do |_, cmd|
     puts "#{self.class.name} #{cmd.stream_id} NOTIFY"
-    apply(Notified, mailer_id: cmd.payload.mailer_id)
+    event(Notified, mailer_id: cmd.payload.mailer_id)
   end
 
-  evolve ItemAdded do |cart, event|
+  event ItemAdded do |cart, event|
     cart.items << event.payload
   end
 
-  evolve Placed do |cart, _event|
+  event Placed do |cart, _event|
     cart.status = :placed
   end
 
-  evolve Notified do |cart, event|
+  event Notified do |cart, event|
     cart.notified = true
     cart.mailer_id = event.payload.mailer_id
   end
@@ -91,16 +92,16 @@ class Mailer < Sourced::Decider
     attribute :cart_id, String
   end
 
-  def init_state(_id)
+  state do |id|
     []
   end
 
-  command :send_email, 'mailer.send_email', cart_id: String do |_, cmd|
+  command :send_email, cart_id: String do |_, cmd|
     # Send email here, emit EmailSent if successful
-    apply(EmailSent, cart_id: cmd.payload.cart_id)
+    event(EmailSent, cart_id: cmd.payload.cart_id)
   end
 
-  evolve EmailSent do |list, event|
+  event EmailSent do |list, event|
     list << event
   end
 end
@@ -183,11 +184,11 @@ class CartListings < Sourced::Decider
     cart[:seqs] << event.seq
   end
 
-  evolve Cart::Placed do |cart, event|
+  event Cart::Placed do |cart, event|
     cart[:status] = :placed
   end
 
-  evolve Cart::ItemAdded do |cart, event|
+  event Cart::ItemAdded do |cart, event|
     cart[:items] << event.payload.to_h
   end
 end
