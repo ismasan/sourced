@@ -22,7 +22,7 @@ The entire behaviour of an event-sourced app is described via **commands**, **ev
 ![command, events, reactions](docs/images/sourced-arch-diagram.png)
 
 * **Commands** are _intents_ to effect some change in the state of the system. Ex. `Add cart item`, `Place order`, `Update email`, etc.
-* **Events** are produced after handling a command and they describe _facts_ or state changes in the system. Ex. 'Item added to cart', 'order placed', 'email updated'. Events are stored and you can use them to build views ("projections"), caches and reports to support UIs, or other artifacts.
+* **Events** are produced after handling a command and they describe _facts_ or state changes in the system. Ex. `Item added to cart`, `order placed`, `email updated`. Events are stored and you can use them to build views ("projections"), caches and reports to support UIs, or other artifacts.
 * **State** is whatever object you need to hold the current state of a part of the system. It's usually derived from past events, and it's just enough to interrogate the state of the system and make the next decision.
 
 #### Deciders
