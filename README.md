@@ -25,7 +25,7 @@ The entire behaviour of an event-sourced app is described via **commands**, **ev
 * **Events** are produced after handling a command and they describe _facts_ or state changes in the system. Ex. `Item added to cart`, `order placed`, `email updated`. Events are stored and you can use them to build views ("projections"), caches and reports to support UIs, or other artifacts.
 * **State** is whatever object you need to hold the current state of a part of the system. It's usually derived from past events, and it's just enough to interrogate the state of the system and make the next decision.
 
-#### Deciders
+### Deciders
 
 Deciders are classes that encapsulate loading state from past events and handling commands for a part of your system. They can also define reactions to their own events, or events emitted by other deciders. This is a simple shopping cart decider.
 
@@ -108,9 +108,7 @@ cart2.stats.total # 2000
 cart2.state.items.size # 1
 ```
 
-
-
-### Expanded message syntax
+#### Expanded message syntax
 
 Commands and event structs can also be defined separately as `Sourced::Command` and `Sourced::Event` sub-classes.
 
@@ -163,7 +161,7 @@ Sourced::Router.register(Cart)
 
 
 
-### Running reactions in the background
+### Background vs. foreground execution
 
 TODO
 
