@@ -193,6 +193,10 @@ TODO
 
 TODO
 
+### Testing
+
+TODO
+
 ## Setup
 
 You'll need the `pg` and `sequel` gems.
