@@ -80,9 +80,9 @@ module Sourced
   #
   #        # ====== EVENT BLOCK =================
   #        # .event blocks define how an event updates the state
-  #        # These blocks are run before running a .decide block
+  #        # These blocks are run before running a .command block
   #        # To update the state object from past events
-  #        # They're also run within a .decide block when applying new events with `#apply`
+  #        # They're also run within a .command block when applying new events with `#apply`
   #        event LeadCreated do |state, event|
   #          state[:status] = 'created'
   #          state[:name] = event.payload.name
@@ -90,7 +90,7 @@ module Sourced
   #        end
   #
   #        # ====== REACT BLOCK =================
-  #        # React blocks listen to events emitted by .decide blocks
+  #        # React blocks listen to events emitted by .command blocks
   #        # From this or any other Decider
   #        # and allow an part of the app to react to events
   #        # This is how you build worlflows that span multiple Deciders
@@ -204,18 +204,6 @@ module Sourced
         @handled_commands ||= []
       end
 
-      # The .decide macro.
-      # Register a command handler
-      # @example
-      #
-      #  decide SomeCommand do |state, cmd|
-      #    apply SomeEvent, field1: cmd.payload.field1, field2: 'foobar'
-      #  end
-      def decide(cmd_type, &block)
-        handled_commands << cmd_type
-        define_method(Sourced.message_method_name(PREFIX, cmd_type.name), &block)
-      end
-
       # Define a command class, register a command handler
       # and define a method to send the command
       # Example:
@@ -256,7 +244,7 @@ module Sourced
           in [Symbol => cmd_name]
             __register_named_command_handler(cmd_name, &block)
           in [Class => cmd_type] if cmd_type < Sourced::Message
-            decide(cmd_type, &block)
+            __register_class_command_handler(cmd_type, &block)
         else
           raise ArgumentError, "Invalid arguments for #{self}.command"
         end
@@ -266,7 +254,7 @@ module Sourced
         cmd_class = self::Command.define(__message_type(cmd_name), payload_schema:)
         klass_name = cmd_name.to_s.split('_').map(&:capitalize).join
         const_set(klass_name, cmd_class)
-        decide(cmd_class, &block)
+        __register_class_command_handler(cmd_class, &block)
         define_method(cmd_name) do |**payload|
           issue_command cmd_class, payload
         end
@@ -284,6 +272,11 @@ module Sourced
             Sourced.config.backend.schedule_commands([c]) if c.valid?
           end
         end
+      end
+
+      private def __register_class_command_handler(cmd_type, &block)
+        handled_commands << cmd_type
+        define_method(Sourced.message_method_name(PREFIX, cmd_type.name), &block)
       end
 
       # Support defining event handlers with a symbol and a payload schema
