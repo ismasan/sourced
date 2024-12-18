@@ -110,7 +110,7 @@ cart2.state.items.size # 1
 
 
 
-### Extended message syntax
+### Expanded message syntax
 
 Commands and event structs can also be defined separately as `Sourced::Command` and `Sourced::Event` sub-classes.
 
@@ -254,7 +254,7 @@ module Types
 end
 ```
 
-Then you can use your any built-in Plumb types, as well as your own, when defining command or event structs (or any other data structures for your app).
+Then you can use any [built-in Plumb types](https://github.com/ismasan/plumb?tab=readme-ov-file#built-in-types), as well as your own, when defining command or event structs (or any other data structures for your app).
 
 ```ruby
 UpdateEmail = Sourced::Command.define('accounts.update_email') do
