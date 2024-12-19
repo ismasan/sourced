@@ -223,6 +223,15 @@ class CartListings < Sourced::Projector::EventSourced
 end
 ```
 
+#### Registering projectors
+
+Like any other _reactor_, projectors need to be registered for background workers to route events to them.
+
+```ruby
+# In your app's configuration
+Sourced::Router.register(CartListings)
+```
+
 
 
 ### Orchestration and choreography
