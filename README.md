@@ -239,9 +239,65 @@ Like any other _reactor_, projectors need to be registered for background worker
 Sourced::Router.register(CartListings)
 ```
 
+## Concurrency model
 
+Concurrency in Sourced is achieved by explicitely _modeling it in_.
+
+Sourced workers process events and commands by acquiring locks on `[reactor group ID][stream ID]`.
+
+This means that all events for a given reactor/stream are processed in order, but events for different streams can be processed concurrently. You can define workflows where some work is done concurrently by modeling them as a collaboration of streams.
+
+#### Single-stream sequential execution
+
+In the following (simplified!) example, a Holiday Booking workflow is modelled as a single stream ("Decider"). The infrastructure makes sure these steps are run sequentially.
+
+![Concurrency single stream](docs/images/sourced-concurrency-single-lane.png)
+
+The Decider defines glues the steps together by reacting to events emitted by the previous step, and dispatching the next command.
+
+```ruby
+class HolidayBooking < Sourced::Decider
+  # State and details omitted...
+  
+  command :start_booking do |state, cmd|
+    event :booking_started
+  end
+  
+  react :booking_started do |event|
+    command :book_flight
+  end
+  
+  command :book_flight do |state, cmd|
+    event :flght_booked
+  end
+  
+  react :flight_booked do |event|
+    command :book_hotel
+  end
+  
+  command :book_hotel do |state, cmd|
+    event :hotel_booked
+  end
+  
+  # Define event handlers if you haven't...
+  event :booking_started, # ..etc
+  event :flight_booked, # ..etc
+end
+```
+
+#### Multi-stream concurrent execution
+
+In this other example, the same workflow is split into separate streams/deciders, so that Flight and Hotel bookings can run concurrently from each other. When completed, they each notify the parent Holiday decider, so the whole process coalesces into a sequential operation again.
+
+![multi stream](docs/images/sourced-concurrency-multi-lane.png)
+
+TODO: code example.
 
 ### Orchestration and choreography
+
+TODO
+
+### Transactional boundaries
 
 TODO
 
@@ -298,16 +354,6 @@ Start background workers.
 # require your code here
 Sourced::Supervisor.start(count: 10) # 10 worker fibers
 ```
-
-
-
-## Concurrency model
-
-Workers process events and commands by acquiring locks on `[reactor group ID][stream ID]`.
-
-This means that all events for a given reactor/stream are processed in order, but events for different streams can be processed concurrently. You can define workflows where some work is done concurrently by modeling them as a collaboration of streams.
-
-![Concurrency lanes](docs/images/sourced-concurrency-lanes.png)
 
 ### Custom attribute types and coercions.
 
