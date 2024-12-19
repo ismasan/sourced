@@ -293,6 +293,10 @@ In this other example, the same workflow is split into separate streams/deciders
 
 TODO: code example.
 
+### Durable workflows
+
+TODO
+
 ### Orchestration and choreography
 
 TODO
