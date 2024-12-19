@@ -253,7 +253,7 @@ In the following (simplified!) example, a Holiday Booking workflow is modelled a
 
 ![Concurrency single stream](docs/images/sourced-concurrency-single-lane.png)
 
-The Decider defines glues the steps together by reacting to events emitted by the previous step, and dispatching the next command.
+The Decider glues its steps together by reacting to events emitted by the previous step, and dispatching the next command.
 
 ```ruby
 class HolidayBooking < Sourced::Decider
