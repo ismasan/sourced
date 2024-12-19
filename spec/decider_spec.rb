@@ -242,6 +242,13 @@ RSpec.describe Sourced::Decider do
     expect(decider.seq).to eq(2)
   end
 
+  specify '#event with no set command (ex. applying events in tests)' do
+    decider = TestDecider::TodoListDecider.new('list1')
+    decider.event(TestDecider::TodoListDecider::ItemAdded, name: 'item1')
+    expect(decider.seq).to eq(1)
+    expect(decider.state.items.size).to eq(1)
+  end
+
   it 'returns if invalid command' do
     decider = TestDecider::TodoListDecider.new('list1')
     cmd = decider.add_one(name: 10)

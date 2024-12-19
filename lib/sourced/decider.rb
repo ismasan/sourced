@@ -368,7 +368,7 @@ module Sourced
       @seq = 0
       @state = init_state(id)
       @uncommitted_events = []
-      @__current_command = nil
+      @__current_command = Sourced::Command.new(stream_id: id)
     end
 
     def inspect
