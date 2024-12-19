@@ -243,7 +243,7 @@ Sourced::Router.register(CartListings)
 
 Concurrency in Sourced is achieved by explicitely _modeling it in_.
 
-Sourced workers process events and commands by acquiring locks on `[reactor group ID][stream ID]`.
+Sourced workers process events and commands by acquiring locks on `[reactor group ID][stream ID]`. For example `"CartDecider:cart-123"`
 
 This means that all events for a given reactor/stream are processed in order, but events for different streams can be processed concurrently. You can define workflows where some work is done concurrently by modeling them as a collaboration of streams.
 
