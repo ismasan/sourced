@@ -173,7 +173,57 @@ TODO
 
 ### Projectors
 
-TODO
+From the outside-in, projectors are classes that implement the _Reactor interface_.
+
+Sourced ships with two ready-to-use projectors, but you can also build your own.
+
+#### State-stored projector
+
+A state-stored projector fetches initial state from storage somewhere (DB, files, API), and then after reacting to events and updating state, it can save it back to the same or different storage.
+
+```ruby
+class CartListings < Sourced::Projector::StateStored
+  # Fetch listing record from DB, or new one.
+  state do |id|
+    CartListing.find_or_initialize(id)
+  end
+
+  # Evolve listing record from events
+  event Carts::ItemAdded do |listing, event|
+    listing.total += event.payload.price
+  end
+
+  # Sync listing record back to DB
+  sync do |listing, _, _|
+    listing.save!
+  end
+end
+```
+
+#### Event-sourced projector
+
+An event-sourced projector fetches initial state from past events in the event store, and then after reacting to events and updating state, it can save it to a DB table, a file, etc.
+
+```ruby
+class CartListings < Sourced::Projector::EventSourced
+  # Initial in-memory state
+  state do |id|
+    { id:, total: 0 }
+  end
+
+  # Evolve listing record from events
+  event Carts::ItemAdded do |listing, event|
+    listing[:total] += event.payload.price
+  end
+
+  # Sync listing record to a file
+  sync do |listing, _, _|
+    File.write("/listings/#{listing[:id]}.json", JSON.dump(listing)) 
+  end
+end
+```
+
+
 
 ### Orchestration and choreography
 
