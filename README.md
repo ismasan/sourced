@@ -108,6 +108,21 @@ cart2.stats.total # 2000
 cart2.state.items.size # 1
 ```
 
+#### Registering deciders
+
+Invoking commands directly on a decider instance works in an IRB console or a synchronous-only web handler, but for deciders to be available for background workers, and to react to other decider's events, you need to register them.
+
+```ruby
+Sourced::Router.register(Cart)
+```
+
+This achieves two things:
+
+1. Commands can be routed to this decider by background processes, using its `.handle_command(command)` interface
+2. The decider can _react_ to other events in the system (more on event choreography later), via its `.handle_events(events)` interface.
+
+This two properties are what enables asynchronous, eventually-consistent systems in Sourced.
+
 #### Expanded message syntax
 
 Commands and event structs can also be defined separately as `Sourced::Command` and `Sourced::Event` sub-classes.
@@ -147,16 +162,6 @@ module Carts
     end
   end
 end
-```
-
-
-
-### Registering deciders
-
-TODO
-
-```ruby
-Sourced::Router.register(Cart)
 ```
 
 
