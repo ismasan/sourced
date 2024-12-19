@@ -164,17 +164,19 @@ module Carts
 end
 ```
 
+### Causation and correlation
 
+When a command produces events, or when an event makes a reactor dispatch a new command, the cause-and-effect relationship between these messages is tracked by Sourced in the form of `correlation_id` and `causation_id` properties in each message's metadata.
+
+![causation and correlation](docs/images/sourced-causation-correlation.png)
+
+This helps the system keep a full audit trail of the cause-and-effect behaviour of the entire system.
+
+![command and event causation view](docs/images/sourced-causation-view.png)
 
 ### Background vs. foreground execution
 
 TODO
-
-### Causation and correlation
-
-TODO
-
-![command and event causation view](docs/images/sourced-causation-view.png)
 
 ### Projectors
 
@@ -299,7 +301,7 @@ Sourced::Supervisor.start(count: 10) # 10 worker fibers
 
 
 
-## Control concurrency my modeling the domain
+## Concurrency model
 
 Workers process events and commands by acquiring locks on `[reactor group ID][stream ID]`.
 
