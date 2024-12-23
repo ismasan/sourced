@@ -187,8 +187,6 @@ The class-level `.event` block registers an _event handler_ used to _evolve_ the
 
 These blocks are used both to load the initial state when handling a command, and to apply new events to the state in command handlers.
 
-These handlers are pure: given the same state and event, they should always update the state in the same exact way. They should never reach out to the outside (API calls, current time, etc), and they should never run validations. They work on events already committed to history, which by definition are assumed to be valid.
-
 ![evolve handler](docs/images/sourced-evolve-handler.png)
 
 ```ruby
@@ -197,7 +195,7 @@ event ItemAdded do |cart, event|
 end
 ```
 
-
+These handlers are pure: given the same state and event, they should always update the state in the same exact way. They should never reach out to the outside (API calls, current time, etc), and they should never run validations. They work on events already committed to history, which by definition are assumed to be valid.
 
 #### `.react` block
 
