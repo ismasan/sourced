@@ -390,7 +390,7 @@ TODO
 The diagram shows the units of work in an example Sourced worklow. The operations within each of the red boxes either succeeds or rolls back the transaction, and it can then be retried or compensated. They are **strongly consistent**. 
 The data-flow _between_ these boxes is propagated asynchronously by Sourced's infrastructure so, relative to each other, the entire system is **eventually consistent**.
 
-These transactional boundaries are also guarded by the same locks that enforce the [concurrency model](#concurrency-model), so that for example the same event or command can't be processed by the same Decider or Reactor (workflow, projector, etc). 
+These transactional boundaries are also guarded by the same locks that enforce the [concurrency model](#concurrency-model), so that for example the same event or command can't be processed twice by the same Decider or Reactor (workflow, projector, etc). 
 
 ### Scheduled commands
 
