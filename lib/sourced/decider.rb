@@ -320,14 +320,73 @@ module Sourced
       # TODO: should this be defined in Evolve?
       # @example
       #   react :item_added do |event|
+      #     command :do_something
       #   end
       #
+      #   react ItemAdded do |event|
+      #     command DoSomething
+      #   end
+      #
+      # @param event_name [Symbol, Class]
+      # @yield [Sourced::Event]
+      # @return [void]
       def react(event_name, &block)
         if event_name.is_a?(Symbol)
           event_class = self::Event.registry[__message_type(event_name)]
           super(event_class, &block)
         else
           super
+        end
+      end
+
+      # React to events this class evolves from.
+      # And load internal state from past events 
+      # So that Deciders can react to own events and have state available.
+      # This should be useful to implement TODO List - style reactors that can keep their own state based on events.
+      #
+      # @example
+      #
+      #  event SomethingHappened do |state, event|
+      #    state[:count] += 1
+      #  end
+      #
+      #  react_with_state SomethingHappened do |state, event|
+      #    if state[:count] % 3 == 0
+      #      command NotifyEachThirdTime
+      #    end
+      #  end
+      #
+      # Note: this callback loads the decider's state _up to its current state_, which
+      # may be more recent than what the event reacted to represents.
+      # Ex. if the event history of the decider is [E1, E2, E3, E4]
+      # a reaction registered with `.react_with_state(E2, &block)` will run asynchronously _later_.
+      # It will react to E2 even though the decider's current state is up to E4.
+      # It's up to the reaction block to take that into account, for example comparing the decider's and the event's sequence number.
+      #
+      #  react_with_state SomethingHappened do |state, event|
+      #    if seq == event.seq # event is the last one to have happened.
+      #      command DoSomething
+      #    else
+      #      # ignore ?
+      #    end
+      #  end
+      #
+      # @param event_name [Symbol, Class]
+      # @yield [Object, Sourced::Event]
+      # @return [void]
+      def react_with_state(event_name, &block)
+        event_class = if event_name.is_a?(Symbol)
+          event_class = self::Event.registry[__message_type(event_name)]
+        else
+          event_name
+        end
+        raise ArgumentError, '.react_with_state expects a block with |state, event|' unless block.arity == 2
+        unless handled_events_for_evolve.include?(event_class)
+          raise ArgumentError, '.react_with_state only works with event types handled by this class via .event(event_type)' 
+        end
+        react event_class do |event|
+          load(after: seq)
+          instance_exec(state, event, &block)
         end
       end
 
@@ -351,7 +410,7 @@ module Sourced
       end
 
       def __string_to_message_type(str)
-        str.gsub(/::/, '.')
+        str.to_s.gsub(/::/, '.')
           .gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
           .gsub(/([a-z\d])([A-Z])/, '\1_\2')
           .tr("-", "_")
