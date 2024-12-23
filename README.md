@@ -164,6 +164,86 @@ module Carts
 end
 ```
 
+#### `.command` block
+
+The class-level `.command` block defines a _command handler_. Its job is to take a command (from a user, an automation, etc), validate it, and apply state changes by publishing new events.
+
+![command handler](docs/images/sourced-command-handler.png)
+
+```ruby
+command AddItem do |cart, cmd|
+  # logic here...
+  # apply and publish one or more new events
+  # using instance-level #event(event_type, **payload)
+  event ItemAdded, product_id: cmd.payload.product_id
+end
+```
+
+
+
+### `.event` block
+
+The class-level `.event` block registers an _event handler_ used to _evolve_ the decider's internal state.
+
+These blocks are used both to load the initial state when handling a command, and to apply new events to the state in command handlers.
+
+These handlers are pure: given the same state and event, they should always update the state in the same exact way. They should never reach out to the outside (API calls, current time, etc), and they should never run validations. They work on events already committed to history, which by definition are assumed to be valid.
+
+![evolve handler](docs/images/sourced-evolve-handler.png)
+
+```ruby
+event ItemAdded do |cart, event|
+  cart.items << CartItem.new(**event.payload.to_h)
+end
+```
+
+
+
+#### `.react` block
+
+The class-level `.react` block registers an event handler that _reacts_ to events already published by this or other Deciders.
+
+`.react` blocks can dispatch the next command in a workflow with the instance-level `#command` helper.
+
+![react](docs/images/sourced-react-handler.png)
+
+```ruby
+react ItemAdded do |event|
+  # dispatch the next command
+  command(
+    CheckInventory, 
+    product_id: event.payload.product_id,
+    quantity: event.payload.quantity
+  )
+end
+```
+
+
+
+#### `.react_with_state` block
+
+Class-level `.react_with_state` is similar to `.react`, except that it also loads and yields the Decider's current state by loading and applying past events to it (same as when handling commands).
+
+For this reason, `.react_with_state` can only be used with events that are also registered to _evolve_ the same Decider.
+
+![react](docs/images/sourced-react-with-state-handler.png)
+
+```ruby
+# Define an event handler to evolve state
+event ItemAdded do |state, event|
+  state[:item_count] += 1
+end
+
+# Now react to it and check state
+react_with_state ItemAdded do |state, event|
+  if state[:item_count] > 30
+    command NotifyBigCart
+  end
+end
+```
+
+
+
 ### Causation and correlation
 
 When a command produces events, or when an event makes a reactor dispatch a new command, the cause-and-effect relationship between these messages is tracked by Sourced in the form of `correlation_id` and `causation_id` properties in each message's metadata.
@@ -179,6 +259,8 @@ This helps the system keep a full audit trail of the cause-and-effect behaviour 
 TODO
 
 ### Projectors
+
+Projectors react to events published by deciders and update views, search indices, caches, or other representations of current state useful to the app. They can both react to events as they happen in the system, and also "catch up" to past events. Sourced keep track of where in the global event stream each projector is.
 
 From the outside-in, projectors are classes that implement the _Reactor interface_.
 

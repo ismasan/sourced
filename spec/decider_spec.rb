@@ -303,6 +303,66 @@ RSpec.describe Sourced::Decider do
     expect(decider.state.archive_status).to eq(:confirmed)
   end
 
+  describe '.react_with_state for own events' do
+    let(:klass) do
+      klass = Class.new(Sourced::Decider) do
+        consumer do |c|
+          c.group_id = 'ReactTest'
+          c.sync!
+        end
+
+        state do |id|
+          [id, :new, nil]
+        end
+
+        command :do_thing, name: String do |_state, cmd|
+          event :thing_done, cmd.payload
+        end
+
+        event :thing_done, name: String do |state, _event|
+          state[1] = :done
+        end
+
+        react_with_state :thing_done do |state, event|
+          command :notify, value: "seq was #{seq}, state was #{state[1]}, name was #{event.payload.name}"
+        end
+
+        command :notify, value: String do |_state, cmd|
+          event :notified, cmd.payload
+        end
+
+        event :notified, value: String do |state, event|
+          state[2] = event.payload.value
+        end
+      end
+    end
+
+    before do
+      # Register so that sync! works
+      Sourced::Router.register(klass)
+    end
+
+    it 'evolves and yields own state' do
+      decider = klass.new('1')
+      decider.do_thing(name: 'thing1')
+      decider.catch_up
+      expect(decider.state).to eq(['1', :done, 'seq was 2, state was done, name was thing1'])
+      expect(decider.seq).to eq(4)
+    end
+
+    it 'fails to register reaction if event is not handled by the same Decider' do
+      expect do
+        klass.react_with_state(TestDecider::ListStarted) { |_state, _event| }
+      end.to raise_error(ArgumentError)
+    end
+
+    it 'fails to register reaction if block does not support |state, event|' do
+      expect do
+        klass.react_with_state(TestDecider::ListStarted) { |_state| }
+      end.to raise_error(ArgumentError)
+    end
+  end
+
   describe '.sync' do
     before do
       allow(TestDecider::Listener).to receive(:call)
