@@ -180,6 +180,8 @@ TODO
 
 ### Projectors
 
+Projectors react to events published by deciders and update views, search indices, caches, or other representations of current state useful to the app. They can both react to events as they happen in the system, and also "catch up" to past events. Sourced keep track of where in the global event stream each projector is.
+
 From the outside-in, projectors are classes that implement the _Reactor interface_.
 
 Sourced ships with two ready-to-use projectors, but you can also build your own.
