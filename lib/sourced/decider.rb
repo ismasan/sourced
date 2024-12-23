@@ -351,7 +351,7 @@ module Sourced
       end
 
       def __string_to_message_type(str)
-        str.gsub(/::/, '.')
+        str.to_s.gsub(/::/, '.')
           .gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
           .gsub(/([a-z\d])([A-Z])/, '\1_\2')
           .tr("-", "_")
