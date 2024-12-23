@@ -181,7 +181,7 @@ end
 
 
 
-### `.event` block
+#### `.event` block
 
 The class-level `.event` block registers an _event handler_ used to _evolve_ the decider's internal state.
 
