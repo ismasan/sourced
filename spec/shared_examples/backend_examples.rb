@@ -103,7 +103,6 @@ module BackendExamples
       end
 
       it 'blocks concurrent workers from processing the same command' do
-        # backend.send(:db)[:sourced_commands].delete
         now = Time.now - 10
         cmd1 = Tests::DoSomething.parse(stream_id: 'as1', created_at: now, payload: { account_id: 1 })
         cmd2 = Tests::DoSomething.parse(stream_id: 'as2', created_at: now + 5, payload: { account_id: 1 })
