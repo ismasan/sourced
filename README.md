@@ -218,6 +218,32 @@ react ItemAdded do |event|
 end
 ```
 
+
+
+#### `.react_with_state` block
+
+Class-level `.react_with_state` is similar to `.react`, except that it also loads and yields the Decider's current state by loading and applying past events to it (same as when handling commands).
+
+For this reason, `.react_with_state` can only be used with events that are also registered to _evolve_ the same Decider.
+
+![react](docs/images/sourced-react-with-state-handler.png)
+
+```ruby
+# Define an event handler to evolve state
+event ItemAdded do |state, event|
+  state[:item_count] += 1
+end
+
+# Now react to it and check state
+react_with_state ItemAdded do |state, event|
+  if state[:item_count] > 30
+    command NotifyBigCart
+  end
+end
+```
+
+
+
 ### Causation and correlation
 
 When a command produces events, or when an event makes a reactor dispatch a new command, the cause-and-effect relationship between these messages is tracked by Sourced in the form of `correlation_id` and `causation_id` properties in each message's metadata.
