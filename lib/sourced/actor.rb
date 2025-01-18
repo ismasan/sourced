@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
 module Sourced
-  # A "Decider" is an object that encapsulates the process of handling a command and updating system state via events.
-  # This is the "controller" in a Sourced app.
-  # All capabilities in an app are commands handled by Deciders.
+  # An "Actor" is an object that holds state, handles commands, produces events, and can also react to events.
+  # All capabilities in an app are commands handled by Actors.
+  # Actors implement both the Decider interface (to handle commands) and the Reactor interface (to handle events).
   # The top-level API is:
   #   cmd = SomeCommand.new(stream_id: '123', payload: { ... })
-  #   state, new_events = SomeDecider.handle_command(cmd)
+  #   state, new_events = SomeActor.handle_command(cmd)
   # 
   # This will:
   # 1. Initialize in-memory state with a stream_id.
@@ -15,12 +15,12 @@ module Sourced
   # 4. Yield the state and command to the command handler.
   # 5. Capture any events returned by the command handler.
   # 6. Persist the new events to the backend.
-  # 7. Run any synchronous blocks registered with the Decider in the same transaction.
+  # 7. Run any synchronous blocks registered with the Actor in the same transaction.
   # 8. Return the updated state and new events.
   #
-  # command => Decider[init state, load events, evolve state, handle command, apply events, commit, sync blocks] => [new state, new events]
+  # command => Decide[init state, load events, evolve state, handle command, apply events, commit, sync blocks] => [new state, new events]
   #
-  # Sourced::Decider defines a DSL to define command handlers, event evolvers and "reactions".
+  # Sourced::Actor defines a DSL to define command handlers, event evolvers and "reactions".
   # See https://ismaelcelis.com/posts/decide-evolve-react-pattern-in-ruby/
   # But Sourced will accept anything that implements the top level Decider API:
   #
@@ -30,7 +30,7 @@ module Sourced
   # You can also use the #decide(command) => Aray<Events> method directly.
   # for testing behaviour via commands and events without touching the DB.
   #
-  #    decider = SomeDecider.new('123')
+  #    decider = SomeActor.new('123')
   #    state, new_events = decider.decide(cmd)
   #
   # Full definition example:
@@ -47,8 +47,8 @@ module Sourced
   #        attribute :email, Plumb::Types::Email.present
   #      end
   #
-  #      # Leads::LeadDecider encapsulates working with Leads
-  #      class LeadDecider < Sourced::Decider
+  #      # Leads::LeadActor encapsulates working with Leads
+  #      class LeadActor < Sourced::Actor
   #        # First define what initial state looks like
   #        # This can return any object that makes sense for the app.
   #        # This state will be updated by applying events on it,
@@ -91,9 +91,9 @@ module Sourced
   #
   #        # ====== REACT BLOCK =================
   #        # React blocks listen to events emitted by .command blocks
-  #        # From this or any other Decider
+  #        # From this or any other Actors
   #        # and allow an part of the app to react to events
-  #        # This is how you build worlflows that span multiple Deciders
+  #        # This is how you build worlflows that span multiple Actors
   #        # React blocks run in the background, and therefore these workflows
   #        # are eventually consistent, unless configured to be synchronous.
   #        # In this example we listen to LeadCreated events
@@ -118,7 +118,7 @@ module Sourced
   #        end
   #      end
   #    end
-  class Decider
+  class Actor
     include Evolve
     include React
     include Sync
@@ -128,9 +128,9 @@ module Sourced
 
     UndefinedMessageError = Class.new(KeyError)
 
-    # A Decider class has its own Command and Event
+    # An Actor class has its own Command and Event
     # subclasses that are used to define inine commands and events.
-    # These classes serve as message registry for the Decider's inline messages.
+    # These classes serve as message registry for the Actor's inline messages.
     class Command < Sourced::Command; end
     class Event < Sourced::Event; end
 
@@ -144,7 +144,7 @@ module Sourced
         end
       end
 
-      # Access a Decider's Command or Event classes by name (e.g. :some_command or :some_event)
+      # Access a Actor's Command or Event classes by name (e.g. :some_command or :some_event)
       # @param message_name [Symbol]
       # @return [Class]
       # @raise [ArgumentError] if the message is not defined
@@ -192,10 +192,10 @@ module Sourced
         load(cmd.stream_id).handle_command(cmd)
       end
 
-      # Load a Decider from event history
+      # Load a Actor from event history
       #
       # @param stream_id [String] the stream id
-      # @return [Decider]
+      # @return [Actor]
       def load(stream_id, upto: nil)
         new(stream_id).load(upto:)
       end
@@ -219,7 +219,7 @@ module Sourced
       #   issue_command AddItem, name:
       # end
       #
-      # This method can be used on Decider instances:
+      # This method can be used on Actor instances:
       #   aggregate.add_item(name: 'Buy milk')
       #
       # Payload schema is a Plumb Hash schema.
@@ -341,7 +341,7 @@ module Sourced
 
       # React to events this class evolves from.
       # And load internal state from past events 
-      # So that Deciders can react to own events and have state available.
+      # So that Actor can react to own events and have state available.
       # This should be useful to implement TODO List - style reactors that can keep their own state based on events.
       #
       # @example
@@ -573,7 +573,7 @@ module Sourced
     end
 
     # Register a second sync block to route events to any
-    # SYNC reactors that are listening to events emitted by this Decider.
+    # SYNC reactors that are listening to events emitted by this Actor.
     sync do |_state, command, events|
       Sourced::Router.handle_events(events)
     end
@@ -596,7 +596,7 @@ module Sourced
     # Reactor interface
     # Handle events, return new commands
     # Workers will handle routing these commands
-    # to their target Deciders
+    # to their target Actor
     # @param events [Array<Sourced::Event>]
     # @return [Array<Sourced::Command>]
     def handle_events(events)

@@ -25,12 +25,12 @@ The entire behaviour of an event-sourced app is described via **commands**, **ev
 * **Events** are produced after handling a command and they describe _facts_ or state changes in the system. Ex. `Item added to cart`, `order placed`, `email updated`. Events are stored and you can use them to build views ("projections"), caches and reports to support UIs, or other artifacts.
 * **State** is whatever object you need to hold the current state of a part of the system. It's usually derived from past events, and it's just enough to interrogate the state of the system and make the next decision.
 
-### Deciders
+### Actors
 
-Deciders are classes that encapsulate loading state from past events and handling commands for a part of your system. They can also define reactions to their own events, or events emitted by other deciders. This is a simple shopping cart decider.
+Actors are classes that encapsulate loading state from past events and handling commands for a part of your system. They can also define reactions to their own events, or events emitted by other actors. This is a simple shopping cart actor.
 
 ```ruby
-class Cart < Sourced::Decider
+class Cart < Sourced::Actor
   # Define what cart state looks like.
   # This is the initial state which will be updated by applying events.
   # The state holds whatever data is relevant to decide how to handle a command.
@@ -65,7 +65,7 @@ class Cart < Sourced::Decider
     cart.items << CartItem.new(**event.payload.to_h)
   end
   
-  # Optionally, define how this decider reacts to the event above.
+  # Optionally, define how this actor reacts to the event above.
   # .react blocks can dispatch new commands that will be routed to their handlers.
   # This allows you to build workflows.
   # TODO: reacting to own events should provide state?
@@ -83,7 +83,7 @@ class Cart < Sourced::Decider
 end
 ```
 
-Using the `CartDecider` in an IRB console. This will use Sourced's in-memory backend by default.
+Using the `CartActor` in an IRB console. This will use Sourced's in-memory backend by default.
 
 ```ruby
 cart = Cart.new('test-cart')
@@ -108,9 +108,9 @@ cart2.stats.total # 2000
 cart2.state.items.size # 1
 ```
 
-#### Registering deciders
+#### Registering actors
 
-Invoking commands directly on a decider instance works in an IRB console or a synchronous-only web handler, but for deciders to be available to background workers, and to react to other decider's events, you need to register them.
+Invoking commands directly on an actor instance works in an IRB console or a synchronous-only web handler, but for actors to be available to background workers, and to react to other actor's events, you need to register them.
 
 ```ruby
 Sourced::Router.register(Cart)
@@ -118,8 +118,8 @@ Sourced::Router.register(Cart)
 
 This achieves two things:
 
-1. Commands can be routed to this decider by background processes, using its `.handle_command(command)` interface
-2. The decider can _react_ to other events in the system (more on event choreography later), via its `.handle_events(events)` interface.
+1. Commands can be routed to this actor by background processes, using its `.handle_command(command)` interface
+2. The actor can _react_ to other events in the system (more on event choreography later), via its `.handle_events(events)` interface.
 
 These two properties are what enables asynchronous, eventually-consistent systems in Sourced.
 
@@ -148,8 +148,8 @@ module Carts
     attribute :price, Integer
   end
   
-  ## Now define command and event handlers in a Decider
-  class Cart < Sourced::Decider
+  ## Now define command and event handlers in a Actor
+  class Cart < Sourced::Actor
     # Initial state, etc...
     
     command AddItem do |cart, cmd|
@@ -183,7 +183,7 @@ end
 
 #### `.event` block
 
-The class-level `.event` block registers an _event handler_ used to _evolve_ the decider's internal state.
+The class-level `.event` block registers an _event handler_ used to _evolve_ the actor's internal state.
 
 These blocks are used both to load the initial state when handling a command, and to apply new events to the state in command handlers.
 
@@ -199,7 +199,7 @@ These handlers are pure: given the same state and event, they should always upda
 
 #### `.react` block
 
-The class-level `.react` block registers an event handler that _reacts_ to events already published by this or other Deciders.
+The class-level `.react` block registers an event handler that _reacts_ to events already published by this or other Actors.
 
 `.react` blocks can dispatch the next command in a workflow with the instance-level `#command` helper.
 
@@ -220,9 +220,9 @@ end
 
 #### `.react_with_state` block
 
-Class-level `.react_with_state` is similar to `.react`, except that it also loads and yields the Decider's current state by loading and applying past events to it (same as when handling commands).
+Class-level `.react_with_state` is similar to `.react`, except that it also loads and yields the Actor's current state by loading and applying past events to it (same as when handling commands).
 
-For this reason, `.react_with_state` can only be used with events that are also registered to _evolve_ the same Decider.
+For this reason, `.react_with_state` can only be used with events that are also registered to _evolve_ the same Actor.
 
 ![react](docs/images/sourced-react-with-state-handler.png)
 
@@ -258,7 +258,7 @@ TODO
 
 ### Projectors
 
-Projectors react to events published by deciders and update views, search indices, caches, or other representations of current state useful to the app. They can both react to events as they happen in the system, and also "catch up" to past events. Sourced keeps track of where in the global event stream each projector is.
+Projectors react to events published by actors and update views, search indices, caches, or other representations of current state useful to the app. They can both react to events as they happen in the system, and also "catch up" to past events. Sourced keeps track of where in the global event stream each projector is.
 
 From the outside-in, projectors are classes that implement the _Reactor interface_.
 
@@ -323,20 +323,20 @@ Sourced::Router.register(CartListings)
 
 Concurrency in Sourced is achieved by explicitely _modeling it in_.
 
-Sourced workers process events and commands by acquiring locks on `[reactor group ID][stream ID]`. For example `"CartDecider:cart-123"`
+Sourced workers process events and commands by acquiring locks on `[reactor group ID][stream ID]`. For example `"CartActor:cart-123"`
 
 This means that all events for a given reactor/stream are processed in order, but events for different streams can be processed concurrently. You can define workflows where some work is done concurrently by modeling them as a collaboration of streams.
 
 #### Single-stream sequential execution
 
-In the following (simplified!) example, a Holiday Booking workflow is modelled as a single stream ("Decider"). The infrastructure makes sure these steps are run sequentially.
+In the following (simplified!) example, a Holiday Booking workflow is modelled as a single stream ("Actor"). The infrastructure makes sure these steps are run sequentially.
 
 ![Concurrency single stream](docs/images/sourced-concurrency-single-lane.png)
 
-The Decider glues its steps together by reacting to events emitted by the previous step, and dispatching the next command.
+The Actor glues its steps together by reacting to events emitted by the previous step, and dispatching the next command.
 
 ```ruby
-class HolidayBooking < Sourced::Decider
+class HolidayBooking < Sourced::Actor
   # State and details omitted...
   
   command :start_booking do |state, cmd|
@@ -367,7 +367,7 @@ end
 
 #### Multi-stream concurrent execution
 
-In this other example, the same workflow is split into separate streams/deciders, so that Flight and Hotel bookings can run concurrently from each other. When completed, they each notify the parent Holiday decider, so the whole process coalesces into a sequential operation again.
+In this other example, the same workflow is split into separate streams/actors, so that Flight and Hotel bookings can run concurrently from each other. When completed, they each notify the parent Holiday actor, so the whole process coalesces into a sequential operation again.
 
 ![multi stream](docs/images/sourced-concurrency-multi-lane.png)
 
@@ -385,10 +385,10 @@ TODO
 
 ![transactional boundaries](docs/images/sourced-transactional-boundaries.png)
 
-The diagram shows the units of work in an example Sourced worklow. The operations within each of the red boxes either succeeds or rolls back the transaction, and it can then be retried or compensated. They are **strongly consistent**. 
+The diagram shows the units of work in an example Sourced workflow. The operations within each of the red boxes either succeeds or rolls back the transaction, and it can then be retried or compensated. They are **strongly consistent**. 
 The data-flow _between_ these boxes is propagated asynchronously by Sourced's infrastructure so, relative to each other, the entire system is **eventually consistent**.
 
-These transactional boundaries are also guarded by the same locks that enforce the [concurrency model](#concurrency-model), so that for example the same event or command can't be processed twice by the same Decider or Reactor (workflow, projector, etc). 
+These transactional boundaries are also guarded by the same locks that enforce the [concurrency model](#concurrency-model), so that for example the same event or command can't be processed twice by the same Actor or Reactor (workflow, projector, etc). 
 
 ### Scheduled commands
 
@@ -429,10 +429,10 @@ end
 Sourced.config.backend.install unless Sourced.config.backend.installed?
 ```
 
-Register your Deciders and Reactors.
+Register your Actor's and Reactors.
 
 ```ruby
-Sourced::Router.register(Leads::Decider)
+Sourced::Router.register(Leads::Actor)
 Sourced::Router.register(Leads::Listings)
 Sourced::Router.register(Webooks::Dispatcher)
 ```

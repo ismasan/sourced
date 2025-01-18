@@ -2,7 +2,7 @@
 
 require 'spec_helper'
 
-class SyncTodoListDecider < Sourced::Decider
+class SyncTodoListActor < Sourced::Actor
   TodoList = Struct.new(:seq, :id, :items, :notified)
 
   consumer do |c|
@@ -37,15 +37,15 @@ end
 RSpec.describe 'Immediate consistency' do
   before do
     Sourced.config.backend.clear!
-    Sourced::Router.register(SyncTodoListDecider)
+    Sourced::Router.register(SyncTodoListActor)
   end
 
-  let(:cmd) { SyncTodoListDecider[:add_item].parse(stream_id: 'list1', payload: { name: 'item1' }) }
+  let(:cmd) { SyncTodoListActor[:add_item].parse(stream_id: 'list1', payload: { name: 'item1' }) }
 
   it 'runs reactor immediately' do
-    decider, _events = SyncTodoListDecider.handle_command(cmd)
+    decider, _events = SyncTodoListActor.handle_command(cmd)
     decider.catch_up
     expect(decider.state.notified).to be(true)
-    expect(SyncTodoListDecider.load(decider.id).state.notified).to be(true)
+    expect(SyncTodoListActor.load(decider.id).state.notified).to be(true)
   end
 end

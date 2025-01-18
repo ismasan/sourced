@@ -2,11 +2,11 @@
 
 module Sourced
   # This mixin provides a .sync macro to registering blocks
-  # that will run within a transaction. Ie. in Deciders when appending events to the backend,
+  # that will run within a transaction. Ie. in Actors when appending events to the backend,
   # or projectors when persisting their state.
   # @example
   #
-  #  class CartDecider < Sourced::Decider
+  #  class CartActor < Sourced::Actor
   #    # Run this block within a transaction
   #    # when appending messages to storage
   #    sync do |state, command, events|
@@ -17,14 +17,14 @@ module Sourced
   # When given a ReactorInterface, it will run that reactor synchronously
   # and ACK the offsets for the embedded reactor and consumed events.
   # This is so that reactors can be run in a strong consistency manner
-  # within a Decider lifecycle.
+  # within an Actor lifecycle.
   # ACKing the events will ensure that the events are not reprocessed
   # if the child reactor is later moved to eventually consistent processing.
   # @example
   #
-  #  class CartDecider < Sourced::Decider
+  #  class CartActor < Sourced::Actor
   #    # The CartListings projector
-  #    # will be run synchronously when events are appended by this Decider
+  #    # will be run synchronously when events are appended by this Actor
   #    # Any error raised by the projector will cause the transaction to rollback
   #    sync CartListings
   #  end

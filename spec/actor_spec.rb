@@ -2,7 +2,7 @@
 
 require 'spec_helper'
 
-module TestDecider
+module TestActor
   TodoList = Struct.new(:archive_status, :seq, :id, :status, :items)
 
   AddItem = Sourced::Message.define('decider.todos.add') do
@@ -16,7 +16,7 @@ module TestDecider
   ConfirmArchive = Sourced::Message.define('decider.todos.archive_confirm')
   ArchiveConfirmed = Sourced::Message.define('decider.todos.archive_confirmed')
 
-  class TodoListDecider < Sourced::Decider
+  class TodoListActor < Sourced::Actor
     consumer do |c|
       c.async!
     end
@@ -75,13 +75,13 @@ module TestDecider
     end
   end
 
-  class ChildDecider < TodoListDecider
+  class ChildActor < TodoListActor
     command :add_more, name: String do |_list, cmd|
       event :item_added, name: cmd.payload.name
     end
   end
 
-  Sourced::Router.register(TodoListDecider)
+  Sourced::Router.register(TodoListActor)
 
   class Listener
     def self.call(state, command, events); end
@@ -103,7 +103,7 @@ module TestDecider
     end
   end
 
-  class WithSync < Sourced::Decider
+  class WithSync < Sourced::Actor
     ThingDone = Sourced::Message.define('with_sync_callable.thing_done')
 
     def init_state(id)
@@ -119,15 +119,15 @@ module TestDecider
   end
 end
 
-RSpec.describe Sourced::Decider do
+RSpec.describe Sourced::Actor do
   before do
     Sourced.config.backend.clear!
   end
 
-  let(:cmd) { TestDecider::AddItem.parse(stream_id: 'list1', payload: { name: 'item1' }) }
+  let(:cmd) { TestActor::AddItem.parse(stream_id: 'list1', payload: { name: 'item1' }) }
 
   describe '#decide' do
-    let(:decider) {  TestDecider::TodoListDecider.new(cmd.stream_id) }
+    let(:decider) {  TestActor::TodoListActor.new(cmd.stream_id) }
 
     it 'takes command, evolves state' do
       list, _events = decider.decide(cmd)
@@ -139,7 +139,7 @@ RSpec.describe Sourced::Decider do
       _list, events = decider.decide(cmd)
       expect(events.map(&:seq)).to eq([1, 2, 3])
       expect(events.map(&:type)).to eq(%w[decider.todos.add decider.todos.started
-                                          test_decider.todo_list_decider.item_added])
+                                          test_actor.todo_list_actor.item_added])
     end
 
     it 'increments #seq' do
@@ -152,63 +152,63 @@ RSpec.describe Sourced::Decider do
       decider.decide(cmd)
       expect(decider.uncommitted_events.map(&:seq)).to eq([1, 2, 3])
       expect(decider.uncommitted_events.map(&:type)).to eq(%w[decider.todos.add decider.todos.started
-                                                              test_decider.todo_list_decider.item_added])
+                                                              test_actor.todo_list_actor.item_added])
     end
   end
 
   describe '.handle_command' do
     it 'appends events to store' do
-      TestDecider::TodoListDecider.handle_command(cmd)
+      TestActor::TodoListActor.handle_command(cmd)
       events = Sourced.config.backend.read_event_stream(cmd.stream_id)
       expect(events.map(&:seq)).to eq([1, 2, 3])
       expect(events.map(&:type)).to eq(%w[decider.todos.add decider.todos.started
-                                          test_decider.todo_list_decider.item_added])
+                                          test_actor.todo_list_actor.item_added])
       expect(events.map { |e| e.metadata[:producer] }).to eq([
                                                                nil,
-                                                               TestDecider::TodoListDecider.consumer_info.group_id,
-                                                               TestDecider::TodoListDecider.consumer_info.group_id
+                                                               TestActor::TodoListActor.consumer_info.group_id,
+                                                               TestActor::TodoListActor.consumer_info.group_id
                                                              ])
     end
   end
 
   describe '.load' do
     it 'loads state from event history' do
-      TestDecider::TodoListDecider.handle_command(cmd)
-      decider = TestDecider::TodoListDecider.load(cmd.stream_id)
+      TestActor::TodoListActor.handle_command(cmd)
+      decider = TestActor::TodoListActor.load(cmd.stream_id)
       expect(decider.seq).to eq(3)
       expect(decider.state.items.map(&:name)).to eq(%w[item1])
     end
   end
 
   specify '.handled_commands' do
-    expect(TestDecider::TodoListDecider.handled_commands).to eq([
-                                                                  TestDecider::AddItem,
-                                                                  TestDecider::TodoListDecider::AddOne,
-                                                                  TestDecider::TodoListDecider::Archive,
-                                                                  TestDecider::ConfirmArchive,
-                                                                  TestDecider::Notify
-                                                                ])
+    expect(TestActor::TodoListActor.handled_commands).to eq([
+                                                              TestActor::AddItem,
+                                                              TestActor::TodoListActor::AddOne,
+                                                              TestActor::TodoListActor::Archive,
+                                                              TestActor::ConfirmArchive,
+                                                              TestActor::Notify
+                                                            ])
   end
 
   specify '.handled_events' do
-    expect(TestDecider::TodoListDecider.handled_events).to eq([
-                                                                TestDecider::ArchiveRequested,
-                                                                TestDecider::TodoListDecider::ItemAdded
-                                                              ])
+    expect(TestActor::TodoListActor.handled_events).to eq([
+                                                            TestActor::ArchiveRequested,
+                                                            TestActor::TodoListActor::ItemAdded
+                                                          ])
   end
 
   describe 'definining inline commands' do
     specify '.[](message_name)' do
-      expect(TestDecider::TodoListDecider[:item_added]).to eq(TestDecider::TodoListDecider::ItemAdded)
+      expect(TestActor::TodoListActor[:item_added]).to eq(TestActor::TodoListActor::ItemAdded)
     end
 
     it 'uses Ruby namespace as message type prefix by default' do
-      event_class = TestDecider::TodoListDecider[:item_added]
-      expect(event_class.type).to eq('test_decider.todo_list_decider.item_added')
+      event_class = TestActor::TodoListActor[:item_added]
+      expect(event_class.type).to eq('test_actor.todo_list_actor.item_added')
     end
 
     it 'can define a custom prefix via .message_namespace' do
-      klass = Class.new(Sourced::Decider) do
+      klass = Class.new(Sourced::Actor) do
         def self.message_namespace = 'my_namespace'
         command :do_something do |_list, _cmd|
         end
@@ -218,79 +218,79 @@ RSpec.describe Sourced::Decider do
   end
 
   specify '.handle_events' do
-    evt = TestDecider::TodoListDecider::ItemAdded.parse(stream_id: 'list1', payload: { name: 'item1' })
-    commands = TestDecider::TodoListDecider.handle_events([evt])
-    expect(commands.map(&:class)).to eq([TestDecider::Notify])
+    evt = TestActor::TodoListActor::ItemAdded.parse(stream_id: 'list1', payload: { name: 'item1' })
+    commands = TestActor::TodoListActor.handle_events([evt])
+    expect(commands.map(&:class)).to eq([TestActor::Notify])
     expect(commands.first.stream_id).to eq('list1')
     expect(commands.first.causation_id).to eq(evt.id)
   end
 
   specify '#catch_up' do
-    TestDecider::TodoListDecider.handle_command(cmd)
-    decider = TestDecider::TodoListDecider.load(cmd.stream_id)
+    TestActor::TodoListActor.handle_command(cmd)
+    decider = TestActor::TodoListActor.load(cmd.stream_id)
     expect(decider.seq).to eq(3)
-    cmd2 = TestDecider::AddItem.parse(stream_id: cmd.stream_id, payload: { name: 'item2' })
-    TestDecider::TodoListDecider.handle_command(cmd2)
+    cmd2 = TestActor::AddItem.parse(stream_id: cmd.stream_id, payload: { name: 'item2' })
+    TestActor::TodoListActor.handle_command(cmd2)
     expect(decider.catch_up).to eq([3, 5])
     expect(decider.seq).to eq(5)
   end
 
   specify 'command DSL' do
-    decider = TestDecider::TodoListDecider.new('list1')
+    decider = TestActor::TodoListActor.new('list1')
     cmd = decider.add_one(name: 'item1')
     expect(cmd.valid?).to eq(true)
     expect(decider.seq).to eq(2)
   end
 
   specify '#event with no set command (ex. applying events in tests)' do
-    decider = TestDecider::TodoListDecider.new('list1')
-    decider.event(TestDecider::TodoListDecider::ItemAdded, name: 'item1')
+    decider = TestActor::TodoListActor.new('list1')
+    decider.event(TestActor::TodoListActor::ItemAdded, name: 'item1')
     expect(decider.seq).to eq(1)
     expect(decider.state.items.size).to eq(1)
   end
 
   it 'returns if invalid command' do
-    decider = TestDecider::TodoListDecider.new('list1')
+    decider = TestActor::TodoListActor.new('list1')
     cmd = decider.add_one(name: 10)
     expect(cmd.valid?).to be(false)
     expect(decider.state.items.size).to eq(0)
   end
 
   specify '[command]_async' do
-    decider = TestDecider::TodoListDecider.new('list1')
+    decider = TestActor::TodoListActor.new('list1')
     cmd = decider.add_one_async(name: 'item1')
-    expect(cmd).to be_a(TestDecider::TodoListDecider::AddOne)
+    expect(cmd).to be_a(TestActor::TodoListActor::AddOne)
     expect(cmd.valid?).to eq(true)
     expect(Sourced.config.backend.next_command).to eq(cmd)
   end
 
   specify '[command]_later' do
-    decider = TestDecider::TodoListDecider.new('list1')
+    decider = TestActor::TodoListActor.new('list1')
     later = Time.now + 60
     cmd = decider.add_one_later(later, name: 'item1')
-    expect(cmd).to be_a(TestDecider::TodoListDecider::AddOne)
+    expect(cmd).to be_a(TestActor::TodoListActor::AddOne)
     expect(cmd.valid?).to eq(true)
     expect(Sourced.config.backend.next_command).to eq(cmd)
     expect(cmd.created_at).to eq(later)
   end
 
   specify '#events' do
-    decider = TestDecider::TodoListDecider.new('list1')
+    decider = TestActor::TodoListActor.new('list1')
     decider.add_one(name: 'item1')
     events = decider.events
     expect(events.map(&:seq)).to eq([1, 2])
     expect(events.map(&:class)).to eq([
-                                        TestDecider::TodoListDecider::AddOne,
-                                        TestDecider::TodoListDecider::ItemAdded
+                                        TestActor::TodoListActor::AddOne,
+                                        TestActor::TodoListActor::ItemAdded
                                       ])
 
-    TestDecider::TodoListDecider.handle_command(cmd)
+    TestActor::TodoListActor.handle_command(cmd)
     expect(decider.events.map(&:seq)).to eq([1, 2])
     expect(decider.events(upto: nil).map(&:seq)).to eq([1, 2, 3, 4, 5])
   end
 
   specify 'reacting to events' do
-    decider = TestDecider::TodoListDecider.new('list1')
+    decider = TestActor::TodoListActor.new('list1')
     decider.add_one(name: 'Buy milk')
     decider.add_one(name: 'Buy bread')
 
@@ -305,7 +305,7 @@ RSpec.describe Sourced::Decider do
 
   describe '.react_with_state for own events' do
     let(:klass) do
-      klass = Class.new(Sourced::Decider) do
+      klass = Class.new(Sourced::Actor) do
         consumer do |c|
           c.group_id = 'ReactTest'
           c.sync!
@@ -350,52 +350,52 @@ RSpec.describe Sourced::Decider do
       expect(decider.seq).to eq(4)
     end
 
-    it 'fails to register reaction if event is not handled by the same Decider' do
+    it 'fails to register reaction if event is not handled by the same Actor' do
       expect do
-        klass.react_with_state(TestDecider::ListStarted) { |_state, _event| }
+        klass.react_with_state(TestActor::ListStarted) { |_state, _event| }
       end.to raise_error(ArgumentError)
     end
 
     it 'fails to register reaction if block does not support |state, event|' do
       expect do
-        klass.react_with_state(TestDecider::ListStarted) { |_state| }
+        klass.react_with_state(TestActor::ListStarted) { |_state| }
       end.to raise_error(ArgumentError)
     end
   end
 
   describe '.sync' do
     before do
-      allow(TestDecider::Listener).to receive(:call)
+      allow(TestActor::Listener).to receive(:call)
     end
 
     specify 'with a .call(state, command, events) interface' do
-      decider = TestDecider::WithSync.new('id')
+      decider = TestActor::WithSync.new('id')
       decider.do_thing
-      expect(TestDecider::Listener).to have_received(:call) do |state, command, events|
+      expect(TestActor::Listener).to have_received(:call) do |state, command, events|
         expect(state).to eq(decider.state)
-        expect(command).to be_a(TestDecider::WithSync::DoThing)
-        expect(events.map(&:class)).to eq([TestDecider::WithSync::ThingDone])
+        expect(command).to be_a(TestActor::WithSync::DoThing)
+        expect(events.map(&:class)).to eq([TestActor::WithSync::ThingDone])
       end
     end
 
     specify 'raising an exception cancels append transaction' do
-      allow(TestDecider::Listener).to receive(:call).and_raise('boom')
-      decider = TestDecider::WithSync.new('id')
+      allow(TestActor::Listener).to receive(:call).and_raise('boom')
+      decider = TestActor::WithSync.new('id')
       expect { decider.do_thing }.to raise_error('boom')
       expect(Sourced.config.backend.read_event_stream('id')).to be_empty
     end
 
     specify 'with a Reactor interface it calls #handle_events and ACKs group offsets' do
-      allow(TestDecider::DummyProjector).to receive(:handle_events)
+      allow(TestActor::DummyProjector).to receive(:handle_events)
 
-      decider = TestDecider::WithSync.new('id')
+      decider = TestActor::WithSync.new('id')
       decider.do_thing
-      expect(TestDecider::DummyProjector).to have_received(:handle_events) do |events|
-        expect(events.map(&:class)).to eq([TestDecider::WithSync::ThingDone])
+      expect(TestActor::DummyProjector).to have_received(:handle_events) do |events|
+        expect(events.map(&:class)).to eq([TestActor::WithSync::ThingDone])
       end
 
       group = Sourced.config.backend.stats.groups.first
-      expect(group[:group_id]).to eq('TestDecider::DummyProjector')
+      expect(group[:group_id]).to eq('TestActor::DummyProjector')
       expect(group[:stream_count]).to eq(1)
       expect(group[:oldest_processed]).to eq(2)
     end
@@ -403,18 +403,18 @@ RSpec.describe Sourced::Decider do
 
   describe 'inheritance' do
     it 'copies over .handled_events' do
-      expect(TestDecider::ChildDecider.handled_events).to eq(TestDecider::TodoListDecider.handled_events)
+      expect(TestActor::ChildActor.handled_events).to eq(TestActor::TodoListActor.handled_events)
     end
 
     it 'copies over .handled_commands and appends its own commands' do
-      expect(TestDecider::ChildDecider.handled_commands).to eq([
-                                                                 *TestDecider::TodoListDecider.handled_commands,
-                                                                 TestDecider::ChildDecider::AddMore
-                                                               ])
+      expect(TestActor::ChildActor.handled_commands).to eq([
+                                                             *TestActor::TodoListActor.handled_commands,
+                                                             TestActor::ChildActor::AddMore
+                                                           ])
     end
 
     it 'has its own event registry' do
-      expect(TestDecider::ChildDecider[:add_more]).to eq(TestDecider::ChildDecider::AddMore)
+      expect(TestActor::ChildActor[:add_more]).to eq(TestActor::ChildActor::AddMore)
     end
   end
 end
