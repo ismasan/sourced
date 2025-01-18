@@ -83,7 +83,7 @@ class Cart < Sourced::Actor
 end
 ```
 
-Using the `CartActor` in an IRB console. This will use Sourced's in-memory backend by default.
+Using the `Cart` actor in an IRB console. This will use Sourced's in-memory backend by default.
 
 ```ruby
 cart = Cart.new('test-cart')
