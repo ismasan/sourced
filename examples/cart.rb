@@ -25,7 +25,7 @@ end
 #
 # The above sends a Cart::Place command
 # which produces a Cart::Placed event
-class Cart < Sourced::Decider
+class Cart < Sourced::Actor
   State = Struct.new(:status, :notified, :items, :mailer_id) do
     def total = items.sum(&:price)
   end
@@ -87,7 +87,7 @@ class Cart < Sourced::Decider
   # sync CartListings
 end
 
-class Mailer < Sourced::Decider
+class Mailer < Sourced::Actor
   EmailSent = Sourced::Message.define('mailer.email_sent') do
     attribute :cart_id, String
   end
@@ -107,7 +107,7 @@ class Mailer < Sourced::Decider
 end
 
 # A Saga that orchestrates the flow between Cart and Mailer
-class CartEmailsSaga < Sourced::Decider
+class CartEmailsSaga < Sourced::Actor
   # Listen for Cart::Placed events and
   # send command to Mailer
   react Cart::Placed do |event|
@@ -131,7 +131,7 @@ end
 
 # A projector
 # "reacts" to events registered with .evolve
-class CartListings < Sourced::Decider
+class CartListings < Sourced::Actor
   class << self
     def handled_events = self.handled_events_for_evolve
 
