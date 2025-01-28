@@ -376,7 +376,7 @@ module Sourced
       # @return [void]
       def react_with_state(event_name, &block)
         event_class = if event_name.is_a?(Symbol)
-          event_class = self::Event.registry[__message_type(event_name)]
+          self::Event.registry[__message_type(event_name)]
         else
           event_name
         end
