@@ -323,7 +323,7 @@ RSpec.describe Sourced::Actor do
         end
 
         react :thing_done do |_event|
-          command :notify, value: 'done!'
+          command(:notify, value: 'done!').delay(Time.now + 1)
         end
 
         command :notify, value: String do |_state, cmd|
