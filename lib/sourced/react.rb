@@ -35,7 +35,13 @@ module Sourced
     # @param events [Array<Sourced::Event>]
     # @return [Array<Sourced::Command>]
     def react(events)
-      events.flat_map { |event| __handle_reaction(event) }
+      @__commands_after_reaction = []
+      events.each do |event|
+        __handle_reaction(event)
+      end
+      cmds = @__commands_after_reaction.dup
+      @__commands_after_reaction.clear
+      cmds
     end
 
     private
@@ -45,23 +51,16 @@ module Sourced
       return [] unless respond_to?(method_name)
 
       @__event_for_reaction = event
-      cmds = send(method_name, event)
-      [cmds].flatten.compact.map do |cmd|
-        cmd.with_metadata(producer: self.class.consumer_info.group_id)
-      end
+      send(method_name, event)
     end
 
-    # TODO:
-    # .react blocks should allow returning multiple commands
-    # just like using #event inside .command blocks
-    # ex.
-    #   react SomethingHappened do |event|
-    #     command(DoSomethingElse, field1: 'value1')
-    #     command(DoSomethingElse, field1: 'value2')
-    #   end
-    # TODO: Decider can do #command(:some_command)
+    # TODO: Actor can do #command(:some_command)
     def command(command_class, payload = {})
-      @__event_for_reaction.follow(command_class, payload)
+      cmd = @__event_for_reaction
+            .follow(command_class, payload)
+            .with_metadata(producer: self.class.consumer_info.group_id)
+
+      @__commands_after_reaction << cmd
     end
 
     module ClassMethods

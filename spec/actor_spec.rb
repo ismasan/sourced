@@ -303,6 +303,54 @@ RSpec.describe Sourced::Actor do
     expect(decider.state.archive_status).to eq(:confirmed)
   end
 
+  describe '.react producing own commands as Symbols' do
+    let(:klass) do
+      klass = Class.new(Sourced::Actor) do
+        consumer do |c|
+          c.group_id = 'ReactSymbolTest'
+          c.sync!
+        end
+
+        state do |id|
+          [id, :new, nil]
+        end
+
+        command :do_thing, name: String do |_state, cmd|
+          event :thing_done, cmd.payload
+        end
+
+        event :thing_done, name: String do |state, _event|
+        end
+
+        react :thing_done do |_event|
+          command :notify, value: 'done!'
+        end
+
+        command :notify, value: String do |_state, cmd|
+          event :notified, cmd.payload
+        end
+
+        event :notified, value: String do |state, event|
+          state[1] = :notified
+          state[2] = event.payload.value
+        end
+      end
+    end
+
+    before do
+      # Register so that sync! works
+      Sourced::Router.register(klass)
+    end
+
+    it 'resolves own commands by Symbol' do
+      actor = klass.new('1')
+      actor.do_thing(name: 'thing1')
+      actor.catch_up
+      expect(actor.state).to eq(['1', :notified, 'done!'])
+      expect(actor.seq).to eq(4)
+    end
+  end
+
   describe '.react_with_state for own events' do
     let(:klass) do
       klass = Class.new(Sourced::Actor) do
