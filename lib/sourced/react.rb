@@ -61,6 +61,7 @@ module Sourced
             .with_metadata(producer: self.class.consumer_info.group_id)
 
       @__commands_after_reaction << cmd
+      cmd
     end
 
     module ClassMethods
