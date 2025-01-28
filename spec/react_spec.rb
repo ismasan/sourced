@@ -10,6 +10,7 @@ class ReactTestReactor
   Event3 = Sourced::Message.define('reacttest.event3')
   Cmd1 = Sourced::Message.define('reacttest.cmd1')
   Cmd2 = Sourced::Message.define('reacttest.cmd2')
+  Cmd3 = Sourced::Message.define('reacttest.cmd3')
 
   react Event1 do |_event|
     command Cmd1
@@ -17,6 +18,7 @@ class ReactTestReactor
 
   react Event2 do |_event|
     command Cmd2
+    command Cmd3
   end
 
   react Event3 do |_event|
@@ -30,8 +32,12 @@ RSpec.describe Sourced::React do
     evt2 = ReactTestReactor::Event2.new(stream_id: '1', seq: 2)
     evt3 = ReactTestReactor::Event3.new(stream_id: '1', seq: 3)
     commands = ReactTestReactor.new.react([evt1, evt2])
-    expect(commands.map(&:class)).to eq([ReactTestReactor::Cmd1, ReactTestReactor::Cmd2])
-    expect(commands.map { |e| e.metadata[:producer] }).to eq(%w[ReactTestReactor ReactTestReactor])
+    expect(commands.map(&:class)).to eq([
+                                          ReactTestReactor::Cmd1,
+                                          ReactTestReactor::Cmd2,
+                                          ReactTestReactor::Cmd3
+                                        ])
+    expect(commands.map { |e| e.metadata[:producer] }).to eq(%w[ReactTestReactor ReactTestReactor ReactTestReactor])
     expect(commands.first.causation_id).to eq(evt1.id)
     expect(commands.last.causation_id).to eq(evt2.id)
   end
