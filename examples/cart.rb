@@ -223,8 +223,8 @@ end
 
 # Register Reactor interfaces with the Router
 # This allows the Router to route commands and events to reactors
-Sourced::Router.register(LoggingReactor)
-Sourced::Router.register(Cart)
-Sourced::Router.register(Mailer)
-Sourced::Router.register(CartEmailsSaga)
-Sourced::Router.register(CartListings)
+Sourced.register(LoggingReactor)
+Sourced.register(Cart)
+Sourced.register(Mailer)
+Sourced.register(CartEmailsSaga)
+Sourced.register(CartListings)

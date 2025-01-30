@@ -20,6 +20,10 @@ module Sourced
     config
   end
 
+  def self.register(reactor)
+    Router.register(reactor)
+  end
+
   def self.message_method_name(prefix, name)
     "__handle_#{prefix}_#{name.split('::').map(&:downcase).join('_')}"
   end
