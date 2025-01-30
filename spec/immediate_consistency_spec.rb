@@ -37,7 +37,7 @@ end
 RSpec.describe 'Immediate consistency' do
   before do
     Sourced.config.backend.clear!
-    Sourced::Router.register(SyncTodoListActor)
+    Sourced.register(SyncTodoListActor)
   end
 
   let(:cmd) { SyncTodoListActor[:add_item].parse(stream_id: 'list1', payload: { name: 'item1' }) }
