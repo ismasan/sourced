@@ -81,7 +81,7 @@ module TestActor
     end
   end
 
-  Sourced::Router.register(TodoListActor)
+  Sourced.register(TodoListActor)
 
   class Listener
     def self.call(state, command, events); end
@@ -339,7 +339,7 @@ RSpec.describe Sourced::Actor do
 
     before do
       # Register so that sync! works
-      Sourced::Router.register(klass)
+      Sourced.register(klass)
     end
 
     it 'resolves own commands by Symbol' do
@@ -387,7 +387,7 @@ RSpec.describe Sourced::Actor do
 
     before do
       # Register so that sync! works
-      Sourced::Router.register(klass)
+      Sourced.register(klass)
     end
 
     it 'evolves and yields own state' do
