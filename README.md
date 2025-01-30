@@ -113,7 +113,7 @@ cart2.state.items.size # 1
 Invoking commands directly on an actor instance works in an IRB console or a synchronous-only web handler, but for actors to be available to background workers, and to react to other actor's events, you need to register them.
 
 ```ruby
-Sourced::Router.register(Cart)
+Sourced.register(Cart)
 ```
 
 This achieves two things:
@@ -316,7 +316,7 @@ Like any other _reactor_, projectors need to be registered for background worker
 
 ```ruby
 # In your app's configuration
-Sourced::Router.register(CartListings)
+Sourced.register(CartListings)
 ```
 
 ## Concurrency model
@@ -432,9 +432,9 @@ Sourced.config.backend.install unless Sourced.config.backend.installed?
 Register your Actor's and Reactors.
 
 ```ruby
-Sourced::Router.register(Leads::Actor)
-Sourced::Router.register(Leads::Listings)
-Sourced::Router.register(Webooks::Dispatcher)
+Sourced.register(Leads::Actor)
+Sourced.register(Leads::Listings)
+Sourced.register(Webooks::Dispatcher)
 ```
 
 Start background workers.
