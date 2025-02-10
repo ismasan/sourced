@@ -55,11 +55,12 @@ module Sourced
     end
 
     # TODO: Actor can do #command(:some_command)
-    def command(command_class, payload = {})
+    def command(command_class, payload = {}, &)
       cmd = @__event_for_reaction
             .follow(command_class, payload)
             .with_metadata(producer: self.class.consumer_info.group_id)
 
+      cmd = yield(cmd) if block_given?
       @__commands_after_reaction << cmd
       cmd
     end

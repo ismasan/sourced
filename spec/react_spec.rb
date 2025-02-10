@@ -18,7 +18,9 @@ class ReactTestReactor
 
   react Event2 do |_event|
     command Cmd2
-    command Cmd3
+    command Cmd3 do |cmd|
+      cmd.with_metadata(greeting: 'Hi!')
+    end
   end
 
   react Event3 do |_event|
@@ -40,6 +42,7 @@ RSpec.describe Sourced::React do
     expect(commands.map { |e| e.metadata[:producer] }).to eq(%w[ReactTestReactor ReactTestReactor ReactTestReactor])
     expect(commands.first.causation_id).to eq(evt1.id)
     expect(commands.last.causation_id).to eq(evt2.id)
+    expect(commands.last.metadata[:greeting]).to eq('Hi!')
   end
 
   specify '.handled_events_for_react' do
