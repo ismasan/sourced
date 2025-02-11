@@ -452,9 +452,9 @@ module BackendExamples
         received = []
         Sync do |task|
           task.async do
-            backend.pubsub.subscribe('test_channel') do |event|
+            backend.pubsub.subscribe('test_channel') do |event, channel|
               received << event
-              break if received.size == 2
+              channel.stop if received.size == 2
             end
           end
           task.async do
@@ -463,7 +463,7 @@ module BackendExamples
             backend.pubsub.publish('test_channel', e1)
             backend.pubsub.publish('test_channel', e2)
           end
-        end
+        end.wait
 
         expect(received.map(&:type)).to eq(%w[tests.something_happened1 tests.something_happened1])
         expect(received.map(&:seq)).to eq([1, 2])

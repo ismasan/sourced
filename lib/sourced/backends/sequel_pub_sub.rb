@@ -39,7 +39,7 @@ module Sourced
 
         @running = true
         @db.listen(@name, loop: true) do |_channel, _pid, payload|
-          @handler.call parse(payload)
+          @handler.call parse(payload), self
           break unless @running
           # TODO: handle exceptions
         end
