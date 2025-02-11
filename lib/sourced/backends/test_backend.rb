@@ -84,6 +84,8 @@ module Sourced
         attr_reader :backend
       end
 
+      attr_reader :pubsub
+
       def initialize
         clear!
         @mutex = Mutex.new
@@ -164,8 +166,50 @@ module Sourced
         end
       end
 
+      class TestPubSub
+        def initialize
+          @channels = {}
+        end
+
+        def subscribe(channel_name, handler = nil, &block)
+          handler ||= block
+          ch = @channels[channel_name] ||= Channel.new(channel_name)
+          ch.subscribe(handler)
+          ch.start
+        end
+
+        def publish(channel_name, event)
+          channel = @channels[channel_name]
+          channel&.publish(event)
+          self
+        end
+
+        class Channel
+          attr_reader :name
+
+          def initialize(name)
+            @name = name
+            @handlers = []
+          end
+
+          def subscribe(handler)
+            @handlers << handler
+          end
+
+          def publish(event)
+            @handlers.each do |handler|
+              handler.call(event, self)
+            end
+          end
+
+          def start = self
+          def stop = nil
+        end
+      end
+
       def clear!
         @state = State.new
+        @pubsub = TestPubSub.new
       end
 
       def installed? = true
