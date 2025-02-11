@@ -449,12 +449,14 @@ module BackendExamples
 
     describe '#pubsub' do
       it 'publishes and subscribes to events' do
+        channel1 = backend.pubsub.subscribe('test_channel')
         received = []
+
         Sync do |task|
           task.async do
-            backend.pubsub.subscribe('test_channel') do |event, channel|
+            channel1.start do |event, _channel|
               received << event
-              channel.stop if received.size == 2
+              throw :stop if received.size == 2
             end
           end
           task.async do

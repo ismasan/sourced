@@ -171,11 +171,8 @@ module Sourced
           @channels = {}
         end
 
-        def subscribe(channel_name, handler = nil, &block)
-          handler ||= block
-          ch = @channels[channel_name] ||= Channel.new(channel_name)
-          ch.subscribe(handler)
-          ch.start
+        def subscribe(channel_name)
+          @channels[channel_name] ||= Channel.new(channel_name)
         end
 
         def publish(channel_name, event)
@@ -192,17 +189,19 @@ module Sourced
             @handlers = []
           end
 
-          def subscribe(handler)
+          def start(handler: nil, &block)
+            handler ||= block
             @handlers << handler
           end
 
           def publish(event)
             @handlers.each do |handler|
-              handler.call(event, self)
+              catch(:stop) do
+                handler.call(event, self)
+              end
             end
           end
 
-          def start = self
           def stop = nil
         end
       end

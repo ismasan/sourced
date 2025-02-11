@@ -11,8 +11,8 @@ module Sourced
         @db = db
       end
 
-      def subscribe(channel_name, handler = nil, &block)
-        Channel.new(db: @db, name: channel_name, handler: handler || block).start
+      def subscribe(channel_name)
+        Channel.new(db: @db, name: channel_name)
       end
 
       def publish(channel_name, event)
@@ -27,21 +27,29 @@ module Sourced
 
       attr_reader :name
 
-      def initialize(db:, handler:, name: NOTIFY_CHANNEL)
+      def initialize(db:, name: NOTIFY_CHANNEL, timeout: 3)
         @db = db
         @name = name
-        @handler = handler
         @running = false
+        @timeout = timeout
       end
 
-      def start
+      def start(handler: nil, &block)
         return self if @running
 
+        handler ||= block
+
         @running = true
-        @db.listen(@name, loop: true) do |_channel, _pid, payload|
-          @handler.call parse(payload), self
+        # We need a reasobaly short timeout
+        # so that this block gets a chance to check the @running flag
+        @db.listen(@name, timeout: @timeout, loop: true) do |_channel, _pid, payload|
           break unless @running
+
+          handler.call parse(payload), self
           # TODO: handle exceptions
+          # Any exception raised here will be rescued by Sequel
+          # and close the LISTEN connection
+          # Perhaps that's enaough
         end
 
         self
