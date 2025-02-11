@@ -446,6 +446,29 @@ module BackendExamples
         expect(events).to eq([e2, e3])
       end
     end
+
+    describe '#pubsub' do
+      it 'publishes and subscribes to events' do
+        received = []
+        Sync do |task|
+          task.async do
+            backend.pubsub.subscribe('test_channel') do |event|
+              received << event
+              break if received.size == 2
+            end
+          end
+          task.async do
+            e1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+            e2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+            backend.pubsub.publish('test_channel', e1)
+            backend.pubsub.publish('test_channel', e2)
+          end
+        end
+
+        expect(received.map(&:type)).to eq(%w[tests.something_happened1 tests.something_happened1])
+        expect(received.map(&:seq)).to eq([1, 2])
+      end
+    end
   end
 
   class Migrator
