@@ -27,6 +27,16 @@ RSpec.describe Sourced::CommandContext do
       expect(cmd.stream_id).to eq('aaa')
     end
 
+    it 'can take a command class' do
+      ctx = described_class.new(metadata: { user_id: 10 })
+      cmd = ctx.build(ContextTest::Add, stream_id: '123', payload: { value: 1 })
+      expect(cmd).to be_a(ContextTest::Add)
+      expect(cmd.stream_id).to eq('123')
+      expect(cmd.payload.value).to eq(1)
+      expect(cmd.metadata[:user_id]).to eq(10)
+      expect(cmd.valid?).to eq(true)
+    end
+
     it 'symbolizes attributes' do
       ctx = described_class.new(stream_id: '123', metadata: { user_id: 10 })
       cmd = ctx.build('type' => 'ctest.add', 'payload' => { 'value' => 1 })

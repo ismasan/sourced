@@ -29,6 +29,9 @@ module Sourced
   #
   #  cmd = ctx.build(type: 'do_something', payload: { foo: 'bar' })
   #
+  #  # Or with class and attrs
+  #  cmd = ctx.build(SomeCommand, stream_id: '111', payload: { foo: 'bar' })
+  #
   # Attempting to build a command not in the scope will raise an error.
   class CommandContext
     # @option stream_id [String]
@@ -44,9 +47,17 @@ module Sourced
 
     # @param attrs [Hash] attributes to lookup and buils a scope from.
     # @return [Sourced::Message]
-    def build(attrs)
-      attrs = defaults.merge(Types::SymbolizedHash.parse(attrs))
-      scope.from(attrs)
+    def build(*args)
+      case args
+      in [Class => klass, Hash => attrs]
+        attrs = defaults.merge(Types::SymbolizedHash.parse(attrs))
+        klass.parse(attrs)
+      in [Hash => attrs]
+        attrs = defaults.merge(Types::SymbolizedHash.parse(attrs))
+        scope.from(attrs)
+      else
+        raise ArgumentError, "Invalid arguments: #{args.inspect}"
+      end
     end
 
     private
