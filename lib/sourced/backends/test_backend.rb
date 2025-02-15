@@ -166,15 +166,21 @@ module Sourced
         end
       end
 
+      # An in-meory pubsub implementation for testing
       class TestPubSub
         def initialize
           @channels = {}
         end
 
+        # @param channel_name [String]
+        # @return [Channel]
         def subscribe(channel_name)
           @channels[channel_name] ||= Channel.new(channel_name)
         end
 
+        # @param channel_name [String]
+        # @param event [Sourced::Message]
+        # @return [self]
         def publish(channel_name, event)
           channel = @channels[channel_name]
           channel&.publish(event)
