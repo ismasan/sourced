@@ -6,15 +6,36 @@ require 'json'
 
 module Sourced
   module Backends
+    # a PubSub implementation using Postgres' LISTEN/NOTIFY
+    # @example
+    #
+    #   # Publisher
+    #   Sourced.config.backend.pub_sub.publish('my_channel', event)
+    #
+    #   # Subscriber
+    #   channel = Source.config.backend.pub_sub.subscribe('my_channel')
+    #   channel.start do |event, ch|
+    #     case event
+    #     when MyEvent
+    #       # do something
+    #     end
+    #   end
+    #
     class SequelPubSub
+      # @option db [Sequel::Database]
       def initialize(db:)
         @db = db
       end
 
+      # @param channel_name [String]
+      # @return [Channel]
       def subscribe(channel_name)
         Channel.new(db: @db, name: channel_name)
       end
 
+      # @param channel_name [String]
+      # @param event [Sourced::Message]
+      # @return [self]
       def publish(channel_name, event)
         event_data = JSON.dump(event.to_h)
         @db.run(Sequel.lit('SELECT pg_notify(?, ?)', channel_name, event_data))
@@ -27,6 +48,9 @@ module Sourced
 
       attr_reader :name
 
+      # @option db [Sequel::Database]
+      # @option name [String]
+      # @option timeout [Numeric]
       def initialize(db:, name: NOTIFY_CHANNEL, timeout: 3)
         @db = db
         @name = name
@@ -34,6 +58,13 @@ module Sourced
         @timeout = timeout
       end
 
+      # Start listening to incoming events
+      # via Postgres LISTEN as implemented in Sequel
+      #
+      # @option handler [#call, nil] a callable object to use as an event handler
+      # @yieldparam [Sourced::Message]
+      # @yieldparam [Channel]
+      # @return [self]
       def start(handler: nil, &block)
         return self if @running
 
@@ -49,20 +80,21 @@ module Sourced
           # TODO: handle exceptions
           # Any exception raised here will be rescued by Sequel
           # and close the LISTEN connection
-          # Perhaps that's enaough
+          # Perhaps that's enough
         end
 
         self
+      end
+
+      # Mark the channel to stop on the next tick
+      def stop
+        @running = false
       end
 
       # Public so that we can test this separately from async channel listening.
       def parse(payload)
         data = JSON.parse(payload, symbolize_names: true)
         Sourced::Message.from(data)
-      end
-
-      def stop
-        @running = false
       end
     end
   end
