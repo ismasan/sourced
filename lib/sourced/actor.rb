@@ -125,6 +125,7 @@ module Sourced
     extend Consumer
 
     PREFIX = 'decide'
+    REACTION_WITH_STATE_PREFIX = 'reaction_with_state'
 
     UndefinedMessageError = Class.new(KeyError)
 
@@ -375,6 +376,8 @@ module Sourced
       # @yield [Object, Sourced::Event]
       # @return [void]
       def reaction_with_state(event_name, &block)
+        raise ArgumentError, 'react_with_state expects a block' unless block_given?
+
         event_class = if event_name.is_a?(Symbol)
           self::Event.registry[__message_type(event_name)]
         else
@@ -384,9 +387,14 @@ module Sourced
         unless handled_events_for_evolve.include?(event_class)
           raise ArgumentError, '.react_with_state only works with event types handled by this class via .event(event_type)' 
         end
+
+        method_name = Sourced.message_method_name(REACTION_WITH_STATE_PREFIX, event_class.to_s)
+        define_method(method_name, &block)
+        send(:private, method_name)
+
         reaction event_class do |event|
           load(after: seq)
-          instance_exec(state, event, &block)
+          send(method_name, state, event)
         end
       end
 

@@ -373,6 +373,7 @@ RSpec.describe Sourced::Actor do
 
         reaction_with_state :thing_done do |state, event|
           command :notify, value: "seq was #{seq}, state was #{state[1]}, name was #{event.payload.name}"
+          return # <= should not raise LocalJumpError
         end
 
         command :notify, value: String do |_state, cmd|
