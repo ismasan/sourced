@@ -319,18 +319,18 @@ module Sourced
       # pointing to an event class defined locally with .event
       # TODO: should this be defined in Evolve?
       # @example
-      #   react :item_added do |event|
+      #   reaction :item_added do |event|
       #     command :do_something
       #   end
       #
-      #   react ItemAdded do |event|
+      #   reaction ItemAdded do |event|
       #     command DoSomething
       #   end
       #
       # @param event_name [Symbol, Class]
       # @yield [Sourced::Event]
       # @return [void]
-      def react(event_name, &block)
+      def reaction(event_name, &block)
         if event_name.is_a?(Symbol)
           event_class = self::Event.registry[__message_type(event_name)]
           super(event_class, &block)
@@ -359,11 +359,11 @@ module Sourced
       # Note: this callback loads the decider's state _up to its current state_, which
       # may be more recent than what the event reacted to represents.
       # Ex. if the event history of the decider is [E1, E2, E3, E4]
-      # a reaction registered with `.react_with_state(E2, &block)` will run asynchronously _later_.
+      # a reaction registered with `.reaction_with_state(E2, &block)` will run asynchronously _later_.
       # It will react to E2 even though the decider's current state is up to E4.
       # It's up to the reaction block to take that into account, for example comparing the decider's and the event's sequence number.
       #
-      #  react_with_state SomethingHappened do |state, event|
+      #  reaction_with_state SomethingHappened do |state, event|
       #    if seq == event.seq # event is the last one to have happened.
       #      command DoSomething
       #    else
@@ -374,7 +374,7 @@ module Sourced
       # @param event_name [Symbol, Class]
       # @yield [Object, Sourced::Event]
       # @return [void]
-      def react_with_state(event_name, &block)
+      def reaction_with_state(event_name, &block)
         event_class = if event_name.is_a?(Symbol)
           self::Event.registry[__message_type(event_name)]
         else
@@ -384,7 +384,7 @@ module Sourced
         unless handled_events_for_evolve.include?(event_class)
           raise ArgumentError, '.react_with_state only works with event types handled by this class via .event(event_type)' 
         end
-        react event_class do |event|
+        reaction event_class do |event|
           load(after: seq)
           instance_exec(state, event, &block)
         end
