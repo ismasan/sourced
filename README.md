@@ -66,10 +66,9 @@ class Cart < Sourced::Actor
   end
   
   # Optionally, define how this actor reacts to the event above.
-  # .react blocks can dispatch new commands that will be routed to their handlers.
+  # .reaction blocks can dispatch new commands that will be routed to their handlers.
   # This allows you to build workflows.
-  # TODO: reacting to own events should provide state?
-  react :item_added do |event|
+  reaction :item_added do |event|
     # Evaluate whether we should dispatch the next command.
     # Here we could fetch some external data or query that might be needed
     # to populate the new commands.
@@ -197,16 +196,16 @@ end
 
 These handlers are pure: given the same state and event, they should always update the state in the same exact way. They should never reach out to the outside (API calls, current time, etc), and they should never run validations. They work on events already committed to history, which by definition are assumed to be valid.
 
-#### `.react` block
+#### `.reaction` block
 
-The class-level `.react` block registers an event handler that _reacts_ to events already published by this or other Actors.
+The class-level `.reaction` block registers an event handler that _reacts_ to events already published by this or other Actors.
 
-`.react` blocks can dispatch the next command in a workflow with the instance-level `#command` helper.
+`.reaction` blocks can dispatch the next command in a workflow with the instance-level `#command` helper.
 
 ![react](docs/images/sourced-react-handler.png)
 
 ```ruby
-react ItemAdded do |event|
+reaction ItemAdded do |event|
   # dispatch the next command
   command(
     CheckInventory, 
@@ -218,7 +217,7 @@ end
 
 
 
-#### `.react_with_state` block
+#### `.reaction_with_state` block
 
 Class-level `.react_with_state` is similar to `.react`, except that it also loads and yields the Actor's current state by loading and applying past events to it (same as when handling commands).
 
@@ -233,7 +232,7 @@ event ItemAdded do |state, event|
 end
 
 # Now react to it and check state
-react_with_state ItemAdded do |state, event|
+reaction_with_state ItemAdded do |state, event|
   if state[:item_count] > 30
     command NotifyBigCart
   end
@@ -343,7 +342,7 @@ class HolidayBooking < Sourced::Actor
     event :booking_started
   end
   
-  react :booking_started do |event|
+  reaction :booking_started do |event|
     command :book_flight
   end
   
@@ -351,7 +350,7 @@ class HolidayBooking < Sourced::Actor
     event :flght_booked
   end
   
-  react :flight_booked do |event|
+  reaction :flight_booked do |event|
     command :book_hotel
   end
   
@@ -501,4 +500,4 @@ To install this gem onto your local machine, run `bundle exec rake install`. To 
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/ismasan/sourced.
+Bug reports and pull requests are welcome on GitHub at https://github.com/ismasan/sourced.	
