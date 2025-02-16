@@ -34,8 +34,8 @@ module ProjectorTest
       state.total += event.payload.amount
     end
 
-    sync do |state, _, _events|
-      STORE[state.id] = state
+    sync do |state, _, events|
+      STORE[state.id] = [state, events.last.type]
     end
   end
 end
@@ -83,7 +83,9 @@ RSpec.describe Sourced::Projector do
       result = ProjectorTest::EventSourced.handle_events([e1, e2])
 
       expect(result).to eq([])
-      expect(ProjectorTest::STORE['111'].total).to eq(15)
+      obj, last_event_type = ProjectorTest::STORE['111']
+      expect(obj.total).to eq(15)
+      expect(last_event_type).to eq('prtest.added')
     end
 
     specify 'with previous events' do
@@ -96,7 +98,9 @@ RSpec.describe Sourced::Projector do
       result = ProjectorTest::EventSourced.handle_events([e2, e3])
 
       expect(result).to eq([])
-      expect(ProjectorTest::STORE['111'].total).to eq(22)
+      obj, last_event_type = ProjectorTest::STORE['111']
+      expect(obj.total).to eq(22)
+      expect(last_event_type).to eq('prtest.added')
     end
   end
 end

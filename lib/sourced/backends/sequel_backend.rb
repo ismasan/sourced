@@ -3,6 +3,7 @@
 require 'sequel'
 require 'json'
 require 'sourced/message'
+require 'sourced/backends/sequel_pub_sub'
 
 Sequel.extension :fiber_concurrency
 Sequel.extension :pg_json if defined?(PG)
@@ -10,8 +11,11 @@ Sequel.extension :pg_json if defined?(PG)
 module Sourced
   module Backends
     class SequelBackend
+      attr_reader :pubsub
+
       def initialize(db, logger: Sourced.config.logger, prefix: 'sourced')
         @db = connect(db)
+        @pubsub = SequelPubSub.new(db: @db)
         @logger = logger
         @prefix = prefix
         @commands_table = table_name(:commands)
@@ -85,6 +89,7 @@ module Sourced
           rows = events.map { |e| serialize_event(e, id) }
           db[events_table].multi_insert(rows)
         end
+
         true
       rescue Sequel::UniqueConstraintViolation => e
         raise Sourced::ConcurrentAppendError, e.message
