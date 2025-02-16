@@ -20,7 +20,7 @@ module Sourced
   #    # This command will be scheduled for processing by a Decider.
   #    # Using Sourced::Event#follow copies over metadata from the event
   #    # including causation and correlation IDs.
-  #    react SomethingHappened do |event|
+  #    reaction SomethingHappened do |event|
   #      event.follow(DoSomethingElse, field1: 'value1')
   #    end
   #  end
@@ -92,7 +92,7 @@ module Sourced
       # structs defined via .event(:event_name, payload_schema)
       # So it can only take qualified event classes
       # Decider can override this method to provide symbol-based event names
-      def react(event_class, &block)
+      def reaction(event_class, &block)
         unless event_class.is_a?(Class) && event_class < Sourced::Message
           raise ArgumentError,
                 "Invalid argument #{event_class.inspect} for #{self}.react"
