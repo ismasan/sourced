@@ -39,7 +39,7 @@ module TestActor
       event ArchiveRequested
     end
 
-    react ArchiveRequested do |_event|
+    reaction ArchiveRequested do |_event|
       command ConfirmArchive
     end
 
@@ -67,7 +67,7 @@ module TestActor
       list.items << event.payload
     end
 
-    react :item_added do |_event|
+    reaction :item_added do |_event|
       command Notify
     end
 
@@ -322,7 +322,7 @@ RSpec.describe Sourced::Actor do
         event :thing_done, name: String do |state, _event|
         end
 
-        react :thing_done do |_event|
+        reaction :thing_done do |_event|
           command(:notify, value: 'done!').delay(Time.now + 1)
         end
 
@@ -351,7 +351,7 @@ RSpec.describe Sourced::Actor do
     end
   end
 
-  describe '.react_with_state for own events' do
+  describe '.reaction_with_state for own events' do
     let(:klass) do
       klass = Class.new(Sourced::Actor) do
         consumer do |c|
@@ -371,7 +371,7 @@ RSpec.describe Sourced::Actor do
           state[1] = :done
         end
 
-        react_with_state :thing_done do |state, event|
+        reaction_with_state :thing_done do |state, event|
           command :notify, value: "seq was #{seq}, state was #{state[1]}, name was #{event.payload.name}"
         end
 
@@ -400,13 +400,13 @@ RSpec.describe Sourced::Actor do
 
     it 'fails to register reaction if event is not handled by the same Actor' do
       expect do
-        klass.react_with_state(TestActor::ListStarted) { |_state, _event| }
+        klass.reaction_with_state(TestActor::ListStarted) { |_state, _event| }
       end.to raise_error(ArgumentError)
     end
 
     it 'fails to register reaction if block does not support |state, event|' do
       expect do
-        klass.react_with_state(TestActor::ListStarted) { |_state| }
+        klass.reaction_with_state(TestActor::ListStarted) { |_state| }
       end.to raise_error(ArgumentError)
     end
   end

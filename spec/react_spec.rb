@@ -12,18 +12,18 @@ class ReactTestReactor
   Cmd2 = Sourced::Message.define('reacttest.cmd2')
   Cmd3 = Sourced::Message.define('reacttest.cmd3')
 
-  react Event1 do |_event|
+  reaction Event1 do |_event|
     command Cmd1
   end
 
-  react Event2 do |_event|
+  reaction Event2 do |_event|
     command Cmd2
     command Cmd3 do |cmd|
       cmd.with_metadata(greeting: 'Hi!')
     end
   end
 
-  react Event3 do |_event|
+  reaction Event3 do |_event|
     nil
   end
 end
