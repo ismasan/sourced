@@ -94,6 +94,7 @@ module Sourced
     def handle_next_event_for_reactor(reactor, process_name = nil)
       backend.reserve_next_for_reactor(reactor) do |event|
         log_event('handling event', reactor, event, process_name)
+        #  TODO: handle exceptions here
         commands = reactor.handle_events([event])
         if commands.any?
           # TODO: handle decider errors
@@ -127,7 +128,7 @@ module Sourced
 
     def dispatch_next_command
       backend.next_command do |cmd|
-        #  TODO: error handling
+        #  TODO: handle exceptions here
         handle_command(cmd)
       end
     end
