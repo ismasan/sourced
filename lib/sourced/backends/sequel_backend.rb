@@ -21,12 +21,17 @@ module Sourced
         @commands_table = table_name(:commands)
         @streams_table = table_name(:streams)
         @offsets_table = table_name(:offsets)
+        @reactors_table = table_name(:reactors)
         @events_table = table_name(:events)
         logger.info("Connected to #{@db}")
       end
 
       def installed?
-        db.table_exists?(events_table) && db.table_exists?(streams_table) && db.table_exists?(offsets_table) && db.table_exists?(commands_table)
+        db.table_exists?(events_table) \
+          && db.table_exists?(streams_table) \
+          && db.table_exists?(reactors_table) \
+          && db.table_exists?(offsets_table) \
+          && db.table_exists?(commands_table)
       end
 
       def schedule_commands(commands)
@@ -133,12 +138,30 @@ module Sourced
       end
 
       private def ack_event(group_id, stream_id, global_seq)
-        db[offsets_table]
-          .insert_conflict(
-            target: [:group_id, :stream_id],
-            update: { global_seq: Sequel[:excluded][:global_seq] }
-          )
-          .insert(stream_id:, group_id:, global_seq:)
+        db.transaction do
+          # Find or create reactor
+          reactor_row = db[reactors_table]
+            .insert_conflict(
+              target: :group_id,
+              update: { updated_at: Sequel.function(:now) }
+            )
+            .returning(:id)
+            .insert(group_id:)
+
+          reactor_id = reactor_row[0][:id]
+
+          # Upsert offset
+          db[offsets_table]
+            .insert_conflict(
+              target: [:reactor_id, :stream_id],
+              update: { global_seq: Sequel[:excluded][:global_seq] }
+            )
+            .insert(
+              reactor_id:,
+              stream_id:,
+              global_seq:
+            )
+        end
       end
 
       private def base_events_query
@@ -191,6 +214,7 @@ module Sourced
         db[events_table].truncate(cascade: true, only: true, restart: true)
         db[events_table].delete
         db[commands_table].delete
+        db[reactors_table].delete
         db[offsets_table].delete
         db[streams_table].delete
       end
@@ -201,6 +225,7 @@ module Sourced
         end
 
         _streams_table = streams_table
+        _reactors_table = reactors_table
 
         db.create_table?(streams_table) do
           primary_key :id
@@ -211,13 +236,28 @@ module Sourced
 
         logger.info("Created table #{streams_table}")
 
+        db.create_table?(reactors_table) do
+          primary_key :id
+          String :group_id, null: false, unique: true
+          String :status, null: false, default: 'active', index: true
+          column :error_context, :jsonb
+          Time :retry_at, null: true
+          Time :created_at, null: false, default: Sequel.function(:now)
+          Time :updated_at, null: false, default: Sequel.function(:now)
+
+          index :group_id, unique: true
+        end
+
+        logger.info("Created table #{reactors_table}")
+
         db.create_table?(offsets_table) do
           primary_key :id
-          foreign_key :stream_id, _streams_table
-          String :group_id, null: false, index: true
+          foreign_key :reactor_id, _reactors_table, on_delete: :cascade
+          foreign_key :stream_id, _streams_table, on_delete: :cascade
           Bignum :global_seq, null: false
           Time :created_at, null: false, default: Sequel.function(:now)
-          index %i[group_id stream_id], unique: true
+
+          index %i[reactor_id stream_id], unique: true
         end
 
         logger.info("Created table #{offsets_table}")
@@ -256,7 +296,7 @@ module Sourced
 
       private
 
-      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :commands_table
+      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :reactors_table, :commands_table
 
       def sql_for_next_command
         <<~SQL
@@ -288,12 +328,24 @@ module Sourced
         time_window_sql = with_time_window ? ' AND e.created_at > ?' : ''
 
         <<~SQL
-          WITH candidate_events AS (
-              SELECT 
+          WITH target_reactor AS (
+              SELECT id, group_id
+              FROM #{reactors_table}
+              WHERE group_id = ?
+          ),
+          latest_offset AS (
+              SELECT o.global_seq
+              FROM target_reactor tr
+              JOIN #{offsets_table} o ON o.reactor_id = tr.id
+              ORDER BY o.global_seq DESC
+              LIMIT 1
+          ),
+          candidate_events AS (
+              SELECT
                   e.global_seq,
                   e.id,
-                  e.stream_id AS stream_id_fk,
                   s.stream_id,
+                  e.stream_id AS stream_id_fk,
                   e.seq,
                   e.type,
                   e.causation_id,
@@ -301,12 +353,15 @@ module Sourced
                   e.metadata,
                   e.payload,
                   e.created_at,
-                  pg_try_advisory_xact_lock(hashtext(?::text), hashtext(s.id::text)) as lock_obtained
+                  pg_try_advisory_xact_lock(
+                      hashtext(?::text),
+                      hashtext(s.id::text)
+                  ) as lock_obtained
               FROM #{events_table} e
               JOIN #{streams_table} s ON e.stream_id = s.id
-              LEFT JOIN #{offsets_table} o ON o.stream_id = e.stream_id 
-                  AND o.group_id = ?
-              WHERE e.global_seq > COALESCE(o.global_seq, 0)#{event_types_sql}#{time_window_sql}
+              LEFT JOIN latest_offset lo ON true
+              WHERE e.global_seq > COALESCE(lo.global_seq, 0)
+              #{event_types_sql}#{time_window_sql}
               ORDER BY e.global_seq
           )
           SELECT *
@@ -337,12 +392,13 @@ module Sourced
       def sql_for_consumer_stats
         @sql_for_consumer_stats ||= <<~SQL
           SELECT 
-              group_id,
-              min(global_seq) as oldest_processed,
-              max(global_seq) as newest_processed,
+              r.group_id,
+              min(o.global_seq) as oldest_processed,
+              max(o.global_seq) as newest_processed,
               count(*) as stream_count
-          FROM #{offsets_table}
-          GROUP BY group_id;
+          FROM #{offsets_table} o
+          LEFT JOIN #{reactors_table} r ON o.reactor_id = r.id
+          GROUP BY r.group_id;
         SQL
       end
 
