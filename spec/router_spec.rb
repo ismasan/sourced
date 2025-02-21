@@ -97,6 +97,13 @@ RSpec.describe Sourced::Router do
   #   end
   # end
 
+  describe '#register' do
+    it 'registers group id with configured backend' do
+      expect(backend).to receive(:register_consumer_group).with(RouterTest::DeciderReactor.consumer_info.group_id)
+      router.register(RouterTest::DeciderReactor)
+    end
+  end
+
   describe '#schedule_commands' do
     it 'schedules commands for the right target deciders' do
       router.register(RouterTest::DeciderReactor)
