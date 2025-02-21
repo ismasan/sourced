@@ -11,6 +11,9 @@ Sequel.extension :pg_json if defined?(PG)
 module Sourced
   module Backends
     class SequelBackend
+      ACTIVE = 'active'
+      STOPPED = 'stopped'
+
       attr_reader :pubsub
 
       def initialize(db, logger: Sourced.config.logger, prefix: 'sourced')
@@ -135,13 +138,13 @@ module Sourced
       def register_consumer_group(group_id)
         db[consumer_groups_table]
           .insert_conflict(target: :group_id, update: nil)
-          .insert(group_id:, status: 'active')
+          .insert(group_id:, status: ACTIVE)
       end
 
       def stop_consumer_group(group_id, error = nil)
         db[consumer_groups_table]
-          .insert_conflict(target: :group_id, update: { status: 'stopped', updated_at: Time.now })
-          .insert(group_id:, status: 'stopped')
+          .insert_conflict(target: :group_id, update: { status: STOPPED, updated_at: Time.now })
+          .insert(group_id:, status: STOPPED)
       end
 
       def ack_on(group_id, event_id, &)
@@ -158,7 +161,7 @@ module Sourced
       private def ack_event(group_id, stream_id, global_seq)
         db.transaction do
           # Find or create reactor
-          # TODO: we'll be creating reactors in advance
+          # TODO: we'll be creating consumer groups in advance
           # So here we should just assume it exists and insert it.
           reactor_row = db[consumer_groups_table]
             .insert_conflict(
@@ -259,7 +262,7 @@ module Sourced
         db.create_table?(consumer_groups_table) do
           primary_key :id
           String :group_id, null: false, unique: true
-          String :status, null: false, default: 'active', index: true
+          String :status, null: false, default: ACTIVE, index: true
           column :error_context, :jsonb
           Time :retry_at, null: true
           Time :created_at, null: false, default: Sequel.function(:now)
@@ -337,7 +340,7 @@ module Sourced
               ) as lock_obtained
               FROM #{commands_table} c
               INNER JOIN #{consumer_groups_table} r ON c.reactor_group_id = r.group_id
-              WHERE r.status = 'active'
+              WHERE r.status = '#{ACTIVE}'
               AND c.created_at <= ? 
               ORDER BY c.created_at ASC
           )
@@ -358,7 +361,7 @@ module Sourced
               SELECT id, group_id
               FROM #{consumer_groups_table}
               WHERE group_id = ?
-              AND status = 'active'  -- Only active reactors
+              AND status = '#{ACTIVE}'  -- Only active consumer groups
           ),
           latest_offset AS (
               SELECT o.global_seq
@@ -442,7 +445,7 @@ module Sourced
         JSON.parse(json, symbolize_names: true)
       end
 
-      def upsert_consumer_group(group_id, status: 'active')
+      def upsert_consumer_group(group_id, status: ACTIVE)
         db[consumer_groups_table]
           .insert_conflict(target: :group_id, update: { status:, updated_at: Time.now })
           .insert(group_id:, status:)
