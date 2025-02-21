@@ -160,10 +160,10 @@ module Sourced
 
       private def ack_event(group_id, stream_id, global_seq)
         db.transaction do
-          # Find or create reactor
+          # Find or create group
           # TODO: we'll be creating consumer groups in advance
           # So here we should just assume it exists and insert it.
-          reactor_row = db[consumer_groups_table]
+          group_row = db[consumer_groups_table]
             .insert_conflict(
               target: :group_id,
               update: { updated_at: Sequel.function(:now) }
@@ -171,16 +171,16 @@ module Sourced
             .returning(:id)
             .insert(group_id:)
 
-          reactor_id = reactor_row[0][:id]
+          group_id = group_row[0][:id]
 
           # Upsert offset
           db[offsets_table]
             .insert_conflict(
-              target: [:reactor_id, :stream_id],
+              target: [:group_id, :stream_id],
               update: { global_seq: Sequel[:excluded][:global_seq] }
             )
             .insert(
-              reactor_id:,
+              group_id:,
               stream_id:,
               global_seq:
             )
@@ -275,12 +275,12 @@ module Sourced
 
         db.create_table?(offsets_table) do
           primary_key :id
-          foreign_key :reactor_id, _consumer_groups_table, on_delete: :cascade
+          foreign_key :group_id, _consumer_groups_table, on_delete: :cascade
           foreign_key :stream_id, _streams_table, on_delete: :cascade
           Bignum :global_seq, null: false
           Time :created_at, null: false, default: Sequel.function(:now)
 
-          index %i[reactor_id stream_id], unique: true
+          index %i[group_id stream_id], unique: true
         end
 
         logger.info("Created table #{offsets_table}")
@@ -303,7 +303,7 @@ module Sourced
 
         db.create_table?(commands_table) do
           column :id, :uuid, unique: true
-          String :reactor_group_id, null: false, index: true
+          String :consumer_group_id, null: false, index: true
           String :stream_id, null: false, index: true
           String :type, null: false
           Time :created_at, null: false, index: true
@@ -335,11 +335,11 @@ module Sourced
               c.payload,
               c.created_at,
               pg_try_advisory_xact_lock(
-                  hashtext(c.reactor_group_id::text),
+                  hashtext(c.consumer_group_id::text),
                   hashtext(c.stream_id::text)
               ) as lock_obtained
               FROM #{commands_table} c
-              INNER JOIN #{consumer_groups_table} r ON c.reactor_group_id = r.group_id
+              INNER JOIN #{consumer_groups_table} r ON c.consumer_group_id = r.group_id
               WHERE r.status = '#{ACTIVE}'
               AND c.created_at <= ? 
               ORDER BY c.created_at ASC
@@ -357,7 +357,7 @@ module Sourced
         time_window_sql = with_time_window ? ' AND e.created_at > ?' : ''
 
         <<~SQL
-          WITH target_reactor AS (
+          WITH target_group AS (
               SELECT id, group_id
               FROM #{consumer_groups_table}
               WHERE group_id = ?
@@ -365,8 +365,8 @@ module Sourced
           ),
           latest_offset AS (
               SELECT o.global_seq
-              FROM target_reactor tr
-              LEFT JOIN #{offsets_table} o ON o.reactor_id = tr.id  -- LEFT JOIN to allow missing offsets
+              FROM target_group tr
+              LEFT JOIN #{offsets_table} o ON o.group_id = tr.id  -- LEFT JOIN to allow missing offsets
               ORDER BY o.global_seq DESC
               LIMIT 1
           ),
@@ -387,7 +387,7 @@ module Sourced
                       hashtext(tr.group_id::text),
                       hashtext(s.id::text)
                   ) as lock_obtained
-              FROM target_reactor tr
+              FROM target_group tr
               CROSS JOIN #{events_table} e  -- CROSS JOIN since we need all events
               JOIN #{streams_table} s ON e.stream_id = s.id
               LEFT JOIN latest_offset lo ON true
@@ -429,7 +429,7 @@ module Sourced
               COALESCE(MAX(o.global_seq), 0) AS newest_processed,
               COUNT(o.id) AS stream_count
           FROM #{consumer_groups_table} r
-          LEFT JOIN #{offsets_table} o ON o.reactor_id = r.id
+          LEFT JOIN #{offsets_table} o ON o.group_id = r.id
           GROUP BY r.id, r.group_id, r.status
           ORDER BY r.group_id;
         SQL
@@ -453,7 +453,7 @@ module Sourced
 
       def serialize_command(cmd, group_id: nil)
         row = cmd.to_h.except(:seq)
-        row[:reactor_group_id] = group_id if group_id
+        row[:consumer_group_id] = group_id if group_id
         row[:metadata] = JSON.dump(row[:metadata]) if row[:metadata]
         row[:payload] = JSON.dump(row[:payload]) if row[:payload]
         row
