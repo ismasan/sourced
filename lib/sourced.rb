@@ -24,6 +24,10 @@ module Sourced
     Router.register(reactor)
   end
 
+  def self.schedule_commands(commands)
+    Router.schedule_commands(commands)
+  end
+
   def self.message_method_name(prefix, name)
     "__handle_#{prefix}_#{name.split('::').map(&:downcase).join('_')}"
   end
