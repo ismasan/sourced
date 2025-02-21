@@ -21,7 +21,7 @@ module Sourced
         @commands_table = table_name(:commands)
         @streams_table = table_name(:streams)
         @offsets_table = table_name(:offsets)
-        @reactors_table = table_name(:reactors)
+        @consumer_groups_table = table_name(:consumer_groups)
         @events_table = table_name(:events)
         logger.info("Connected to #{@db}")
       end
@@ -29,7 +29,7 @@ module Sourced
       def installed?
         db.table_exists?(events_table) \
           && db.table_exists?(streams_table) \
-          && db.table_exists?(reactors_table) \
+          && db.table_exists?(consumer_groups_table) \
           && db.table_exists?(offsets_table) \
           && db.table_exists?(commands_table)
       end
@@ -133,13 +133,13 @@ module Sourced
       end
 
       def register_consumer_group(group_id)
-        db[reactors_table]
+        db[consumer_groups_table]
           .insert_conflict(target: :group_id, update: nil)
           .insert(group_id:, status: 'active')
       end
 
       def stop_consumer_group(group_id, error = nil)
-        db[reactors_table]
+        db[consumer_groups_table]
           .insert_conflict(target: :group_id, update: { status: 'stopped', updated_at: Time.now })
           .insert(group_id:, status: 'stopped')
       end
@@ -160,7 +160,7 @@ module Sourced
           # Find or create reactor
           # TODO: we'll be creating reactors in advance
           # So here we should just assume it exists and insert it.
-          reactor_row = db[reactors_table]
+          reactor_row = db[consumer_groups_table]
             .insert_conflict(
               target: :group_id,
               update: { updated_at: Sequel.function(:now) }
@@ -234,7 +234,7 @@ module Sourced
         db[events_table].truncate(cascade: true, only: true, restart: true)
         db[events_table].delete
         db[commands_table].delete
-        db[reactors_table].delete
+        db[consumer_groups_table].delete
         db[offsets_table].delete
         db[streams_table].delete
       end
@@ -245,7 +245,7 @@ module Sourced
         end
 
         _streams_table = streams_table
-        _reactors_table = reactors_table
+        _consumer_groups_table = consumer_groups_table
 
         db.create_table?(streams_table) do
           primary_key :id
@@ -256,7 +256,7 @@ module Sourced
 
         logger.info("Created table #{streams_table}")
 
-        db.create_table?(reactors_table) do
+        db.create_table?(consumer_groups_table) do
           primary_key :id
           String :group_id, null: false, unique: true
           String :status, null: false, default: 'active', index: true
@@ -268,11 +268,11 @@ module Sourced
           index :group_id, unique: true
         end
 
-        logger.info("Created table #{reactors_table}")
+        logger.info("Created table #{consumer_groups_table}")
 
         db.create_table?(offsets_table) do
           primary_key :id
-          foreign_key :reactor_id, _reactors_table, on_delete: :cascade
+          foreign_key :reactor_id, _consumer_groups_table, on_delete: :cascade
           foreign_key :stream_id, _streams_table, on_delete: :cascade
           Bignum :global_seq, null: false
           Time :created_at, null: false, default: Sequel.function(:now)
@@ -317,7 +317,7 @@ module Sourced
 
       private
 
-      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :reactors_table, :commands_table
+      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :commands_table
 
       def sql_for_next_command
         <<~SQL
@@ -336,7 +336,7 @@ module Sourced
                   hashtext(c.stream_id::text)
               ) as lock_obtained
               FROM #{commands_table} c
-              INNER JOIN #{reactors_table} r ON c.reactor_group_id = r.group_id
+              INNER JOIN #{consumer_groups_table} r ON c.reactor_group_id = r.group_id
               WHERE r.status = 'active'
               AND c.created_at <= ? 
               ORDER BY c.created_at ASC
@@ -356,7 +356,7 @@ module Sourced
         <<~SQL
           WITH target_reactor AS (
               SELECT id, group_id
-              FROM #{reactors_table}
+              FROM #{consumer_groups_table}
               WHERE group_id = ?
               AND status = 'active'  -- Only active reactors
           ),
@@ -425,7 +425,7 @@ module Sourced
               COALESCE(MIN(o.global_seq), 0) AS oldest_processed,
               COALESCE(MAX(o.global_seq), 0) AS newest_processed,
               COUNT(o.id) AS stream_count
-          FROM #{reactors_table} r
+          FROM #{consumer_groups_table} r
           LEFT JOIN #{offsets_table} o ON o.reactor_id = r.id
           GROUP BY r.id, r.group_id, r.status
           ORDER BY r.group_id;
@@ -443,7 +443,7 @@ module Sourced
       end
 
       def upsert_consumer_group(group_id, status: 'active')
-        db[reactors_table]
+        db[consumer_groups_table]
           .insert_conflict(target: :group_id, update: { status:, updated_at: Time.now })
           .insert(group_id:, status:)
       end
