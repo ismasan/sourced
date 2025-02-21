@@ -73,7 +73,11 @@ module Sourced
         end
       end
 
-      raise InvalidReactorError, "#{thing.inspect} is not a valid Decider or Reactor interface" unless regs.positive?
+      if regs.positive?
+        backend.register_consumer_group(thing.consumer_info.group_id)
+      else
+        raise InvalidReactorError, "#{thing.inspect} is not a valid Decider or Reactor interface"
+      end
     end
 
     # Schedule commands for later processing
