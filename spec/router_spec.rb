@@ -77,7 +77,34 @@ module RouterTest
 end
 
 RSpec.describe Sourced::Router do
-  subject(:router) { described_class.new }
+  subject(:router) { described_class.new(backend:) }
+
+  let(:backend) { Sourced::Backends::TestBackend.new }
+
+  # describe '#dispatch_next_command' do
+  #   before do
+  #     router.register(RouterTest::DeciderReactor)
+  #   end
+  #
+  #   context 'when reactor raises exception' do
+  #     it 'invokes .on_exception on reactor' do
+  #       cmd = RouterTest::AddItem.new
+  #       router.backend.schedule_commands([cmd])
+  #       expect(RouterTest::DeciderReactor).to receive(:handle_command).and_raise('boom')
+  #
+  #       router.dispatch_next_command
+  #     end
+  #   end
+  # end
+
+  describe '#schedule_commands' do
+    it 'schedules commands for the right target deciders' do
+      router.register(RouterTest::DeciderReactor)
+      cmd = RouterTest::AddItem.new
+      expect(backend).to receive(:schedule_commands).with([cmd], group_id: RouterTest::DeciderReactor.consumer_info.group_id)
+      router.schedule_commands([cmd])
+    end
+  end
 
   describe '#register' do
     it 'registers Decider interfaces' do

@@ -34,12 +34,15 @@ module Sourced
           && db.table_exists?(commands_table)
       end
 
-      def schedule_commands(commands)
+      def schedule_commands(commands, group_id:)
         return false if commands.empty?
 
-        rows = commands.map { |c| serialize_command(c) }
+        rows = commands.map { |c| serialize_command(c, group_id:) }
 
         db.transaction do
+          # TODO: reactors will be created in advance
+          # Here we can just update it.
+          upsert_consumer_group(group_id)
           db[commands_table].multi_insert(rows)
         end
         true
@@ -56,15 +59,18 @@ module Sourced
             return unless row
 
             cmd = deserialize_event(row)
-            yield cmd
-            db[commands_table].where(id: cmd.id).delete
+            # reserve block can return falsey
+            # to keep the command in the bus. For example when retrying.
+            if yield(cmd)
+              db[commands_table].where(id: cmd.id).delete
+            end
             cmd
-            # TODO: on failure, do we want to mark command as failed
-            # and put it in a dead-letter queue?
           end
         else
-          row = db[commands_table].order(:created_at).first
-          row ? deserialize_event(row) : nil
+          db.transaction do
+            row = db.fetch(sql_for_next_command, Time.now.utc).first
+            row ? deserialize_event(row) : nil
+          end
         end
       end
 
@@ -108,9 +114,9 @@ module Sourced
         db.transaction do
           start_from = reactor.consumer_info.start_from.call
           row = if start_from.is_a?(Time)
-            db.fetch(sql_for_reserve_next_with_events(handled_events, true), group_id, group_id, start_from).first
+            db.fetch(sql_for_reserve_next_with_events(handled_events, true), group_id, start_from).first
           else
-            db.fetch(sql_for_reserve_next_with_events(handled_events), group_id, group_id).first
+            db.fetch(sql_for_reserve_next_with_events(handled_events), group_id).first
           end
           return unless row
 
@@ -124,6 +130,18 @@ module Sourced
 
           event
         end
+      end
+
+      def register_consumer_group(group_id)
+        db[reactors_table]
+          .insert_conflict(target: :group_id, update: nil)
+          .insert(group_id:, status: 'active')
+      end
+
+      def stop_consumer_group(group_id, error = nil)
+        db[reactors_table]
+          .insert_conflict(target: :group_id, update: { status: 'stopped', updated_at: Time.now })
+          .insert(group_id:, status: 'stopped')
       end
 
       def ack_on(group_id, event_id, &)
@@ -140,6 +158,8 @@ module Sourced
       private def ack_event(group_id, stream_id, global_seq)
         db.transaction do
           # Find or create reactor
+          # TODO: we'll be creating reactors in advance
+          # So here we should just assume it exists and insert it.
           reactor_row = db[reactors_table]
             .insert_conflict(
               target: :group_id,
@@ -280,6 +300,7 @@ module Sourced
 
         db.create_table?(commands_table) do
           column :id, :uuid, unique: true
+          String :reactor_group_id, null: false, index: true
           String :stream_id, null: false, index: true
           String :type, null: false
           Time :created_at, null: false, index: true
@@ -302,18 +323,23 @@ module Sourced
         <<~SQL
           WITH next_command AS (
               SELECT 
-                  id,
-                  stream_id,
-                  type,
-                  causation_id,
-                  correlation_id,
-                  metadata,
-                  payload,
-                  created_at,
-                  pg_try_advisory_xact_lock(hashtext(stream_id::text)) AS lock_obtained
-              FROM #{commands_table}
-              WHERE created_at <= ? 
-              ORDER BY created_at
+              c.id,
+              c.stream_id,
+              c.type,
+              c.causation_id,
+              c.correlation_id,
+              c.metadata,
+              c.payload,
+              c.created_at,
+              pg_try_advisory_xact_lock(
+                  hashtext(c.reactor_group_id::text),
+                  hashtext(c.stream_id::text)
+              ) as lock_obtained
+              FROM #{commands_table} c
+              INNER JOIN #{reactors_table} r ON c.reactor_group_id = r.group_id
+              WHERE r.status = 'active'
+              AND c.created_at <= ? 
+              ORDER BY c.created_at ASC
           )
           SELECT *
           FROM next_command
@@ -332,11 +358,12 @@ module Sourced
               SELECT id, group_id
               FROM #{reactors_table}
               WHERE group_id = ?
+              AND status = 'active'  -- Only active reactors
           ),
           latest_offset AS (
               SELECT o.global_seq
               FROM target_reactor tr
-              JOIN #{offsets_table} o ON o.reactor_id = tr.id
+              LEFT JOIN #{offsets_table} o ON o.reactor_id = tr.id  -- LEFT JOIN to allow missing offsets
               ORDER BY o.global_seq DESC
               LIMIT 1
           ),
@@ -354,10 +381,11 @@ module Sourced
                   e.payload,
                   e.created_at,
                   pg_try_advisory_xact_lock(
-                      hashtext(?::text),
+                      hashtext(tr.group_id::text),
                       hashtext(s.id::text)
                   ) as lock_obtained
-              FROM #{events_table} e
+              FROM target_reactor tr
+              CROSS JOIN #{events_table} e  -- CROSS JOIN since we need all events
               JOIN #{streams_table} s ON e.stream_id = s.id
               LEFT JOIN latest_offset lo ON true
               WHERE e.global_seq > COALESCE(lo.global_seq, 0)
@@ -393,12 +421,14 @@ module Sourced
         @sql_for_consumer_stats ||= <<~SQL
           SELECT 
               r.group_id,
-              min(o.global_seq) as oldest_processed,
-              max(o.global_seq) as newest_processed,
-              count(*) as stream_count
-          FROM #{offsets_table} o
-          LEFT JOIN #{reactors_table} r ON o.reactor_id = r.id
-          GROUP BY r.group_id;
+              r.status,
+              COALESCE(MIN(o.global_seq), 0) AS oldest_processed,
+              COALESCE(MAX(o.global_seq), 0) AS newest_processed,
+              COUNT(o.id) AS stream_count
+          FROM #{reactors_table} r
+          LEFT JOIN #{offsets_table} o ON o.reactor_id = r.id
+          GROUP BY r.id, r.group_id, r.status
+          ORDER BY r.group_id;
         SQL
       end
 
@@ -412,8 +442,15 @@ module Sourced
         JSON.parse(json, symbolize_names: true)
       end
 
-      def serialize_command(cmd)
+      def upsert_consumer_group(group_id, status: 'active')
+        db[reactors_table]
+          .insert_conflict(target: :group_id, update: { status:, updated_at: Time.now })
+          .insert(group_id:, status:)
+      end
+
+      def serialize_command(cmd, group_id: nil)
         row = cmd.to_h.except(:seq)
+        row[:reactor_group_id] = group_id if group_id
         row[:metadata] = JSON.dump(row[:metadata]) if row[:metadata]
         row[:payload] = JSON.dump(row[:payload]) if row[:payload]
         row
