@@ -110,7 +110,7 @@ end
 class CartEmailsSaga < Sourced::Actor
   # Listen for Cart::Placed events and
   # send command to Mailer
-  react Cart::Placed do |event|
+  reaction Cart::Placed do |event|
     event.follow_with_stream_id(
       Mailer::SendEmail,
       "mailer-#{event.stream_id}",
@@ -120,7 +120,7 @@ class CartEmailsSaga < Sourced::Actor
 
   # Listen for Mailer::EmailSent events and
   # send command to Cart
-  react Mailer::EmailSent do |event|
+  reaction Mailer::EmailSent do |event|
     event.follow_with_stream_id(
       Cart::Notify,
       event.payload.cart_id,
