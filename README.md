@@ -11,7 +11,7 @@ There's many ES gems available already. The objectives here are:
 * Simple to operate: it should be as simple to run as most Ruby queuing systems.
 * Explore ES as a programming model for Ruby apps.
 
-
+A small demo app [here](https://github.com/ismasan/sourced_todo)
 
 ### The programming model
 
