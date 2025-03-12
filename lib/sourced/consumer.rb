@@ -59,5 +59,25 @@ module Sourced
 
       @consumer_info = info
     end
+
+    # Implement this in your reactors
+    # to manage exception handling in eventually-consistent workflows
+    # @example retry with exponential back off
+    #
+    #   def self.on_exception(exception, _message, group)
+    #     if group.error_context[:retry_count] < 3
+    #       later = 5 + 5 * group.error_context[:retry_count]
+    #       group.retry(later)
+    #     else
+    #       group.stop(exception)
+    #     end
+    #   end
+    #
+    # @param exception [Exception] the exception raised
+    # @param message [Sourced::Message] the event or command being handled
+    # @param group [#stop, #retry] consumer group object to update state, ie. for retries
+    def on_exception(exception, _message, group)
+      group.stop(exception)
+    end
   end
 end
