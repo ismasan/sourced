@@ -60,6 +60,15 @@ class Cart < Sourced::Actor
     event(Notified, mailer_id: cmd.payload.mailer_id)
   end
 
+  def self.on_exception(exception, _message, group)
+    if group.error_context[:retry_count] < 3
+      later = 5 + 5 * group.error_context[:retry_count]
+      group.retry(later)
+    else
+      group.stop(exception)
+    end
+  end
+
   event ItemAdded do |cart, event|
     cart.items << event.payload
   end
