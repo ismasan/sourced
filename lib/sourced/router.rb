@@ -149,25 +149,20 @@ module Sourced
         # backend.with_context_for(reactor) do |ctx|
         reactor.handle_command(cmd)
         # end
-        # rescue StandardError => e
-        #   logger.warn "[#{PID}]: error handling command #{cmd.class} with reactor #{reactor} #{e}"
-        #   # TODO: if it retries and then succeeds
-        #   # the retry count should be reset
-        #   # TODO: if an exception is raised
-        #   # we don't want to crash the worker
-        #   # but we only DO NOT WANT TO ACK THIS COMMAND
-        #   # Ie it should not be removed from the command bus
-        #   # Same for #handle_next_event_for_reactor() below
-        #   ctx = backend.reactor_error_context_for(reactor.consumer_info.group_id)
-        #   out = reactor.on_exception(e, cmd, ctx)
-        #   case out
-        #   in [:retry, Time => later]
-        #     logger.warn "[#{PID}]: retrying at #{later}"
-        #     backend.set_reactor_for_retry(reactor.consumer_info.group_id, later)
-        #   in [:stop]
-        #     logger.error "[#{PID}]: stopping reactor #{reactor}"
-        #     backend.stop_reactor(reactor.consumer_info.group_id, e)
-        #   end
+      rescue StandardError => e
+        logger.warn "[#{PID}]: error handling command #{cmd.class} with reactor #{reactor} #{e}"
+        # TODO: if it retries and then succeeds
+        # the retry count should be reset
+        # TODO: if an exception is raised
+        # we don't want to crash the worker
+        # but we also DO NOT WANT TO ACK THIS COMMAND
+        # Ie it should not be removed from the command bus
+        # Same for #handle_next_event_for_reactor() below
+        backend.updating_consumer_group(reactor.consumer_info.group_id) do |ctx|
+          reactor.on_exception(e, cmd, ctx)
+        end
+        # Do not remove command
+        false
       end
     end
 
