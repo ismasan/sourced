@@ -143,21 +143,13 @@ module Sourced
       # OR, on failure I need to mark commands in the bus as failed
       # so that they're ignored by the worker
       backend.next_command do |cmd|
-        #  TODO: handle exceptions here
-        # handle_command(cmd)
         reactor = @decider_lookup.fetch(cmd.class)
-        # backend.with_context_for(reactor) do |ctx|
         reactor.handle_command(cmd)
-        # end
+        true
       rescue StandardError => e
         logger.warn "[#{PID}]: error handling command #{cmd.class} with reactor #{reactor} #{e}"
         # TODO: if it retries and then succeeds
         # the retry count should be reset
-        # TODO: if an exception is raised
-        # we don't want to crash the worker
-        # but we also DO NOT WANT TO ACK THIS COMMAND
-        # Ie it should not be removed from the command bus
-        # Same for #handle_next_event_for_reactor() below
         backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
           reactor.on_exception(e, cmd, group)
         end

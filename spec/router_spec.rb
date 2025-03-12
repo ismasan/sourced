@@ -82,23 +82,39 @@ RSpec.describe Sourced::Router do
   let(:backend) { Sourced::Backends::TestBackend.new }
 
   describe '#dispatch_next_command' do
+    let(:cmd) { RouterTest::AddItem.new(stream_id: '123') }
+
     before do
       router.register(RouterTest::DeciderReactor)
     end
 
+    context 'with successful command handling' do
+      it 'deletes command from bus' do
+        router.dispatch_next_command
+        expect(backend.next_command).to be_nil
+      end
+    end
+
     context 'when reactor raises exception' do
-      it 'invokes .on_exception on reactor' do
-        cmd = RouterTest::AddItem.new(stream_id: '123')
+      before do
         router.schedule_commands([cmd])
         allow(RouterTest::DeciderReactor).to receive(:on_exception)
         expect(RouterTest::DeciderReactor).to receive(:handle_command).and_raise('boom')
+      end
 
+      it 'invokes .on_exception on reactor' do
         router.dispatch_next_command
+
         expect(RouterTest::DeciderReactor).to have_received(:on_exception) do |exception, cmd, group|
           expect(exception.message).to eq('boom')
           expect(cmd).to eq(cmd)
           expect(group).to respond_to(:stop)
         end
+      end
+
+      it 'does not delete command from bus, so that it can be retried' do
+        router.dispatch_next_command
+        expect(backend.next_command).to eq(cmd)
       end
     end
   end
