@@ -5,8 +5,12 @@ require 'thread'
 module Sourced
   module Backends
     class TestBackend
+      ACTIVE = 'active'
+      STOPPED = 'stopped'
+
       class Group
         attr_reader :group_id, :commands, :oldest_command_date
+        attr_accessor :status, :error_context, :retry_at
 
         Offset = Struct.new(:stream_id, :index, :locked)
 
@@ -17,14 +21,23 @@ module Sourced
           @commands = []
           @status = :active
           @oldest_command_date = nil
+          @error_context = {}
+          @retry_at = nil
           reindex
         end
 
         def active? = @status == :active
         def active_with_commands? = active? && !!@oldest_command_date
 
-        def stop(_error)
+        def stop(reason = nil)
+          @error_context[:reason] = reason if reason
           @status = :stopped
+        end
+
+        def retry(time)
+          @error_context[:retry_count] ||= 0
+          @error_context[:retry_count] += 1
+          @retry_at = time
         end
 
         def to_h
@@ -33,7 +46,14 @@ module Sourced
           newest_processed = (active_offsets.max_by(&:index)&.index || -1) + 1
           stream_count = active_offsets.size
 
-          { group_id:, status: @status.to_s, oldest_processed:, newest_processed:, stream_count: }
+          { 
+            group_id:, 
+            status: @status.to_s, 
+            oldest_processed:, 
+            newest_processed:, 
+            stream_count:,
+            retry_at:
+          }
         end
 
         def schedule_commands(commands)
@@ -176,7 +196,9 @@ module Sourced
           )
         end
 
-        private def deep_dup(hash)
+        private
+
+        def deep_dup(hash)
           hash.each.with_object(hash.dup.clear) do |(k, v), new_hash|
             new_hash[k] = v.dup
           end
@@ -259,6 +281,24 @@ module Sourced
       def register_consumer_group(group_id)
         transaction do
           @state.groups[group_id]
+        end
+      end
+
+      def updating_consumer_group(group_id, &)
+        transaction do
+          group = @state.groups[group_id]
+          group.error_context[:retry_count] ||= 0
+          yield group
+        end
+      end
+
+      # @param group_id [String]
+      def start_consumer_group(group_id)
+        transaction do
+          group = @state.groups[group_id]
+          group.error_context = {}
+          group.status = ACTIVE
+          group.retry_at = nil
         end
       end
 

@@ -335,9 +335,9 @@ module BackendExamples
         expect(stats.max_global_seq).to eq(5)
 
         expect(stats.groups).to match_array([
-          { group_id: 'group1', status: 'active', oldest_processed: 2, newest_processed: 5, stream_count: 2 },
-          { group_id: 'group2', status: 'active', oldest_processed: 3, newest_processed: 3, stream_count: 1 },
-          { group_id: 'group3', status: 'stopped', oldest_processed: 0, newest_processed: 0, stream_count: 0 }
+          { group_id: 'group1', status: 'active', retry_at: nil, oldest_processed: 2, newest_processed: 5, stream_count: 2 },
+          { group_id: 'group2', status: 'active', retry_at: nil, oldest_processed: 3, newest_processed: 3, stream_count: 1 },
+          { group_id: 'group3', status: 'stopped', retry_at: nil, oldest_processed: 0, newest_processed: 0, stream_count: 0 }
         ])
 
         #  Test that reactors with events not in the stream do not advance the cursor
@@ -362,10 +362,10 @@ module BackendExamples
         expect(group4_messages).to eq([])
 
         expect(backend.stats.groups).to match_array([
-          { group_id: 'group1', status: 'active', oldest_processed: 2, newest_processed: 5, stream_count: 2 },
-          { group_id: 'group2', status: 'active', oldest_processed: 3, newest_processed: 3, stream_count: 1 },
-          { group_id: 'group3', status: 'stopped', oldest_processed: 0, newest_processed: 0, stream_count: 0 },
-          { group_id: 'group4', status: 'active', oldest_processed: 0, newest_processed: 0, stream_count: 0 }
+          { group_id: 'group1', status: 'active', retry_at: nil, oldest_processed: 2, newest_processed: 5, stream_count: 2 },
+          { group_id: 'group2', status: 'active', retry_at: nil, oldest_processed: 3, newest_processed: 3, stream_count: 1 },
+          { group_id: 'group3', status: 'stopped', retry_at: nil, oldest_processed: 0, newest_processed: 0, stream_count: 0 },
+          { group_id: 'group4', status: 'active', retry_at: nil, oldest_processed: 0, newest_processed: 0, stream_count: 0 }
         ])
 
         # Now append an event that Reactor4 cares about
@@ -379,10 +379,10 @@ module BackendExamples
         expect(group4_messages).to eq([evt_a3])
 
         expect(backend.stats.groups).to match_array([
-          { group_id: 'group1', status: 'active', oldest_processed: 2, newest_processed: 5, stream_count: 2 },
-          { group_id: 'group2', status: 'active', oldest_processed: 3, newest_processed: 3, stream_count: 1 },
-          { group_id: 'group3', status: 'stopped', oldest_processed: 0, newest_processed: 0, stream_count: 0 },
-          { group_id: 'group4', status: 'active', oldest_processed: 6, newest_processed: 6, stream_count: 1 }
+          { group_id: 'group1', status: 'active', retry_at: nil, oldest_processed: 2, newest_processed: 5, stream_count: 2 },
+          { group_id: 'group2', status: 'active', retry_at: nil, oldest_processed: 3, newest_processed: 3, stream_count: 1 },
+          { group_id: 'group3', status: 'stopped', retry_at: nil, oldest_processed: 0, newest_processed: 0, stream_count: 0 },
+          { group_id: 'group4', status: 'active', retry_at: nil, oldest_processed: 6, newest_processed: 6, stream_count: 1 }
         ])
 
         #  Test that #reserve_next_for returns next event, or nil
@@ -526,6 +526,43 @@ module BackendExamples
 
         expect(received.map(&:type)).to eq(%w[tests.something_happened1 tests.something_happened1])
         expect(received.map(&:seq)).to eq([1, 2])
+      end
+    end
+
+    describe '#updating_consumer_group' do
+      specify '#retry_at(Time)' do
+        later = Time.now + 10
+        counts = []
+        backend.register_consumer_group('group1')
+        backend.updating_consumer_group('group1') do |group|
+          counts << group.error_context[:retry_count]
+          group.retry(later)
+        end
+        backend.updating_consumer_group('group1') do |group|
+          counts << group.error_context[:retry_count]
+          group.retry(later)
+        end
+        gr = backend.stats.groups.first
+        expect(gr[:group_id]).to eq('group1')
+        expect(gr[:status]).to eq('active')
+        expect(gr[:retry_at]).to eq(later)
+        expect(counts).to eq([0, 1])
+      end
+
+      specify '#stop(error)' do
+        backend.register_consumer_group('group1')
+        backend.updating_consumer_group('group1') do |group|
+          group.stop(StandardError.new('boom'))
+        end
+
+        gr = backend.stats.groups.first
+        expect(gr[:group_id]).to eq('group1')
+        expect(gr[:status]).to eq('stopped')
+
+        backend.start_consumer_group('group1')
+        gr = backend.stats.groups.first
+        expect(gr[:group_id]).to eq('group1')
+        expect(gr[:status]).to eq('active')
       end
     end
   end

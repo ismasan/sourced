@@ -141,6 +141,64 @@ module Sourced
           .insert(group_id:, status: ACTIVE)
       end
 
+      class GroupUpdater
+        attr_reader :group_id, :updates, :error_context
+
+        def initialize(group_id, row, logger)
+          @group_id = group_id
+          @row = row
+          @logger = logger
+          @error_context = row[:error_context]
+          @updates = { error_context: @error_context.dup }
+        end
+
+        def stop(reason = nil)
+          @logger.error "stopping consumer group #{group_id}"
+          @updates[:status] = STOPPED
+          @updates[:updated_at] = Time.now
+          @updates[:error_context][:reason] = reason if reason
+        end
+
+        def retry(time)
+          @logger.warn "retrying consumer group #{group_id} at #{time}"
+          @updates[:updated_at] = Time.now
+          @updates[:retry_at] = time
+          @updates[:error_context][:retry_count] += 1
+        end
+      end
+
+      # Fetch and update a consumer group in a transaction
+      # Used by Router to stop / retry consumer groups
+      # when handing exceptions.
+      #
+      # @example
+      #   backend.updating_consumer_group(group_id) do |group|
+      #     group.stop('some reason')
+      #   end
+      #
+      # @param group_id [String]
+      # @yield [GroupUpdater]
+      def updating_consumer_group(group_id, &)
+        dataset = db[consumer_groups_table].where(group_id:)
+        group_row = dataset.for_update.first
+        raise ArgumentError, "Consumer group #{group_id} not found" unless group_row
+
+        ctx = group_row[:error_context] ? parse_json(group_row[:error_context]) : {}
+        ctx[:retry_count] ||= 0
+        group_row[:error_context] = ctx
+        group = GroupUpdater.new(group_id, group_row, logger)
+        yield group
+        updates = group.updates
+        updates[:error_context] = JSON.dump(updates[:error_context])
+        dataset.update(updates)
+      end
+
+      # @param group_id [String]
+      def start_consumer_group(group_id)
+        dataset = db[consumer_groups_table].where(group_id: group_id)
+        dataset.update(status: ACTIVE, retry_at: nil, error_context: nil)
+      end
+
       def stop_consumer_group(group_id, error = nil)
         db[consumer_groups_table]
           .insert_conflict(target: :group_id, update: { status: STOPPED, updated_at: Time.now })
@@ -340,7 +398,9 @@ module Sourced
               ) as lock_obtained
               FROM #{commands_table} c
               INNER JOIN #{consumer_groups_table} r ON c.consumer_group_id = r.group_id
-              WHERE r.status = '#{ACTIVE}'
+              WHERE 
+                r.status = '#{ACTIVE}'
+                AND (r.retry_at IS NULL OR r.retry_at <= now())
               AND c.created_at <= ? 
               ORDER BY c.created_at ASC
           )
@@ -425,6 +485,7 @@ module Sourced
           SELECT 
               r.group_id,
               r.status,
+              r.retry_at,
               COALESCE(MIN(o.global_seq), 0) AS oldest_processed,
               COALESCE(MAX(o.global_seq), 0) AS newest_processed,
               COUNT(o.id) AS stream_count
