@@ -43,7 +43,7 @@ module Sourced
 
     def handle_events(events)
       evolve(state, events)
-      save
+      save(state, events)
       [] # no commands
     end
 
@@ -55,9 +55,9 @@ module Sourced
       nil
     end
 
-    def save
+    def save(state, events)
       backend.transaction do
-        run_sync_blocks(state, nil, [])
+        run_sync_blocks(state, nil, events)
       end
     end
 
