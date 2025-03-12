@@ -158,8 +158,8 @@ module Sourced
         # but we also DO NOT WANT TO ACK THIS COMMAND
         # Ie it should not be removed from the command bus
         # Same for #handle_next_event_for_reactor() below
-        backend.updating_consumer_group(reactor.consumer_info.group_id) do |ctx|
-          reactor.on_exception(e, cmd, ctx)
+        backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
+          reactor.on_exception(e, cmd, group)
         end
         # Do not remove command
         false

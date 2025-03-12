@@ -81,21 +81,27 @@ RSpec.describe Sourced::Router do
 
   let(:backend) { Sourced::Backends::TestBackend.new }
 
-  # describe '#dispatch_next_command' do
-  #   before do
-  #     router.register(RouterTest::DeciderReactor)
-  #   end
-  #
-  #   context 'when reactor raises exception' do
-  #     it 'invokes .on_exception on reactor' do
-  #       cmd = RouterTest::AddItem.new
-  #       router.backend.schedule_commands([cmd])
-  #       expect(RouterTest::DeciderReactor).to receive(:handle_command).and_raise('boom')
-  #
-  #       router.dispatch_next_command
-  #     end
-  #   end
-  # end
+  describe '#dispatch_next_command' do
+    before do
+      router.register(RouterTest::DeciderReactor)
+    end
+
+    context 'when reactor raises exception' do
+      it 'invokes .on_exception on reactor' do
+        cmd = RouterTest::AddItem.new(stream_id: '123')
+        router.schedule_commands([cmd])
+        allow(RouterTest::DeciderReactor).to receive(:on_exception)
+        expect(RouterTest::DeciderReactor).to receive(:handle_command).and_raise('boom')
+
+        router.dispatch_next_command
+        expect(RouterTest::DeciderReactor).to have_received(:on_exception) do |exception, cmd, group|
+          expect(exception.message).to eq('boom')
+          expect(cmd).to eq(cmd)
+          expect(group).to respond_to(:stop)
+        end
+      end
+    end
+  end
 
   describe '#register' do
     it 'registers group id with configured backend' do
