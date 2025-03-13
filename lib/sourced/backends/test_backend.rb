@@ -267,7 +267,9 @@ module Sourced
         start_from = reactor.consumer_info.start_from.call
         transaction do
           group = @state.groups[group_id]
-          group.reserve_next(reactor.handled_events, start_from, &) if group.active?
+          if group.active? && (group.retry_at.nil? || group.retry_at <= Time.now)
+            group.reserve_next(reactor.handled_events, start_from, &)
+          end
         end
       end
 
