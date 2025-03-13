@@ -170,6 +170,13 @@ module Sourced
         end
 
         event
+      rescue StandardError => e
+        logger.warn "[#{PID}]: error handling event #{event.class} with reactor #{reactor} #{e}"
+        backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
+          reactor.on_exception(e, event, group)
+        end
+        # Do not ACK event for reactor
+        false
       end
     end
 

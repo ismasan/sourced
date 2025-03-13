@@ -105,9 +105,9 @@ RSpec.describe Sourced::Router do
       it 'invokes .on_exception on reactor' do
         router.dispatch_next_command
 
-        expect(RouterTest::DeciderReactor).to have_received(:on_exception) do |exception, cmd, group|
+        expect(RouterTest::DeciderReactor).to have_received(:on_exception) do |exception, message, group|
           expect(exception.message).to eq('boom')
-          expect(cmd).to eq(cmd)
+          expect(message).to eq(cmd)
           expect(group).to respond_to(:stop)
         end
       end
@@ -115,6 +115,34 @@ RSpec.describe Sourced::Router do
       it 'does not delete command from bus, so that it can be retried' do
         router.dispatch_next_command
         expect(backend.next_command).to eq(cmd)
+      end
+    end
+  end
+
+  describe '#handle_next_event_for_reactor' do
+    let(:event) { RouterTest::ItemAdded.new(stream_id: '123') }
+
+    before do
+      backend.append_to_stream('123', [event])
+      allow(RouterTest::DeciderReactor).to receive(:on_exception)
+      expect(RouterTest::DeciderReactor).to receive(:handle_events).and_raise('boom')
+    end
+
+    context 'when reactor raises exception' do
+      it 'invokes .on_exception on reactor' do
+        router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
+
+        expect(RouterTest::DeciderReactor).to have_received(:on_exception) do |exception, message, group|
+          expect(exception.message).to eq('boom')
+          expect(message).to eq(event)
+          expect(group).to respond_to(:stop)
+        end
+      end
+
+      it 'does not acknowledge event for reactor, so that it can be retried' do
+        router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
+        groups = backend.stats.groups
+        expect(groups.first[:stream_count]).to eq(0)
       end
     end
   end

@@ -243,12 +243,9 @@ module BackendExamples
       it 'schedules messages and reserves them in order of arrival' do
         cmd_a = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         cmd_b = Tests::DoSomething.parse(stream_id: 's2', seq: 1, payload: { account_id: 2 })
-        evt_a1 = cmd_a.with(metadata: { tid: 'evt_a1' }).follow_with_seq(Tests::SomethingHappened1, 2,
-                                                                         account_id: cmd_a.payload.account_id)
-        evt_a2 = cmd_a.with(metadata: { tid: 'evt_a2' }).follow_with_seq(Tests::SomethingHappened1, 3,
-                                                                         account_id: cmd_a.payload.account_id)
-        evt_b1 = cmd_b.with(metadata: { tid: 'evt_b1' }).follow_with_seq(Tests::SomethingHappened1, 2,
-                                                                         account_id: cmd_b.payload.account_id)
+        evt_a1 = cmd_a.with(metadata: { tid: 'evt_a1' }).follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd_a.payload.account_id)
+        evt_a2 = cmd_a.with(metadata: { tid: 'evt_a2' }).follow_with_seq(Tests::SomethingHappened1, 3, account_id: cmd_a.payload.account_id)
+        evt_b1 = cmd_b.with(metadata: { tid: 'evt_b1' }).follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd_b.payload.account_id)
 
         reactor1 = Class.new do
           def self.consumer_info
@@ -293,8 +290,8 @@ module BackendExamples
         group2_messages = []
         group3_messages = []
 
-        #  Test that concurrent consumers for the same group
-        #  never process events for the same stream
+        # Test that concurrent consumers for the same group
+        # never process events for the same stream
         Sync do |task|
           task.async do
             backend.reserve_next_for_reactor(reactor1) do |msg|
@@ -326,8 +323,11 @@ module BackendExamples
         expect(group3_messages).to eq([])
 
         # Test that NOOP handlers still advance the cursor
-        backend.reserve_next_for_reactor(reactor2) { |_msg| }
-        #
+        backend.reserve_next_for_reactor(reactor2) { |_msg| true }
+
+        # Test returning falsey does not advance the cursor
+        backend.reserve_next_for_reactor(reactor2) { |_msg| false }
+
         # Verify state of groups with stats
         stats = backend.stats
 

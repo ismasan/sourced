@@ -110,8 +110,8 @@ module Sourced
           end
 
           if evt
-            if block_given?
-              yield(evt)
+            if block_given? && yield(evt)
+              # ACK reactor/event if block returns truthy
               offset.index = index
             end
             offset.locked = false
