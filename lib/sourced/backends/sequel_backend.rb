@@ -173,6 +173,7 @@ module Sourced
         def stop(reason = nil)
           @logger.error "stopping consumer group #{group_id}"
           @updates[:status] = STOPPED
+          @updates[:retry_at] = nil
           @updates[:updated_at] = Time.now
           @updates[:error_context][:reason] = reason if reason
         end
@@ -440,10 +441,11 @@ module Sourced
 
         <<~SQL
           WITH target_group AS (
-              SELECT id, group_id
+              SELECT id, group_id, retry_at
               FROM #{consumer_groups_table}
               WHERE group_id = ?
               AND status = '#{ACTIVE}'  -- Only active consumer groups
+              AND (retry_at IS NULL OR retry_at <= now())
           ),
           latest_offset AS (
               SELECT o.global_seq
