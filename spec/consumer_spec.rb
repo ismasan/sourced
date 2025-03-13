@@ -85,8 +85,9 @@ RSpec.describe Sourced::Consumer do
     it 'stops the consumer group by default' do
       group = double('group', error_context: { retry_count: 3 }, stop: true)
       exception = StandardError.new('test error')
-      TestConsumer::TestConsumer.on_exception(exception, nil, group)
-      expect(group).to have_received(:stop).with(exception)
+      message = { id: 1 }
+      TestConsumer::TestConsumer.on_exception(exception, message, group)
+      expect(group).to have_received(:stop).with(exception:, message:)
     end
   end
 end
