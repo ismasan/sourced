@@ -211,16 +211,20 @@ module Sourced
         dataset.update(updates)
       end
 
+      # Start a consumer group that has been stopped.
+      #
       # @param group_id [String]
       def start_consumer_group(group_id)
         dataset = db[consumer_groups_table].where(group_id: group_id)
         dataset.update(status: ACTIVE, retry_at: nil, error_context: nil)
       end
 
-      def stop_consumer_group(group_id, error = nil)
-        db[consumer_groups_table]
-          .insert_conflict(target: :group_id, update: { status: STOPPED, updated_at: Time.now })
-          .insert(group_id:, status: STOPPED)
+      # @param group_id [String]
+      # @param reason [#inspect, NilClass]
+      def stop_consumer_group(group_id, reason = nil)
+        updating_consumer_group(group_id) do |group|
+          group.stop(reason)
+        end
       end
 
       def ack_on(group_id, event_id, &)
