@@ -109,7 +109,26 @@ module Sourced
         raise Sourced::ConcurrentAppendError, e.message
       end
 
+      # Reserve next event for a reactor, based on the reactor's #handled_events list
+      # This fetches the next un-aknowledged event for the reactor, and processes it in a transaction
+      # which aquires a lock on the event's stream_id and the reactor's group_id
+      # So that no other reactor instance in the same group can process the same stream concurrently.
+      # This way, events for the same stream are guaranteed to be processed linearly for each reactor group.
+      # If the given block returns truthy, the event is marked as acknowledged for this reactor group
+      # (ie. it won't be processed again by the same group).
+      # If the block returns falsey, the event is NOT aknowledged and will be retried,
+      # unless the block also stops the reactor, which is the default behaviour when an exception is raised.
+      # See Router#handle_next_event_for_reactor,
+      #
+      # @example
+      #   backend.reserve_next_for_reactor(reactor) do |event|
+      #     # process event here
+      #     true # ACK event
+      #   end
+      #
       # @param reactor [Sourced::ReactorInterface]
+      # @yieldparam [Sourced::Message]
+      # @yieldreturn [Boolean] whether to ACK the event for this reactor group and stream ID.
       def reserve_next_for_reactor(reactor, &)
         group_id = reactor.consumer_info.group_id
         handled_events = reactor.handled_events.map(&:type)
@@ -125,9 +144,8 @@ module Sourced
 
           event = deserialize_event(row)
 
-          if block_given?
-            yield(event)
-            # ACK
+          if block_given? && yield(event)
+            # ACK if block returns truthy
             ack_event(group_id, row[:stream_id_fk], row[:global_seq])
           end
 
