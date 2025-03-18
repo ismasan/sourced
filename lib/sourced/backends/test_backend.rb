@@ -34,9 +34,8 @@ module Sourced
           @status = :stopped
         end
 
-        def retry(time)
-          @error_context[:retry_count] ||= 0
-          @error_context[:retry_count] += 1
+        def retry(time, ctx = {})
+          @error_context.merge!(ctx)
           @retry_at = time
         end
 
@@ -289,7 +288,6 @@ module Sourced
       def updating_consumer_group(group_id, &)
         transaction do
           group = @state.groups[group_id]
-          group.error_context[:retry_count] ||= 0
           yield group
         end
       end
