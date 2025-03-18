@@ -178,11 +178,11 @@ module Sourced
           @updates[:error_context][:reason] = reason if reason
         end
 
-        def retry(time)
+        def retry(time, ctx = {})
           @logger.warn "retrying consumer group #{group_id} at #{time}"
           @updates[:updated_at] = Time.now
           @updates[:retry_at] = time
-          @updates[:error_context][:retry_count] += 1
+          @updates[:error_context].merge!(ctx)
         end
       end
 
@@ -203,7 +203,6 @@ module Sourced
         raise ArgumentError, "Consumer group #{group_id} not found" unless group_row
 
         ctx = group_row[:error_context] ? parse_json(group_row[:error_context]) : {}
-        ctx[:retry_count] ||= 0
         group_row[:error_context] = ctx
         group = GroupUpdater.new(group_id, group_row, logger)
         yield group

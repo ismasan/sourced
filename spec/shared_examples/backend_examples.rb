@@ -578,7 +578,7 @@ module BackendExamples
         backend.register_consumer_group('group1')
         backend.updating_consumer_group('group1') do |group|
           counts << group.error_context[:retry_count]
-          group.retry(later)
+          group.retry(later, retry_count: 1)
         end
         backend.updating_consumer_group('group1') do |group|
           counts << group.error_context[:retry_count]
@@ -588,7 +588,7 @@ module BackendExamples
         expect(gr[:group_id]).to eq('group1')
         expect(gr[:status]).to eq('active')
         expect(gr[:retry_at]).to eq(later)
-        expect(counts).to eq([0, 1])
+        expect(counts).to eq([nil, 1])
       end
 
       specify '#stop(error)' do
