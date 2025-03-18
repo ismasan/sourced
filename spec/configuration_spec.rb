@@ -9,6 +9,10 @@ RSpec.describe Sourced::Configuration do
     expect(config.backend).to be_a(Sourced::Backends::TestBackend)
   end
 
+  it 'has a default #error_strategy' do
+    expect(config.error_strategy).to be_a(Sourced::ErrorStrategy)
+  end
+
   describe '#backend=' do
     it 'can configure backend with a Sequel database' do
       config.backend = Sequel.sqlite
