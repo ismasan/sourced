@@ -28,7 +28,7 @@ module Sourced
     ]
 
     attr_accessor :logger
-    attr_reader :backend, :error_strategy
+    attr_reader :backend
 
     def initialize
       @logger = Console
@@ -47,6 +47,36 @@ module Sourced
                  else
                    BackendInterface.parse(bnd)
                  end
+    end
+
+    # Assign an error strategy
+    # @param strategy [ErrorStrategy, #call(Exception, Sourced::Message, Group)]
+    # @raise [ArgumentError] if strategy does not respond to #call
+    def error_strategy=(strategy)
+      raise ArgumentError, 'Must respond to #call(Exception, Sourced::Message, Group)' unless strategy.respond_to?(:call)
+
+      @error_strategy = strategy
+    end
+
+    # Configure a built-in Sourced::ErrorStrategy
+    # @example
+    #   config.error_strategy do |s|
+    #     s.retry(times: 30, after: 50, backoff: ->(retry_after, retry_count) { retry_after * retry_count })
+    #
+    #     s.on_retry do |n, exception, message, later| 
+    #       puts "Retrying #{n} times" }
+    #     end
+    #
+    #     s.on_stop do |exception, message|
+    #       Sentry.capture_exception(exception)
+    #     end
+    #   end
+    #
+    # @yieldparam s [ErrorStrategy]
+    def error_strategy(&blk)
+      return @error_strategy unless block_given?
+
+      self.error_strategy = ErrorStrategy.new(&blk)
     end
   end
 end
