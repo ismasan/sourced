@@ -15,6 +15,10 @@ module Sourced
         instance.register(...)
       end
 
+      def schedule_commands(commands)
+        instance.schedule_commands(commands)
+      end
+
       def handle_command(command)
         instance.handle_command(command)
       end
@@ -69,7 +73,23 @@ module Sourced
         end
       end
 
-      raise InvalidReactorError, "#{thing.inspect} is not a valid Decider or Reactor interface" unless regs.positive?
+      if regs.positive?
+        backend.register_consumer_group(thing.consumer_info.group_id)
+      else
+        raise InvalidReactorError, "#{thing.inspect} is not a valid Decider or Reactor interface"
+      end
+    end
+
+    # Schedule commands for later processing
+    # commands are scheduled with the group_id or their target reactor
+    # So that we only fetch the next available commands for ACTIVE reactors.
+    # @param [Array<Sourced::Message>] commands
+    def schedule_commands(commands)
+      commands = Array(commands)
+      grouped = commands.group_by { |cmd| @decider_lookup.fetch(cmd.class).consumer_info.group_id }
+      grouped.each do |group_id, cmds|
+        backend.schedule_commands(cmds, group_id:)
+      end
     end
 
     def handle_command(command)
@@ -88,19 +108,6 @@ module Sourced
       # Also this could potential lead to infinite recursion!
       reactors.each do |r|
         handle_and_ack_events_for_reactor(r, events)
-      end
-    end
-
-    def handle_next_event_for_reactor(reactor, process_name = nil)
-      backend.reserve_next_for_reactor(reactor) do |event|
-        log_event('handling event', reactor, event, process_name)
-        commands = reactor.handle_events([event])
-        if commands.any?
-          # TODO: handle decider errors
-          backend.schedule_commands(commands)
-        end
-
-        event
       end
     end
 
@@ -125,10 +132,51 @@ module Sourced
       end
     end
 
+    # These two are invoked by background workers
+    # Here we want to handle exceptions
+    # and trigger retries if needed
     def dispatch_next_command
+      # TODO: I need to get the next available command
+      # for a reactor that is ACTIVE
+      # so commands in the bus need to know what reactor group_id
+      # they belong to
+      # OR, on failure I need to mark commands in the bus as failed
+      # so that they're ignored by the worker
       backend.next_command do |cmd|
-        #  TODO: error handling
-        handle_command(cmd)
+        reactor = @decider_lookup.fetch(cmd.class)
+        reactor.handle_command(cmd)
+        true
+      rescue StandardError => e
+        logger.warn "[#{PID}]: error handling command #{cmd.class} with reactor #{reactor} #{e}"
+        # TODO: if it retries and then succeeds
+        # the retry count should be reset
+        backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
+          reactor.on_exception(e, cmd, group)
+        end
+        # Do not remove command
+        false
+      end
+    end
+
+    def handle_next_event_for_reactor(reactor, process_name = nil)
+      backend.reserve_next_for_reactor(reactor) do |event|
+        log_event('handling event', reactor, event, process_name)
+        #  TODO: handle exceptions here
+        commands = reactor.handle_events([event])
+        if commands.any?
+          # TODO: this schedules commands that will be picked up
+          # by #dispatch_next_command above on the worker's next tick
+          schedule_commands(commands)
+        end
+
+        event
+      rescue StandardError => e
+        logger.warn "[#{PID}]: error handling event #{event.class} with reactor #{reactor} #{e}"
+        backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
+          reactor.on_exception(e, event, group)
+        end
+        # Do not ACK event for reactor
+        false
       end
     end
 

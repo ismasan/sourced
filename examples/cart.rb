@@ -60,6 +60,15 @@ class Cart < Sourced::Actor
     event(Notified, mailer_id: cmd.payload.mailer_id)
   end
 
+  def self.on_exception(exception, _message, group)
+    if group.error_context[:retry_count] < 3
+      later = 5 + 5 * group.error_context[:retry_count]
+      group.retry(later)
+    else
+      group.stop(exception)
+    end
+  end
+
   event ItemAdded do |cart, event|
     cart.items << event.payload
   end
@@ -110,7 +119,7 @@ end
 class CartEmailsSaga < Sourced::Actor
   # Listen for Cart::Placed events and
   # send command to Mailer
-  react Cart::Placed do |event|
+  reaction Cart::Placed do |event|
     event.follow_with_stream_id(
       Mailer::SendEmail,
       "mailer-#{event.stream_id}",
@@ -120,7 +129,7 @@ class CartEmailsSaga < Sourced::Actor
 
   # Listen for Mailer::EmailSent events and
   # send command to Cart
-  react Mailer::EmailSent do |event|
+  reaction Mailer::EmailSent do |event|
     event.follow_with_stream_id(
       Cart::Notify,
       event.payload.cart_id,

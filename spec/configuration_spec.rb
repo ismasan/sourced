@@ -9,6 +9,28 @@ RSpec.describe Sourced::Configuration do
     expect(config.backend).to be_a(Sourced::Backends::TestBackend)
   end
 
+  it 'has a default #error_strategy' do
+    expect(config.error_strategy).to be_a(Sourced::ErrorStrategy)
+  end
+
+  specify '#error_strategy=' do
+    st = Sourced::ErrorStrategy.new
+    config.error_strategy = st
+    expect(config.error_strategy).to eq(st)
+  end
+
+  describe '#error_strategy(&block)' do
+    it 'configures the error strategy with a block' do
+      config.error_strategy do |s|
+        s.retry(times: 30, after: 50)
+      end
+
+      expect(config.error_strategy).to be_a(Sourced::ErrorStrategy)
+      expect(config.error_strategy.max_retries).to eq(30)
+      expect(config.error_strategy.retry_after).to eq(50)
+    end
+  end
+
   describe '#backend=' do
     it 'can configure backend with a Sequel database' do
       config.backend = Sequel.sqlite

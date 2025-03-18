@@ -464,7 +464,71 @@ UpdateEmail = Sourced::Command.define('accounts.update_email') do
 end
 ```
 
+### Error handling
 
+Sourced workflows are eventually-consistent by default. This means that commands and events are handled in background processes, and any exceptions raised can't be immediatly surfaced back to the user (and, there might not be a user anyway!).
+
+Most "domain errors" in command handlers should be handled by the developer and recorded as domain events, so that the domain can react and/or compensate for them.
+
+To handle true _exceptions_ (code or data bugs, network or IO exceptions) Sourced provides a default error strategy that will "stop" the affected consumer group (the Postgres backend will log the exception and offending message in the `consumer_groups` table).
+
+You can configure the error strategy with retries and exponential backoff, as well as `on_retry` and `on_stop` callbacks.
+
+```ruby
+Sourced.configure do |config|
+  # config.backend = Sequel.connect(ENV.fetch('DATABASE_URL'))
+  config.error_strategy do |s|
+    s.retry(
+      # Retry up to 3 times
+      times: 3,
+      # Wait 5 seconds before retrying
+      after: 5, 
+      # Custom backoff: given after=5, retries in 5, 10 and 15 seconds before stopping
+      backoff: ->(retry_after, retry_count) { retry_after * retry_count }
+    )
+    
+    # Trigger this callback on each retry
+    s.on_retry do |n, exception, message, later|
+      LOGGER.info("Retrying #{n} times")
+    end
+
+    # Finally, trigger this callback
+    # after all retries have failed and the consumer group is stopped.
+    s.on_stop do |exception, message|
+      Sentry.capture_exception(exception)
+    end
+  end
+end
+```
+
+#### Custom error strategy
+
+You can also configure your own error strategy. It must respond to `#call(exception, message, group)`
+
+```ruby
+CUSTOM_STRATEGY = proc do |exception, message, group|
+  case exception
+  when Faraday::Error
+    group.retry(Time.now + 10)
+  else
+    group.stop(exception)
+  end
+end
+
+Sourced.configure do |config|
+  # Configure backend, etc
+  config.error_strategy = CUSTOM_STRATEGY
+end
+```
+
+### Stopping and starting consumer groups programmatically.
+
+`Sourced.config.backend` provides an API for stopping and starting consumer groups. For example to resume groups that were stopped by raised exceptions, after the error has been corrected.
+
+```ruby
+Sourced.config.backend.stop_consumer_group('Carts::Listings')
+Sourced.config.backend.start_consumer_group('Carts::Listings')
+```
 
 ## Rails integration
 

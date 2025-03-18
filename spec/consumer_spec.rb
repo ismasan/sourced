@@ -80,4 +80,14 @@ RSpec.describe Sourced::Consumer do
       expect(klass.consumer_info.async).to be(false)
     end
   end
+
+  describe '.on_exception' do
+    it 'stops the consumer group by default' do
+      group = double('group', error_context: {}, stop: true)
+      exception = StandardError.new('test error')
+      message = { id: 1 }
+      TestConsumer::TestConsumer.on_exception(exception, message, group)
+      expect(group).to have_received(:stop).with(exception:, message:)
+    end
+  end
 end

@@ -263,14 +263,14 @@ module Sourced
         define_method("#{cmd_name}_async") do |**payload|
           cmd = cmd_class.new(stream_id: id, payload:)
           cmd.tap do |c|
-            Sourced.config.backend.schedule_commands([c]) if c.valid?
+            Sourced.schedule_commands([c]) if c.valid?
           end
         end
 
         define_method("#{cmd_name}_later") do |time, **payload|
           cmd = cmd_class.new(stream_id: id, payload:).delay(time)
           cmd.tap do |c|
-            Sourced.config.backend.schedule_commands([c]) if c.valid?
+            Sourced.schedule_commands([c]) if c.valid?
           end
         end
       end

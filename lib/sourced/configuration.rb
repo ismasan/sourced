@@ -3,6 +3,7 @@
 require 'console' #  comes with async gem
 require 'sourced/types'
 require 'sourced/backends/test_backend'
+require 'sourced/error_strategy'
 
 module Sourced
   # Configure a Sourced app.
@@ -32,6 +33,7 @@ module Sourced
     def initialize
       @logger = Console
       @backend = Backends::TestBackend.new
+      @error_strategy = ErrorStrategy.new
     end
 
     # Configure the backend for the app.
@@ -45,6 +47,36 @@ module Sourced
                  else
                    BackendInterface.parse(bnd)
                  end
+    end
+
+    # Assign an error strategy
+    # @param strategy [ErrorStrategy, #call(Exception, Sourced::Message, Group)]
+    # @raise [ArgumentError] if strategy does not respond to #call
+    def error_strategy=(strategy)
+      raise ArgumentError, 'Must respond to #call(Exception, Sourced::Message, Group)' unless strategy.respond_to?(:call)
+
+      @error_strategy = strategy
+    end
+
+    # Configure a built-in Sourced::ErrorStrategy
+    # @example
+    #   config.error_strategy do |s|
+    #     s.retry(times: 30, after: 50, backoff: ->(retry_after, retry_count) { retry_after * retry_count })
+    #
+    #     s.on_retry do |n, exception, message, later| 
+    #       puts "Retrying #{n} times" }
+    #     end
+    #
+    #     s.on_stop do |exception, message|
+    #       Sentry.capture_exception(exception)
+    #     end
+    #   end
+    #
+    # @yieldparam s [ErrorStrategy]
+    def error_strategy(&blk)
+      return @error_strategy unless block_given?
+
+      self.error_strategy = ErrorStrategy.new(&blk)
     end
   end
 end
