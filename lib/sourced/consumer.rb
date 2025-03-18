@@ -78,7 +78,7 @@ module Sourced
     # @param message [Sourced::Message] the event or command being handled
     # @param group [#stop, #retry] consumer group object to update state, ie. for retries
     def on_exception(exception, message, group)
-      group.stop(exception:, message:)
+      Sourced.config.error_strategy.call(exception, message, group)
     end
   end
 end

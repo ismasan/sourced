@@ -3,6 +3,7 @@
 require 'console' #  comes with async gem
 require 'sourced/types'
 require 'sourced/backends/test_backend'
+require 'sourced/error_strategy'
 
 module Sourced
   # Configure a Sourced app.
@@ -27,11 +28,12 @@ module Sourced
     ]
 
     attr_accessor :logger
-    attr_reader :backend
+    attr_reader :backend, :error_strategy
 
     def initialize
       @logger = Console
       @backend = Backends::TestBackend.new
+      @error_strategy = ErrorStrategy.new
     end
 
     # Configure the backend for the app.
