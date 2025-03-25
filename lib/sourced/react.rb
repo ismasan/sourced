@@ -38,12 +38,15 @@ module Sourced
     class StreamDispatcher
       attr_reader :stream_id, :commands
 
-      def initialize(stream_id, source_event, reactor_class)
+      def initialize(stream_id, source_event, producer_reactor, target_reactor)
         @stream_id = stream_id
         @source_event = source_event
-        @reactor_class = reactor_class
+        @producer_reactor = producer_reactor
+        @target_reactor = target_reactor
         @commands = []
       end
+
+      def inspect = "#<#{self.class} stream_id: #{stream_id}, source_event: #{source_event.inspect}>"
 
       # Build a command instance
       # with metadata from the source event
@@ -53,11 +56,11 @@ module Sourced
       # @yieldparam cmd [Sourced::Command]
       # @return [Sourced::Command]
       def command(command_class, payload = {}, &)
-        command_class = reactor_class[command_class] if command_class.is_a?(Symbol)
+        command_class = target_reactor[command_class] if command_class.is_a?(Symbol)
 
         cmd = source_event
-              .follow(command_class, payload)
-              .with_metadata(producer: reactor_class.consumer_info.group_id)
+              .follow_with_stream_id(command_class, stream_id, payload)
+              .with_metadata(producer: producer_reactor.consumer_info.group_id)
 
         cmd = yield(cmd) if block_given?
         @commands << cmd
@@ -66,7 +69,7 @@ module Sourced
 
       private
 
-      attr_reader :source_event, :reactor_class
+      attr_reader :source_event, :producer_reactor, :target_reactor
     end
 
     # @param events [Array<Sourced::Event>]
@@ -106,9 +109,10 @@ module Sourced
     # @param stream_id [String, #stream_id]
     # @return [StreamDispatcher]
     def stream_for(stream_id)
+      target_reactor = stream_id.respond_to?(:resolve_message_class) ? stream_id : self.class
       stream_id = stream_id.stream_id if stream_id.respond_to?(:stream_id)
       key = [stream_id, @__event_for_reaction.id]
-      @__stream_dispatchers[key] ||= StreamDispatcher.new(stream_id, @__event_for_reaction, self.class)
+      @__stream_dispatchers[key] ||= StreamDispatcher.new(stream_id, @__event_for_reaction, self.class, target_reactor)
     end
 
     module ClassMethods
