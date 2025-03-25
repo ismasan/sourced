@@ -318,14 +318,17 @@ module Sourced
 
       # Support defining event reactions with a symbol
       # pointing to an event class defined locally with .event
+      # See Sourced::React#reaction
       # TODO: should this be defined in Evolve?
       # @example
       #   reaction :item_added do |event|
-      #     command :do_something
+      #     stream = stream_for(event)
+      #     stream.command :do_something
       #   end
       #
       #   reaction ItemAdded do |event|
-      #     command DoSomething
+      #     stream = stream_for(event)
+      #     stream.command DoSomething
       #   end
       #
       # @param event_name [Symbol, Class]
@@ -542,24 +545,6 @@ module Sourced
       )
       uncommitted_events << evt
       evolve(state, [evt])
-    end
-
-    # Dispatch a command from within a .react block
-    # Override React.command to allow resolving command classes from symbols
-    # @example
-    #
-    #  react SomethingHappened do |event|
-    #    command :do_something, field1: 'foo', field2: 'bar'
-    #  end
-    #
-    # TODO: test this
-    def command(command_name, payload = {})
-      return super unless command_name.is_a?(Symbol)
-
-      # Clean this up
-      command_class = self.class[command_name]
-
-      super(command_class, payload)
     end
 
     # Commit uncommitted events to the backend
