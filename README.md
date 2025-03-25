@@ -72,7 +72,9 @@ class Cart < Sourced::Actor
     # Evaluate whether we should dispatch the next command.
     # Here we could fetch some external data or query that might be needed
     # to populate the new commands.
-    command :send_admin_email, product_id: event.payload.product_id
+    # Here we dispatch a command to the same stream_id present in the event
+    stream = stream_for(event)
+    stream.command :send_admin_email, product_id: event.payload.product_id
   end
   
   # Handle the :send_admin_email dispatched by the reaction above
@@ -206,8 +208,8 @@ The class-level `.reaction` block registers an event handler that _reacts_ to ev
 
 ```ruby
 reaction ItemAdded do |event|
-  # dispatch the next command
-  command(
+  # dispatch the next command to the event's stream_id
+  stream_for(event).command(
     CheckInventory, 
     product_id: event.payload.product_id,
     quantity: event.payload.quantity
@@ -215,7 +217,18 @@ reaction ItemAdded do |event|
 end
 ```
 
+The `stream_for` helper lets you choose what stream to dispatch the command to. Stream IDs are just strings, and define concurrency / consistency "tracks" for your events.
 
+The `stream_for` helper also makes sure to copy over causation and correlation IDs from the source event to the new commands.
+
+```ruby
+# dispatch a command to a new custom-made stream_id
+stream = stream_for("cart-#{Time.now.to_i}")
+stream.command CheckInventory, event.payload
+
+# Or use Sourced.new_stream_id
+stream_for(Sourced.new_stream_id).command CheckInventory, event.payload
+```
 
 #### `.reaction_with_state` block
 
@@ -234,7 +247,7 @@ end
 # Now react to it and check state
 reaction_with_state ItemAdded do |state, event|
   if state[:item_count] > 30
-    command NotifyBigCart
+    stream_for(event).command NotifyBigCart
   end
 end
 ```
@@ -343,7 +356,7 @@ class HolidayBooking < Sourced::Actor
   end
   
   reaction :booking_started do |event|
-    command :book_flight
+    stream_for(event).command :book_flight
   end
   
   command :book_flight do |state, cmd|
@@ -351,7 +364,7 @@ class HolidayBooking < Sourced::Actor
   end
   
   reaction :flight_booked do |event|
-    command :book_hotel
+    stream_for(event).command :book_hotel
   end
   
   command :book_hotel do |state, cmd|
