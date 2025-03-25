@@ -12,13 +12,15 @@ class ReactTestReactor
   Cmd2 = Sourced::Message.define('reacttest.cmd2')
   Cmd3 = Sourced::Message.define('reacttest.cmd3')
 
-  reaction Event1 do |_event|
-    command Cmd1
+  reaction Event1 do |event|
+    stream_for(event).command Cmd1
   end
 
-  reaction Event2 do |_event|
-    command Cmd2
-    command Cmd3 do |cmd|
+  reaction Event2 do |event|
+    stream = stream_for(event)
+
+    stream.command Cmd2
+    stream.command Cmd3 do |cmd|
       cmd.with_metadata(greeting: 'Hi!')
     end
   end

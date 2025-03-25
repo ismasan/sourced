@@ -39,8 +39,8 @@ module TestActor
       event ArchiveRequested
     end
 
-    reaction ArchiveRequested do |_event|
-      command ConfirmArchive
+    reaction ArchiveRequested do |event|
+      stream_for(event).command ConfirmArchive
     end
 
     command ConfirmArchive do |_list, _cmd|
@@ -67,8 +67,8 @@ module TestActor
       list.items << event.payload
     end
 
-    reaction :item_added do |_event|
-      command Notify
+    reaction :item_added do |event|
+      stream_for(event).command Notify
     end
 
     command Notify do |list, cmd|
@@ -322,8 +322,8 @@ RSpec.describe Sourced::Actor do
         event :thing_done, name: String do |state, _event|
         end
 
-        reaction :thing_done do |_event|
-          command(:notify, value: 'done!').delay(Time.now + 1)
+        reaction :thing_done do |event|
+          stream_for(event).command(:notify, value: 'done!').delay(Time.now + 1)
         end
 
         command :notify, value: String do |_state, cmd|
@@ -372,7 +372,7 @@ RSpec.describe Sourced::Actor do
         end
 
         reaction_with_state :thing_done do |state, event|
-          command :notify, value: "seq was #{seq}, state was #{state[1]}, name was #{event.payload.name}"
+          stream_for(event.stream_id).command :notify, value: "seq was #{seq}, state was #{state[1]}, name was #{event.payload.name}"
           return # <= should not raise LocalJumpError
         end
 
