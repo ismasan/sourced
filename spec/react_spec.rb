@@ -32,7 +32,6 @@ RSpec.describe Sourced::React do
   specify '.react returns commands' do
     evt1 = ReactTestReactor::Event1.new(stream_id: '1', seq: 1)
     evt2 = ReactTestReactor::Event2.new(stream_id: '1', seq: 2)
-    evt3 = ReactTestReactor::Event3.new(stream_id: '1', seq: 3)
     commands = ReactTestReactor.new.react([evt1, evt2])
     expect(commands.map(&:class)).to eq([
                                           ReactTestReactor::Cmd1,
