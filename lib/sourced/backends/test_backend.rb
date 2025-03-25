@@ -5,8 +5,12 @@ require 'thread'
 module Sourced
   module Backends
     class TestBackend
+      ACTIVE = 'active'
+      STOPPED = 'stopped'
+
       class Group
-        attr_reader :group_id
+        attr_reader :group_id, :commands, :oldest_command_date
+        attr_accessor :status, :error_context, :retry_at
 
         Offset = Struct.new(:stream_id, :index, :locked)
 
@@ -14,7 +18,25 @@ module Sourced
           @group_id = group_id
           @backend = backend
           @offsets = {}
+          @commands = []
+          @status = :active
+          @oldest_command_date = nil
+          @error_context = {}
+          @retry_at = nil
           reindex
+        end
+
+        def active? = @status == :active
+        def active_with_commands? = active? && !!@oldest_command_date
+
+        def stop(reason = nil)
+          @error_context[:reason] = reason if reason
+          @status = :stopped
+        end
+
+        def retry(time, ctx = {})
+          @error_context.merge!(ctx)
+          @retry_at = time
         end
 
         def to_h
@@ -23,7 +45,24 @@ module Sourced
           newest_processed = (active_offsets.max_by(&:index)&.index || -1) + 1
           stream_count = active_offsets.size
 
-          { group_id:, oldest_processed:, newest_processed:, stream_count: }
+          { 
+            group_id:, 
+            status: @status.to_s, 
+            oldest_processed:, 
+            newest_processed:, 
+            stream_count:,
+            retry_at:
+          }
+        end
+
+        def schedule_commands(commands)
+          @commands = (@commands + commands).sort_by(&:created_at)
+          @oldest_command_date = @commands.first&.created_at
+        end
+
+        def delete_command(idx)
+          @commands.delete_at(idx)
+          @oldest_command_date = @commands.first&.created_at
         end
 
         def reindex
@@ -70,8 +109,8 @@ module Sourced
           end
 
           if evt
-            if block_given?
-              yield(evt)
+            if block_given? && yield(evt)
+              # ACK reactor/event if block returns truthy
               offset.index = index
             end
             offset.locked = false
@@ -100,11 +139,10 @@ module Sourced
       end
 
       class State
-        attr_reader :events, :commands, :groups, :events_by_correlation_id, :events_by_stream_id, :stream_id_seq_index
+        attr_reader :events, :groups, :events_by_correlation_id, :events_by_stream_id, :stream_id_seq_index
 
         def initialize(
           events: [], 
-          commands: [],
           groups: Hash.new { |h, k| h[k] = Group.new(k, self) }, 
           events_by_correlation_id: Hash.new { |h, k| h[k] = [] }, 
           events_by_stream_id: Hash.new { |h, k| h[k] = [] },
@@ -114,44 +152,42 @@ module Sourced
           @events = events
           @groups = groups
           @events_by_correlation_id = events_by_correlation_id
-          @commands = commands
           @command_locks = {}
           @events_by_stream_id = events_by_stream_id
           @stream_id_seq_index = stream_id_seq_index
         end
 
-        def schedule_commands(commands)
-          @commands = (@commands + commands).sort_by(&:created_at)
-        end
-
         def next_command(&reserve)
           now = Time.now.utc
+          group = @groups.values.filter(&:active_with_commands?).sort_by(&:oldest_command_date).first
+          return nil unless group
 
           if block_given?
-            return nil if @commands.empty?
-            idx = @commands.index do |c|
+            idx = group.commands.index do |c|
               !@command_locks[c.stream_id] && c.created_at <= now
             end
 
             return nil unless idx
-            cmd = @commands[idx]
+
+            cmd = group.commands[idx]
             @command_locks[cmd.stream_id] = true
+
             begin
-              yield cmd
-              @commands.delete_at(idx)
+              if yield(cmd)
+                group.delete_command(idx)
+              end
             ensure
               @command_locks.delete(cmd.stream_id)
             end
             cmd
           else
-            @commands.first
+            group.commands.first
           end
         end
 
         def copy
           self.class.new(
             events: events.dup,
-            commands: commands.dup,
             groups: deep_dup(groups),
             events_by_correlation_id: deep_dup(events_by_correlation_id),
             events_by_stream_id: deep_dup(events_by_stream_id),
@@ -159,7 +195,9 @@ module Sourced
           )
         end
 
-        private def deep_dup(hash)
+        private
+
+        def deep_dup(hash)
           hash.each.with_object(hash.dup.clear) do |(k, v), new_hash|
             new_hash[k] = v.dup
           end
@@ -219,12 +257,18 @@ module Sourced
 
       def installed? = true
 
+      def handling_reactor_exceptions(_reactor, &)
+        yield
+      end
+
       def reserve_next_for_reactor(reactor, &)
         group_id = reactor.consumer_info.group_id
         start_from = reactor.consumer_info.start_from.call
         transaction do
           group = @state.groups[group_id]
-          group.reserve_next(reactor.handled_events, start_from, &)
+          if group.active? && (group.retry_at.nil? || group.retry_at <= Time.now)
+            group.reserve_next(reactor.handled_events, start_from, &)
+          end
         end
       end
 
@@ -235,9 +279,40 @@ module Sourced
         end
       end
 
-      def schedule_commands(commands)
+      def register_consumer_group(group_id)
         transaction do
-          @state.schedule_commands(commands)
+          @state.groups[group_id]
+        end
+      end
+
+      def updating_consumer_group(group_id, &)
+        transaction do
+          group = @state.groups[group_id]
+          yield group
+        end
+      end
+
+      # @param group_id [String]
+      def start_consumer_group(group_id)
+        transaction do
+          group = @state.groups[group_id]
+          group.error_context = {}
+          group.status = ACTIVE
+          group.retry_at = nil
+        end
+      end
+
+      def stop_consumer_group(group_id, error = nil)
+        transaction do
+          group = @state.groups[group_id]
+          group.stop(error)
+        end
+      end
+
+      def schedule_commands(commands, group_id:)
+        transaction do
+          group = @state.groups[group_id]
+          group.schedule_commands(commands)
         end
       end
 
@@ -252,7 +327,7 @@ module Sourced
       def stats
         stream_count = @state.events_by_stream_id.size
         max_global_seq = events.size
-        groups = @state.groups.values.map(&:to_h).filter { |g| g[:stream_count] > 0 }
+        groups = @state.groups.values.map(&:to_h)#.filter { |g| g[:stream_count] > 0 }
         Stats.new(stream_count, max_global_seq, groups)
       end
 
