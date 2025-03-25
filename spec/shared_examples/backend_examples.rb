@@ -73,14 +73,14 @@ module BackendExamples
     describe '#schedule_commands and #next_command' do
       it 'schedules command and fetches it back' do
         cmd = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        backend.schedule_commands([cmd])
+        backend.schedule_commands([cmd], group_id: 'reactor1')
         cmd2 = backend.next_command
         expect(cmd2).to eq(cmd)
       end
 
       it 'schedules command and reserves it' do
         cmd = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        backend.schedule_commands([cmd])
+        backend.schedule_commands([cmd], group_id: 'reactor1')
         cmd2 = nil
         backend.next_command do |c|
           cmd2 = c
@@ -89,9 +89,28 @@ module BackendExamples
         expect(backend.next_command).to be(nil)
       end
 
+      it 'skips command if target reactor is stopped' do
+        cmd1 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
+        cmd2 = Tests::DoSomething.parse(stream_id: 's2', payload: { account_id: 1 })
+        backend.schedule_commands([cmd1], group_id: 'reactor1')
+        backend.schedule_commands([cmd2], group_id: 'reactor2')
+
+        backend.stop_consumer_group('reactor1')
+
+        cmds = []
+        backend.next_command do |c|
+          cmds << c
+        end
+        backend.next_command do |c|
+          cmds << c
+        end
+        expect(cmds).to eq([cmd2])
+        expect(backend.next_command).to be(nil)
+      end
+
       it 'does not delete command if processing raises' do
         cmd = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        backend.schedule_commands([cmd])
+        backend.schedule_commands([cmd], group_id: 'reactor1')
         begin
           backend.next_command do |_c|
             raise 'nope!'
@@ -102,11 +121,20 @@ module BackendExamples
         expect(backend.next_command).to eq(cmd)
       end
 
+      it 'does not delete command if processing return false' do
+        cmd = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
+        backend.schedule_commands([cmd], group_id: 'reactor1')
+        backend.next_command do |_c|
+          false
+        end
+        expect(backend.next_command).to eq(cmd)
+      end
+
       it 'blocks concurrent workers from processing the same command' do
         now = Time.now - 10
         cmd1 = Tests::DoSomething.parse(stream_id: 'as1', created_at: now, payload: { account_id: 1 })
         cmd2 = Tests::DoSomething.parse(stream_id: 'as2', created_at: now + 5, payload: { account_id: 1 })
-        backend.schedule_commands([cmd1, cmd2])
+        backend.schedule_commands([cmd1, cmd2], group_id: 'reactor1')
         results = Concurrent::Array.new
         2.times.map do
           Thread.new do
@@ -123,7 +151,7 @@ module BackendExamples
         now = Time.now
         cmd1 = Tests::DoSomething.parse(stream_id: 's1', created_at: now - 1, payload: { account_id: 1 })
         cmd2 = Tests::DoSomething.parse(stream_id: 's1', created_at: now + 10, payload: { account_id: 1 })
-        backend.schedule_commands([cmd1, cmd2])
+        backend.schedule_commands([cmd1, cmd2], group_id: 'reactor1')
 
         results = []
         backend.next_command do |c|
@@ -145,10 +173,10 @@ module BackendExamples
 
       it 'linearizes commands for the same stream' do
         now = Time.now
-        cmd1 = Tests::DoSomething.parse(stream_id: 'ss1', created_at: now - 10, payload: { account_id: 1 })
+        cmd1 = Tests::DoSomething.parse(stream_id: 'ss1', created_at: now - 11, payload: { account_id: 1 })
         cmd2 = Tests::DoSomething.parse(stream_id: 'ss1', created_at: now - 10, payload: { account_id: 1 })
         cmd3 = Tests::DoSomething.parse(stream_id: 'ss2', created_at: now - 5, payload: { account_id: 1 })
-        backend.schedule_commands([cmd1, cmd2, cmd3])
+        backend.schedule_commands([cmd1, cmd2, cmd3], group_id: 'reactor1')
         results = Concurrent::Array.new
 
         2.times.map do
@@ -198,6 +226,8 @@ module BackendExamples
           end
         end
 
+        backend.register_consumer_group('group1')
+
         messages = []
 
         backend.reserve_next_for_reactor(reactor1) do |msg|
@@ -213,9 +243,9 @@ module BackendExamples
       it 'schedules messages and reserves them in order of arrival' do
         cmd_a = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         cmd_b = Tests::DoSomething.parse(stream_id: 's2', seq: 1, payload: { account_id: 2 })
-        evt_a1 = cmd_a.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd_a.payload.account_id)
-        evt_a2 = cmd_a.follow_with_seq(Tests::SomethingHappened1, 3, account_id: cmd_a.payload.account_id)
-        evt_b1 = cmd_b.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd_b.payload.account_id)
+        evt_a1 = cmd_a.with(metadata: { tid: 'evt_a1' }).follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd_a.payload.account_id)
+        evt_a2 = cmd_a.with(metadata: { tid: 'evt_a2' }).follow_with_seq(Tests::SomethingHappened1, 3, account_id: cmd_a.payload.account_id)
+        evt_b1 = cmd_b.with(metadata: { tid: 'evt_b1' }).follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd_b.payload.account_id)
 
         reactor1 = Class.new do
           def self.consumer_info
@@ -237,14 +267,31 @@ module BackendExamples
           end
         end
 
+        reactor3 = Class.new do
+          def self.consumer_info
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group3')
+          end
+
+          def self.handled_events
+            [Tests::SomethingHappened1]
+          end
+        end
+
+        backend.register_consumer_group('group1')
+        backend.register_consumer_group('group2')
+        backend.register_consumer_group('group3')
+
+        backend.stop_consumer_group('group3')
+
         expect(backend.append_to_stream('s1', [cmd_a, evt_a1, evt_a2])).to be(true)
         expect(backend.append_to_stream('s2', [cmd_b, evt_b1])).to be(true)
 
         group1_messages = []
         group2_messages = []
+        group3_messages = []
 
-        #  Test that concurrent consumers for the same group
-        #  never process events for the same stream
+        # Test that concurrent consumers for the same group
+        # never process events for the same stream
         Sync do |task|
           task.async do
             backend.reserve_next_for_reactor(reactor1) do |msg|
@@ -268,25 +315,35 @@ module BackendExamples
 
         expect(group2_messages).to eq([evt_a1])
 
+        # Test stopped reactors are ignored
+        backend.reserve_next_for_reactor(reactor3) do |msg|
+          group3_messages << msg
+        end
+
+        expect(group3_messages).to eq([])
+
         # Test that NOOP handlers still advance the cursor
-        backend.reserve_next_for_reactor(reactor2) { |_msg| }
-        #
+        backend.reserve_next_for_reactor(reactor2) { |_msg| true }
+
+        # Test returning falsey does not advance the cursor
+        backend.reserve_next_for_reactor(reactor2) { |_msg| false }
+
         # Verify state of groups with stats
         stats = backend.stats
 
         expect(stats.stream_count).to eq(2)
         expect(stats.max_global_seq).to eq(5)
+
         expect(stats.groups).to match_array([
-                                              { group_id: 'group2', oldest_processed: 3, newest_processed: 3,
-                                                stream_count: 1 },
-                                              { group_id: 'group1', oldest_processed: 2, newest_processed: 5,
-                                                stream_count: 2 }
-                                            ])
+          { group_id: 'group1', status: 'active', retry_at: nil, oldest_processed: 2, newest_processed: 5, stream_count: 2 },
+          { group_id: 'group2', status: 'active', retry_at: nil, oldest_processed: 3, newest_processed: 3, stream_count: 1 },
+          { group_id: 'group3', status: 'stopped', retry_at: nil, oldest_processed: 0, newest_processed: 0, stream_count: 0 }
+        ])
 
         #  Test that reactors with events not in the stream do not advance the cursor
-        reactor3 = Class.new do
+        reactor4 = Class.new do
           def self.consumer_info
-            Sourced::Consumer::ConsumerInfo.new(group_id: 'group3')
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group4')
           end
 
           def self.handled_events
@@ -294,39 +351,39 @@ module BackendExamples
           end
         end
 
-        group3_messages = []
+        backend.register_consumer_group('group4')
 
-        backend.reserve_next_for_reactor(reactor3) do |msg|
-          group3_messages << msg
+        group4_messages = []
+
+        backend.reserve_next_for_reactor(reactor4) do |msg|
+          group4_messages << msg
         end
 
-        expect(group3_messages).to eq([])
+        expect(group4_messages).to eq([])
 
         expect(backend.stats.groups).to match_array([
-                                                      { group_id: 'group2', oldest_processed: 3, newest_processed: 3,
-                                                        stream_count: 1 },
-                                                      { group_id: 'group1', oldest_processed: 2, newest_processed: 5,
-                                                        stream_count: 2 }
-                                                    ])
+          { group_id: 'group1', status: 'active', retry_at: nil, oldest_processed: 2, newest_processed: 5, stream_count: 2 },
+          { group_id: 'group2', status: 'active', retry_at: nil, oldest_processed: 3, newest_processed: 3, stream_count: 1 },
+          { group_id: 'group3', status: 'stopped', retry_at: nil, oldest_processed: 0, newest_processed: 0, stream_count: 0 },
+          { group_id: 'group4', status: 'active', retry_at: nil, oldest_processed: 0, newest_processed: 0, stream_count: 0 }
+        ])
 
-        # Now append an event that Reactor3 cares about
+        # Now append an event that Reactor4 cares about
         evt_a3 = cmd_a.follow_with_seq(Tests::SomethingHappened2, 4, account_id: cmd_a.payload.account_id)
         backend.append_to_stream('s1', [evt_a3])
 
-        backend.reserve_next_for_reactor(reactor3) do |msg|
-          group3_messages << msg
+        backend.reserve_next_for_reactor(reactor4) do |msg|
+          group4_messages << msg
         end
 
-        expect(group3_messages).to eq([evt_a3])
+        expect(group4_messages).to eq([evt_a3])
 
         expect(backend.stats.groups).to match_array([
-                                                      { group_id: 'group1', oldest_processed: 2, newest_processed: 5,
-                                                        stream_count: 2 },
-                                                      { group_id: 'group2', oldest_processed: 3, newest_processed: 3,
-                                                        stream_count: 1 },
-                                                      { group_id: 'group3', oldest_processed: 6, newest_processed: 6,
-                                                        stream_count: 1 }
-                                                    ])
+          { group_id: 'group1', status: 'active', retry_at: nil, oldest_processed: 2, newest_processed: 5, stream_count: 2 },
+          { group_id: 'group2', status: 'active', retry_at: nil, oldest_processed: 3, newest_processed: 3, stream_count: 1 },
+          { group_id: 'group3', status: 'stopped', retry_at: nil, oldest_processed: 0, newest_processed: 0, stream_count: 0 },
+          { group_id: 'group4', status: 'active', retry_at: nil, oldest_processed: 6, newest_processed: 6, stream_count: 1 }
+        ])
 
         #  Test that #reserve_next_for returns next event, or nil
         evt = backend.reserve_next_for_reactor(reactor2) { true }
@@ -334,6 +391,48 @@ module BackendExamples
 
         evt = backend.reserve_next_for_reactor(reactor2) { true }
         expect(evt).to be(nil)
+      end
+    end
+
+    describe '#reserve_next_for_reactor with retry_at' do
+      it 'does not fetch events until retry_at is up' do
+        now = Time.now
+
+        evt_a1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        backend.append_to_stream('s1', [evt_a1])
+
+        reactor1 = Class.new do
+          def self.consumer_info
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
+          end
+
+          def self.handled_events
+            [Tests::SomethingHappened1]
+          end
+        end
+
+        backend.register_consumer_group('group1')
+        backend.updating_consumer_group('group1') do |gr|
+          gr.retry(now + 4)
+        end
+
+        messages = []
+
+        backend.reserve_next_for_reactor(reactor1) do |msg|
+          messages << msg
+        end
+
+        expect(messages.any?).to be(false)
+
+        backend.updating_consumer_group('group1') do |gr|
+          gr.retry(now - 1)
+        end
+
+        backend.reserve_next_for_reactor(reactor1) do |msg|
+          messages << msg
+        end
+
+        expect(messages.any?).to be(true)
       end
     end
 
@@ -469,6 +568,43 @@ module BackendExamples
 
         expect(received.map(&:type)).to eq(%w[tests.something_happened1 tests.something_happened1])
         expect(received.map(&:seq)).to eq([1, 2])
+      end
+    end
+
+    describe '#updating_consumer_group' do
+      specify '#retry_at(Time)' do
+        later = Time.now + 10
+        counts = []
+        backend.register_consumer_group('group1')
+        backend.updating_consumer_group('group1') do |group|
+          counts << group.error_context[:retry_count]
+          group.retry(later, retry_count: 1)
+        end
+        backend.updating_consumer_group('group1') do |group|
+          counts << group.error_context[:retry_count]
+          group.retry(later)
+        end
+        gr = backend.stats.groups.first
+        expect(gr[:group_id]).to eq('group1')
+        expect(gr[:status]).to eq('active')
+        expect(gr[:retry_at]).to eq(later)
+        expect(counts).to eq([nil, 1])
+      end
+
+      specify '#stop(error)' do
+        backend.register_consumer_group('group1')
+        backend.updating_consumer_group('group1') do |group|
+          group.stop(StandardError.new('boom'))
+        end
+
+        gr = backend.stats.groups.first
+        expect(gr[:group_id]).to eq('group1')
+        expect(gr[:status]).to eq('stopped')
+
+        backend.start_consumer_group('group1')
+        gr = backend.stats.groups.first
+        expect(gr[:group_id]).to eq('group1')
+        expect(gr[:status]).to eq('active')
       end
     end
   end
