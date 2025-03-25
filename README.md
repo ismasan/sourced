@@ -228,6 +228,9 @@ stream.command CheckInventory, event.payload
 
 # Or use Sourced.new_stream_id
 stream_for(Sourced.new_stream_id).command CheckInventory, event.payload
+
+# Or start a new stream and dispatch commands to another actor
+stream_for(NotifierActor).command :notify, message: 'hello!'
 ```
 
 #### `.reaction_with_state` block
