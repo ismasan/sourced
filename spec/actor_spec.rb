@@ -117,6 +117,57 @@ module TestActor
     sync Listener
     sync DummyProjector
   end
+
+  class ReactorSymbolTest < Sourced::Actor
+    consumer do |c|
+      c.sync!
+    end
+
+    state do |id|
+      [id, :new, nil]
+    end
+
+    command :do_thing, name: String do |_state, cmd|
+      event :thing_done, cmd.payload
+    end
+
+    event :thing_done, name: String do |state, _event|
+    end
+
+    reaction :thing_done do |event|
+      stream_for(event).command(:notify, value: 'done!').delay(Time.now + 1)
+    end
+
+    command :notify, value: String do |_state, cmd|
+      event :notified, cmd.payload
+    end
+
+    event :notified, value: String do |state, event|
+      state[1] = :notified
+      state[2] = event.payload.value
+    end
+  end
+
+  class ReactorSecondStreamTest < Sourced::Actor
+    consumer do |c|
+      c.sync!
+    end
+
+    state do |id|
+      [id, :new, nil]
+    end
+
+    command :do_thing, name: String do |_state, cmd|
+      event :thing_done, cmd.payload
+    end
+
+    event :thing_done, name: String do |state, _event|
+    end
+
+    reaction :thing_done do |event|
+      stream_for(ReactorSymbolTest).command(:notify, value: 'done from ReactorSecondStreamTest!')
+    end
+  end
 end
 
 RSpec.describe Sourced::Actor do
@@ -304,56 +355,53 @@ RSpec.describe Sourced::Actor do
   end
 
   describe '.react producing own commands as Symbols' do
-    let(:klass) do
-      klass = Class.new(Sourced::Actor) do
-        consumer do |c|
-          c.group_id = 'ReactSymbolTest'
-          c.sync!
-        end
-
-        state do |id|
-          [id, :new, nil]
-        end
-
-        command :do_thing, name: String do |_state, cmd|
-          event :thing_done, cmd.payload
-        end
-
-        event :thing_done, name: String do |state, _event|
-        end
-
-        reaction :thing_done do |event|
-          stream_for(event).command(:notify, value: 'done!').delay(Time.now + 1)
-        end
-
-        command :notify, value: String do |_state, cmd|
-          event :notified, cmd.payload
-        end
-
-        event :notified, value: String do |state, event|
-          state[1] = :notified
-          state[2] = event.payload.value
-        end
-      end
-    end
-
     before do
       # Register so that sync! works
-      Sourced.register(klass)
+      Sourced.register(TestActor::ReactorSymbolTest)
+      Sourced.register(TestActor::ReactorSecondStreamTest)
     end
 
     it 'resolves own commands by Symbol' do
-      actor = klass.new('1')
+      actor = TestActor::ReactorSymbolTest.new('1')
       actor.do_thing(name: 'thing1')
       actor.catch_up
       expect(actor.state).to eq(['1', :notified, 'done!'])
       expect(actor.seq).to eq(4)
     end
+
+    it "resolves another reactor's command by symbol" do
+      actor = TestActor::ReactorSecondStreamTest.new('1')
+      actor.do_thing(name: 'thing1')
+
+      Sourced::Worker.drain
+
+      events = Sourced.config.backend.events
+      expect(events.map(&:class)).to eq([
+        TestActor::ReactorSecondStreamTest::DoThing, 
+        TestActor::ReactorSecondStreamTest::ThingDone, 
+        TestActor::ReactorSymbolTest::Notify, 
+        TestActor::ReactorSymbolTest::Notified
+      ])
+
+      stream_ids = events.map(&:stream_id)
+
+      expect(stream_ids[0]).to eq('1')
+      expect(stream_ids[1]).to eq('1')
+      expect(stream_ids[2]).not_to eq('1')
+      expect(stream_ids[3]).to eq(stream_ids[2])
+
+      expect(events[0].causation_id).to eq(events[0].id)
+      expect(events[1].causation_id).to eq(events[0].id)
+      expect(events[2].causation_id).to eq(events[1].id)
+      expect(events[3].causation_id).to eq(events[2].id)
+
+      expect(events.map(&:correlation_id).uniq).to eq([events[0].id])
+    end
   end
 
   describe '.reaction_with_state for own events' do
     let(:klass) do
-      klass = Class.new(Sourced::Actor) do
+      Class.new(Sourced::Actor) do
         consumer do |c|
           c.group_id = 'ReactTest'
           c.sync!
@@ -372,7 +420,7 @@ RSpec.describe Sourced::Actor do
         end
 
         reaction_with_state :thing_done do |state, event|
-          stream_for(event.stream_id).command :notify, value: "seq was #{seq}, state was #{state[1]}, name was #{event.payload.name}"
+          stream_for(event).command :notify, value: "seq was #{seq}, state was #{state[1]}, name was #{event.payload.name}"
           return # <= should not raise LocalJumpError
         end
 
