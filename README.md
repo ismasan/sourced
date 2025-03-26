@@ -103,7 +103,7 @@ Try loading a new cart instance from recorded events
 ```ruby
 cart2 = Cart.load('test-cart')
 cart2.seq # 2
-cart2.stats.total # 2000
+cart2.state.total # 2000
 cart2.state.items.size # 1
 ```
 
