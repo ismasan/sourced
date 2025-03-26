@@ -202,7 +202,7 @@ These handlers are pure: given the same state and event, they should always upda
 
 The class-level `.reaction` block registers an event handler that _reacts_ to events already published by this or other Actors.
 
-`.reaction` blocks can dispatch the next command in a workflow with the instance-level `#command` helper.
+`.reaction` blocks can dispatch the next command in a workflow with the instance-level `#stream_for` helper.
 
 ![react](docs/images/sourced-react-handler.png)
 
