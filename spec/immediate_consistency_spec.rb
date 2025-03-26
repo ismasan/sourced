@@ -21,8 +21,8 @@ class SyncTodoListActor < Sourced::Actor
     list.items << event.payload
   end
 
-  reaction :item_added do |_event|
-    command :notify
+  reaction :item_added do |event|
+    stream_for(event).command :notify
   end
 
   command :notify do |_list, _cmd|

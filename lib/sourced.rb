@@ -2,6 +2,7 @@
 
 require_relative 'sourced/version'
 
+require 'securerandom'
 require 'sourced/message'
 
 module Sourced
@@ -10,6 +11,11 @@ module Sourced
   ConcurrentAckError = Class.new(Error)
   InvalidReactorError = Class.new(Error)
   
+  def self.new_stream_id(prefix = nil)
+    uuid = SecureRandom.uuid
+    prefix ? "#{prefix}-#{uuid}" : uuid
+  end
+
   def self.config
     @config ||= Configuration.new
   end

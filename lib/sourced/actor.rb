@@ -89,8 +89,8 @@ module Sourced
   #          state[:email] = event.payload.email
   #        end
   #
-  #        # ====== REACT BLOCK =================
-  #        # React blocks listen to events emitted by .command blocks
+  #        # ====== REACTION BLOCK =================
+  #        # Reaction blocks listen to events emitted by .command blocks
   #        # From this or any other Actors
   #        # and allow an part of the app to react to events
   #        # This is how you build worlflows that span multiple Actors
@@ -98,8 +98,9 @@ module Sourced
   #        # are eventually consistent, unless configured to be synchronous.
   #        # In this example we listen to LeadCreated events
   #        # and schedule a new SendEmail command
-  #        react LeadCreated do |event|
-  #          command SendEmail 
+  #        reaction LeadCreated do |event|
+  #          stream = stream_for(event)
+  #          stream.command SendEmail 
   #        end
   #
   #        # We now handle the SendEmail command and the cycle starts again.
@@ -149,12 +150,25 @@ module Sourced
       # @param message_name [Symbol]
       # @return [Class]
       # @raise [ArgumentError] if the message is not defined
-      def [](message_name)
+      def resolve_message_class(message_name)
         message_type = __message_type(message_name)
         msg_class = self::Event.registry[message_type] || self::Command.registry[message_type]
 
         raise UndefinedMessageError, "Message not found: #{message_name}" unless msg_class
         msg_class
+      end
+
+      alias [] resolve_message_class
+
+      # Interface expected by React::StreamDispatcher
+      # so that this works in reaction blocks
+      # @example
+      #   stream = stream_for(SomeActor)
+      #   stream.command :do_something
+      #
+      # @return [String]
+      def stream_id
+        Sourced.new_stream_id
       end
 
       # Define an initial state factory for this decider.
@@ -318,14 +332,17 @@ module Sourced
 
       # Support defining event reactions with a symbol
       # pointing to an event class defined locally with .event
+      # See Sourced::React#reaction
       # TODO: should this be defined in Evolve?
       # @example
       #   reaction :item_added do |event|
-      #     command :do_something
+      #     stream = stream_for(event)
+      #     stream.command :do_something
       #   end
       #
       #   reaction ItemAdded do |event|
-      #     command DoSomething
+      #     stream = stream_for(event)
+      #     stream.command DoSomething
       #   end
       #
       # @param event_name [Symbol, Class]
@@ -542,24 +559,6 @@ module Sourced
       )
       uncommitted_events << evt
       evolve(state, [evt])
-    end
-
-    # Dispatch a command from within a .react block
-    # Override React.command to allow resolving command classes from symbols
-    # @example
-    #
-    #  react SomethingHappened do |event|
-    #    command :do_something, field1: 'foo', field2: 'bar'
-    #  end
-    #
-    # TODO: test this
-    def command(command_name, payload = {})
-      return super unless command_name.is_a?(Symbol)
-
-      # Clean this up
-      command_class = self.class[command_name]
-
-      super(command_class, payload)
     end
 
     # Commit uncommitted events to the backend
