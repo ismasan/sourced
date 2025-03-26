@@ -32,15 +32,55 @@ module Sourced
       base.extend ClassMethods
     end
 
+    # Helper class to collect commands to be dispatched
+    # after runing a reaction block.
+    # See #reaction
+    class StreamDispatcher
+      attr_reader :stream_id, :commands
+
+      def initialize(stream_id, source_event, producer_reactor, target_reactor)
+        @stream_id = stream_id
+        @source_event = source_event
+        @producer_reactor = producer_reactor
+        @target_reactor = target_reactor
+        @commands = []
+      end
+
+      def inspect = "#<#{self.class} stream_id: #{stream_id}, source_event: #{source_event.inspect}>"
+
+      # Build a command instance
+      # with metadata from the source event
+      #
+      # @param command_class [Class, Symbol]
+      # @param payload [#to_h]
+      # @yieldparam cmd [Sourced::Command]
+      # @return [Sourced::Command]
+      def command(command_class, payload = {}, &)
+        command_class = target_reactor[command_class] if command_class.is_a?(Symbol)
+
+        cmd = source_event
+              .follow_with_stream_id(command_class, stream_id, payload)
+              .with_metadata(producer: producer_reactor.consumer_info.group_id)
+
+        cmd = yield(cmd) if block_given?
+        @commands << cmd
+        cmd
+      end
+
+      private
+
+      attr_reader :source_event, :producer_reactor, :target_reactor
+    end
+
     # @param events [Array<Sourced::Event>]
     # @return [Array<Sourced::Command>]
     def react(events)
-      @__commands_after_reaction = []
+      @__stream_dispatchers = {}
       events.each do |event|
         __handle_reaction(event)
       end
-      cmds = @__commands_after_reaction.dup
-      @__commands_after_reaction.clear
+      cmds = @__stream_dispatchers.values.flat_map(&:commands)
+      @__stream_dispatchers.clear
       cmds
     end
 
@@ -54,15 +94,25 @@ module Sourced
       send(method_name, event)
     end
 
-    # TODO: Actor can do #command(:some_command)
-    def command(command_class, payload = {}, &)
-      cmd = @__event_for_reaction
-            .follow(command_class, payload)
-            .with_metadata(producer: self.class.consumer_info.group_id)
-
-      cmd = yield(cmd) if block_given?
-      @__commands_after_reaction << cmd
-      cmd
+    # Helper to build a StreamDispatcher from within a reaction block
+    # Works with Strings, or anything that responds to #stream_id
+    # @example
+    #   stream = stream_for(event)
+    #   stream = stream_for("new-stream-id")
+    #   stream.command DoSomething, name: "value"
+    #   # with block to refine command
+    #   stream.command DoSomething do |cmd|
+    #     cmd.with_metadata(greeting: 'Hi!')
+    #     cmd.delay(Time.zone.now + 1.day)
+    #   end
+    #
+    # @param stream_id [String, #stream_id]
+    # @return [StreamDispatcher]
+    def stream_for(stream_id)
+      target_reactor = stream_id.respond_to?(:resolve_message_class) ? stream_id : self.class
+      stream_id = stream_id.stream_id if stream_id.respond_to?(:stream_id)
+      key = [stream_id, @__event_for_reaction.id]
+      @__stream_dispatchers[key] ||= StreamDispatcher.new(stream_id, @__event_for_reaction, self.class, target_reactor)
     end
 
     module ClassMethods
@@ -88,10 +138,15 @@ module Sourced
         @handled_events_for_react ||= []
       end
 
-      # A standalone reactor doesn't have its own Event
-      # structs defined via .event(:event_name, payload_schema)
-      # So it can only take qualified event classes
-      # Decider can override this method to provide symbol-based event names
+      # Define a reaction to an event
+      # @example
+      #   reaction SomethingHappened do |event|
+      #     stream = stream_for(event)
+      #     # stream = stream_for("new-stream-id")
+      #     stream.command DoSomethingElse
+      #   end
+      #
+      # @param event_class [Class<Sourced::Message>]
       def reaction(event_class, &block)
         unless event_class.is_a?(Class) && event_class < Sourced::Message
           raise ArgumentError,
