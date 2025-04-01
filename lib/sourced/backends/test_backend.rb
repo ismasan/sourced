@@ -158,7 +158,7 @@ module Sourced
         end
 
         def next_command(&reserve)
-          now = Time.now.utc
+          now = Time.now
           group = @groups.values.filter(&:active_with_commands?).sort_by(&:oldest_command_date).first
           return nil unless group
 

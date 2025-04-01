@@ -65,7 +65,7 @@ module Sourced
     def call(exception, message, group)
       retry_count = group.error_context[:retry_count] || 1
       if retry_count <= max_retries
-        now = Time.now.utc
+        now = Time.now
         later = now + (backoff.call(retry_after, retry_count))
         @on_retry.call(retry_count, exception, message, later)
         retry_count += 1

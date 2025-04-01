@@ -55,10 +55,13 @@ module Sourced
       # the command row is not deleted, so that it can be retried.
       # However, if a command fails _permanently_ there's no point in keeping it in the queue,
       # this ties with unresolved error handling in event handling, too.
+      # TODO2: Can't use Time.now.utc because it's not timezone-aware
+      # I shouldn't mix PG NOW() with Time.now. Need to consistently use one or the other.
+      # Only reason to use Time.now here if for testing with Timecop, I think
       def next_command(&reserve)
         if block_given?
           db.transaction do
-            row = db.fetch(sql_for_next_command, Time.now.utc).first
+            row = db.fetch(sql_for_next_command, Time.now).first
             return unless row
 
             cmd = deserialize_event(row)
@@ -71,7 +74,7 @@ module Sourced
           end
         else
           db.transaction do
-            row = db.fetch(sql_for_next_command, Time.now.utc).first
+            row = db.fetch(sql_for_next_command, Time.now).first
             row ? deserialize_event(row) : nil
           end
         end
