@@ -16,6 +16,7 @@ A small demo app [here](https://github.com/ismasan/sourced_todo)
 ### The programming model
 
 If you're unfamiliar with Event Sourcing, you can read this first: [Event Sourcing from the ground up, with Ruby examples](https://ismaelcelis.com/posts/event-sourcing-ruby-examples)
+For a high-level overview of the mental model, [read this](https://ismaelcelis.com/posts/2025-04-give-it-time/)
 
 The entire behaviour of an event-sourced app is described via **commands**, **events** and **reactions**.
 
