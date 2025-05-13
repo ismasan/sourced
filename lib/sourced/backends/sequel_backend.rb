@@ -230,6 +230,23 @@ module Sourced
         end
       end
 
+      # Reset offsets for all streams tracked by a consumer group.
+      # If the consumer group is active, this will make it re-process all events
+      #
+      # @param group_id [String]
+      # @return [Boolean]
+      def reset_consumer_group(group_id)
+        db.transaction do
+          row = db[consumer_groups_table].where(group_id:).select(:id).first
+          return unless row
+
+          id = row[:id]
+          db[offsets_table].where(group_id: id).delete
+        end
+
+        true
+      end
+
       def ack_on(group_id, event_id, &)
         db.transaction do
           row = db.fetch(sql_for_ack_on, group_id, event_id).first
