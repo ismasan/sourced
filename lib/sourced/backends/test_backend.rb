@@ -17,13 +17,12 @@ module Sourced
         def initialize(group_id, backend)
           @group_id = group_id
           @backend = backend
-          @offsets = {}
           @commands = []
           @status = :active
           @oldest_command_date = nil
           @error_context = {}
           @retry_at = nil
-          reindex
+          reset!
         end
 
         def active? = @status == :active
@@ -32,6 +31,11 @@ module Sourced
         def stop(reason = nil)
           @error_context[:reason] = reason if reason
           @status = :stopped
+        end
+
+        def reset!
+          @offsets = {}
+          reindex
         end
 
         def retry(time, ctx = {})
@@ -307,6 +311,14 @@ module Sourced
           group = @state.groups[group_id]
           group.stop(error)
         end
+      end
+
+      def reset_consumer_group(group_id)
+        transaction do
+          group = @state.groups[group_id]
+          group.reset!
+        end
+        true
       end
 
       def schedule_commands(commands, group_id:)
