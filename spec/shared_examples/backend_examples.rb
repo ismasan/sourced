@@ -394,6 +394,45 @@ module BackendExamples
       end
     end
 
+    describe '#reserve_next_for_reactor and #reset_consumer_group' do
+      it 'reserves events again after reset' do
+        evt_a1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        backend.append_to_stream('s1', [evt_a1])
+
+        reactor1 = Class.new do
+          def self.consumer_info
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
+          end
+
+          def self.handled_events
+            [Tests::SomethingHappened1]
+          end
+        end
+
+        backend.register_consumer_group('group1')
+
+        messages = []
+
+        backend.reserve_next_for_reactor(reactor1) do |msg|
+          messages << msg
+        end
+
+        backend.reserve_next_for_reactor(reactor1) do |msg|
+          messages << msg
+        end
+
+        expect(messages).to eq([evt_a1])
+
+        expect(backend.reset_consumer_group('group1')).to be(true)
+
+        backend.reserve_next_for_reactor(reactor1) do |msg|
+          messages << msg
+        end
+
+        expect(messages).to eq([evt_a1, evt_a1])
+      end
+    end
+
     describe '#reserve_next_for_reactor with retry_at' do
       it 'does not fetch events until retry_at is up' do
         now = Time.now
