@@ -71,7 +71,7 @@ module Sourced
         end
 
         def reindex
-          backend.events.each.with_index do |e, idx|
+          backend.events.each do |e|
             @offsets[e.stream_id] ||= Offset.new(e.stream_id, -1, false)
           end
         end
