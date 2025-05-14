@@ -161,7 +161,6 @@ module Sourced
     def handle_next_event_for_reactor(reactor, process_name = nil)
       backend.reserve_next_for_reactor(reactor) do |event|
         log_event('handling event', reactor, event, process_name)
-        #  TODO: handle exceptions here
         commands = reactor.handle_events([event])
         if commands.any?
           # TODO: this schedules commands that will be picked up
