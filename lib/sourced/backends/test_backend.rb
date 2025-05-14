@@ -22,6 +22,7 @@ module Sourced
           @oldest_command_date = nil
           @error_context = {}
           @retry_at = nil
+          @highest_index = -1
           reset!
         end
 
@@ -87,6 +88,7 @@ module Sourced
             offset.locked = true
             yield
             offset.index = global_seq
+            @highest_index = global_seq if global_seq > @highest_index
             offset.locked = false
           end
         end
@@ -113,9 +115,11 @@ module Sourced
           end
 
           if evt
-            if block_given? && yield(evt)
+            replaying = @highest_index >= index
+            if block_given? && yield(evt, replaying)
               # ACK reactor/event if block returns truthy
               offset.index = index
+              @highest_index = index if index > @highest_index
             end
             offset.locked = false
           end
