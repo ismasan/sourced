@@ -395,7 +395,7 @@ module BackendExamples
     end
 
     describe '#reserve_next_for_reactor and #reset_consumer_group' do
-      it 'reserves events again after reset' do
+      it 'reserves events again after reset, yields replaying boolean' do
         evt_a1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         backend.append_to_stream('s1', [evt_a1])
 
@@ -412,24 +412,30 @@ module BackendExamples
         backend.register_consumer_group('group1')
 
         messages = []
+        replaying = []
 
-        backend.reserve_next_for_reactor(reactor1) do |msg|
+        backend.reserve_next_for_reactor(reactor1) do |msg, is_replaying|
           messages << msg
+          replaying << is_replaying
         end
 
-        backend.reserve_next_for_reactor(reactor1) do |msg|
+        # This is a noop since the event is already processed
+        backend.reserve_next_for_reactor(reactor1) do |msg, is_replaying|
           messages << msg
+          replaying << is_replaying
         end
 
         expect(messages).to eq([evt_a1])
 
         expect(backend.reset_consumer_group('group1')).to be(true)
 
-        backend.reserve_next_for_reactor(reactor1) do |msg|
+        backend.reserve_next_for_reactor(reactor1) do |msg, is_replaying|
           messages << msg
+          replaying << is_replaying
         end
 
         expect(messages).to eq([evt_a1, evt_a1])
+        expect(replaying).to eq([false, true])
       end
     end
 
