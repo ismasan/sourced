@@ -131,6 +131,7 @@ module Sourced
       #
       # @param reactor [Sourced::ReactorInterface]
       # @yieldparam [Sourced::Message]
+      # @yieldparam [Boolean] whether the event is being replayed (ie. it has been processed before)
       # @yieldreturn [Boolean] whether to ACK the event for this reactor group and stream ID.
       def reserve_next_for_reactor(reactor, &)
         group_id = reactor.consumer_info.group_id
@@ -147,7 +148,7 @@ module Sourced
 
           event = deserialize_event(row)
 
-          if block_given? && yield(event)
+          if block_given? && yield(event, row[:replaying])
             # ACK if block returns truthy
             ack_event(group_id, row[:stream_id_fk], row[:global_seq])
           end
@@ -261,15 +262,35 @@ module Sourced
       private def ack_event(group_id, stream_id, global_seq)
         db.transaction do
           # Find or create group
+          # group_row = db[consumer_groups_table]
+          #   .where(group_id:)
+          #   .returning(:id)
+          #   .update(
+          #     updated_at: Sequel.function(:now),
+          #     highest_global_seq: Sequel.function(:greatest, :highest_global_seq, global_seq)
+          #   )
+          #   .first
+          #
+          # if group_row.nil?
+          #   raise "Consumer group #{group_id} not found"
+          # end
+
           # TODO: we'll be creating consumer groups in advance
           # So here we should just assume it exists and insert it.
           group_row = db[consumer_groups_table]
             .insert_conflict(
               target: :group_id,
-              update: { updated_at: Sequel.function(:now) }
+              update: { 
+                updated_at: Sequel.function(:now),
+                highest_global_seq: Sequel.function(
+                  :greatest, 
+                  Sequel.qualify(consumer_groups_table, :highest_global_seq),
+                  global_seq
+                )
+              }
             )
             .returning(:id)
-            .insert(group_id:)
+            .insert(group_id:, highest_global_seq: global_seq)
 
           group_id = group_row[0][:id]
 
@@ -362,6 +383,7 @@ module Sourced
         db.create_table?(consumer_groups_table) do
           primary_key :id
           String :group_id, null: false, unique: true
+          Bignum :highest_global_seq, null: false, default: 0
           String :status, null: false, default: ACTIVE, index: true
           column :error_context, :jsonb
           Time :retry_at, null: true
@@ -460,7 +482,7 @@ module Sourced
 
         <<~SQL
           WITH target_group AS (
-              SELECT id, group_id, retry_at
+              SELECT id, group_id, retry_at, highest_global_seq
               FROM #{consumer_groups_table}
               WHERE group_id = ?
               AND status = '#{ACTIVE}'  -- Only active consumer groups
@@ -486,6 +508,7 @@ module Sourced
                   e.metadata,
                   e.payload,
                   e.created_at,
+                  (e.global_seq <= tr.highest_global_seq) AS replaying,
                   pg_try_advisory_xact_lock(
                       hashtext(tr.group_id::text),
                       hashtext(s.id::text)
