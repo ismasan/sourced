@@ -24,7 +24,13 @@ module Sourced
       :read_event_stream,
       :schedule_commands,
       :next_command,
-      :transaction
+      :transaction,
+      :stats,
+      :updating_consumer_group,
+      :register_consumer_group,
+      :start_consumer_group,
+      :stop_consumer_group,
+      :reset_consumer_group
     ]
 
     attr_accessor :logger
