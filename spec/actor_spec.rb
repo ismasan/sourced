@@ -460,6 +460,41 @@ RSpec.describe Sourced::Actor do
     end
   end
 
+  describe '.reaction_with_state for all own events' do
+    let(:klass) do
+      Class.new(Sourced::Actor) do
+        state do |id|
+          [id, :new, nil]
+        end
+
+        command :do_thing, name: String do |_state, cmd|
+          event :thing_done, cmd.payload
+        end
+
+        event :thing_done, name: String do |state, _event|
+          state[1] = :done
+        end
+
+        command :notify, value: String do |_state, _cmd|
+        end
+
+        reaction_with_state do |state, event|
+          stream_for(event).command :notify, value: "seq was #{seq}, state was #{state[1]}, name was #{event.payload.name}"
+        end
+      end
+    end
+
+    it 'evolves and yields own state, returning commands' do
+      actor = klass.new('1')
+      actor.do_thing(name: 'thing1')
+
+      e1 = klass[:thing_done].parse(stream_id: actor.id, payload: { name: 'thing1' })
+      commands = klass.handle_events([e1], replaying: false)
+      expect(commands.map(&:class)).to eq([klass::Notify])
+      expect(commands.first.payload.value).to eq('seq was 2, state was done, name was thing1')
+    end
+  end
+
   describe '.sync' do
     before do
       allow(TestActor::Listener).to receive(:call)
