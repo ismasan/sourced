@@ -154,8 +154,24 @@ module Sourced
       #     stream.command DoSomethingElse
       #   end
       #
+      # If the block defines two arguments, it will be registered as a reaction with state.
+      # These handlers will load the decider's state from past events, and yield the state and the event to the block.
+      # See .reaction_with_state
+      # @example
+      #   reaction SomethingHappened do |state, event|
+      #     if state[:count] % 3 == 0
+      #       steam_for(event).command DoSomething
+      #     end
+      #   end
+      #
       # @param event_class [Class<Sourced::Message>]
-      def reaction(event_class, &block)
+      # @yield [Sourced::Event]
+      # @return [void]
+      def reaction(event_class = nil, &block)
+        if block_given? && block.arity == 2 # state, event
+          return reaction_with_state(event_class, &block)
+        end
+
         unless event_class.is_a?(Class) && event_class < Sourced::Message
           raise ArgumentError,
                 "Invalid argument #{event_class.inspect} for #{self}.reaction"
@@ -165,6 +181,9 @@ module Sourced
         define_method(Sourced.message_method_name(React::PREFIX, event_class.to_s), &block) if block_given?
       end
 
+      # @param event_name [Class]
+      # @yield [Object, Sourced::Event]
+      # @return [void]
       def reaction_with_state(event_class = nil, &block)
         if event_class.nil?
           # register a reaction for all handled events

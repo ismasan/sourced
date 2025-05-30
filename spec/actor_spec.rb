@@ -419,7 +419,7 @@ RSpec.describe Sourced::Actor do
           state[1] = :done
         end
 
-        reaction_with_state :thing_done do |state, event|
+        reaction :thing_done do |state, event|
           stream_for(event).command :notify, value: "seq was #{seq}, state was #{state[1]}, name was #{event.payload.name}"
           return # <= should not raise LocalJumpError
         end
@@ -449,13 +449,7 @@ RSpec.describe Sourced::Actor do
 
     it 'fails to register reaction if event is not handled by the same Actor' do
       expect do
-        klass.reaction_with_state(TestActor::ListStarted) { |_state, _event| }
-      end.to raise_error(ArgumentError)
-    end
-
-    it 'fails to register reaction if block does not support |state, event|' do
-      expect do
-        klass.reaction_with_state(TestActor::ListStarted) { |_state| }
+        klass.reaction(TestActor::ListStarted) { |_state, _event| }
       end.to raise_error(ArgumentError)
     end
   end
@@ -478,7 +472,7 @@ RSpec.describe Sourced::Actor do
         command :notify, value: String do |_state, _cmd|
         end
 
-        reaction_with_state do |state, event|
+        reaction do |state, event|
           stream_for(event).command :notify, value: "seq was #{seq}, state was #{state[1]}, name was #{event.payload.name}"
         end
       end

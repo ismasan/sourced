@@ -346,10 +346,24 @@ module Sourced
       #     stream.command DoSomething
       #   end
       #
-      # @param event_name [Symbol, Class]
+      # If the block has two arguments, it will be registered as a reaction with state.
+      # These handlers will load the decider's state from past events, and yield the state and the event to the block.
+      # See .reaction_with_state
+      # @example
+      #   reaction :item_added do |state, event|
+      #     if state[:count] % 3 == 0
+      #       steam_for(event).command DoSomething
+      #     end
+      #   end
+      #
+      # @param event_name [nil, Symbol, Class]
       # @yield [Sourced::Event]
       # @return [void]
-      def reaction(event_name, &block)
+      def reaction(event_name = nil, &block)
+        if block_given? && block.arity == 2 # state, event
+          return reaction_with_state(event_name, &block)
+        end
+
         if event_name.is_a?(Symbol)
           event_class = self::Event.registry[__message_type(event_name)]
           super(event_class, &block)
@@ -374,6 +388,11 @@ module Sourced
       #      command NotifyEachThirdTime
       #    end
       #  end
+      #
+      # I no given an event name, this will register a reaction for all events handled by this class
+      #
+      #   reaction_with_state do |state, event|
+      #   end
       #
       # Note: this callback loads the decider's state _up to its current state_, which
       # may be more recent than what the event reacted to represents.
