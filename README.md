@@ -354,6 +354,9 @@ Sourced projectors can define `.reaction` handlers that will be called after evo
 
 This can be useful to implement TODO List patterns where a projector persists projected data, and then reacts to the data update using the data to schedule the next command in a workflow.
 
+![CleanShot 2025-05-30 at 18 43 01](https://github.com/user-attachments/assets/ef8a61b7-6b99-49a1-9767-af94b9c2c4e2)
+
+
 ```ruby
 class ReadyOrders < Sourced::Projector::StateStored
   # Fetch listing record from DB, or new one.
