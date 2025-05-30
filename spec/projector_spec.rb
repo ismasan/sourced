@@ -118,6 +118,15 @@ RSpec.describe Sourced::Projector do
       expect(commands).to eq([])
       expect(ProjectorTest::STORE['222'].total).to eq(22)
     end
+
+    it 'rejects reactions to events not handled by .event handlers' do
+      expect {
+        Class.new(Sourced::Projector::StateStored) do
+          reaction_with_state ProjectorTest::Added do |_state, _event|
+          end
+        end
+      }.to raise_error(ArgumentError)
+    end
   end
 
   describe Sourced::Projector::EventSourced do
