@@ -11,7 +11,13 @@ module ProjectorTest
     attribute :amount, Integer
   end
 
+  Probed = Sourced::Event.define('prtest.probed')
+
   NextCommand = Sourced::Command.define('prtest.next_command') do
+    attribute :amount, Integer
+  end
+
+  NextCommand2 = Sourced::Command.define('prtest.next_command2') do
     attribute :amount, Integer
   end
 
@@ -52,9 +58,19 @@ module ProjectorTest
       state.total += event.payload.amount
     end
 
+    event Probed # register so that it's handled by .reaction_with_state
+
+    # React to a specific event
     reaction_with_state Added do |state, event|
       if state.total > 20
         stream_for(event).command NextCommand, amount: state.total
+      end
+    end
+
+    # React to any event
+    reaction_with_state do |state, event|
+      if state.total > 10
+        stream_for(event).command NextCommand2, amount: state.total
       end
     end
 
@@ -109,6 +125,14 @@ RSpec.describe Sourced::Projector do
       expect(commands.map(&:class)).to eq([ProjectorTest::NextCommand])
       expect(commands.map(&:stream_id)).to eq(['222'])
       expect(commands.first.payload.amount).to eq(21)
+    end
+
+    it 'reacts to wildcard events, if it evolves from them' do
+      e1 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 12 })
+      e2 = ProjectorTest::Probed.parse(stream_id: '222')
+
+      commands = ProjectorTest::StateStoredWithReactions.handle_events([e1, e2], replaying: false)
+      expect(commands.map(&:class)).to eq([ProjectorTest::NextCommand2])
     end
 
     it 'does not react if replaying' do
