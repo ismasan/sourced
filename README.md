@@ -234,11 +234,11 @@ stream_for(Sourced.new_stream_id).command CheckInventory, event.payload
 stream_for(NotifierActor).command :notify, message: 'hello!'
 ```
 
-#### `.reaction_with_state` block
+##### `.reaction` block with actor state
 
-Class-level `.react_with_state` is similar to `.react`, except that it also loads and yields the Actor's current state by loading and applying past events to it (same as when handling commands).
+If the block to `.reaction`  defines two arguments, this will cause Sourced to load up and yield the Actor's current state by loading and applying past events to it (same as when handling commands).
 
-For this reason, `.react_with_state` can only be used with events that are also registered to _evolve_ the same Actor.
+For this reason,  in this mode `.reaction` can only be used with events that are also registered to _evolve_ the same Actor.
 
 ![react](docs/images/sourced-react-with-state-handler.png)
 
@@ -249,7 +249,20 @@ event ItemAdded do |state, event|
 end
 
 # Now react to it and check state
-reaction_with_state ItemAdded do |state, event|
+reaction ItemAdded do |state, event|
+  if state[:item_count] > 30
+    stream_for(event).command NotifyBigCart
+  end
+end
+```
+
+##### `.reaction` with state for all events
+
+If the event name or class is omitted, the `.reaction` macro registers reaction handlers for all events already registered for the actor with the `.event` macro, minus events that have specific reaction handlers defined.
+
+```ruby
+# wildcard reaction for all evolved events
+reaction do |state, event|
   if state[:item_count] > 30
     stream_for(event).command NotifyBigCart
   end
