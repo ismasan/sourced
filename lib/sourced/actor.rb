@@ -192,8 +192,9 @@ module Sourced
       # Any commands returned will be schedule to run next.
       #
       # @param events [Array<Sourced::Event>]
+      # @option replaying [Boolean] if true, the events are being replayed
       # @return [Array<Sourced::Command>]
-      def handle_events(events)
+      def handle_events(events, replaying: false)
         load(events.first.stream_id).handle_events(events)
       end
 
