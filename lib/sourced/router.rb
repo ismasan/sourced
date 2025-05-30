@@ -167,9 +167,9 @@ module Sourced
     end
 
     def handle_next_event_for_reactor(reactor, process_name = nil)
-      backend.reserve_next_for_reactor(reactor) do |event|
+      backend.reserve_next_for_reactor(reactor) do |event, replaying|
         log_event('handling event', reactor, event, process_name)
-        commands = reactor.handle_events([event])
+        commands = reactor.handle_events([event], replaying:)
         if commands.any?
           # TODO: this schedules commands that will be picked up
           # by #dispatch_next_command above on the worker's next tick
