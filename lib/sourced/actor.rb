@@ -393,14 +393,28 @@ module Sourced
       # @param event_name [Symbol, Class]
       # @yield [Object, Sourced::Event]
       # @return [void]
-      def reaction_with_state(event_name, &block)
+      def reaction_with_state(event_name = nil, &block)
         raise ArgumentError, '.reaction_with_state expects a block' unless block_given?
+
+        if event_name.nil?
+          # register a reaction for all handled events
+          # except ones that have custom handlers
+          handled_events_for_evolve.each do |evt_class|
+            method_name = Sourced.message_method_name(REACTION_WITH_STATE_PREFIX, evt_class.to_s)
+            if !instance_methods.include?(method_name.to_sym)
+              reaction_with_state(evt_class, &block)
+            end
+          end
+
+          return
+        end
 
         event_class = if event_name.is_a?(Symbol)
           self::Event.registry[__message_type(event_name)]
         else
           event_name
         end
+
         raise ArgumentError, '.reaction_with_state expects a block with |state, event|' unless block.arity == 2
         unless handled_events_for_evolve.include?(event_class)
           raise ArgumentError, '.reaction_with_state only works with event types handled by this class via .event(event_type)' 
