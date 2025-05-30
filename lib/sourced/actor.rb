@@ -369,7 +369,7 @@ module Sourced
       #    state[:count] += 1
       #  end
       #
-      #  react_with_state SomethingHappened do |state, event|
+      #  reaction_with_state SomethingHappened do |state, event|
       #    if state[:count] % 3 == 0
       #      command NotifyEachThirdTime
       #    end
@@ -394,16 +394,16 @@ module Sourced
       # @yield [Object, Sourced::Event]
       # @return [void]
       def reaction_with_state(event_name, &block)
-        raise ArgumentError, 'react_with_state expects a block' unless block_given?
+        raise ArgumentError, '.reaction_with_state expects a block' unless block_given?
 
         event_class = if event_name.is_a?(Symbol)
           self::Event.registry[__message_type(event_name)]
         else
           event_name
         end
-        raise ArgumentError, '.react_with_state expects a block with |state, event|' unless block.arity == 2
+        raise ArgumentError, '.reaction_with_state expects a block with |state, event|' unless block.arity == 2
         unless handled_events_for_evolve.include?(event_class)
-          raise ArgumentError, '.react_with_state only works with event types handled by this class via .event(event_type)' 
+          raise ArgumentError, '.reaction_with_state only works with event types handled by this class via .event(event_type)' 
         end
 
         method_name = Sourced.message_method_name(REACTION_WITH_STATE_PREFIX, event_class.to_s)
