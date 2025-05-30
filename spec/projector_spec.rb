@@ -54,7 +54,7 @@ RSpec.describe Sourced::Projector do
       e1 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 10 })
       e2 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 5 })
 
-      ProjectorTest::StateStored.handle_events([e1, e2])
+      ProjectorTest::StateStored.handle_events([e1, e2], replaying: false)
 
       expect(ProjectorTest::STORE['111'].total).to eq(15)
     end
@@ -65,7 +65,7 @@ RSpec.describe Sourced::Projector do
       e1 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 10 })
       e2 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 5 })
 
-      ProjectorTest::StateStored.handle_events([e1, e2])
+      ProjectorTest::StateStored.handle_events([e1, e2], replaying: false)
 
       expect(ProjectorTest::STORE['111'].total).to eq(25)
     end
@@ -80,7 +80,7 @@ RSpec.describe Sourced::Projector do
       e1 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 10 })
       e2 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 5 })
 
-      result = ProjectorTest::EventSourced.handle_events([e1, e2])
+      result = ProjectorTest::EventSourced.handle_events([e1, e2], replaying: false)
 
       expect(result).to eq([])
       obj, last_event_type = ProjectorTest::STORE['111']
@@ -95,7 +95,7 @@ RSpec.describe Sourced::Projector do
 
       Sourced.config.backend.append_to_stream('111', [e1])
 
-      result = ProjectorTest::EventSourced.handle_events([e2, e3])
+      result = ProjectorTest::EventSourced.handle_events([e2, e3], replaying: false)
 
       expect(result).to eq([])
       obj, last_event_type = ProjectorTest::STORE['111']
