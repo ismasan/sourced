@@ -270,7 +270,7 @@ RSpec.describe Sourced::Actor do
 
   specify '.handle_events' do
     evt = TestActor::TodoListActor::ItemAdded.parse(stream_id: 'list1', payload: { name: 'item1' })
-    commands = TestActor::TodoListActor.handle_events([evt])
+    commands = TestActor::TodoListActor.handle_events([evt], replaying: false)
     expect(commands.map(&:class)).to eq([TestActor::Notify])
     expect(commands.first.stream_id).to eq('list1')
     expect(commands.first.causation_id).to eq(evt.id)
