@@ -61,14 +61,14 @@ module ProjectorTest
     event Probed # register so that it's handled by .reaction_with_state
 
     # React to a specific event
-    reaction_with_state Added do |state, event|
+    reaction Added do |state, event|
       if state.total > 20
         stream_for(event).command NextCommand, amount: state.total
       end
     end
 
     # React to any event
-    reaction_with_state do |state, event|
+    reaction do |state, event|
       if state.total > 10
         stream_for(event).command NextCommand2, amount: state.total
       end
@@ -146,7 +146,7 @@ RSpec.describe Sourced::Projector do
     it 'rejects reactions to events not handled by .event handlers' do
       expect {
         Class.new(Sourced::Projector::StateStored) do
-          reaction_with_state ProjectorTest::Added do |_state, _event|
+          reaction ProjectorTest::Added do |_state, _event|
           end
         end
       }.to raise_error(ArgumentError)
