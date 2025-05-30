@@ -41,7 +41,7 @@ module Sourced
       %(<#{self.class} id:#{id} seq:#{seq}>)
     end
 
-    def handle_events(events)
+    def handle_events(events, replaying:)
       evolve(state, events)
       save(state, events)
       [] # no commands
@@ -85,9 +85,9 @@ module Sourced
     #  end
     class StateStored < self
       class << self
-        def handle_events(events)
+        def handle_events(events, replaying: false)
           instance = new(events.first.stream_id)
-          instance.handle_events(events)
+          instance.handle_events(events, replaying:)
         end
       end
     end
@@ -116,11 +116,11 @@ module Sourced
     #  end
     class EventSourced < self
       class << self
-        def handle_events(events)
+        def handle_events(events, replaying: false)
           # The current state already includes
           # the new events, so we need to load upto events.first.seq
           instance = load(events.first.stream_id, upto: events.first.seq - 1)
-          instance.handle_events(events)
+          instance.handle_events(events, replaying:)
         end
 
         # Load from event history
