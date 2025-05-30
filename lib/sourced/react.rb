@@ -78,6 +78,7 @@ module Sourced
     def react(events)
       @__stream_dispatchers = {}
       events.each do |event|
+        @__event_for_reaction = event
         __handle_reaction(event)
       end
       cmds = @__stream_dispatchers.values.flat_map(&:commands)
@@ -88,6 +89,7 @@ module Sourced
     def react_with_state(events, state)
       @__stream_dispatchers = {}
       events.each do |event|
+        @__event_for_reaction = event
         __handle_reaction_with_state(event, state)
       end
       cmds = @__stream_dispatchers.values.flat_map(&:commands)
@@ -99,18 +101,18 @@ module Sourced
 
     def __handle_reaction(event)
       method_name = Sourced.message_method_name(React::PREFIX, event.class.to_s)
-      return [] unless respond_to?(method_name)
+      return false unless respond_to?(method_name)
 
-      @__event_for_reaction = event
       send(method_name, event)
+      true
     end
 
     def __handle_reaction_with_state(event, state)
       method_name = Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, event.class.to_s)
-      return [] unless respond_to?(method_name)
+      return false unless respond_to?(method_name)
 
-      @__event_for_reaction = event
       send(method_name, state, event)
+      true
     end
 
     # Helper to build a StreamDispatcher from within a reaction block
@@ -176,7 +178,20 @@ module Sourced
         define_method(Sourced.message_method_name(React::PREFIX, event_class.to_s), &block) if block_given?
       end
 
-      def reaction_with_state(event_class, &block)
+      def reaction_with_state(event_class = nil, &block)
+        if event_class.nil?
+          # register a reaction for all handled events
+          # except ones that have custom handlers
+          handled_events_for_evolve.each do |evt_class|
+            method_name = Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, evt_class.to_s)
+            if !instance_methods.include?(method_name.to_sym)
+              reaction_with_state(evt_class, &block)
+            end
+          end
+
+          return
+        end
+
         unless event_class.is_a?(Class) && event_class < Sourced::Message
           raise ArgumentError,
                 "Invalid argument #{event_class.inspect} for #{self}.reaction_with_state"

@@ -31,8 +31,8 @@ module Sourced
 
       private :reaction
 
-      def reaction_with_state(event_class, &block)
-        unless handled_events_for_evolve.include?(event_class)
+      def reaction_with_state(event_class = nil, &block)
+        if event_class && !handled_events_for_evolve.include?(event_class)
           raise ArgumentError, '.reaction_with_state only works with event types handled by this class via .event(event_type)' 
         end
 
