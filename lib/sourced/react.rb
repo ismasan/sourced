@@ -130,8 +130,8 @@ module Sourced
 
       # These two are the Reactor interface
       # expected by Worker
-      def handle_events(_events)
-        raise NoMethodError, "implement .handle_events(Array<Event>) in #{self}"
+      def handle_events(_events, replaying: false)
+        raise NotImplementedError, "implement .handle_events(Array<Event>, replaying: Boolean) in #{self}"
       end
 
       def handled_events_for_react
