@@ -384,7 +384,7 @@ module Sourced
       #
       #  reaction_with_state SomethingHappened do |state, event|
       #    if seq == event.seq # event is the last one to have happened.
-      #      command DoSomething
+      #      stream_for(event).command DoSomething
       #    else
       #      # ignore ?
       #    end
