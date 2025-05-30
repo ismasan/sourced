@@ -4,9 +4,12 @@ module Sourced
   # Projectors react to events
   # and update views of current state somewhere (a DB, files, etc)
   class Projector
+    include React
     include Evolve
     include Sync
     extend Consumer
+
+    REACTION_WITH_STATE_PREFIX = 'reaction_with_state'
 
     class << self
       # The Reactor interface
@@ -25,6 +28,8 @@ module Sourced
           blk.call(id)
         end
       end
+
+      private :reaction
     end
 
     attr_reader :id, :seq, :state
@@ -43,8 +48,7 @@ module Sourced
 
     def handle_events(events, replaying:)
       evolve(state, events)
-      save(state, events)
-      [] # no commands
+      save(state, events, replaying)
     end
 
     private
@@ -55,9 +59,14 @@ module Sourced
       nil
     end
 
-    def save(state, events)
+    def save(state, events, replaying)
       backend.transaction do
         run_sync_blocks(state, nil, events)
+        if replaying
+          []
+        else
+          react_with_state(events, state)
+        end
       end
     end
 
