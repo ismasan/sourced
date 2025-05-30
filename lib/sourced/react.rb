@@ -76,43 +76,30 @@ module Sourced
     # @param events [Array<Sourced::Event>]
     # @return [Array<Sourced::Command>]
     def react(events)
-      @__stream_dispatchers = {}
-      events.each do |event|
-        @__event_for_reaction = event
-        __handle_reaction(event)
+      __handling_reactions(events) do |event|
+        method_name = Sourced.message_method_name(React::PREFIX, event.class.to_s)
+        send(method_name, event) if respond_to?(method_name)
       end
-      cmds = @__stream_dispatchers.values.flat_map(&:commands)
-      @__stream_dispatchers.clear
-      cmds
     end
 
     def react_with_state(events, state)
-      @__stream_dispatchers = {}
-      events.each do |event|
-        @__event_for_reaction = event
-        __handle_reaction_with_state(event, state)
+      __handling_reactions(events) do |event|
+        method_name = Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, event.class.to_s)
+        send(method_name, state, event) if respond_to?(method_name)
       end
-      cmds = @__stream_dispatchers.values.flat_map(&:commands)
-      @__stream_dispatchers.clear
-      cmds
     end
 
     private
 
-    def __handle_reaction(event)
-      method_name = Sourced.message_method_name(React::PREFIX, event.class.to_s)
-      return false unless respond_to?(method_name)
-
-      send(method_name, event)
-      true
-    end
-
-    def __handle_reaction_with_state(event, state)
-      method_name = Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, event.class.to_s)
-      return false unless respond_to?(method_name)
-
-      send(method_name, state, event)
-      true
+    def __handling_reactions(events, &)
+      @__stream_dispatchers = {}
+      events.each do |event|
+        @__event_for_reaction = event
+        yield event
+      end
+      cmds = @__stream_dispatchers.values.flat_map(&:commands)
+      @__stream_dispatchers.clear
+      cmds
     end
 
     # Helper to build a StreamDispatcher from within a reaction block
