@@ -11,6 +11,10 @@ module ProjectorTest
     attribute :amount, Integer
   end
 
+  NextCommand = Sourced::Command.define('prtest.next_command') do
+    attribute :amount, Integer
+  end
+
   class StateStored < Sourced::Projector::StateStored
     state do |id|
       STORE[id] || State.new(id, 0)
@@ -36,6 +40,26 @@ module ProjectorTest
 
     sync do |state, _, events|
       STORE[state.id] = [state, events.last.type]
+    end
+  end
+
+  class StateStoredWithReactions < Sourced::Projector::StateStored
+    state do |id|
+      STORE[id] || State.new(id, 0)
+    end
+
+    event Added do |state, event|
+      state.total += event.payload.amount
+    end
+
+    reaction_with_state Added do |state, event|
+      if state.total > 20
+        stream_for(event).command NextCommand, amount: state.total
+      end
+    end
+
+    sync do |state, _, _events|
+      STORE[state.id] = state
     end
   end
 end
@@ -68,6 +92,31 @@ RSpec.describe Sourced::Projector do
       ProjectorTest::StateStored.handle_events([e1, e2], replaying: false)
 
       expect(ProjectorTest::STORE['111'].total).to eq(25)
+    end
+  end
+
+  describe 'Sourced::Projector::StateStored with reactions' do
+    it 'reacts to events based on projected state, and returns commands' do
+      e1 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 10 })
+      e2 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 5 })
+      e3 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 6 })
+
+      commands = ProjectorTest::StateStoredWithReactions.handle_events([e1, e2], replaying: false)
+      expect(commands).to eq([])
+
+      commands = ProjectorTest::StateStoredWithReactions.handle_events([e3], replaying: false)
+      expect(ProjectorTest::STORE['222'].total).to eq(21)
+      expect(commands.map(&:class)).to eq([ProjectorTest::NextCommand])
+      expect(commands.map(&:stream_id)).to eq(['222'])
+      expect(commands.first.payload.amount).to eq(21)
+    end
+
+    it 'does not react if replaying' do
+      e1 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 22 })
+
+      commands = ProjectorTest::StateStoredWithReactions.handle_events([e1], replaying: true)
+      expect(commands).to eq([])
+      expect(ProjectorTest::STORE['222'].total).to eq(22)
     end
   end
 

@@ -26,6 +26,7 @@ module Sourced
   #  end
   module React
     PREFIX = 'reaction'
+    REACTION_WITH_STATE_PREFIX = 'reaction_with_state'
 
     def self.included(base)
       super
@@ -84,6 +85,16 @@ module Sourced
       cmds
     end
 
+    def react_with_state(events, state)
+      @__stream_dispatchers = {}
+      events.each do |event|
+        __handle_reaction_with_state(event, state)
+      end
+      cmds = @__stream_dispatchers.values.flat_map(&:commands)
+      @__stream_dispatchers.clear
+      cmds
+    end
+
     private
 
     def __handle_reaction(event)
@@ -92,6 +103,14 @@ module Sourced
 
       @__event_for_reaction = event
       send(method_name, event)
+    end
+
+    def __handle_reaction_with_state(event, state)
+      method_name = Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, event.class.to_s)
+      return [] unless respond_to?(method_name)
+
+      @__event_for_reaction = event
+      send(method_name, state, event)
     end
 
     # Helper to build a StreamDispatcher from within a reaction block
@@ -150,11 +169,23 @@ module Sourced
       def reaction(event_class, &block)
         unless event_class.is_a?(Class) && event_class < Sourced::Message
           raise ArgumentError,
-                "Invalid argument #{event_class.inspect} for #{self}.react"
+                "Invalid argument #{event_class.inspect} for #{self}.reaction"
         end
 
         handled_events_for_react << event_class
         define_method(Sourced.message_method_name(React::PREFIX, event_class.to_s), &block) if block_given?
+      end
+
+      def reaction_with_state(event_class, &block)
+        unless event_class.is_a?(Class) && event_class < Sourced::Message
+          raise ArgumentError,
+                "Invalid argument #{event_class.inspect} for #{self}.reaction_with_state"
+        end
+
+        raise ArgumentError, '.reaction_with_state expects a block with |state, event|' unless block.arity == 2
+
+        handled_events_for_react << event_class
+        define_method(Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, event_class.to_s), &block) if block_given?
       end
     end
   end
