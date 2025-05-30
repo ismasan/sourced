@@ -348,6 +348,49 @@ Like any other _reactor_, projectors need to be registered for background worker
 Sourced.register(CartListings)
 ```
 
+#### Reacting to events and scheduling the next command from projectors
+
+Sourced projectors can define `.reaction` handlers that will be called after evolving state via their `.event` handlers, in the same transaction.
+
+This can be useful to implement TODO List patterns where a projector persists projected data, and then reacts to the data update using the data to schedule the next command in a workflow.
+
+```ruby
+class ReadyOrders < Sourced::Projector::StateStored
+  # Fetch listing record from DB, or new one.
+  state do |id|
+    OrderListing.find_or_initialize(id)
+  end
+
+  event Orders::ItemAdded do |listing, event|
+    listing.line_items << event.payload
+  end
+  
+  # Evolve listing record from events
+  event Orders::PaymentConfirmed do |listing, event|
+    listing.payment_confirmed = true
+  end
+
+  event Orders::BuildConfirmed do |listing, event|
+    listing.build_confirmed = true
+  end
+  
+  # Sync listing record back to DB
+  sync do |listing, _, _|
+    listing.save!
+  end
+  
+  # If a listing has both the build and payment confirmed,
+  # automate dispatching the next command in the workflow
+  reaction do |listing, event|
+    if listing.payment_confirmed? && listing.build_confirmed?
+      stream_for(event).command Orders::Release, **listing.attributes
+    end
+  end
+end
+```
+
+
+
 ## Concurrency model
 
 Concurrency in Sourced is achieved by explicitely _modeling it in_.
