@@ -113,18 +113,23 @@ module Sourced
       end
 
       # Reserve next event for a reactor, based on the reactor's #handled_events list
-      # This fetches the next un-aknowledged event for the reactor, and processes it in a transaction
+      # This fetches the next un-acknowledged event for the reactor, and processes it in a transaction
       # which aquires a lock on the event's stream_id and the reactor's group_id
       # So that no other reactor instance in the same group can process the same stream concurrently.
-      # This way, events for the same stream are guaranteed to be processed linearly for each reactor group.
+      # This way, events for the same stream are guaranteed to be processed sequentially for each reactor group.
       # If the given block returns truthy, the event is marked as acknowledged for this reactor group
       # (ie. it won't be processed again by the same group).
-      # If the block returns falsey, the event is NOT aknowledged and will be retried,
+      # If the block returns falsey, the event is NOT acknowledged and will be retried,
       # unless the block also stops the reactor, which is the default behaviour when an exception is raised.
       # See Router#handle_next_event_for_reactor,
+      # A boolean is passed to the block to indicate whether the event is being replayed 
+      # (ie the reactor group has previously processed it).
+      # This is done by incrementing the group's highest_global_seq with every event acknowledged.
+      # When the group's offsets are reset (in order to re-process all events), this value is preserved
+      # so that each event's global_seq can be compared against it to determine if the event is being replayed.
       #
       # @example
-      #   backend.reserve_next_for_reactor(reactor) do |event|
+      #   backend.reserve_next_for_reactor(reactor) do |event, replaying|
       #     # process event here
       #     true # ACK event
       #   end
