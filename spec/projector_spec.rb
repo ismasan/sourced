@@ -58,7 +58,7 @@ module ProjectorTest
       state.total += event.payload.amount
     end
 
-    event Probed # register so that it's handled by .reaction_with_state
+    event Probed # register so that it's handled by .reaction
 
     # React to a specific event
     reaction Added do |state, event|

@@ -399,7 +399,7 @@ RSpec.describe Sourced::Actor do
     end
   end
 
-  describe '.reaction_with_state for own events' do
+  describe '.reaction with state for own events' do
     let(:klass) do
       Class.new(Sourced::Actor) do
         consumer do |c|
@@ -419,6 +419,8 @@ RSpec.describe Sourced::Actor do
           state[1] = :done
         end
 
+        # Two arguments to reaction, the first is the state
+        # this will cause the actor to load state from past events
         reaction :thing_done do |state, event|
           stream_for(event).command :notify, value: "seq was #{seq}, state was #{state[1]}, name was #{event.payload.name}"
           return # <= should not raise LocalJumpError
@@ -454,7 +456,7 @@ RSpec.describe Sourced::Actor do
     end
   end
 
-  describe '.reaction_with_state for all own events' do
+  describe '.reaction with state for all own events' do
     let(:klass) do
       Class.new(Sourced::Actor) do
         state do |id|
