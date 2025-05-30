@@ -4,6 +4,8 @@ require 'singleton'
 
 module Sourced
   class Router
+    UnregisteredCommandError = Class.new(StandardError)
+
     include Singleton
 
     PID = Process.pid
@@ -86,7 +88,13 @@ module Sourced
     # @param [Array<Sourced::Message>] commands
     def schedule_commands(commands)
       commands = Array(commands)
-      grouped = commands.group_by { |cmd| @decider_lookup.fetch(cmd.class).consumer_info.group_id }
+      grouped = commands.group_by do |cmd| 
+        reactor = @decider_lookup[cmd.class]
+        raise UnregisteredCommandError, "No reactor registered for command #{cmd.class}" unless reactor
+
+        reactor.consumer_info.group_id
+      end
+
       grouped.each do |group_id, cmds|
         backend.schedule_commands(cmds, group_id:)
       end
@@ -169,6 +177,8 @@ module Sourced
         end
 
         event
+      rescue UnregisteredCommandError
+        raise
       rescue StandardError => e
         logger.warn "[#{PID}]: error handling event #{event.class} with reactor #{reactor} #{e}"
         backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
