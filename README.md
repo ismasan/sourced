@@ -389,7 +389,11 @@ class ReadyOrders < Sourced::Projector::StateStored
 end
 ```
 
+##### Skipping projector reactions when replaying events
 
+When a projector's offsets are reset (so that it starts re-processing events and re- building projections), Sourced skips invoking a projector's `.reaction` handlers. This is because building projections should be deterministic, and rebuilding them should not trigger side-effects such as automation (we don't want to call 3rd party APIs, send emails, or just dispatch the same commands over and over when rebuilding projections).
+
+To do this, Sourced keeps track of each consumer groups' highest acknowledged event sequence. When a consumer group is reset and starts re-processing past events, this sequence number is compared with each event's sequence, which tells us whether the event has been processed before.
 
 ## Concurrency model
 
