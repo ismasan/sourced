@@ -266,38 +266,36 @@ module Sourced
 
       private def ack_event(group_id, stream_id, global_seq)
         db.transaction do
-          # Find or create group
-          # group_row = db[consumer_groups_table]
-          #   .where(group_id:)
-          #   .returning(:id)
-          #   .update(
-          #     updated_at: Sequel.function(:now),
-          #     highest_global_seq: Sequel.function(:greatest, :highest_global_seq, global_seq)
-          #   )
-          #   .first
-          #
-          # if group_row.nil?
-          #   raise "Consumer group #{group_id} not found"
-          # end
-
-          # TODO: we'll be creating consumer groups in advance
-          # So here we should just assume it exists and insert it.
-          group_row = db[consumer_groups_table]
-            .insert_conflict(
-              target: :group_id,
-              update: { 
-                updated_at: Sequel.function(:now),
-                highest_global_seq: Sequel.function(
-                  :greatest, 
-                  Sequel.qualify(consumer_groups_table, :highest_global_seq),
-                  global_seq
-                )
-              }
-            )
+          # We could use an upsert here, but
+          # we create consumer groups on registration, or
+          # after the first update.
+          # So by this point, the consumer groups table 
+          # will always have a record for the group_id.
+          # So we assume it's there and update it directly.
+          # If the group_id doesn't exist, it will be created below,
+          # but this should only happen once per group.
+          update_result = db[consumer_groups_table]
+            .where(group_id:)
             .returning(:id)
-            .insert(group_id:, highest_global_seq: global_seq)
+            .update(
+              updated_at: Sequel.function(:now),
+              highest_global_seq: Sequel.function(
+                :greatest, 
+                :highest_global_seq,
+                global_seq
+              )
+            )
 
-          group_id = group_row[0][:id]
+          # Here we do issue a separate INSERT, but this should only happen
+          # if the group record doesn't exist yet, for some reason.
+          if update_result.empty?  # No rows were updated (record doesn't exist)
+            # Only then INSERT
+            update_result = db[consumer_groups_table]
+              .returning(:id)
+              .insert(group_id:, highest_global_seq: global_seq)
+          end
+
+          group_id = update_result[0][:id]
 
           # Upsert offset
           db[offsets_table]
