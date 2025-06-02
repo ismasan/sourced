@@ -220,8 +220,9 @@ class LoggingReactor
     # to be dispatched to the appropriate command handlers.
     #
     # @param events [Array<Message>]
+    # @option replaying [Boolean] whether this is a replay of events
     # @return [Array<Message]
-    def handle_events(events)
+    def handle_events(events, replaying:)
       puts "LoggingReactor received #{events}"
       []
     end

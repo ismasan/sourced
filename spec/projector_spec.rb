@@ -11,6 +11,16 @@ module ProjectorTest
     attribute :amount, Integer
   end
 
+  Probed = Sourced::Event.define('prtest.probed')
+
+  NextCommand = Sourced::Command.define('prtest.next_command') do
+    attribute :amount, Integer
+  end
+
+  NextCommand2 = Sourced::Command.define('prtest.next_command2') do
+    attribute :amount, Integer
+  end
+
   class StateStored < Sourced::Projector::StateStored
     state do |id|
       STORE[id] || State.new(id, 0)
@@ -38,6 +48,36 @@ module ProjectorTest
       STORE[state.id] = [state, events.last.type]
     end
   end
+
+  class StateStoredWithReactions < Sourced::Projector::StateStored
+    state do |id|
+      STORE[id] || State.new(id, 0)
+    end
+
+    event Added do |state, event|
+      state.total += event.payload.amount
+    end
+
+    event Probed # register so that it's handled by .reaction
+
+    # React to a specific event
+    reaction Added do |state, event|
+      if state.total > 20
+        stream_for(event).command NextCommand, amount: state.total
+      end
+    end
+
+    # React to any event
+    reaction do |state, event|
+      if state.total > 10
+        stream_for(event).command NextCommand2, amount: state.total
+      end
+    end
+
+    sync do |state, _, _events|
+      STORE[state.id] = state
+    end
+  end
 end
 
 RSpec.describe Sourced::Projector do
@@ -54,7 +94,7 @@ RSpec.describe Sourced::Projector do
       e1 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 10 })
       e2 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 5 })
 
-      ProjectorTest::StateStored.handle_events([e1, e2])
+      ProjectorTest::StateStored.handle_events([e1, e2], replaying: false)
 
       expect(ProjectorTest::STORE['111'].total).to eq(15)
     end
@@ -65,9 +105,51 @@ RSpec.describe Sourced::Projector do
       e1 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 10 })
       e2 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 5 })
 
-      ProjectorTest::StateStored.handle_events([e1, e2])
+      ProjectorTest::StateStored.handle_events([e1, e2], replaying: false)
 
       expect(ProjectorTest::STORE['111'].total).to eq(25)
+    end
+  end
+
+  describe 'Sourced::Projector::StateStored with reactions' do
+    it 'reacts to events based on projected state, and returns commands' do
+      e1 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 10 })
+      e2 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 5 })
+      e3 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 6 })
+
+      commands = ProjectorTest::StateStoredWithReactions.handle_events([e1, e2], replaying: false)
+      expect(commands).to eq([])
+
+      commands = ProjectorTest::StateStoredWithReactions.handle_events([e3], replaying: false)
+      expect(ProjectorTest::STORE['222'].total).to eq(21)
+      expect(commands.map(&:class)).to eq([ProjectorTest::NextCommand])
+      expect(commands.map(&:stream_id)).to eq(['222'])
+      expect(commands.first.payload.amount).to eq(21)
+    end
+
+    it 'reacts to wildcard events, if it evolves from them' do
+      e1 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 12 })
+      e2 = ProjectorTest::Probed.parse(stream_id: '222')
+
+      commands = ProjectorTest::StateStoredWithReactions.handle_events([e1, e2], replaying: false)
+      expect(commands.map(&:class)).to eq([ProjectorTest::NextCommand2])
+    end
+
+    it 'does not react if replaying' do
+      e1 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 22 })
+
+      commands = ProjectorTest::StateStoredWithReactions.handle_events([e1], replaying: true)
+      expect(commands).to eq([])
+      expect(ProjectorTest::STORE['222'].total).to eq(22)
+    end
+
+    it 'rejects reactions to events not handled by .event handlers' do
+      expect {
+        Class.new(Sourced::Projector::StateStored) do
+          reaction ProjectorTest::Added do |_state, _event|
+          end
+        end
+      }.to raise_error(ArgumentError)
     end
   end
 
@@ -80,7 +162,7 @@ RSpec.describe Sourced::Projector do
       e1 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 10 })
       e2 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 5 })
 
-      result = ProjectorTest::EventSourced.handle_events([e1, e2])
+      result = ProjectorTest::EventSourced.handle_events([e1, e2], replaying: false)
 
       expect(result).to eq([])
       obj, last_event_type = ProjectorTest::STORE['111']
@@ -95,7 +177,7 @@ RSpec.describe Sourced::Projector do
 
       Sourced.config.backend.append_to_stream('111', [e1])
 
-      result = ProjectorTest::EventSourced.handle_events([e2, e3])
+      result = ProjectorTest::EventSourced.handle_events([e2, e3], replaying: false)
 
       expect(result).to eq([])
       obj, last_event_type = ProjectorTest::STORE['111']

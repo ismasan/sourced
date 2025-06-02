@@ -4,6 +4,8 @@ require 'singleton'
 
 module Sourced
   class Router
+    UnregisteredCommandError = Class.new(StandardError)
+
     include Singleton
 
     PID = Process.pid
@@ -86,7 +88,13 @@ module Sourced
     # @param [Array<Sourced::Message>] commands
     def schedule_commands(commands)
       commands = Array(commands)
-      grouped = commands.group_by { |cmd| @decider_lookup.fetch(cmd.class).consumer_info.group_id }
+      grouped = commands.group_by do |cmd| 
+        reactor = @decider_lookup[cmd.class]
+        raise UnregisteredCommandError, "No reactor registered for command #{cmd.class}" unless reactor
+
+        reactor.consumer_info.group_id
+      end
+
       grouped.each do |group_id, cmds|
         backend.schedule_commands(cmds, group_id:)
       end
@@ -159,10 +167,9 @@ module Sourced
     end
 
     def handle_next_event_for_reactor(reactor, process_name = nil)
-      backend.reserve_next_for_reactor(reactor) do |event|
+      backend.reserve_next_for_reactor(reactor) do |event, replaying|
         log_event('handling event', reactor, event, process_name)
-        #  TODO: handle exceptions here
-        commands = reactor.handle_events([event])
+        commands = reactor.handle_events([event], replaying:)
         if commands.any?
           # TODO: this schedules commands that will be picked up
           # by #dispatch_next_command above on the worker's next tick
@@ -170,6 +177,8 @@ module Sourced
         end
 
         event
+      rescue UnregisteredCommandError
+        raise
       rescue StandardError => e
         logger.warn "[#{PID}]: error handling event #{event.class} with reactor #{reactor} #{e}"
         backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|

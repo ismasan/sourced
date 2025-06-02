@@ -270,7 +270,7 @@ RSpec.describe Sourced::Actor do
 
   specify '.handle_events' do
     evt = TestActor::TodoListActor::ItemAdded.parse(stream_id: 'list1', payload: { name: 'item1' })
-    commands = TestActor::TodoListActor.handle_events([evt])
+    commands = TestActor::TodoListActor.handle_events([evt], replaying: false)
     expect(commands.map(&:class)).to eq([TestActor::Notify])
     expect(commands.first.stream_id).to eq('list1')
     expect(commands.first.causation_id).to eq(evt.id)
@@ -399,7 +399,7 @@ RSpec.describe Sourced::Actor do
     end
   end
 
-  describe '.reaction_with_state for own events' do
+  describe '.reaction with state for own events' do
     let(:klass) do
       Class.new(Sourced::Actor) do
         consumer do |c|
@@ -419,7 +419,9 @@ RSpec.describe Sourced::Actor do
           state[1] = :done
         end
 
-        reaction_with_state :thing_done do |state, event|
+        # Two arguments to reaction, the first is the state
+        # this will cause the actor to load state from past events
+        reaction :thing_done do |state, event|
           stream_for(event).command :notify, value: "seq was #{seq}, state was #{state[1]}, name was #{event.payload.name}"
           return # <= should not raise LocalJumpError
         end
@@ -449,14 +451,43 @@ RSpec.describe Sourced::Actor do
 
     it 'fails to register reaction if event is not handled by the same Actor' do
       expect do
-        klass.reaction_with_state(TestActor::ListStarted) { |_state, _event| }
+        klass.reaction(TestActor::ListStarted) { |_state, _event| }
       end.to raise_error(ArgumentError)
     end
+  end
 
-    it 'fails to register reaction if block does not support |state, event|' do
-      expect do
-        klass.reaction_with_state(TestActor::ListStarted) { |_state| }
-      end.to raise_error(ArgumentError)
+  describe '.reaction with state for all own events' do
+    let(:klass) do
+      Class.new(Sourced::Actor) do
+        state do |id|
+          [id, :new, nil]
+        end
+
+        command :do_thing, name: String do |_state, cmd|
+          event :thing_done, cmd.payload
+        end
+
+        event :thing_done, name: String do |state, _event|
+          state[1] = :done
+        end
+
+        command :notify, value: String do |_state, _cmd|
+        end
+
+        reaction do |state, event|
+          stream_for(event).command :notify, value: "seq was #{seq}, state was #{state[1]}, name was #{event.payload.name}"
+        end
+      end
+    end
+
+    it 'evolves and yields own state, returning commands' do
+      actor = klass.new('1')
+      actor.do_thing(name: 'thing1')
+
+      e1 = klass[:thing_done].parse(stream_id: actor.id, payload: { name: 'thing1' })
+      commands = klass.handle_events([e1], replaying: false)
+      expect(commands.map(&:class)).to eq([klass::Notify])
+      expect(commands.first.payload.value).to eq('seq was 2, state was done, name was thing1')
     end
   end
 

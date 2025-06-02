@@ -113,24 +113,30 @@ module Sourced
       end
 
       # Reserve next event for a reactor, based on the reactor's #handled_events list
-      # This fetches the next un-aknowledged event for the reactor, and processes it in a transaction
+      # This fetches the next un-acknowledged event for the reactor, and processes it in a transaction
       # which aquires a lock on the event's stream_id and the reactor's group_id
       # So that no other reactor instance in the same group can process the same stream concurrently.
-      # This way, events for the same stream are guaranteed to be processed linearly for each reactor group.
+      # This way, events for the same stream are guaranteed to be processed sequentially for each reactor group.
       # If the given block returns truthy, the event is marked as acknowledged for this reactor group
       # (ie. it won't be processed again by the same group).
-      # If the block returns falsey, the event is NOT aknowledged and will be retried,
+      # If the block returns falsey, the event is NOT acknowledged and will be retried,
       # unless the block also stops the reactor, which is the default behaviour when an exception is raised.
       # See Router#handle_next_event_for_reactor,
+      # A boolean is passed to the block to indicate whether the event is being replayed 
+      # (ie the reactor group has previously processed it).
+      # This is done by incrementing the group's highest_global_seq with every event acknowledged.
+      # When the group's offsets are reset (in order to re-process all events), this value is preserved
+      # so that each event's global_seq can be compared against it to determine if the event is being replayed.
       #
       # @example
-      #   backend.reserve_next_for_reactor(reactor) do |event|
+      #   backend.reserve_next_for_reactor(reactor) do |event, replaying|
       #     # process event here
       #     true # ACK event
       #   end
       #
       # @param reactor [Sourced::ReactorInterface]
       # @yieldparam [Sourced::Message]
+      # @yieldparam [Boolean] whether the event is being replayed (ie. it has been processed before)
       # @yieldreturn [Boolean] whether to ACK the event for this reactor group and stream ID.
       def reserve_next_for_reactor(reactor, &)
         group_id = reactor.consumer_info.group_id
@@ -147,7 +153,7 @@ module Sourced
 
           event = deserialize_event(row)
 
-          if block_given? && yield(event)
+          if block_given? && yield(event, row[:replaying])
             # ACK if block returns truthy
             ack_event(group_id, row[:stream_id_fk], row[:global_seq])
           end
@@ -260,18 +266,36 @@ module Sourced
 
       private def ack_event(group_id, stream_id, global_seq)
         db.transaction do
-          # Find or create group
-          # TODO: we'll be creating consumer groups in advance
-          # So here we should just assume it exists and insert it.
-          group_row = db[consumer_groups_table]
-            .insert_conflict(
-              target: :group_id,
-              update: { updated_at: Sequel.function(:now) }
-            )
+          # We could use an upsert here, but
+          # we create consumer groups on registration, or
+          # after the first update.
+          # So by this point, the consumer groups table 
+          # will always have a record for the group_id.
+          # So we assume it's there and update it directly.
+          # If the group_id doesn't exist, it will be created below,
+          # but this should only happen once per group.
+          update_result = db[consumer_groups_table]
+            .where(group_id:)
             .returning(:id)
-            .insert(group_id:)
+            .update(
+              updated_at: Sequel.function(:now),
+              highest_global_seq: Sequel.function(
+                :greatest, 
+                :highest_global_seq,
+                global_seq
+              )
+            )
 
-          group_id = group_row[0][:id]
+          # Here we do issue a separate INSERT, but this should only happen
+          # if the group record doesn't exist yet, for some reason.
+          if update_result.empty?  # No rows were updated (record doesn't exist)
+            # Only then INSERT
+            update_result = db[consumer_groups_table]
+              .returning(:id)
+              .insert(group_id:, highest_global_seq: global_seq)
+          end
+
+          group_id = update_result[0][:id]
 
           # Upsert offset
           db[offsets_table]
@@ -362,6 +386,7 @@ module Sourced
         db.create_table?(consumer_groups_table) do
           primary_key :id
           String :group_id, null: false, unique: true
+          Bignum :highest_global_seq, null: false, default: 0
           String :status, null: false, default: ACTIVE, index: true
           column :error_context, :jsonb
           Time :retry_at, null: true
@@ -460,7 +485,7 @@ module Sourced
 
         <<~SQL
           WITH target_group AS (
-              SELECT id, group_id, retry_at
+              SELECT id, group_id, retry_at, highest_global_seq
               FROM #{consumer_groups_table}
               WHERE group_id = ?
               AND status = '#{ACTIVE}'  -- Only active consumer groups
@@ -486,6 +511,7 @@ module Sourced
                   e.metadata,
                   e.payload,
                   e.created_at,
+                  (e.global_seq <= tr.highest_global_seq) AS replaying,
                   pg_try_advisory_xact_lock(
                       hashtext(tr.group_id::text),
                       hashtext(s.id::text)
