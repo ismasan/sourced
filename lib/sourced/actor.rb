@@ -192,8 +192,9 @@ module Sourced
       # Any commands returned will be schedule to run next.
       #
       # @param events [Array<Sourced::Event>]
+      # @option replaying [Boolean] if true, the events are being replayed
       # @return [Array<Sourced::Command>]
-      def handle_events(events)
+      def handle_events(events, replaying: false)
         load(events.first.stream_id).handle_events(events)
       end
 
@@ -345,10 +346,24 @@ module Sourced
       #     stream.command DoSomething
       #   end
       #
-      # @param event_name [Symbol, Class]
+      # If the block has two arguments, it will be registered as a reaction with state.
+      # These handlers will load the decider's state from past events, and yield the state and the event to the block.
+      # See .reaction_with_state
+      # @example
+      #   reaction :item_added do |state, event|
+      #     if state[:count] % 3 == 0
+      #       steam_for(event).command DoSomething
+      #     end
+      #   end
+      #
+      # @param event_name [nil, Symbol, Class]
       # @yield [Sourced::Event]
       # @return [void]
-      def reaction(event_name, &block)
+      def reaction(event_name = nil, &block)
+        if block_given? && block.arity == 2 # state, event
+          return reaction_with_state(event_name, &block)
+        end
+
         if event_name.is_a?(Symbol)
           event_class = self::Event.registry[__message_type(event_name)]
           super(event_class, &block)
@@ -368,11 +383,16 @@ module Sourced
       #    state[:count] += 1
       #  end
       #
-      #  react_with_state SomethingHappened do |state, event|
+      #  reaction_with_state SomethingHappened do |state, event|
       #    if state[:count] % 3 == 0
       #      command NotifyEachThirdTime
       #    end
       #  end
+      #
+      # I no given an event name, this will register a reaction for all events handled by this class
+      #
+      #   reaction_with_state do |state, event|
+      #   end
       #
       # Note: this callback loads the decider's state _up to its current state_, which
       # may be more recent than what the event reacted to represents.
@@ -383,7 +403,7 @@ module Sourced
       #
       #  reaction_with_state SomethingHappened do |state, event|
       #    if seq == event.seq # event is the last one to have happened.
-      #      command DoSomething
+      #      stream_for(event).command DoSomething
       #    else
       #      # ignore ?
       #    end
@@ -392,17 +412,31 @@ module Sourced
       # @param event_name [Symbol, Class]
       # @yield [Object, Sourced::Event]
       # @return [void]
-      def reaction_with_state(event_name, &block)
-        raise ArgumentError, 'react_with_state expects a block' unless block_given?
+      def reaction_with_state(event_name = nil, &block)
+        raise ArgumentError, '.reaction_with_state expects a block' unless block_given?
+
+        if event_name.nil?
+          # register a reaction for all handled events
+          # except ones that have custom handlers
+          handled_events_for_evolve.each do |evt_class|
+            method_name = Sourced.message_method_name(REACTION_WITH_STATE_PREFIX, evt_class.to_s)
+            if !instance_methods.include?(method_name.to_sym)
+              reaction_with_state(evt_class, &block)
+            end
+          end
+
+          return
+        end
 
         event_class = if event_name.is_a?(Symbol)
           self::Event.registry[__message_type(event_name)]
         else
           event_name
         end
-        raise ArgumentError, '.react_with_state expects a block with |state, event|' unless block.arity == 2
+
+        raise ArgumentError, '.reaction_with_state expects a block with |state, event|' unless block.arity == 2
         unless handled_events_for_evolve.include?(event_class)
-          raise ArgumentError, '.react_with_state only works with event types handled by this class via .event(event_type)' 
+          raise ArgumentError, '.reaction_with_state only works with event types handled by this class via .event(event_type)' 
         end
 
         method_name = Sourced.message_method_name(REACTION_WITH_STATE_PREFIX, event_class.to_s)

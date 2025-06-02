@@ -4,9 +4,12 @@ module Sourced
   # Projectors react to events
   # and update views of current state somewhere (a DB, files, etc)
   class Projector
+    include React
     include Evolve
     include Sync
     extend Consumer
+
+    REACTION_WITH_STATE_PREFIX = 'reaction_with_state'
 
     class << self
       # The Reactor interface
@@ -25,6 +28,16 @@ module Sourced
           blk.call(id)
         end
       end
+
+      private :reaction
+
+      def reaction_with_state(event_class = nil, &block)
+        if event_class && !handled_events_for_evolve.include?(event_class)
+          raise ArgumentError, '.reaction_with_state only works with event types handled by this class via .event(event_type)' 
+        end
+
+        super
+      end
     end
 
     attr_reader :id, :seq, :state
@@ -41,10 +54,9 @@ module Sourced
       %(<#{self.class} id:#{id} seq:#{seq}>)
     end
 
-    def handle_events(events)
+    def handle_events(events, replaying:)
       evolve(state, events)
-      save(state, events)
-      [] # no commands
+      save(state, events, replaying)
     end
 
     private
@@ -55,9 +67,14 @@ module Sourced
       nil
     end
 
-    def save(state, events)
+    def save(state, events, replaying)
       backend.transaction do
         run_sync_blocks(state, nil, events)
+        if replaying
+          []
+        else
+          react_with_state(events, state)
+        end
       end
     end
 
@@ -85,9 +102,9 @@ module Sourced
     #  end
     class StateStored < self
       class << self
-        def handle_events(events)
+        def handle_events(events, replaying: false)
           instance = new(events.first.stream_id)
-          instance.handle_events(events)
+          instance.handle_events(events, replaying:)
         end
       end
     end
@@ -116,11 +133,11 @@ module Sourced
     #  end
     class EventSourced < self
       class << self
-        def handle_events(events)
+        def handle_events(events, replaying: false)
           # The current state already includes
           # the new events, so we need to load upto events.first.seq
           instance = load(events.first.stream_id, upto: events.first.seq - 1)
-          instance.handle_events(events)
+          instance.handle_events(events, replaying:)
         end
 
         # Load from event history

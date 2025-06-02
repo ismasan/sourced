@@ -4,6 +4,7 @@ require 'spec_helper'
 
 module RouterTest
   AddItem = Sourced::Message.define('routertest.todos.add')
+  NextCommand = Sourced::Message.define('routertest.todos.next')
   ItemAdded = Sourced::Message.define('routertest.todos.added')
 
   class DeciderOnly
@@ -26,7 +27,7 @@ module RouterTest
 
     # The Decider interface
     def self.handled_commands
-      [AddItem]
+      [AddItem, NextCommand]
     end
 
     def self.handle_command(_cmd); end
@@ -36,8 +37,10 @@ module RouterTest
       [ItemAdded]
     end
 
-    def self.handle_events(_evts)
-      []
+    def self.handle_events(evts, replaying:)
+      cmd = NextCommand.parse(stream_id: evts.first.stream_id)
+
+      [cmd]
     end
   end
 
@@ -70,7 +73,7 @@ module RouterTest
       []
     end
 
-    def self.handle_events(_evts)
+    def self.handle_events(_evts, replaying:)
       []
     end
   end
@@ -123,12 +126,30 @@ RSpec.describe Sourced::Router do
     let(:event) { RouterTest::ItemAdded.new(stream_id: '123') }
 
     before do
-      backend.append_to_stream('123', [event])
+      router.register(RouterTest::DeciderReactor)
+
       allow(RouterTest::DeciderReactor).to receive(:on_exception)
-      expect(RouterTest::DeciderReactor).to receive(:handle_events).and_raise('boom')
+      backend.append_to_stream('123', [event])
+    end
+
+    context 'when reactor returns commands' do
+      it 'schedules commands' do
+        allow(backend).to receive(:schedule_commands)
+
+        router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
+        expect(RouterTest::DeciderReactor).not_to have_received(:on_exception)
+        expect(backend).to have_received(:schedule_commands) do |commands, group_id:|
+          expect(commands.map(&:class)).to eq([RouterTest::NextCommand])
+          expect(group_id).to eq(RouterTest::DeciderReactor.consumer_info.group_id)
+        end
+      end
     end
 
     context 'when reactor raises exception' do
+      before do
+        expect(RouterTest::DeciderReactor).to receive(:handle_events).and_raise('boom')
+      end
+
       it 'invokes .on_exception on reactor' do
         router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
 

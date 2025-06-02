@@ -26,6 +26,7 @@ module Sourced
   #  end
   module React
     PREFIX = 'reaction'
+    REACTION_WITH_STATE_PREFIX = 'reaction_with_state'
 
     def self.included(base)
       super
@@ -75,23 +76,30 @@ module Sourced
     # @param events [Array<Sourced::Event>]
     # @return [Array<Sourced::Command>]
     def react(events)
-      @__stream_dispatchers = {}
-      events.each do |event|
-        __handle_reaction(event)
+      __handling_reactions(events) do |event|
+        method_name = Sourced.message_method_name(React::PREFIX, event.class.to_s)
+        send(method_name, event) if respond_to?(method_name)
       end
-      cmds = @__stream_dispatchers.values.flat_map(&:commands)
-      @__stream_dispatchers.clear
-      cmds
+    end
+
+    def react_with_state(events, state)
+      __handling_reactions(events) do |event|
+        method_name = Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, event.class.to_s)
+        send(method_name, state, event) if respond_to?(method_name)
+      end
     end
 
     private
 
-    def __handle_reaction(event)
-      method_name = Sourced.message_method_name(React::PREFIX, event.class.to_s)
-      return [] unless respond_to?(method_name)
-
-      @__event_for_reaction = event
-      send(method_name, event)
+    def __handling_reactions(events, &)
+      @__stream_dispatchers = {}
+      events.each do |event|
+        @__event_for_reaction = event
+        yield event
+      end
+      cmds = @__stream_dispatchers.values.flat_map(&:commands)
+      @__stream_dispatchers.clear
+      cmds
     end
 
     # Helper to build a StreamDispatcher from within a reaction block
@@ -130,8 +138,8 @@ module Sourced
 
       # These two are the Reactor interface
       # expected by Worker
-      def handle_events(_events)
-        raise NoMethodError, "implement .handle_events(Array<Event>) in #{self}"
+      def handle_events(_events, replaying: false)
+        raise NotImplementedError, "implement .handle_events(Array<Event>, replaying: Boolean) in #{self}"
       end
 
       def handled_events_for_react
@@ -146,15 +154,59 @@ module Sourced
       #     stream.command DoSomethingElse
       #   end
       #
+      # If the block defines two arguments, it will be registered as a reaction with state.
+      # These handlers will load the decider's state from past events, and yield the state and the event to the block.
+      # See .reaction_with_state
+      # @example
+      #   reaction SomethingHappened do |state, event|
+      #     if state[:count] % 3 == 0
+      #       steam_for(event).command DoSomething
+      #     end
+      #   end
+      #
       # @param event_class [Class<Sourced::Message>]
-      def reaction(event_class, &block)
+      # @yield [Sourced::Event]
+      # @return [void]
+      def reaction(event_class = nil, &block)
+        if block_given? && block.arity == 2 # state, event
+          return reaction_with_state(event_class, &block)
+        end
+
         unless event_class.is_a?(Class) && event_class < Sourced::Message
           raise ArgumentError,
-                "Invalid argument #{event_class.inspect} for #{self}.react"
+                "Invalid argument #{event_class.inspect} for #{self}.reaction"
         end
 
         handled_events_for_react << event_class
         define_method(Sourced.message_method_name(React::PREFIX, event_class.to_s), &block) if block_given?
+      end
+
+      # @param event_name [Class]
+      # @yield [Object, Sourced::Event]
+      # @return [void]
+      def reaction_with_state(event_class = nil, &block)
+        if event_class.nil?
+          # register a reaction for all handled events
+          # except ones that have custom handlers
+          handled_events_for_evolve.each do |evt_class|
+            method_name = Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, evt_class.to_s)
+            if !instance_methods.include?(method_name.to_sym)
+              reaction_with_state(evt_class, &block)
+            end
+          end
+
+          return
+        end
+
+        unless event_class.is_a?(Class) && event_class < Sourced::Message
+          raise ArgumentError,
+                "Invalid argument #{event_class.inspect} for #{self}.reaction_with_state"
+        end
+
+        raise ArgumentError, '.reaction_with_state expects a block with |state, event|' unless block.arity == 2
+
+        handled_events_for_react << event_class
+        define_method(Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, event_class.to_s), &block) if block_given?
       end
     end
   end

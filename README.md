@@ -234,11 +234,11 @@ stream_for(Sourced.new_stream_id).command CheckInventory, event.payload
 stream_for(NotifierActor).command :notify, message: 'hello!'
 ```
 
-#### `.reaction_with_state` block
+##### `.reaction` block with actor state
 
-Class-level `.react_with_state` is similar to `.react`, except that it also loads and yields the Actor's current state by loading and applying past events to it (same as when handling commands).
+If the block to `.reaction`  defines two arguments, this will cause Sourced to load up and yield the Actor's current state by loading and applying past events to it (same as when handling commands).
 
-For this reason, `.react_with_state` can only be used with events that are also registered to _evolve_ the same Actor.
+For this reason,  in this mode `.reaction` can only be used with events that are also registered to _evolve_ the same Actor.
 
 ![react](docs/images/sourced-react-with-state-handler.png)
 
@@ -249,7 +249,20 @@ event ItemAdded do |state, event|
 end
 
 # Now react to it and check state
-reaction_with_state ItemAdded do |state, event|
+reaction ItemAdded do |state, event|
+  if state[:item_count] > 30
+    stream_for(event).command NotifyBigCart
+  end
+end
+```
+
+##### `.reaction` with state for all events
+
+If the event name or class is omitted, the `.reaction` macro registers reaction handlers for all events already registered for the actor with the `.event` macro, minus events that have specific reaction handlers defined.
+
+```ruby
+# wildcard reaction for all evolved events
+reaction do |state, event|
   if state[:item_count] > 30
     stream_for(event).command NotifyBigCart
   end
@@ -334,6 +347,58 @@ Like any other _reactor_, projectors need to be registered for background worker
 # In your app's configuration
 Sourced.register(CartListings)
 ```
+
+#### Reacting to events and scheduling the next command from projectors
+
+Sourced projectors can define `.reaction` handlers that will be called after evolving state via their `.event` handlers, in the same transaction.
+
+This can be useful to implement TODO List patterns where a projector persists projected data, and then reacts to the data update using the data to schedule the next command in a workflow.
+
+![CleanShot 2025-05-30 at 18 43 01](https://github.com/user-attachments/assets/ef8a61b7-6b99-49a1-9767-af94b9c2c4e2)
+
+
+```ruby
+class ReadyOrders < Sourced::Projector::StateStored
+  # Fetch listing record from DB, or new one.
+  state do |id|
+    OrderListing.find_or_initialize(id)
+  end
+
+  event Orders::ItemAdded do |listing, event|
+    listing.line_items << event.payload
+  end
+  
+  # Evolve listing record from events
+  event Orders::PaymentConfirmed do |listing, event|
+    listing.payment_confirmed = true
+  end
+
+  event Orders::BuildConfirmed do |listing, event|
+    listing.build_confirmed = true
+  end
+  
+  # Sync listing record back to DB
+  sync do |listing, _, _|
+    listing.save!
+  end
+  
+  # If a listing has both the build and payment confirmed,
+  # automate dispatching the next command in the workflow
+  reaction do |listing, event|
+    if listing.payment_confirmed? && listing.build_confirmed?
+      stream_for(event).command Orders::Release, **listing.attributes
+    end
+  end
+end
+```
+
+Projectors can also define `.reaction event_class do |state, event|` to react to specific events.
+
+##### Skipping projector reactions when replaying events
+
+When a projector's offsets are reset (so that it starts re-processing events and re- building projections), Sourced skips invoking a projector's `.reaction` handlers. This is because building projections should be deterministic, and rebuilding them should not trigger side-effects such as automation (we don't want to call 3rd party APIs, send emails, or just dispatch the same commands over and over when rebuilding projections).
+
+To do this, Sourced keeps track of each consumer groups' highest acknowledged event sequence. When a consumer group is reset and starts re-processing past events, this sequence number is compared with each event's sequence, which tells us whether the event has been processed before.
 
 ## Concurrency model
 
