@@ -566,6 +566,94 @@ module BackendExamples
       end
     end
 
+    describe '#recent_streams' do
+      it 'returns streams ordered by most recent activity first' do
+        now = Time.now
+
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's2', seq: 10, payload: { account_id: 1 })
+
+        # Create first stream
+        backend.append_to_stream('s1', [evt1])
+        
+        # Create second stream 5 seconds later
+        Timecop.freeze(now + 5) do
+          backend.append_to_stream('s2', [evt2])
+        end
+
+        streams = backend.recent_streams(limit: 20)
+        
+        # Should be ordered by most recent first (s2, then s1)
+        expect(streams.map(&:stream_id)).to eq(['s2', 's1'])
+        expect(streams.map(&:seq)).to eq([10, 1])
+        expect(streams.first.updated_at).to be_a(Time)
+        expect(streams.size).to eq(2)
+      end
+
+      it 'respects the limit parameter' do
+        # Create 5 streams with different timestamps
+        5.times do |i|
+          evt = Tests::SomethingHappened1.parse(stream_id: "s#{i}", seq: 1, payload: { account_id: 1 })
+          Timecop.freeze(Time.now + i) do
+            backend.append_to_stream("s#{i}", [evt])
+          end
+        end
+
+        # Test limit smaller than total streams
+        streams = backend.recent_streams(limit: 3)
+        expect(streams.size).to eq(3)
+        expect(streams.map(&:stream_id)).to eq(['s4', 's3', 's2']) # Most recent first
+
+        # Test limit larger than total streams
+        streams = backend.recent_streams(limit: 10)
+        expect(streams.size).to eq(5) # Should return all 5 streams
+        expect(streams.map(&:stream_id)).to eq(['s4', 's3', 's2', 's1', 's0'])
+
+        # Test limit of 1
+        streams = backend.recent_streams(limit: 1)
+        expect(streams.size).to eq(1)
+        expect(streams.first.stream_id).to eq('s4') # Most recent
+      end
+
+      it 'uses default limit when not specified' do
+        # Create more streams than the default limit (10)
+        12.times do |i|
+          evt = Tests::SomethingHappened1.parse(stream_id: "s#{i}", seq: 1, payload: { account_id: 1 })
+          backend.append_to_stream("s#{i}", [evt])
+        end
+
+        streams = backend.recent_streams # No limit specified
+        expect(streams.size).to eq(10) # Should default to 10
+      end
+
+      it 'handles edge cases for limit parameter' do
+        # Create a few streams
+        3.times do |i|
+          evt = Tests::SomethingHappened1.parse(stream_id: "s#{i}", seq: 1, payload: { account_id: 1 })
+          backend.append_to_stream("s#{i}", [evt])
+        end
+
+        # Test limit of 0
+        streams = backend.recent_streams(limit: 0)
+        expect(streams.size).to eq(0)
+
+        # Test very large limit
+        streams = backend.recent_streams(limit: 1000)
+        expect(streams.size).to eq(3) # Should return all available streams
+      end
+
+      it 'validates input parameters' do
+        # Test negative limit
+        expect {
+          backend.recent_streams(limit: -1)
+        }.to raise_error(ArgumentError, "limit must be a positive integer")
+
+        expect {
+          backend.recent_streams(limit: -5)
+        }.to raise_error(ArgumentError, "limit must be a positive integer")
+      end
+    end
+
     describe '#read_event_stream' do
       it 'reads full event stream in order' do
         cmd1 = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
