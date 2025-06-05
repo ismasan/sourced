@@ -517,7 +517,7 @@ module Sourced
           Bignum :highest_global_seq, null: false, default: 0
           String :status, null: false, default: ACTIVE, index: true
           column :error_context, :jsonb
-          Time :retry_at, null: true
+          Time :retry_at, null: true, index: true
           Time :created_at, null: false, default: Sequel.function(:now)
           Time :updated_at, null: false, default: Sequel.function(:now)
 
@@ -546,10 +546,18 @@ module Sourced
           String :type, null: false
           Time :created_at, null: false
           column :causation_id, :uuid, index: true
-          column :correlation_id, :uuid
+          column :correlation_id, :uuid, index: true
           column :metadata, :jsonb
           column :payload, :jsonb
+          
+          # Existing indexes
           index %i[stream_id seq], unique: true
+          
+          # Performance indexes for common query patterns
+          index :type                           # For event type filtering
+          index :created_at                     # For time-based queries
+          index %i[type global_seq]             # For filtered ordering (composite)
+          index %i[stream_id global_seq]        # For stream + sequence queries
         end
 
         logger.info("Created table #{events_table}")
