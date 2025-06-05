@@ -645,10 +645,10 @@ module Sourced
                       hashtext(s.id::text)
                   ) as lock_obtained
               FROM target_group tr
-              CROSS JOIN #{events_table} e  -- CROSS JOIN since we need all events
-              JOIN #{streams_table} s ON e.stream_id = s.id
               LEFT JOIN latest_offset lo ON true
-              WHERE e.global_seq > COALESCE(lo.global_seq, 0)
+              JOIN #{events_table} e ON e.global_seq > COALESCE(lo.global_seq, 0)
+              JOIN #{streams_table} s ON e.stream_id = s.id
+              WHERE 1=1
               #{event_types_sql}#{time_window_sql}
               ORDER BY e.global_seq
           )
