@@ -195,6 +195,9 @@ module Sourced
       #   active_count = streams.count { |s| s.updated_at > 1.hour.ago }
       #   puts "#{active_count} streams active in last hour"
       def recent_streams(limit: 10)
+        # Handle edge case where limit is 0
+        return [] if limit == 0
+
         query = db[streams_table]
           .select(:stream_id, :seq, :updated_at)
           .order(Sequel.desc(:updated_at))

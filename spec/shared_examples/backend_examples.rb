@@ -591,13 +591,55 @@ module BackendExamples
       end
 
       it 'respects the limit parameter' do
+        # Create 5 streams with different timestamps
+        5.times do |i|
+          evt = Tests::SomethingHappened1.parse(stream_id: "s#{i}", seq: 1, payload: { account_id: 1 })
+          Timecop.freeze(Time.now + i) do
+            backend.append_to_stream("s#{i}", [evt])
+          end
+        end
+
+        # Test limit smaller than total streams
+        streams = backend.recent_streams(limit: 3)
+        expect(streams.size).to eq(3)
+        expect(streams.map(&:stream_id)).to eq(['s4', 's3', 's2']) # Most recent first
+
+        # Test limit larger than total streams
+        streams = backend.recent_streams(limit: 10)
+        expect(streams.size).to eq(5) # Should return all 5 streams
+        expect(streams.map(&:stream_id)).to eq(['s4', 's3', 's2', 's1', 's0'])
+
+        # Test limit of 1
+        streams = backend.recent_streams(limit: 1)
+        expect(streams.size).to eq(1)
+        expect(streams.first.stream_id).to eq('s4') # Most recent
+      end
+
+      it 'uses default limit when not specified' do
+        # Create more streams than the default limit (10)
+        12.times do |i|
+          evt = Tests::SomethingHappened1.parse(stream_id: "s#{i}", seq: 1, payload: { account_id: 1 })
+          backend.append_to_stream("s#{i}", [evt])
+        end
+
+        streams = backend.recent_streams # No limit specified
+        expect(streams.size).to eq(10) # Should default to 10
+      end
+
+      it 'handles edge cases for limit parameter' do
+        # Create a few streams
         3.times do |i|
           evt = Tests::SomethingHappened1.parse(stream_id: "s#{i}", seq: 1, payload: { account_id: 1 })
           backend.append_to_stream("s#{i}", [evt])
         end
 
-        streams = backend.recent_streams(limit: 2)
-        expect(streams.size).to eq(2)
+        # Test limit of 0
+        streams = backend.recent_streams(limit: 0)
+        expect(streams.size).to eq(0)
+
+        # Test very large limit
+        streams = backend.recent_streams(limit: 1000)
+        expect(streams.size).to eq(3) # Should return all available streams
       end
     end
 
