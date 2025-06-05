@@ -147,14 +147,15 @@ module Sourced
       end
 
       class State
-        attr_reader :events, :groups, :events_by_correlation_id, :events_by_stream_id, :stream_id_seq_index
+        attr_reader :events, :groups, :events_by_correlation_id, :events_by_stream_id, :stream_id_seq_index, :streams
 
         def initialize(
           events: [], 
           groups: Hash.new { |h, k| h[k] = Group.new(k, self) }, 
           events_by_correlation_id: Hash.new { |h, k| h[k] = [] }, 
           events_by_stream_id: Hash.new { |h, k| h[k] = [] },
-          stream_id_seq_index: {}
+          stream_id_seq_index: {},
+          streams: {}
         )
 
           @events = events
@@ -163,6 +164,17 @@ module Sourced
           @command_locks = {}
           @events_by_stream_id = events_by_stream_id
           @stream_id_seq_index = stream_id_seq_index
+          @streams = streams
+        end
+
+        Stream = Data.define(:stream_id, :seq, :updated_at) do
+          def hash = stream_id
+          def eql?(other) = other.is_a?(Stream) && stream_id == other.stream_id
+        end
+
+        def upsert_stream(stream_id, seq)
+          str = Stream.new(stream_id, seq, Time.now)
+          @streams[stream_id] = str
         end
 
         def next_command(&reserve)
@@ -199,7 +211,8 @@ module Sourced
             groups: deep_dup(groups),
             events_by_correlation_id: deep_dup(events_by_correlation_id),
             events_by_stream_id: deep_dup(events_by_stream_id),
-            stream_id_seq_index: deep_dup(stream_id_seq_index)
+            stream_id_seq_index: deep_dup(stream_id_seq_index),
+            streams: streams.dup
           )
         end
 
@@ -347,6 +360,16 @@ module Sourced
         Stats.new(stream_count, max_global_seq, groups)
       end
 
+      # Retrieve a list of recently active streams, ordered by most recent activity.
+      # This is the in-memory implementation that maintains stream metadata during testing.
+      #
+      # @param limit [Integer] Maximum number of streams to return (defaults to 10)
+      # @return [Array<Stream>] Array of Stream objects ordered by updated_at descending
+      # @see SequelBackend#recent_streams
+      def recent_streams(limit: 10)
+        @state.streams.values.sort_by(&:updated_at).reverse.take(limit)
+      end
+
       def transaction(&)
         if @in_tx
           yield
@@ -375,6 +398,7 @@ module Sourced
             @state.events_by_stream_id[stream_id] << event
             @state.events << event
             @state.stream_id_seq_index[seq_key(stream_id, event)] = true
+            @state.upsert_stream(stream_id, event.seq)
           end
         end
         @state.groups.each_value(&:reindex)
