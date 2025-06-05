@@ -526,6 +526,8 @@ module Sourced
 
         logger.info("Created table #{consumer_groups_table}")
 
+        _offsets_table = offsets_table
+        
         db.create_table?(offsets_table) do
           primary_key :id
           foreign_key :group_id, _consumer_groups_table, on_delete: :cascade
@@ -533,7 +535,12 @@ module Sourced
           Bignum :global_seq, null: false
           Time :created_at, null: false, default: Sequel.function(:now)
 
+          # Unique constraint for business logic
           index %i[group_id stream_id], unique: true
+          
+          # Coverage index for aggregation queries (sql_for_consumer_stats)
+          # Covers: GROUP BY group_id + MIN/MAX(global_seq) aggregations
+          index %i[group_id global_seq], name: "idx_#{_offsets_table}_group_seq_covering"
         end
 
         logger.info("Created table #{offsets_table}")
