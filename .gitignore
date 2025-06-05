@@ -5,3 +5,4 @@ examples/carts
 logs/
 pkg
 .DS_Store
+.claude
