@@ -517,7 +517,7 @@ module Sourced
           Bignum :highest_global_seq, null: false, default: 0
           String :status, null: false, default: ACTIVE, index: true
           column :error_context, :jsonb
-          Time :retry_at, null: true
+          Time :retry_at, null: true, index: true
           Time :created_at, null: false, default: Sequel.function(:now)
           Time :updated_at, null: false, default: Sequel.function(:now)
 
@@ -526,6 +526,8 @@ module Sourced
 
         logger.info("Created table #{consumer_groups_table}")
 
+        _offsets_table = offsets_table
+        
         db.create_table?(offsets_table) do
           primary_key :id
           foreign_key :group_id, _consumer_groups_table, on_delete: :cascade
@@ -533,7 +535,12 @@ module Sourced
           Bignum :global_seq, null: false
           Time :created_at, null: false, default: Sequel.function(:now)
 
+          # Unique constraint for business logic
           index %i[group_id stream_id], unique: true
+          
+          # Coverage index for aggregation queries (sql_for_consumer_stats)
+          # Covers: GROUP BY group_id + MIN/MAX(global_seq) aggregations
+          index %i[group_id global_seq], name: "idx_#{_offsets_table}_group_seq_covering"
         end
 
         logger.info("Created table #{offsets_table}")
@@ -546,24 +553,42 @@ module Sourced
           String :type, null: false
           Time :created_at, null: false
           column :causation_id, :uuid, index: true
-          column :correlation_id, :uuid
+          column :correlation_id, :uuid, index: true
           column :metadata, :jsonb
           column :payload, :jsonb
+          
+          # Existing indexes
           index %i[stream_id seq], unique: true
+          
+          # Performance indexes for common query patterns
+          index :type                           # For event type filtering
+          index :created_at                     # For time-based queries
+          index %i[type global_seq]             # For filtered ordering (composite)
+          index %i[stream_id global_seq]        # For stream + sequence queries
         end
 
         logger.info("Created table #{events_table}")
 
+        _commands_table = commands_table
+        
         db.create_table?(commands_table) do
           column :id, :uuid, unique: true
-          String :consumer_group_id, null: false, index: true
-          String :stream_id, null: false, index: true
+          String :consumer_group_id, null: false
+          String :stream_id, null: false  
           String :type, null: false
-          Time :created_at, null: false, index: true
+          Time :created_at, null: false
           column :causation_id, :uuid
           column :correlation_id, :uuid
           column :metadata, :jsonb
           column :payload, :jsonb
+          
+          # Optimized composite index for command processing queries
+          # Covers: consumer_group_id lookup + created_at ordering  
+          index %i[consumer_group_id created_at], name: "idx_#{_commands_table}_group_created"
+          
+          # Individual indexes for other access patterns
+          index :stream_id     # For stream-specific command queries
+          index :type          # For command type filtering
         end
 
         logger.info("Created table #{commands_table}")
@@ -645,10 +670,10 @@ module Sourced
                       hashtext(s.id::text)
                   ) as lock_obtained
               FROM target_group tr
-              CROSS JOIN #{events_table} e  -- CROSS JOIN since we need all events
-              JOIN #{streams_table} s ON e.stream_id = s.id
               LEFT JOIN latest_offset lo ON true
-              WHERE e.global_seq > COALESCE(lo.global_seq, 0)
+              JOIN #{events_table} e ON e.global_seq > COALESCE(lo.global_seq, 0)
+              JOIN #{streams_table} s ON e.stream_id = s.id
+              WHERE 1=1
               #{event_types_sql}#{time_window_sql}
               ORDER BY e.global_seq
           )
