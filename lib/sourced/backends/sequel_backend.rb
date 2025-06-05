@@ -10,12 +10,46 @@ Sequel.extension :pg_json if defined?(PG)
 
 module Sourced
   module Backends
+    # Production backend implementation using Sequel ORM for PostgreSQL and SQLite.
+    # This backend provides persistent storage for events, commands, and consumer state
+    # with support for concurrency control, pub/sub notifications, and transactional processing.
+    #
+    # The SequelBackend handles:
+    # - Event storage and retrieval with ordering guarantees
+    # - Command scheduling and dispatching
+    # - Consumer group management and offset tracking  
+    # - Concurrency control via database locks
+    # - Pub/sub notifications for real-time event processing
+    #
+    # @example Basic setup with PostgreSQL
+    #   db = Sequel.connect('postgres://localhost/myapp')
+    #   backend = Sourced::Backends::SequelBackend.new(db)
+    #   backend.install unless backend.installed?
+    #
+    # @example Configuration in Sourced
+    #   Sourced.configure do |config|
+    #     config.backend = Sequel.connect(ENV['DATABASE_URL'])
+    #   end
     class SequelBackend
+      # Consumer group status indicating active processing
       ACTIVE = 'active'
+      # Consumer group status indicating stopped processing
       STOPPED = 'stopped'
 
+      # @!attribute [r] pubsub
+      #   @return [SequelPubSub] Pub/sub implementation for real-time notifications
       attr_reader :pubsub
 
+      # Initialize a new Sequel backend instance.
+      # Automatically sets up database connection, table names, and pub/sub system.
+      #
+      # @param db [Sequel::Database, String] Database connection or connection string
+      # @param logger [Object] Logger instance for backend operations (defaults to configured logger)
+      # @param prefix [String] Table name prefix for Sourced tables (defaults to 'sourced')
+      # @example Initialize with existing connection
+      #   backend = SequelBackend.new(Sequel.connect('postgres://localhost/mydb'))
+      # @example Initialize with custom prefix
+      #   backend = SequelBackend.new(db, prefix: 'my_app')
       def initialize(db, logger: Sourced.config.logger, prefix: 'sourced')
         @db = connect(db)
         @pubsub = SequelPubSub.new(db: @db)
@@ -29,6 +63,11 @@ module Sourced
         logger.info("Connected to #{@db}")
       end
 
+      # Check if all required database tables exist.
+      # This verifies that the backend has been properly installed with all necessary schema.
+      #
+      # @return [Boolean] true if all required tables exist, false otherwise
+      # @see #install
       def installed?
         db.table_exists?(events_table) \
           && db.table_exists?(streams_table) \
@@ -37,6 +76,15 @@ module Sourced
           && db.table_exists?(commands_table)
       end
 
+      # Schedule commands for background processing by a specific consumer group.
+      # Commands are serialized and stored in the commands table for later dispatch.
+      #
+      # @param commands [Array<Command>] Commands to schedule for processing
+      # @param group_id [String] Consumer group ID that will process these commands
+      # @return [Boolean] true if commands were scheduled, false if array was empty
+      # @example Schedule commands for processing
+      #   commands = [CreateCart.new(stream_id: 'cart-1', payload: {})]
+      #   backend.schedule_commands(commands, group_id: 'CartActor')
       def schedule_commands(commands, group_id:)
         return false if commands.empty?
 
@@ -58,6 +106,23 @@ module Sourced
       # TODO2: Can't use Time.now.utc because it's not timezone-aware
       # I shouldn't mix PG NOW() with Time.now. Need to consistently use one or the other.
       # Only reason to use Time.now here if for testing with Timecop, I think
+      # Retrieve and optionally reserve the next available command for processing.
+      # Commands are ordered by creation time to ensure FIFO processing.
+      # If a block is provided, the command can be reserved for processing.
+      #
+      # @yield [command] Optional block to reserve the command for processing
+      # @yieldparam command [Command] The command to potentially reserve
+      # @yieldreturn [Boolean] true to delete the command (reserve it), false to keep it
+      # @return [Command, nil] The next command or nil if no commands available
+      # @example Get next command without reserving
+      #   command = backend.next_command
+      # @example Reserve command for processing
+      #   backend.next_command do |command|
+      #     # Process command and return true to remove from queue
+      #     process_command(command)
+      #     true
+      #   end
+      # @note Commands that fail processing are kept in the queue for retry
       def next_command(&reserve)
         if block_given?
           db.transaction do
@@ -80,8 +145,24 @@ module Sourced
         end
       end
 
+      # Data structure for backend statistics and monitoring information.
+      # @!attribute [r] stream_count
+      #   @return [Integer] Total number of event streams
+      # @!attribute [r] max_global_seq
+      #   @return [Integer] Highest global sequence number (latest event)
+      # @!attribute [r] groups
+      #   @return [Array<Hash>] Consumer group information with processing stats
       Stats = Data.define(:stream_count, :max_global_seq, :groups)
 
+      # Get comprehensive statistics about the backend state.
+      # Useful for monitoring, debugging, and understanding system health.
+      #
+      # @return [Stats] Statistics object with stream counts, sequences, and group info
+      # @example Get backend statistics
+      #   stats = backend.stats
+      #   puts "Total streams: #{stats.stream_count}"
+      #   puts "Latest event: #{stats.max_global_seq}"
+      #   stats.groups.each { |g| puts "Group #{g[:id]}: #{g[:status]}" }
       def stats
         stream_count = db[streams_table].count
         max_global_seq = db[events_table].max(:global_seq)

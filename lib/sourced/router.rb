@@ -3,7 +3,24 @@
 require 'singleton'
 
 module Sourced
+  # The Router is the central dispatch mechanism in Sourced, responsible for:
+  # - Registering actors and projectors 
+  # - Routing commands to appropriate deciders (actors)
+  # - Routing events to appropriate reactors (actors and projectors)
+  # - Managing the execution of synchronous and asynchronous reactors
+  # - Coordinating with the backend for event storage and retrieval
+  #
+  # The Router uses the Singleton pattern to ensure a single global registry
+  # of all registered components in the system.
+  #
+  # @example Register components and handle commands
+  #   Sourced::Router.register(MyActor)
+  #   Sourced::Router.register(MyProjector)
+  #   
+  #   command = CreateSomething.new(stream_id: 'test', payload: {})
+  #   Sourced::Router.handle_command(command)
   class Router
+    # Raised when attempting to handle a command with no registered handler
     UnregisteredCommandError = Class.new(StandardError)
 
     include Singleton
@@ -13,41 +30,84 @@ module Sourced
     class << self
       public :new
 
+      # Register an actor or projector for command/event handling.
+      # @param args [Object] Arguments passed to the instance register method
+      # @return [void]
+      # @see #register
       def register(...)
         instance.register(...)
       end
 
+      # Schedule commands for background processing.
+      # @param commands [Array<Command>] Commands to schedule
+      # @return [void]
+      # @see #schedule_commands
       def schedule_commands(commands)
         instance.schedule_commands(commands)
       end
 
+      # Handle a command synchronously by routing it to the appropriate decider.
+      # @param command [Command] The command to handle
+      # @return [Array] Array containing updated state and new events
+      # @see #handle_command
       def handle_command(command)
         instance.handle_command(command)
       end
 
+      # Dispatch the next scheduled command from the backend queue.
+      # @return [Boolean] true if a command was dispatched, false if queue is empty
+      # @see #dispatch_next_command
       def dispatch_next_command
         instance.dispatch_next_command
       end
 
+      # Handle events by routing them to all registered reactors.
+      # @param events [Array<Event>] Events to handle
+      # @return [void]
+      # @see #handle_events
       def handle_events(events)
         instance.handle_events(events)
       end
 
+      # Get all registered asynchronous reactors.
+      # @return [Set] Set of async reactor classes
+      # @see #async_reactors
       def async_reactors
         instance.async_reactors
       end
 
+      # Handle and acknowledge events for a specific reactor.
+      # @param reactor [Class] The reactor class to handle events for
+      # @param events [Array<Event>] Events to handle
+      # @return [void]
+      # @see #handle_and_ack_events_for_reactor
       def handle_and_ack_events_for_reactor(reactor, events)
         instance.handle_and_ack_events_for_reactor(reactor, events)
       end
 
+      # Handle the next available event for a specific reactor.
+      # @param reactor [Class] The reactor class to get events for
+      # @param process_name [String, nil] Optional process identifier for logging
+      # @return [Boolean] true if an event was handled, false if no events available
+      # @see #handle_next_event_for_reactor
       def handle_next_event_for_reactor(reactor, process_name = nil)
         instance.handle_next_event_for_reactor(reactor, process_name)
       end
     end
 
+    # @!attribute [r] sync_reactors
+    #   @return [Set] Reactors that run synchronously with command handling
+    # @!attribute [r] async_reactors  
+    #   @return [Set] Reactors that run asynchronously in background workers
+    # @!attribute [r] backend
+    #   @return [Object] The configured backend for event storage
+    # @!attribute [r] logger
+    #   @return [Object] The configured logger instance
     attr_reader :sync_reactors, :async_reactors, :backend, :logger
 
+    # Initialize a new Router instance.
+    # @param backend [Object] Backend for event storage (defaults to configured backend)
+    # @param logger [Object] Logger instance (defaults to configured logger)
     def initialize(backend: Sourced.config.backend, logger: Sourced.config.logger)
       @backend = backend
       @logger = logger
@@ -56,6 +116,18 @@ module Sourced
       @async_reactors = Set.new
     end
 
+    # Register an actor or projector with the router.
+    # Components implementing DeciderInterface can handle commands.
+    # Components implementing ReactorInterface can handle events.
+    # A single class can implement both interfaces.
+    #
+    # @param thing [Class] Actor or Projector class to register
+    # @return [void]
+    # @raise [InvalidReactorError] if the class doesn't implement required interfaces
+    # @example Register an actor that handles both commands and events
+    #   router.register(CartActor)
+    # @example Register a projector that only handles events
+    #   router.register(CartListingsProjector)
     def register(thing)
       regs = 0
       if DeciderInterface === thing
@@ -82,10 +154,19 @@ module Sourced
       end
     end
 
-    # Schedule commands for later processing
-    # commands are scheduled with the group_id or their target reactor
-    # So that we only fetch the next available commands for ACTIVE reactors.
-    # @param [Array<Sourced::Message>] commands
+    # Schedule commands for background processing by registered actors.
+    # Commands are grouped by their target reactor's consumer group ID to ensure
+    # proper ordering and that only commands for active reactors are fetched.
+    #
+    # @param commands [Array<Command>] Commands to schedule for processing
+    # @return [void]
+    # @raise [UnregisteredCommandError] if no reactor is registered for a command type
+    # @example Schedule multiple commands
+    #   commands = [
+    #     CreateCart.new(stream_id: 'cart-1', payload: {}),
+    #     AddItem.new(stream_id: 'cart-1', payload: { product_id: 'p1' })
+    #   ]
+    #   router.schedule_commands(commands)
     def schedule_commands(commands)
       commands = Array(commands)
       grouped = commands.group_by do |cmd| 
@@ -100,6 +181,15 @@ module Sourced
       end
     end
 
+    # Handle a command synchronously by routing it to the appropriate registered decider.
+    # This loads the actor's current state, processes the command, and returns the results.
+    #
+    # @param command [Command] The command to handle
+    # @return [Array] Array containing [updated_state, new_events]
+    # @raise [KeyError] if no decider is registered for the command type
+    # @example Handle a command directly
+    #   command = CreateCart.new(stream_id: 'cart-123', payload: {})
+    #   state, events = router.handle_command(command)
     def handle_command(command)
       decider = @decider_lookup.fetch(command.class)
       decider.handle_command(command)
