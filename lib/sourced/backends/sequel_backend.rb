@@ -170,6 +170,50 @@ module Sourced
         Stats.new(stream_count, max_global_seq, groups)
       end
 
+      # Data structure representing a stream with its metadata.
+      # @!attribute [r] stream_id
+      #   @return [String] Unique identifier for the stream
+      # @!attribute [r] seq
+      #   @return [Integer] Latest sequence number in the stream
+      # @!attribute [r] updated_at
+      #   @return [Time] Timestamp of the most recent event in the stream
+      Stream = Data.define(:stream_id, :seq, :updated_at)
+
+      # Retrieve a list of recently active streams, ordered by most recent activity.
+      # This method is useful for diagnostics, monitoring, and debugging to understand
+      # which streams have been most active in the system.
+      #
+      # The query is optimized with a database index on updated_at for efficient sorting
+      # and uses LIMIT to minimize data transfer.
+      #
+      # @param limit [Integer] Maximum number of streams to return (defaults to 10, must be >= 0)
+      # @return [Array<Stream>] Array of Stream objects ordered by updated_at descending
+      # @raise [ArgumentError] if limit is negative
+      # @example Get the 5 most recently active streams
+      #   recent = backend.recent_streams(limit: 5)
+      #   recent.each do |stream|
+      #     puts "Stream #{stream.stream_id}: seq #{stream.seq} at #{stream.updated_at}"
+      #   end
+      # @example Monitor system activity
+      #   streams = backend.recent_streams(limit: 20)
+      #   active_count = streams.count { |s| s.updated_at > 1.hour.ago }
+      #   puts "#{active_count} streams active in last hour"
+      def recent_streams(limit: 10)
+        # Input validation
+        return [] if limit == 0
+        raise ArgumentError, "limit must be a positive integer" if limit < 0
+
+        # Optimized query with index on updated_at
+        query = db[streams_table]
+          .select(:stream_id, :seq, :updated_at)
+          .reverse(:updated_at)  # More idiomatic Sequel than order(Sequel.desc(:updated_at))
+          .limit(limit)
+
+        query.map do |row|
+          Stream.new(**row)
+        end
+      end
+
       def transaction(&)
         db.transaction(&)
       end
@@ -460,6 +504,9 @@ module Sourced
           String :stream_id, null: false, unique: true
           Time :updated_at, null: false, default: Sequel.function(:now)
           Bignum :seq, null: false
+          
+          # Index for recent_streams query performance
+          index :updated_at, name: "idx_#{_streams_table}_updated_at"
         end
 
         logger.info("Created table #{streams_table}")
