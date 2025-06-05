@@ -562,16 +562,26 @@ module Sourced
 
         logger.info("Created table #{events_table}")
 
+        _commands_table = commands_table
+        
         db.create_table?(commands_table) do
           column :id, :uuid, unique: true
-          String :consumer_group_id, null: false, index: true
-          String :stream_id, null: false, index: true
+          String :consumer_group_id, null: false
+          String :stream_id, null: false  
           String :type, null: false
-          Time :created_at, null: false, index: true
+          Time :created_at, null: false
           column :causation_id, :uuid
           column :correlation_id, :uuid
           column :metadata, :jsonb
           column :payload, :jsonb
+          
+          # Optimized composite index for command processing queries
+          # Covers: consumer_group_id lookup + created_at ordering  
+          index %i[consumer_group_id created_at], name: "idx_#{_commands_table}_group_created"
+          
+          # Individual indexes for other access patterns
+          index :stream_id     # For stream-specific command queries
+          index :type          # For command type filtering
         end
 
         logger.info("Created table #{commands_table}")
