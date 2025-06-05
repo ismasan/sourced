@@ -183,8 +183,12 @@ module Sourced
       # This method is useful for diagnostics, monitoring, and debugging to understand
       # which streams have been most active in the system.
       #
-      # @param limit [Integer] Maximum number of streams to return (defaults to 10)
+      # The query is optimized with a database index on updated_at for efficient sorting
+      # and uses LIMIT to minimize data transfer.
+      #
+      # @param limit [Integer] Maximum number of streams to return (defaults to 10, must be >= 0)
       # @return [Array<Stream>] Array of Stream objects ordered by updated_at descending
+      # @raise [ArgumentError] if limit is negative
       # @example Get the 5 most recently active streams
       #   recent = backend.recent_streams(limit: 5)
       #   recent.each do |stream|
@@ -195,12 +199,14 @@ module Sourced
       #   active_count = streams.count { |s| s.updated_at > 1.hour.ago }
       #   puts "#{active_count} streams active in last hour"
       def recent_streams(limit: 10)
-        # Handle edge case where limit is 0
+        # Input validation
         return [] if limit == 0
+        raise ArgumentError, "limit must be a positive integer" if limit < 0
 
+        # Optimized query with index on updated_at
         query = db[streams_table]
           .select(:stream_id, :seq, :updated_at)
-          .order(Sequel.desc(:updated_at))
+          .reverse(:updated_at)  # More idiomatic Sequel than order(Sequel.desc(:updated_at))
           .limit(limit)
 
         query.map do |row|
@@ -498,6 +504,9 @@ module Sourced
           String :stream_id, null: false, unique: true
           Time :updated_at, null: false, default: Sequel.function(:now)
           Bignum :seq, null: false
+          
+          # Index for recent_streams query performance
+          index :updated_at, name: "idx_#{_streams_table}_updated_at"
         end
 
         logger.info("Created table #{streams_table}")

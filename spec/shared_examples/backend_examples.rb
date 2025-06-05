@@ -641,6 +641,17 @@ module BackendExamples
         streams = backend.recent_streams(limit: 1000)
         expect(streams.size).to eq(3) # Should return all available streams
       end
+
+      it 'validates input parameters' do
+        # Test negative limit
+        expect {
+          backend.recent_streams(limit: -1)
+        }.to raise_error(ArgumentError, "limit must be a positive integer")
+
+        expect {
+          backend.recent_streams(limit: -5)
+        }.to raise_error(ArgumentError, "limit must be a positive integer")
+      end
     end
 
     describe '#read_event_stream' do

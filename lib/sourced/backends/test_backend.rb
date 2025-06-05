@@ -367,6 +367,10 @@ module Sourced
       # @return [Array<Stream>] Array of Stream objects ordered by updated_at descending
       # @see SequelBackend#recent_streams
       def recent_streams(limit: 10)
+        # Input validation (consistent with SequelBackend)
+        return [] if limit == 0
+        raise ArgumentError, "limit must be a positive integer" if limit < 0
+        
         @state.streams.values.sort_by(&:updated_at).reverse.take(limit)
       end
 
