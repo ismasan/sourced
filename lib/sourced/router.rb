@@ -38,6 +38,11 @@ module Sourced
         instance.register(...)
       end
 
+      # @return [Boolean] true if the class is registered as a decider or reactor
+      def registered?(...)
+        instance.registered?(...)
+      end
+
       # Schedule commands for background processing.
       # @param commands [Array<Command>] Commands to schedule
       # @return [void]
@@ -111,6 +116,7 @@ module Sourced
     def initialize(backend: Sourced.config.backend, logger: Sourced.config.logger)
       @backend = backend
       @logger = logger
+      @registered_lookup = {}
       @decider_lookup = {}
       @sync_reactors = Set.new
       @async_reactors = Set.new
@@ -148,10 +154,16 @@ module Sourced
       end
 
       if regs.positive?
-        backend.register_consumer_group(thing.consumer_info.group_id)
+        group_id = thing.consumer_info.group_id
+        @registered_lookup[group_id] = true
+        backend.register_consumer_group(group_id)
       else
         raise InvalidReactorError, "#{thing.inspect} is not a valid Decider or Reactor interface"
       end
+    end
+
+    def registered?(thing)
+      !!@registered_lookup[thing.consumer_info.group_id]
     end
 
     # Schedule commands for background processing by registered actors.

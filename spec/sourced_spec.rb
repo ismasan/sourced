@@ -19,4 +19,33 @@ RSpec.describe Sourced do
       expect(si1).to start_with('cart')
     end
   end
+
+  specify '.registered?' do
+    reactor1 = Class.new do
+      extend Sourced::Consumer
+
+      consumer do |info|
+        info.group_id = 'reactor1'
+      end
+
+      def self.handled_events = [Sourced::Event]
+      def self.handle_events(*) = []
+    end
+
+    reactor2 = Class.new do
+      extend Sourced::Consumer
+
+      consumer do |info|
+        info.group_id = 'reactor2'
+      end
+
+      def self.handled_events = [Sourced::Event]
+      def self.handle_events(*) = []
+    end
+
+    Sourced.register(reactor1)
+
+    expect(Sourced.registered?(reactor1)).to be true
+    expect(Sourced.registered?(reactor2)).to be false
+  end
 end
