@@ -99,6 +99,11 @@ module Sourced
     Router.register(reactor)
   end
 
+  # @return [Boolean]
+  def self.registered?(reactor)
+    Router.registered?(reactor)
+  end
+
   # Schedule commands for background processing by registered actors.
   #
   # @param commands [Array<Command>] Array of command instances to schedule
