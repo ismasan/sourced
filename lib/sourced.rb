@@ -118,6 +118,10 @@ module Sourced
     Router.schedule_commands(commands)
   end
 
+  def self.handle_command(command)
+    Router.handle_command(command)
+  end
+
   # Generate a standardized method name for message handlers.
   # Used internally to create consistent handler method names.
   #
