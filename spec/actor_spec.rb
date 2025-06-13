@@ -222,6 +222,28 @@ RSpec.describe Sourced::Actor do
     end
   end
 
+  describe 'optimistic concurrency' do
+    it 'fails with an explicit error' do
+      # Produce some events for this stream
+      # and load the actor
+      TestActor::TodoListActor.handle_command(cmd)
+      actor = TestActor::TodoListActor.load(cmd.stream_id)
+      # Another thread/worker appends events for this stream
+      evt = TestActor::ArchiveRequested.parse(
+        stream_id: cmd.stream_id,
+        seq: actor.seq + 1,
+      )
+      Sourced.config.backend.append_to_stream(
+        cmd.stream_id,
+        [evt]
+      )
+
+      expect {
+        actor.handle_command(cmd)
+      }.to raise_error(Sourced::ConcurrentAppendError)
+    end
+  end
+
   describe '.load' do
     it 'loads state from event history' do
       TestActor::TodoListActor.handle_command(cmd)
