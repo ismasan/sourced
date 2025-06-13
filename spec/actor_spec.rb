@@ -189,8 +189,8 @@ RSpec.describe Sourced::Actor do
     it 'produces events with incrementing sequences' do
       _list, events = decider.decide(cmd)
       expect(events.map(&:seq)).to eq([1, 2, 3])
-      expect(events.map(&:type)).to eq(%w[decider.todos.add decider.todos.started
-                                          test_actor.todo_list_actor.item_added])
+      expect(events.map(&:type))
+        .to eq(%w[decider.todos.add decider.todos.started test_actor.todo_list_actor.item_added])
     end
 
     it 'increments #seq' do
@@ -202,8 +202,8 @@ RSpec.describe Sourced::Actor do
     it 'tracks #uncommitted_events' do
       decider.decide(cmd)
       expect(decider.uncommitted_events.map(&:seq)).to eq([1, 2, 3])
-      expect(decider.uncommitted_events.map(&:type)).to eq(%w[decider.todos.add decider.todos.started
-                                                              test_actor.todo_list_actor.item_added])
+      expect(decider.uncommitted_events.map(&:type))
+        .to eq(%w[decider.todos.add decider.todos.started test_actor.todo_list_actor.item_added])
     end
   end
 
@@ -215,10 +215,10 @@ RSpec.describe Sourced::Actor do
       expect(events.map(&:type)).to eq(%w[decider.todos.add decider.todos.started
                                           test_actor.todo_list_actor.item_added])
       expect(events.map { |e| e.metadata[:producer] }).to eq([
-                                                               nil,
-                                                               TestActor::TodoListActor.consumer_info.group_id,
-                                                               TestActor::TodoListActor.consumer_info.group_id
-                                                             ])
+        nil,
+        TestActor::TodoListActor.consumer_info.group_id,
+        TestActor::TodoListActor.consumer_info.group_id
+      ])
     end
   end
 
@@ -233,19 +233,19 @@ RSpec.describe Sourced::Actor do
 
   specify '.handled_commands' do
     expect(TestActor::TodoListActor.handled_commands).to eq([
-                                                              TestActor::AddItem,
-                                                              TestActor::TodoListActor::AddOne,
-                                                              TestActor::TodoListActor::Archive,
-                                                              TestActor::ConfirmArchive,
-                                                              TestActor::Notify
-                                                            ])
+      TestActor::AddItem,
+      TestActor::TodoListActor::AddOne,
+      TestActor::TodoListActor::Archive,
+      TestActor::ConfirmArchive,
+      TestActor::Notify
+    ])
   end
 
   specify '.handled_events' do
     expect(TestActor::TodoListActor.handled_events).to eq([
-                                                            TestActor::ArchiveRequested,
-                                                            TestActor::TodoListActor::ItemAdded
-                                                          ])
+      TestActor::ArchiveRequested,
+      TestActor::TodoListActor::ItemAdded
+    ])
   end
 
   describe 'definining inline commands' do
@@ -331,9 +331,9 @@ RSpec.describe Sourced::Actor do
     events = decider.events
     expect(events.map(&:seq)).to eq([1, 2])
     expect(events.map(&:class)).to eq([
-                                        TestActor::TodoListActor::AddOne,
-                                        TestActor::TodoListActor::ItemAdded
-                                      ])
+      TestActor::TodoListActor::AddOne,
+      TestActor::TodoListActor::ItemAdded
+    ])
 
     TestActor::TodoListActor.handle_command(cmd)
     expect(decider.events.map(&:seq)).to eq([1, 2])
@@ -536,9 +536,9 @@ RSpec.describe Sourced::Actor do
 
     it 'copies over .handled_commands and appends its own commands' do
       expect(TestActor::ChildActor.handled_commands).to eq([
-                                                             *TestActor::TodoListActor.handled_commands,
-                                                             TestActor::ChildActor::AddMore
-                                                           ])
+        *TestActor::TodoListActor.handled_commands,
+        TestActor::ChildActor::AddMore
+      ])
     end
 
     it 'has its own event registry' do
