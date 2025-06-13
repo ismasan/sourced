@@ -103,12 +103,6 @@ module Sourced
       # the command row is not deleted, so that it can be retried.
       # However, if a command fails _permanently_ there's no point in keeping it in the queue,
       # this ties with unresolved error handling in event handling, too.
-      # TODO2: Can't use Time.now.utc because it's not timezone-aware
-      # I shouldn't mix PG NOW() with Time.now. Need to consistently use one or the other.
-      # Only reason to use Time.now here if for testing with Timecop, I think
-      # Retrieve and optionally reserve the next available command for processing.
-      # Commands are ordered by creation time to ensure FIFO processing.
-      # If a block is provided, the command can be reserved for processing.
       #
       # @yield [command] Optional block to reserve the command for processing
       # @yieldparam command [Command] The command to potentially reserve
@@ -124,9 +118,11 @@ module Sourced
       #   end
       # @note Commands that fail processing are kept in the queue for retry
       def next_command(&reserve)
+        now = Time.now
+
         if block_given?
           db.transaction do
-            row = db.fetch(sql_for_next_command, Time.now).first
+            row = db.fetch(sql_for_next_command, now, now).first
             return unless row
 
             cmd = deserialize_event(row)
@@ -139,7 +135,7 @@ module Sourced
           end
         else
           db.transaction do
-            row = db.fetch(sql_for_next_command, Time.now).first
+            row = db.fetch(sql_for_next_command, now, now).first
             row ? deserialize_event(row) : nil
           end
         end
@@ -266,13 +262,14 @@ module Sourced
       def reserve_next_for_reactor(reactor, &)
         group_id = reactor.consumer_info.group_id
         handled_events = reactor.handled_events.map(&:type)
+        now = Time.now
 
         db.transaction do
           start_from = reactor.consumer_info.start_from.call
           row = if start_from.is_a?(Time)
-            db.fetch(sql_for_reserve_next_with_events(handled_events, true), group_id, start_from).first
+            db.fetch(sql_for_reserve_next_with_events(handled_events, true), group_id, now, start_from).first
           else
-            db.fetch(sql_for_reserve_next_with_events(handled_events), group_id).first
+            db.fetch(sql_for_reserve_next_with_events(handled_events), group_id, now).first
           end
           return unless row
 
@@ -620,7 +617,7 @@ module Sourced
               INNER JOIN #{consumer_groups_table} r ON c.consumer_group_id = r.group_id
               WHERE 
                 r.status = '#{ACTIVE}'
-                AND (r.retry_at IS NULL OR r.retry_at <= now())
+                AND (r.retry_at IS NULL OR r.retry_at <= ?)
               AND c.created_at <= ? 
               ORDER BY c.created_at ASC
           )
@@ -642,7 +639,7 @@ module Sourced
               FROM #{consumer_groups_table}
               WHERE group_id = ?
               AND status = '#{ACTIVE}'  -- Only active consumer groups
-              AND (retry_at IS NULL OR retry_at <= now())
+              AND (retry_at IS NULL OR retry_at <= ?)
           ),
           latest_offset AS (
               SELECT o.global_seq
