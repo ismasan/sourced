@@ -54,7 +54,7 @@ module Sourced
   #        # This state will be updated by applying events on it,
   #        # and its purpose is to support any questions the app needs to answer
   #        # before deciding to emit new events.
-  #        def init_state(stream_id)
+  #        state(stream_id)
   #          { 
   #            id: stream_id, 
   #            name: nil, 
@@ -82,7 +82,7 @@ module Sourced
   #        # .event blocks define how an event updates the state
   #        # These blocks are run before running a .command block
   #        # To update the state object from past events
-  #        # They're also run within a .command block when applying new events with `#apply`
+  #        # They're also run within a .command block when applying new events with `#event`
   #        event LeadCreated do |state, event|
   #          state[:status] = 'created'
   #          state[:name] = event.payload.name
