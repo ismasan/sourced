@@ -34,9 +34,14 @@ module Sourced
     #
     # @param logger [Object] Logger instance for supervisor output (defaults to configured logger)
     # @param count [Integer] Number of worker fibers to spawn (defaults to 2)
-    def initialize(logger: Sourced.config.logger, count: 2)
+    def initialize(
+      logger: Sourced.config.logger, 
+      count: 2,
+      executor: Sourced.config.executor
+    )
       @logger = logger
       @count = count
+      @executor = executor
       @workers = []
     end
 
@@ -52,9 +57,9 @@ module Sourced
       @workers = @count.times.map do |i|
         Worker.new(logger:, name: "worker-#{i}")
       end
-      Sync do |task|
+      @executor.start do |task|
         @workers.each do |wrk|
-          task.async do
+          task.spawn do
             wrk.poll
           end
         end
