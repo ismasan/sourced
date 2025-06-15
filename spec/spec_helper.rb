@@ -6,6 +6,7 @@ require 'debug'
 require 'logger'
 require 'timecop'
 require_relative './shared_examples/backend_examples'
+require_relative './shared_examples/executor_examples'
 
 ENV['ENVIRONMENT'] ||= 'test'
 
@@ -30,4 +31,5 @@ RSpec.configure do |config|
   end
 
   config.include BackendExamples, type: :backend
+  config.include ExecutorExamples, type: :executor
 end
