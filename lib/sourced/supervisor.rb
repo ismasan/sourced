@@ -52,7 +52,7 @@ module Sourced
     #
     # @return [void] Blocks until interrupted by signal
     def start
-      logger.info("Starting sync supervisor with #{@count} workers")
+      logger.info("Starting sync supervisor with #{@count} workers and #{@executor} executor")
       set_signal_handlers
       @workers = @count.times.map do |i|
         Worker.new(logger:, name: "worker-#{i}")

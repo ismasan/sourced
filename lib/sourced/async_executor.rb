@@ -18,6 +18,10 @@ module Sourced
       end
     end
 
+    def to_s
+      self.class.name
+    end
+
     def start(&)
       Sync do |task|
         yield Task.new(task)
