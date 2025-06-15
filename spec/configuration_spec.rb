@@ -64,4 +64,35 @@ RSpec.describe Sourced::Configuration do
       expect { config.backend = Object.new }.to raise_error(Plumb::ParseError)
     end
   end
+
+  specify '#executor' do
+    expect(config.executor).to be_a(Sourced::AsyncExecutor)
+  end
+
+  describe '#executor=()' do
+    specify ':async' do
+      config.executor = :async
+      expect(config.executor).to be_a(Sourced::AsyncExecutor)
+    end
+
+    specify ':thread' do
+      config.executor = :thread
+      expect(config.executor).to be_a(Sourced::ThreadExecutor)
+    end
+
+    specify 'any #start interface' do
+      custom = Class.new do
+        def start; end
+      end
+
+      config.executor = custom.new
+      expect(config.executor).to be_a(custom)
+    end
+
+    specify 'an invalid executor' do
+      expect {
+        config.executor = Object.new
+      }.to raise_error(ArgumentError)
+    end
+  end
 end

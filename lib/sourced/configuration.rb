@@ -4,6 +4,7 @@ require 'console' #  comes with async gem
 require 'sourced/types'
 require 'sourced/backends/test_backend'
 require 'sourced/error_strategy'
+require 'sourced/async_executor'
 
 module Sourced
   # Configure a Sourced app.
@@ -33,13 +34,18 @@ module Sourced
       :reset_consumer_group
     ]
 
+    ExecutorInterface = Types::Interface[
+      :start
+    ]
+
     attr_accessor :logger
-    attr_reader :backend
+    attr_reader :backend, :executor
 
     def initialize
       @logger = Console
       @backend = Backends::TestBackend.new
       @error_strategy = ErrorStrategy.new
+      @executor = AsyncExecutor.new
     end
 
     # Configure the backend for the app.
@@ -53,6 +59,20 @@ module Sourced
                  else
                    BackendInterface.parse(bnd)
                  end
+    end
+
+    def executor=(ex)
+      @executor = case ex
+      when :async
+        AsyncExecutor.new
+      when :thread
+        require 'sourced/thread_executor'
+        ThreadExecutor.new
+      when ExecutorInterface
+        ex
+      else
+        raise ArgumentError, "executor=(e) must support interface #{ExecutorInterface.inspect}"
+      end
     end
 
     # Assign an error strategy
