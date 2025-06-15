@@ -9,22 +9,17 @@ module Sourced
       @threads = []
     end
 
-    def start(&)
-      running = true
+    def to_s
+      self.class.name
+    end
 
+    def start(&)
       yield self
-      stops = 0
-      while running && @stop_queue.pop
-        stops += 1
-        running = false if stops == @threads.size
-      end
+      @threads.map(&:join)
     end
 
     def spawn(&work)
-      @threads << Thread.new do
-        work.call
-        @stop_queue << 1
-      end
+      @threads << Thread.new(&work)
     end
   end
 end
