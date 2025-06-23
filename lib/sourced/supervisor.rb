@@ -6,8 +6,8 @@ require 'sourced/worker'
 
 module Sourced
   # The Supervisor manages a pool of background workers that process events and commands.
-  # It uses the Async gem to coordinate multiple worker fibers concurrently and handles
-  # graceful shutdown via signal handling.
+  # It relies on the configured executor (Async by default) to coordinate multiple workers running concurrently
+  # and handles graceful shutdown via signal handling.
   #
   # The supervisor automatically sets up signal handlers for INT and TERM signals
   # to ensure workers shut down cleanly when the process is terminated.
@@ -34,27 +34,33 @@ module Sourced
     #
     # @param logger [Object] Logger instance for supervisor output (defaults to configured logger)
     # @param count [Integer] Number of worker fibers to spawn (defaults to 2)
-    def initialize(logger: Sourced.config.logger, count: 2)
+    # @param executor [Object] Executor instance for running concurrent workers (defaults to configured executor)
+    def initialize(
+      logger: Sourced.config.logger, 
+      count: 2,
+      executor: Sourced.config.executor
+    )
       @logger = logger
       @count = count
+      @executor = executor
       @workers = []
     end
 
     # Start the supervisor and all worker fibers.
     # This method blocks until the supervisor receives a shutdown signal.
-    # Workers are spawned as concurrent async fibers and will begin polling
-    # for events and commands immediately.
+    # Workers are spawned as concurrent tasks using the configured executor 
+    # and will begin polling for events and commands immediately.
     #
     # @return [void] Blocks until interrupted by signal
     def start
-      logger.info("Starting sync supervisor with #{@count} workers")
+      logger.info("Starting sync supervisor with #{@count} workers and #{@executor} executor")
       set_signal_handlers
       @workers = @count.times.map do |i|
         Worker.new(logger:, name: "worker-#{i}")
       end
-      Sync do |task|
+      @executor.start do |task|
         @workers.each do |wrk|
-          task.async do
+          task.spawn do
             wrk.poll
           end
         end

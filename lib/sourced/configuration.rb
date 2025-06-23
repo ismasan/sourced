@@ -4,6 +4,7 @@ require 'console' #  comes with async gem
 require 'sourced/types'
 require 'sourced/backends/test_backend'
 require 'sourced/error_strategy'
+require 'sourced/async_executor'
 
 module Sourced
   # Configure a Sourced app.
@@ -33,13 +34,21 @@ module Sourced
       :reset_consumer_group
     ]
 
+    # Interface that all executors must implement
+    # @see AsyncExecutor
+    # @see ThreadExecutor
+    ExecutorInterface = Types::Interface[
+      :start
+    ]
+
     attr_accessor :logger
-    attr_reader :backend
+    attr_reader :backend, :executor
 
     def initialize
       @logger = Console
       @backend = Backends::TestBackend.new
       @error_strategy = ErrorStrategy.new
+      @executor = AsyncExecutor.new
     end
 
     # Configure the backend for the app.
@@ -53,6 +62,36 @@ module Sourced
                  else
                    BackendInterface.parse(bnd)
                  end
+    end
+
+    # Configure the executor for the app.
+    # Supports both symbol shortcuts and executor instances.
+    # Defaults to AsyncExecutor for fiber-based concurrency.
+    #
+    # @param ex [Symbol, Object] The executor to use
+    # @option ex [Symbol] :async Use AsyncExecutor (fiber-based, default)
+    # @option ex [Symbol] :thread Use ThreadExecutor (thread-based)
+    # @option ex [ExecutorInterface] Custom executor instance
+    # @raise [ArgumentError] if executor doesn't implement ExecutorInterface
+    #
+    # @example Using symbol shortcuts
+    #   config.executor = :async   # Default fiber-based
+    #   config.executor = :thread  # Thread-based for CPU-intensive work
+    #
+    # @example Using custom executor
+    #   config.executor = MyCustomExecutor.new
+    def executor=(ex)
+      @executor = case ex
+      when :async
+        AsyncExecutor.new
+      when :thread
+        require 'sourced/thread_executor'
+        ThreadExecutor.new
+      when ExecutorInterface
+        ex
+      else
+        raise ArgumentError, "executor=(e) must support interface #{ExecutorInterface.inspect}"
+      end
     end
 
     # Assign an error strategy
