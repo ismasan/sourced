@@ -268,7 +268,7 @@ module Sourced
         db.transaction do
           seq = events.last.seq
           now = Time.now
-          id = db[streams_table].insert_conflict(target: :stream_id, update: { seq:, updated_at: now }).insert(stream_id:, seq:, updated_at: now)
+          id = upsert_stream_and_get_id(stream_id, seq, now)
           rows = events.map { |e| serialize_event(e, id) }
           db[events_table].multi_insert(rows)
         end
@@ -1009,13 +1009,48 @@ module Sourced
       end
 
       def connect(db)
-        case db
+        connection = case db
         when Sequel::Database
           db
         when String, Hash
           Sequel.connect(db)
         else
           raise ArgumentError, "Invalid database connection: #{db.inspect}"
+        end
+        
+        # Enable foreign key constraints for SQLite
+        if connection.database_type == :sqlite
+          connection.run('PRAGMA foreign_keys = ON')
+        end
+        
+        connection
+      end
+
+      # Upsert stream record and return its ID, handling database-specific differences
+      def upsert_stream_and_get_id(stream_id, seq, updated_at)
+        case db.database_type
+        when :sqlite
+          # SQLite approach: try insert first, then update if conflict, then get ID
+          begin
+            # Try to insert first - if successful, this returns the new ID
+            id = db[streams_table].insert(stream_id: stream_id, seq: seq, updated_at: updated_at)
+            return id
+          rescue Sequel::UniqueConstraintViolation
+            # Stream exists, update it and get its ID
+            db[streams_table]
+              .where(stream_id: stream_id)
+              .update(seq: seq, updated_at: updated_at)
+            
+            # Return the existing stream's ID
+            return db[streams_table].where(stream_id: stream_id).get(:id)
+          end
+        else
+          # PostgreSQL and other databases: use insert_conflict with returning
+          db[streams_table]
+            .insert_conflict(target: :stream_id, update: { seq: seq, updated_at: updated_at })
+            .returning(:id)
+            .insert(stream_id: stream_id, seq: seq, updated_at: updated_at)
+            .first[:id]
         end
       end
     end
