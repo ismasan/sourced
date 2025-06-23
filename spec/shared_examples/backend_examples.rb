@@ -174,19 +174,24 @@ module BackendExamples
       it 'linearizes commands for the same stream' do
         now = Time.now
         cmd1 = Tests::DoSomething.parse(stream_id: 'ss1', created_at: now - 11, payload: { account_id: 1 })
-        cmd2 = Tests::DoSomething.parse(stream_id: 'ss1', created_at: now - 10, payload: { account_id: 1 })
-        cmd3 = Tests::DoSomething.parse(stream_id: 'ss2', created_at: now - 5, payload: { account_id: 1 })
+        cmd2 = Tests::DoSomething.parse(stream_id: 'ss1', created_at: now - 10, payload: { account_id: 2 })
+        cmd3 = Tests::DoSomething.parse(stream_id: 'ss2', created_at: now - 5, payload: { account_id: 3 })
         backend.schedule_commands([cmd1, cmd2, cmd3], group_id: 'reactor1')
         results = Concurrent::Array.new
 
-        2.times.map do
-          Thread.new do
-            backend.next_command do |c|
-              sleep 0.01
-              results << c
-            end
+        t1 = Thread.new do
+          backend.next_command do |c|
+            sleep 0.01
+            results << c
           end
-        end.map(&:join)
+        end
+
+        t2 = Thread.new do
+          backend.next_command do |c|
+            results << c
+          end
+        end
+        [t1, t2].each(&:join)
 
         expect(results).to match_array([cmd1, cmd3])
 
