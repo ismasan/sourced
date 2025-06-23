@@ -5,7 +5,10 @@ require 'json'
 require 'socket'
 require 'sourced/message'
 require 'sourced/backends/sequel_pub_sub'
+require 'sourced/backends/test_pub_sub'
 
+# TODO: this should only be set if
+# config.executor is :async
 Sequel.extension :fiber_concurrency
 Sequel.extension :pg_json if defined?(PG)
 
@@ -57,7 +60,16 @@ module Sourced
       #   backend = SequelBackend.new(db, prefix: 'my_app')
       def initialize(db, logger: Sourced.config.logger, prefix: 'sourced')
         @db = connect(db)
-        @pubsub = SequelPubSub.new(db: @db)
+
+        @pubsub = case db.database_type
+        when :postgres
+          SequelPubSub.new(db: @db)
+        when :sqlite
+          TestPubSub.new
+        else
+          raise ArgumentError, "Unsupported database type: #{db.database_type}"
+        end
+
         @logger = logger
         @prefix = prefix
         @commands_table = table_name(:commands)
