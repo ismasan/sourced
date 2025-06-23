@@ -5,7 +5,7 @@ require 'json'
 require 'socket'
 require 'sourced/message'
 require 'sourced/backends/sequel_pub_sub'
-require 'sourced/backends/test_pub_sub'
+require 'sourced/backends/sqlite_pub_sub'
 
 # TODO: this should only be set if
 # config.executor is :async
@@ -61,13 +61,13 @@ module Sourced
       def initialize(db, logger: Sourced.config.logger, prefix: 'sourced')
         @db = connect(db)
 
-        @pubsub = case db.database_type
+        @pubsub = case @db.database_type
         when :postgres
           SequelPubSub.new(db: @db)
         when :sqlite
-          TestPubSub.new
+          SqlitePubSub.new(db: @db)
         else
-          raise ArgumentError, "Unsupported database type: #{db.database_type}"
+          raise ArgumentError, "Unsupported database type: #{@db.database_type}"
         end
 
         @logger = logger
@@ -827,6 +827,8 @@ module Sourced
         db[offsets_table].delete
         db[streams_table].delete
         db[event_claims_table].delete
+        # Clean up pubsub table if using SqlitePubSub
+        pubsub.cleanup if pubsub.respond_to?(:cleanup)
       end
 
       def install

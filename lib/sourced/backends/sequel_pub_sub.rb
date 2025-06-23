@@ -71,7 +71,7 @@ module Sourced
         handler ||= block
 
         @running = true
-        # We need a reasobaly short timeout
+        # We need a reasonably short timeout
         # so that this block gets a chance to check the @running flag
         @db.listen(@name, timeout: @timeout, loop: true) do |_channel, _pid, payload|
           break unless @running
