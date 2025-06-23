@@ -2,6 +2,7 @@
 
 require 'sequel'
 require 'json'
+require 'socket'
 require 'sourced/message'
 require 'sourced/backends/sequel_pub_sub'
 
@@ -40,6 +41,10 @@ module Sourced
       #   @return [SequelPubSub] Pub/sub implementation for real-time notifications
       attr_reader :pubsub
 
+      # @!attribute [r] worker_id
+      #   @return [String] Unique identifier for this worker process
+      attr_reader :worker_id
+
       # Initialize a new Sequel backend instance.
       # Automatically sets up database connection, table names, and pub/sub system.
       #
@@ -60,6 +65,8 @@ module Sourced
         @offsets_table = table_name(:offsets)
         @consumer_groups_table = table_name(:consumer_groups)
         @events_table = table_name(:events)
+        @event_claims_table = table_name(:event_claims)
+        @worker_id = "#{Socket.gethostname}-#{Process.pid}-#{Thread.current.object_id}"
         logger.info("Connected to #{@db}")
       end
 
@@ -73,7 +80,8 @@ module Sourced
           && db.table_exists?(streams_table) \
           && db.table_exists?(consumer_groups_table) \
           && db.table_exists?(offsets_table) \
-          && db.table_exists?(commands_table)
+          && db.table_exists?(commands_table) \
+          && db.table_exists?(event_claims_table)
       end
 
       # Schedule commands for background processing by a specific consumer group.
@@ -122,7 +130,37 @@ module Sourced
 
         if block_given?
           db.transaction do
-            row = db.fetch(sql_for_next_command, now, now).first
+            # First find active consumer groups
+            active_groups = db[consumer_groups_table]
+              .where(status: ACTIVE)
+              .where(
+                Sequel.|(
+                  {Sequel[:retry_at] => nil},
+                  Sequel[:retry_at] <= now
+                )
+              )
+              .select(:group_id)
+              .map { |row| row[:group_id] }
+
+            return if active_groups.empty?
+
+            # Build query for next available command from active groups
+            query = db[commands_table]
+              .select(
+                :id, :stream_id, :type, :causation_id, :correlation_id,
+                :metadata, :payload, :created_at
+              )
+              .where(consumer_group_id: active_groups)
+              .where(Sequel[:created_at] <= now)
+              .order(:created_at)
+
+            # Use SELECT FOR UPDATE SKIP LOCKED if supported
+            if supports_skip_locked?
+              row = query.for_update.skip_locked.first
+            else
+              row = query.first
+            end
+            
             return unless row
 
             cmd = deserialize_event(row)
@@ -135,7 +173,31 @@ module Sourced
           end
         else
           db.transaction do
-            row = db.fetch(sql_for_next_command, now, now).first
+            # First find active consumer groups
+            active_groups = db[consumer_groups_table]
+              .where(status: ACTIVE)
+              .where(
+                Sequel.|(
+                  {Sequel[:retry_at] => nil},
+                  Sequel[:retry_at] <= now
+                )
+              )
+              .select(:group_id)
+              .map { |row| row[:group_id] }
+
+            return if active_groups.empty?
+
+            # Same query but without locking since we're not processing
+            query = db[commands_table]
+              .select(
+                :id, :stream_id, :type, :causation_id, :correlation_id,
+                :metadata, :payload, :created_at
+              )
+              .where(consumer_group_id: active_groups)
+              .where(Sequel[:created_at] <= now)
+              .order(:created_at)
+
+            row = query.first
             row ? deserialize_event(row) : nil
           end
         end
@@ -223,7 +285,8 @@ module Sourced
 
         db.transaction do
           seq = events.last.seq
-          id = db[streams_table].insert_conflict(target: :stream_id, update: { seq:, updated_at: Time.now }).insert(stream_id:, seq:)
+          now = Time.now
+          id = db[streams_table].insert_conflict(target: :stream_id, update: { seq:, updated_at: now }).insert(stream_id:, seq:, updated_at: now)
           rows = events.map { |e| serialize_event(e, id) }
           db[events_table].multi_insert(rows)
         end
@@ -233,21 +296,20 @@ module Sourced
         raise Sourced::ConcurrentAppendError, e.message
       end
 
-      # Reserve next event for a reactor, based on the reactor's #handled_events list
-      # This fetches the next un-acknowledged event for the reactor, and processes it in a transaction
-      # which aquires a lock on the event's stream_id and the reactor's group_id
-      # So that no other reactor instance in the same group can process the same stream concurrently.
-      # This way, events for the same stream are guaranteed to be processed sequentially for each reactor group.
+      # Reserve next event for a reactor using claims-based locking.
+      # This approach works across different databases without PostgreSQL-specific advisory locks.
+      # Events are claimed in a short transaction, processed outside the transaction,
+      # then acknowledged in another short transaction.
+      # 
+      # The claiming mechanism ensures that no other reactor instance in the same group
+      # can process the same event concurrently while avoiding long-held database connections.
       # If the given block returns truthy, the event is marked as acknowledged for this reactor group
       # (ie. it won't be processed again by the same group).
-      # If the block returns falsey, the event is NOT acknowledged and will be retried,
-      # unless the block also stops the reactor, which is the default behaviour when an exception is raised.
-      # See Router#handle_next_event_for_reactor,
+      # If the block returns falsey, the claim is released and the event will be retried.
+      # 
       # A boolean is passed to the block to indicate whether the event is being replayed 
       # (ie the reactor group has previously processed it).
-      # This is done by incrementing the group's highest_global_seq with every event acknowledged.
-      # When the group's offsets are reset (in order to re-process all events), this value is preserved
-      # so that each event's global_seq can be compared against it to determine if the event is being replayed.
+      # This is determined by comparing the event's global_seq against the group's highest_global_seq.
       #
       # @example
       #   backend.reserve_next_for_reactor(reactor) do |event, replaying|
@@ -264,30 +326,38 @@ module Sourced
         handled_events = reactor.handled_events.map(&:type)
         now = Time.now
 
-        db.transaction do
-          start_from = reactor.consumer_info.start_from.call
-          row = if start_from.is_a?(Time)
-            db.fetch(sql_for_reserve_next_with_events(handled_events, true), group_id, now, start_from).first
+        # Phase 1: Claim event in short transaction
+        claim_info = claim_next_event(group_id, handled_events, now, reactor.consumer_info.start_from.call)
+        return unless claim_info
+
+        event = claim_info[:event]
+        claim_id = claim_info[:claim_id]
+        replaying = claim_info[:replaying]
+
+        begin
+          # Phase 2: Process event outside transaction
+          ack_event = block_given? ? yield(event, replaying) : true
+
+          # Phase 3: Acknowledge in short transaction if successful
+          if ack_event
+            acknowledge_claimed_event(claim_id, group_id, claim_info[:stream_id_fk], claim_info[:global_seq])
           else
-            db.fetch(sql_for_reserve_next_with_events(handled_events), group_id, now).first
-          end
-          return unless row
-
-          event = deserialize_event(row)
-
-          if block_given? && yield(event, row[:replaying])
-            # ACK if block returns truthy
-            ack_event(group_id, row[:stream_id_fk], row[:global_seq])
+            release_claim(claim_id)
           end
 
           event
+        rescue => e
+          # Release claim on exception
+          release_claim(claim_id) rescue nil
+          raise e
         end
       end
 
       def register_consumer_group(group_id)
+        now = Time.now
         db[consumer_groups_table]
           .insert_conflict(target: :group_id, update: nil)
-          .insert(group_id:, status: ACTIVE)
+          .insert(group_id:, status: ACTIVE, created_at: now, updated_at: now)
       end
 
       class GroupUpdater
@@ -377,13 +447,191 @@ module Sourced
 
       def ack_on(group_id, event_id, &)
         db.transaction do
-          row = db.fetch(sql_for_ack_on, group_id, event_id).first
-          raise Sourced::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}" unless row
+          # Find the event
+          event_row = db[events_table]
+            .select(:global_seq, :stream_id)
+            .where(id: event_id)
+            .first
+          raise ArgumentError, "Event #{event_id} not found" unless event_row
+
+          # Register consumer group if it doesn't exist
+          register_consumer_group(group_id)
 
           yield if block_given?
 
-          ack_event(group_id, row[:stream_id_fk], row[:global_seq])
+          # Remove any existing claim and ack event
+          consumer_group = db[consumer_groups_table]
+            .where(group_id: group_id)
+            .first
+          
+          if consumer_group
+            db[event_claims_table]
+              .where(
+                event_global_seq: event_row[:global_seq],
+                group_id: consumer_group[:id]
+              )
+              .delete
+          end
+          
+          ack_event(group_id, event_row[:stream_id], event_row[:global_seq])
         end
+      end
+
+      # Claim the next available event for processing
+      def claim_next_event(group_id, handled_events, now, start_from = nil)
+        db.transaction do
+          # Find consumer group
+          consumer_group = db[consumer_groups_table]
+            .where(group_id: group_id, status: ACTIVE)
+            .where(
+              Sequel.|(
+                {Sequel[:retry_at] => nil},
+                Sequel[:retry_at] <= now
+              )
+            )
+            .first
+          return unless consumer_group
+
+          # Build event selection query
+          query = build_claimable_events_query(consumer_group[:id], handled_events, start_from)
+          
+          # Use SELECT FOR UPDATE SKIP LOCKED for atomic claiming
+          if supports_skip_locked?
+            event_row = query.for_update.skip_locked.first
+          else
+            # Fallback for databases without SKIP LOCKED support
+            event_row = query.first
+            return unless event_row
+            
+            # Check if already claimed
+            existing_claim = db[event_claims_table]
+              .where(event_global_seq: event_row[:global_seq], group_id: consumer_group[:id])
+              .first
+            return if existing_claim
+          end
+          
+          return unless event_row
+
+          # Create claim
+          claim_id = db[event_claims_table].insert(
+            event_global_seq: event_row[:global_seq],
+            stream_id: event_row[:stream_id_fk],
+            group_id: consumer_group[:id],
+            worker_id: worker_id,
+            claimed_at: now,
+            expires_at: now + 300 # 5 minutes
+          )
+
+          {
+            event: deserialize_event(event_row),
+            claim_id: claim_id,
+            stream_id_fk: event_row[:stream_id_fk],
+            global_seq: event_row[:global_seq],
+            replaying: event_row[:global_seq] <= consumer_group[:highest_global_seq]
+          }
+        end
+      rescue Sequel::UniqueConstraintViolation
+        # Another worker claimed this event, try again
+        nil
+      end
+
+      # Build query for events that can be claimed
+      def build_claimable_events_query(group_internal_id, handled_events, start_from = nil)
+        # Find the maximum processed offset for this group
+        max_offset = db[offsets_table]
+          .where(group_id: group_internal_id)
+          .max(:global_seq) || 0
+
+        # Base events query
+        query = db[events_table]
+          .select(
+            Sequel[events_table][:global_seq],
+            Sequel[events_table][:id],
+            Sequel[streams_table][:stream_id],
+            Sequel[events_table][:stream_id].as(:stream_id_fk),
+            Sequel[events_table][:seq],
+            Sequel[events_table][:type],
+            Sequel[events_table][:causation_id],
+            Sequel[events_table][:correlation_id],
+            Sequel[events_table][:metadata],
+            Sequel[events_table][:payload],
+            Sequel[events_table][:created_at]
+          )
+          .join(streams_table, id: :stream_id)
+          .where(Sequel[events_table][:global_seq] > max_offset)
+          .exclude(Sequel[events_table][:global_seq] => 
+            db[event_claims_table]
+              .where(group_id: group_internal_id)
+              .select(:event_global_seq)
+          )
+          # Exclude events from streams that are currently being processed by this group
+          .exclude(Sequel[events_table][:stream_id] => 
+            db[event_claims_table]
+              .where(group_id: group_internal_id)
+              .select(:stream_id)
+          )
+
+        # Filter by event types if specified
+        if handled_events.any?
+          query = query.where(Sequel[events_table][:type] => handled_events)
+        end
+
+        # Filter by start time if specified
+        if start_from.is_a?(Time)
+          query = query.where(Sequel[events_table][:created_at] > start_from)
+        end
+
+        query.order(Sequel[events_table][:global_seq])
+      end
+
+      # Check if database supports SELECT FOR UPDATE SKIP LOCKED
+      def supports_skip_locked?
+        case db.database_type
+        when :postgres, :mysql, :oracle
+          true
+        else
+          false
+        end
+      end
+
+      # Get database-appropriate greatest/max function
+      def greatest_function(*args)
+        case db.database_type
+        when :postgres
+          Sequel.function(:greatest, *args)
+        when :sqlite, :mysql
+          Sequel.function(:max, *args)
+        else
+          # Fallback to max for unknown databases
+          Sequel.function(:max, *args)
+        end
+      end
+
+      # Acknowledge a claimed event
+      def acknowledge_claimed_event(claim_id, group_id, stream_id_fk, global_seq)
+        db.transaction do
+          # Remove claim
+          db[event_claims_table].where(id: claim_id).delete
+          
+          # Update offsets
+          ack_event(group_id, stream_id_fk, global_seq)
+        end
+      end
+
+      # Release a claim without acknowledging
+      def release_claim(claim_id)
+        db[event_claims_table].where(id: claim_id).delete
+      end
+
+      # Clean up expired claims
+      def cleanup_expired_claims
+        now = Time.now
+        expired_count = db[event_claims_table]
+          .where(Sequel[:expires_at] < now)
+          .delete
+        
+        logger.info("Cleaned up #{expired_count} expired event claims") if expired_count > 0
+        expired_count
       end
 
       private def ack_event(group_id, stream_id, global_seq)
@@ -400,12 +648,8 @@ module Sourced
             .where(group_id:)
             .returning(:id)
             .update(
-              updated_at: Sequel.function(:now),
-              highest_global_seq: Sequel.function(
-                :greatest, 
-                :highest_global_seq,
-                global_seq
-              )
+              updated_at: Time.now,
+              highest_global_seq: greatest_function(:highest_global_seq, global_seq)
             )
 
           # Here we do issue a separate INSERT, but this should only happen
@@ -428,7 +672,8 @@ module Sourced
             .insert(
               group_id:,
               stream_id:,
-              global_seq:
+              global_seq:,
+              created_at: Time.now
             )
         end
       end
@@ -486,12 +731,10 @@ module Sourced
         db[consumer_groups_table].delete
         db[offsets_table].delete
         db[streams_table].delete
+        db[event_claims_table].delete
       end
 
       def install
-        if @db.class.name == 'Sequel::SQLite::Database'
-          raise 'no SQLite support yet'
-        end
 
         _streams_table = streams_table
         _consumer_groups_table = consumer_groups_table
@@ -499,7 +742,7 @@ module Sourced
         db.create_table?(streams_table) do
           primary_key :id
           String :stream_id, null: false, unique: true
-          Time :updated_at, null: false, default: Sequel.function(:now)
+          Time :updated_at, null: false
           Bignum :seq, null: false
           
           # Index for recent_streams query performance
@@ -513,10 +756,10 @@ module Sourced
           String :group_id, null: false, unique: true
           Bignum :highest_global_seq, null: false, default: 0
           String :status, null: false, default: ACTIVE, index: true
-          column :error_context, :jsonb
+          column :error_context, :text
           Time :retry_at, null: true, index: true
-          Time :created_at, null: false, default: Sequel.function(:now)
-          Time :updated_at, null: false, default: Sequel.function(:now)
+          Time :created_at, null: false
+          Time :updated_at, null: false
 
           index :group_id, unique: true
         end
@@ -530,7 +773,7 @@ module Sourced
           foreign_key :group_id, _consumer_groups_table, on_delete: :cascade
           foreign_key :stream_id, _streams_table, on_delete: :cascade
           Bignum :global_seq, null: false
-          Time :created_at, null: false, default: Sequel.function(:now)
+          Time :created_at, null: false
 
           # Unique constraint for business logic
           index %i[group_id stream_id], unique: true
@@ -544,15 +787,15 @@ module Sourced
 
         db.create_table?(events_table) do
           primary_key :global_seq, type: :Bignum
-          column :id, :uuid, unique: true
+          column :id, :text, unique: true
           foreign_key :stream_id, _streams_table
           Bignum :seq, null: false
           String :type, null: false
           Time :created_at, null: false
-          column :causation_id, :uuid, index: true
-          column :correlation_id, :uuid, index: true
-          column :metadata, :jsonb
-          column :payload, :jsonb
+          column :causation_id, :text, index: true
+          column :correlation_id, :text, index: true
+          column :metadata, :text
+          column :payload, :text
           
           # Existing indexes
           index %i[stream_id seq], unique: true
@@ -569,15 +812,15 @@ module Sourced
         _commands_table = commands_table
         
         db.create_table?(commands_table) do
-          column :id, :uuid, unique: true
+          column :id, :text, unique: true
           String :consumer_group_id, null: false
           String :stream_id, null: false  
           String :type, null: false
           Time :created_at, null: false
-          column :causation_id, :uuid
-          column :correlation_id, :uuid
-          column :metadata, :jsonb
-          column :payload, :jsonb
+          column :causation_id, :text
+          column :correlation_id, :text
+          column :metadata, :text
+          column :payload, :text
           
           # Optimized composite index for command processing queries
           # Covers: consumer_group_id lookup + created_at ordering  
@@ -590,114 +833,33 @@ module Sourced
 
         logger.info("Created table #{commands_table}")
 
+        # Create event claims table for cross-database compatible locking
+        db.create_table?(event_claims_table) do
+          primary_key :id
+          Bignum :event_global_seq, null: false
+          foreign_key :stream_id, _streams_table, on_delete: :cascade
+          foreign_key :group_id, _consumer_groups_table, on_delete: :cascade
+          String :worker_id, null: false
+          Time :claimed_at, null: false
+          Time :expires_at, null: true
+          
+          # Unique constraint ensures one claim per event per group
+          index %i[event_global_seq group_id], unique: true
+          
+          # Index for cleanup queries
+          index %i[group_id claimed_at]
+          index :expires_at
+        end
+
+        logger.info("Created table #{event_claims_table}")
+
         self
       end
 
       private
 
-      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :commands_table
+      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :commands_table, :event_claims_table
 
-      def sql_for_next_command
-        <<~SQL
-          WITH next_command AS (
-              SELECT 
-              c.id,
-              c.stream_id,
-              c.type,
-              c.causation_id,
-              c.correlation_id,
-              c.metadata,
-              c.payload,
-              c.created_at,
-              pg_try_advisory_xact_lock(
-                  hashtext(c.consumer_group_id::text),
-                  hashtext(c.stream_id::text)
-              ) as lock_obtained
-              FROM #{commands_table} c
-              INNER JOIN #{consumer_groups_table} r ON c.consumer_group_id = r.group_id
-              WHERE 
-                r.status = '#{ACTIVE}'
-                AND (r.retry_at IS NULL OR r.retry_at <= ?)
-              AND c.created_at <= ? 
-              ORDER BY c.created_at ASC
-          )
-          SELECT *
-          FROM next_command
-          WHERE lock_obtained = true
-          LIMIT 1;
-        SQL
-      end
-
-      def sql_for_reserve_next_with_events(handled_events, with_time_window = false)
-        event_types = handled_events.map { |e| "'#{e}'" }
-        event_types_sql = event_types.any? ? " AND e.type IN(#{event_types.join(',')})" : ''
-        time_window_sql = with_time_window ? ' AND e.created_at > ?' : ''
-
-        <<~SQL
-          WITH target_group AS (
-              SELECT id, group_id, retry_at, highest_global_seq
-              FROM #{consumer_groups_table}
-              WHERE group_id = ?
-              AND status = '#{ACTIVE}'  -- Only active consumer groups
-              AND (retry_at IS NULL OR retry_at <= ?)
-          ),
-          latest_offset AS (
-              SELECT o.global_seq
-              FROM target_group tr
-              LEFT JOIN #{offsets_table} o ON o.group_id = tr.id  -- LEFT JOIN to allow missing offsets
-              ORDER BY o.global_seq DESC
-              LIMIT 1
-          ),
-          candidate_events AS (
-              SELECT
-                  e.global_seq,
-                  e.id,
-                  s.stream_id,
-                  e.stream_id AS stream_id_fk,
-                  e.seq,
-                  e.type,
-                  e.causation_id,
-                  e.correlation_id,
-                  e.metadata,
-                  e.payload,
-                  e.created_at,
-                  (e.global_seq <= tr.highest_global_seq) AS replaying,
-                  pg_try_advisory_xact_lock(
-                      hashtext(tr.group_id::text),
-                      hashtext(s.id::text)
-                  ) as lock_obtained
-              FROM target_group tr
-              LEFT JOIN latest_offset lo ON true
-              JOIN #{events_table} e ON e.global_seq > COALESCE(lo.global_seq, 0)
-              JOIN #{streams_table} s ON e.stream_id = s.id
-              WHERE 1=1
-              #{event_types_sql}#{time_window_sql}
-              ORDER BY e.global_seq
-          )
-          SELECT *
-          FROM candidate_events
-          WHERE lock_obtained = true
-          LIMIT 1;
-        SQL
-      end
-
-      def sql_for_ack_on
-        <<~SQL
-          WITH candidate_rows AS (
-            SELECT 
-                e.global_seq,
-                e.stream_id AS stream_id_fk, 
-                pg_try_advisory_xact_lock(hashtext(?::text), hashtext(s.id::text)) as lock_obtained
-            FROM #{events_table} e
-            JOIN #{streams_table} s ON e.stream_id = s.id
-            WHERE e.id = ?
-          )
-          SELECT *
-          FROM candidate_rows
-          WHERE lock_obtained = true
-          LIMIT 1;
-        SQL
-      end
 
       def sql_for_consumer_stats
         @sql_for_consumer_stats ||= <<~SQL
@@ -726,9 +888,10 @@ module Sourced
       end
 
       def upsert_consumer_group(group_id, status: ACTIVE)
+        now = Time.now
         db[consumer_groups_table]
-          .insert_conflict(target: :group_id, update: { status:, updated_at: Time.now })
-          .insert(group_id:, status:)
+          .insert_conflict(target: :group_id, update: { status:, updated_at: now })
+          .insert(group_id:, status:, created_at: now, updated_at: now)
       end
 
       def serialize_command(cmd, group_id: nil)

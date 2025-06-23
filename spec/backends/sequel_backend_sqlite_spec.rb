@@ -3,7 +3,7 @@
 require 'spec_helper'
 require 'sourced/backends/sequel_backend'
 
-RSpec.describe 'Sourced::Backends::SequelBackend with sqlite', skip: true, type: :backend do
+RSpec.describe 'Sourced::Backends::SequelBackend with sqlite', type: :backend do
   subject(:backend) { Sourced::Backends::SequelBackend.new(db) }
 
   let(:db) do
