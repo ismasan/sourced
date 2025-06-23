@@ -34,6 +34,7 @@ module Sourced
     #
     # @param logger [Object] Logger instance for supervisor output (defaults to configured logger)
     # @param count [Integer] Number of worker fibers to spawn (defaults to 2)
+    # @param executor [Object] Executor instance for running concurrent workers (defaults to configured executor)
     def initialize(
       logger: Sourced.config.logger, 
       count: 2,
@@ -47,8 +48,8 @@ module Sourced
 
     # Start the supervisor and all worker fibers.
     # This method blocks until the supervisor receives a shutdown signal.
-    # Workers are spawned as concurrent async fibers and will begin polling
-    # for events and commands immediately.
+    # Workers are spawned as concurrent tasks using the configured executor 
+    # and will begin polling for events and commands immediately.
     #
     # @return [void] Blocks until interrupted by signal
     def start
