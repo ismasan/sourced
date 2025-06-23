@@ -129,47 +129,29 @@ module Sourced
         now = Time.now
 
         if block_given?
-          db.transaction do
-            # First find active consumer groups
-            active_groups = db[consumer_groups_table]
-              .where(status: ACTIVE)
-              .where(
-                Sequel.|(
-                  {Sequel[:retry_at] => nil},
-                  Sequel[:retry_at] <= now
-                )
-              )
-              .select(:group_id)
-              .map { |row| row[:group_id] }
+          # Try to claim and process a command using the unified claims approach
+          claim_info = claim_next_command(now)
+          return unless claim_info
 
-            return if active_groups.empty?
+          cmd = claim_info[:command]
+          claim_id = claim_info[:claim_id]
 
-            # Build query for next available command from active groups
-            query = db[commands_table]
-              .select(
-                :id, :stream_id, :type, :causation_id, :correlation_id,
-                :metadata, :payload, :created_at
-              )
-              .where(consumer_group_id: active_groups)
-              .where(Sequel[:created_at] <= now)
-              .order(:created_at)
+          begin
+            # Process command outside transaction
+            ack_command = yield(cmd)
 
-            # Use SELECT FOR UPDATE SKIP LOCKED if supported
-            if supports_skip_locked?
-              row = query.for_update.skip_locked.first
+            # Acknowledge in short transaction if successful
+            if ack_command
+              acknowledge_claimed_command(claim_id, cmd.id)
             else
-              row = query.first
+              release_command_claim(claim_id)
             end
-            
-            return unless row
 
-            cmd = deserialize_event(row)
-            # reserve block can return falsey
-            # to keep the command in the bus. For example when retrying.
-            if yield(cmd)
-              db[commands_table].where(id: cmd.id).delete
-            end
             cmd
+          rescue => e
+            # Release claim on exception
+            release_command_claim(claim_id) rescue nil
+            raise e
           end
         else
           db.transaction do
@@ -630,8 +612,109 @@ module Sourced
           .where(Sequel[:expires_at] < now)
           .delete
         
-        logger.info("Cleaned up #{expired_count} expired event claims") if expired_count > 0
+        logger.info("Cleaned up #{expired_count} expired claims") if expired_count > 0
         expired_count
+      end
+
+      # Claim the next available command for processing
+      def claim_next_command(now)
+        db.transaction do
+          # Find active consumer groups
+          active_groups = db[consumer_groups_table]
+            .where(status: ACTIVE)
+            .where(
+              Sequel.|(
+                {Sequel[:retry_at] => nil},
+                Sequel[:retry_at] <= now
+              )
+            )
+            .select(:group_id, :id)
+            .to_hash(:group_id, :id)
+
+          return if active_groups.empty?
+
+          # Build command selection query excluding streams with active claims
+          query = db[commands_table]
+            .select(
+              :id, :stream_id, :type, :causation_id, :correlation_id,
+              :metadata, :payload, :created_at, :consumer_group_id
+            )
+            .where(consumer_group_id: active_groups.keys)
+            .where(Sequel[:created_at] <= now)
+            # Exclude commands from streams that are currently being processed
+            .exclude(Sequel[:stream_id] => 
+              db[event_claims_table]
+                .join(streams_table, id: :stream_id)
+                .select(Sequel[streams_table][:stream_id])
+            )
+            .order(:created_at)
+
+          # Use SELECT FOR UPDATE SKIP LOCKED for atomic claiming
+          if supports_skip_locked?
+            command_row = query.for_update.skip_locked.first
+          else
+            # Fallback for databases without SKIP LOCKED support
+            command_row = query.first
+            return unless command_row
+            
+            # Check if stream is already claimed
+            existing_claim = db[event_claims_table]
+              .where(stream_id: command_row[:stream_id])
+              .first
+            return if existing_claim
+          end
+          
+          return unless command_row
+
+          # Get the internal group ID and stream ID
+          group_internal_id = active_groups[command_row[:consumer_group_id]]
+          stream_internal_id = db[streams_table]
+            .where(stream_id: command_row[:stream_id])
+            .get(:id)
+          
+          # If stream doesn't exist, create it
+          unless stream_internal_id
+            stream_internal_id = db[streams_table].insert(
+              stream_id: command_row[:stream_id],
+              seq: 0,
+              updated_at: now
+            )
+          end
+
+          # Create command claim
+          claim_id = db[event_claims_table].insert(
+            command_id: command_row[:id],
+            stream_id: stream_internal_id,
+            group_id: group_internal_id,
+            worker_id: worker_id,
+            claimed_at: now,
+            expires_at: now + 300 # 5 minutes
+          )
+
+          {
+            command: deserialize_event(command_row),
+            claim_id: claim_id
+          }
+        end
+      rescue Sequel::UniqueConstraintViolation
+        # Another worker claimed this command, try again
+        nil
+      end
+
+      # Acknowledge a claimed command by deleting it
+      def acknowledge_claimed_command(claim_id, command_id)
+        db.transaction do
+          # Remove claim
+          db[event_claims_table].where(id: claim_id).delete
+          
+          # Delete the command (it's been processed)
+          db[commands_table].where(id: command_id).delete
+        end
+      end
+
+      # Release a command claim without acknowledging
+      def release_command_claim(claim_id)
+        db[event_claims_table].where(id: claim_id).delete
       end
 
       private def ack_event(group_id, stream_id, global_seq)
@@ -833,22 +916,31 @@ module Sourced
 
         logger.info("Created table #{commands_table}")
 
-        # Create event claims table for cross-database compatible locking
+        # Create claims table for cross-database compatible locking of both events and commands
         db.create_table?(event_claims_table) do
           primary_key :id
-          Bignum :event_global_seq, null: false
+          Bignum :event_global_seq, null: true  # For events
+          column :command_id, :text, null: true  # For commands
           foreign_key :stream_id, _streams_table, on_delete: :cascade
           foreign_key :group_id, _consumer_groups_table, on_delete: :cascade
           String :worker_id, null: false
           Time :claimed_at, null: false
           Time :expires_at, null: true
           
+          # Ensure exactly one of event_global_seq or command_id is set
+          constraint :event_or_command_claim, 
+            '(event_global_seq IS NOT NULL AND command_id IS NULL) OR (event_global_seq IS NULL AND command_id IS NOT NULL)'
+          
           # Unique constraint ensures one claim per event per group
-          index %i[event_global_seq group_id], unique: true
+          index %i[event_global_seq group_id], unique: true, where: Sequel.~(event_global_seq: nil)
+          
+          # Unique constraint ensures one claim per command
+          index [:command_id], unique: true, where: Sequel.~(command_id: nil)
           
           # Index for cleanup queries
           index %i[group_id claimed_at]
           index :expires_at
+          index :stream_id  # For stream-level exclusions
         end
 
         logger.info("Created table #{event_claims_table}")
