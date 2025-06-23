@@ -6,8 +6,8 @@ require 'sourced/worker'
 
 module Sourced
   # The Supervisor manages a pool of background workers that process events and commands.
-  # It uses the Async gem to coordinate multiple worker fibers concurrently and handles
-  # graceful shutdown via signal handling.
+  # It relies on the configured executor (Async by default) to coordinate multiple workers running concurrently
+  # and handles graceful shutdown via signal handling.
   #
   # The supervisor automatically sets up signal handlers for INT and TERM signals
   # to ensure workers shut down cleanly when the process is terminated.
