@@ -11,7 +11,13 @@ RSpec.describe 'Sourced::Backends::SequelBackend with sqlite', type: :backend do
   end
 
   before do
-    backend.install unless backend.installed?
+    if backend.installed?
+      # Force drop and recreate tables to get latest schema
+      %w[sourced_event_claims sourced_offsets sourced_commands sourced_events sourced_consumer_groups sourced_streams].each do |table|
+        db.drop_table?(table.to_sym)
+      end
+    end
+    backend.install
   end
 
   it_behaves_like 'a backend'
