@@ -9,7 +9,7 @@ module Sourced
     # Uses a SQLite table to store transient messages with polling-based delivery
     class SqlitePubSub
       # Default polling interval when no messages are found
-      DEFAULT_POLL_INTERVAL = 0.01
+      DEFAULT_POLL_INTERVAL = 0.1
       # Maximum polling interval (with exponential backoff)
       MAX_POLL_INTERVAL = 0.5
       # Message retention time (clean up after 10 seconds)
@@ -96,17 +96,18 @@ module Sourced
       end
 
       def start_cleanup_thread
+        # TODO: use the configured executor
         @cleanup_thread = Thread.new do
           loop do
             begin
               sleep(60) # Run cleanup every minute
               cleanup_expired_messages
-            rescue => e
+            rescue StandardError => e
               # Log error but keep thread alive
               warn "SqlitePubSub cleanup error: #{e.message}"
             end
           end
-        rescue => e
+        rescue StandardError => e
           warn "SqlitePubSub cleanup thread died: #{e.message}"
         end
       end
@@ -132,11 +133,9 @@ module Sourced
           @db = db
           @table_name = table_name
           @handlers = []
-          @polling_thread = nil
           @last_id = 0
           @stop_requested = false
           @serializer = serializer
-          @mutex = Mutex.new
         end
 
         # Start listening for messages
@@ -146,73 +145,51 @@ module Sourced
           handler ||= block
           return unless handler
 
-          @mutex.synchronize do
-            @handlers << handler
-            start_polling_thread unless @polling_thread&.alive?
+          @handlers << handler
+          catch(:stop) do
+            start_blocking_poll(handler)
           end
         end
 
         # Stop the channel
         def stop
-          @mutex.synchronize do
-            @stop_requested = true
-            if @polling_thread&.alive?
-              @polling_thread.wakeup rescue nil
-              @polling_thread.join(1)
-              @polling_thread = nil
-            end
-          end
+          @stop_requested = true
         end
 
-        # Publish message to handlers (called internally by polling thread)
-        def publish(event)
-          @handlers.each do |handler|
-            catch(:stop) do
-              handler.call(event, self)
-            end
-          rescue => e
-            warn "Error in pubsub handler: #{e.message}"
-          end
-        end
 
         private
 
-        def start_polling_thread
-          return if @polling_thread&.alive?
+        def start_blocking_poll(handler)
+          poll_interval = DEFAULT_POLL_INTERVAL
+          
+          loop do
+            break if @stop_requested
 
-          @polling_thread = Thread.new do
-            poll_interval = DEFAULT_POLL_INTERVAL
-            
-            loop do
-              break if @stop_requested
-
-              begin
-                messages = fetch_new_messages
-                
-                if messages.any?
-                  messages.each do |msg|
-                    event = @serializer.deserialize(msg[:payload])
-                    
-                    publish(event)
-                    @last_id = msg[:id]
-                  end
-                  
-                  # Reset poll interval when we found messages
-                  poll_interval = DEFAULT_POLL_INTERVAL
-                else
-                  # Exponential backoff when no messages
-                  poll_interval = [poll_interval * 1.5, MAX_POLL_INTERVAL].min
+            begin
+              messages = fetch_new_messages
+              
+              if messages.any?
+                messages.each do |msg|
+                  event = @serializer.deserialize(msg[:payload])
+                  handler.call(event, self)
+                  @last_id = msg[:id]
                 end
-
-                sleep(poll_interval) unless @stop_requested
-              rescue => e
-                warn "Error in pubsub polling: #{e.message}"
-                sleep(poll_interval)
+                
+                # Reset poll interval when we found messages
+                poll_interval = DEFAULT_POLL_INTERVAL
+              # else
+              #   # Exponential backoff when no messages
+              #   poll_interval = [poll_interval * 1.5, MAX_POLL_INTERVAL].min
               end
+
+              sleep(poll_interval) unless @stop_requested
+            rescue StandardError => e
+              warn "Error in pubsub polling: #{e.message}"
+              sleep(poll_interval)
             end
-          rescue => e
-            warn "Pubsub polling thread died: #{e.message}"
           end
+        rescue StandardError => e
+          warn "Pubsub polling died: #{e.message}"
         end
 
         def fetch_new_messages
