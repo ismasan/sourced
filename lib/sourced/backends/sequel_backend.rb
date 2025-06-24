@@ -558,12 +558,14 @@ module Sourced
               .where(group_id: group_internal_id)
               .select(:event_global_seq)
           )
+          # =====
           # Exclude events from streams that are currently being processed by this group
-          .exclude(Sequel[events_table][:stream_id] => 
-            db[event_claims_table]
-              .where(group_id: group_internal_id)
-              .select(:stream_id)
-          )
+          # .exclude(Sequel[events_table][:stream_id] => 
+          #   db[event_claims_table]
+          #     .where(group_id: group_internal_id)
+          #     .select(:stream_id)
+          # )
+          # /=====
 
         # Filter by event types if specified
         if handled_events.any?
