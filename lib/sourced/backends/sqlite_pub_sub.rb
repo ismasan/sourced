@@ -47,9 +47,8 @@ module Sourced
       # @param channel_name [String]
       # @return [Channel]
       def subscribe(channel_name)
-        @mutex.synchronize do
-          @channels[channel_name] ||= Channel.new(channel_name, @db, @table_name, @serializer)
-        end
+        # Create a new channel instance for each subscriber to avoid shared state
+        Channel.new(channel_name, @db, @table_name, @serializer)
       end
 
       # Publish a message to a channel
@@ -136,6 +135,7 @@ module Sourced
           @last_id = 0
           @stop_requested = false
           @serializer = serializer
+          @started_at = Time.now
         end
 
         # Start listening for messages
@@ -193,14 +193,19 @@ module Sourced
         end
 
         def fetch_new_messages
+          # Only fetch messages that were created after this subscriber started,
+          # or after @last_id if we've already processed some messages
+          cutoff_time = @started_at - 1 # Allow 1 second buffer for messages just before we started
+          
           messages = @db[@table_name]
             .where(channel_name: @name)
             .where(Sequel[:id] > @last_id)
+            .where(Sequel[:created_at] > cutoff_time)
             .where(Sequel[:expires_at] > Time.now)
             .order(:id)
             .limit(100) # Process in batches
             .all
-          puts "Fetched #{messages.size} messages for channel #{@name}, last_id: #{@last_id}" if $DEBUG && messages.any?
+          puts "Fetched #{messages.size} messages for channel #{@name}, last_id: #{@last_id}, started_at: #{@started_at}" if $DEBUG && messages.any?
           messages
         end
       end
