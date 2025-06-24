@@ -9,10 +9,11 @@ module ConcurrencyExamples
   end
 
   class Store
-    attr_reader :data
+    attr_reader :data, :queue
 
     def initialize
       @mutex = Mutex.new
+      @queue = Queue.new
       @data = {}
     end
 
@@ -23,6 +24,7 @@ module ConcurrencyExamples
     def set(stream_id, state)
       @mutex.synchronize do
         @data[stream_id] = state
+        @queue << 1
       end
     end
   end
@@ -92,7 +94,14 @@ RSpec.describe 'Processing events concurrently', type: :backend do
       end
     end
 
-    sleep 6
+    count = 0
+    while ConcurrencyExamples::STORE.queue.pop
+      count += 1
+      if count == 220
+        break
+      end
+    end
+
     workers.each(&:stop)
     threads.each(&:join)
 
