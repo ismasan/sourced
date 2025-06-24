@@ -41,60 +41,60 @@ module Sourced
         @db.run(Sequel.lit('SELECT pg_notify(?, ?)', channel_name, event_data))
         self
       end
-    end
 
-    class Channel
-      NOTIFY_CHANNEL = 'sourced-scheduler-ch'
+      class Channel
+        NOTIFY_CHANNEL = 'sourced-scheduler-ch'
 
-      attr_reader :name
+        attr_reader :name
 
-      # @option db [Sequel::Database]
-      # @option name [String]
-      # @option timeout [Numeric]
-      def initialize(db:, name: NOTIFY_CHANNEL, timeout: 3)
-        @db = db
-        @name = name
-        @running = false
-        @timeout = timeout
-      end
-
-      # Start listening to incoming events
-      # via Postgres LISTEN as implemented in Sequel
-      #
-      # @option handler [#call, nil] a callable object to use as an event handler
-      # @yieldparam [Sourced::Message]
-      # @yieldparam [Channel]
-      # @return [self]
-      def start(handler: nil, &block)
-        return self if @running
-
-        handler ||= block
-
-        @running = true
-        # We need a reasonably short timeout
-        # so that this block gets a chance to check the @running flag
-        @db.listen(@name, timeout: @timeout, loop: true) do |_channel, _pid, payload|
-          break unless @running
-
-          handler.call parse(payload), self
-          # TODO: handle exceptions
-          # Any exception raised here will be rescued by Sequel
-          # and close the LISTEN connection
-          # Perhaps that's enough
+        # @option db [Sequel::Database]
+        # @option name [String]
+        # @option timeout [Numeric]
+        def initialize(db:, name: NOTIFY_CHANNEL, timeout: 3)
+          @db = db
+          @name = name
+          @running = false
+          @timeout = timeout
         end
 
-        self
-      end
+        # Start listening to incoming events
+        # via Postgres LISTEN as implemented in Sequel
+        #
+        # @option handler [#call, nil] a callable object to use as an event handler
+        # @yieldparam [Sourced::Message]
+        # @yieldparam [Channel]
+        # @return [self]
+        def start(handler: nil, &block)
+          return self if @running
 
-      # Mark the channel to stop on the next tick
-      def stop
-        @running = false
-      end
+          handler ||= block
 
-      # Public so that we can test this separately from async channel listening.
-      def parse(payload)
-        data = JSON.parse(payload, symbolize_names: true)
-        Sourced::Message.from(data)
+          @running = true
+          # We need a reasonably short timeout
+          # so that this block gets a chance to check the @running flag
+          @db.listen(@name, timeout: @timeout, loop: true) do |_channel, _pid, payload|
+            break unless @running
+
+            handler.call parse(payload), self
+            # TODO: handle exceptions
+            # Any exception raised here will be rescued by Sequel
+            # and close the LISTEN connection
+            # Perhaps that's enough
+          end
+
+          self
+        end
+
+        # Mark the channel to stop on the next tick
+        def stop
+          @running = false
+        end
+
+        # Public so that we can test this separately from async channel listening.
+        def parse(payload)
+          data = JSON.parse(payload, symbolize_names: true)
+          Sourced::Message.from(data)
+        end
       end
     end
   end
