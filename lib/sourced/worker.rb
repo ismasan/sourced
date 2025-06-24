@@ -47,16 +47,18 @@ module Sourced
     def initialize(
       logger: Sourced.config.logger,
       name: SecureRandom.hex(4),
-      poll_interval: 0.01
+      poll_interval: 0.01,
+      router: Sourced::Router
     )
       @logger = logger
       @running = false
       @name = [Process.pid, name].join('-')
       @poll_interval = poll_interval
+      @router = router
       # TODO: If reactors have a :weight, we can use that
       # to populate this array according to the weight
       # so that some reactors are picked more often than others
-      @reactors = Router.async_reactors.filter do |r|
+      @reactors = @router.async_reactors.filter do |r|
         r.handled_events.any? || r.handled_commands.any?
       end.to_a.shuffle
       @reactor_index = 0
@@ -118,14 +120,14 @@ module Sourced
     # @param reactor [Class, nil] Specific reactor to process (defaults to next in rotation)
     # @return [Boolean] true if an event was processed, false otherwise
     def tick(reactor = next_reactor)
-      Router.handle_next_event_for_reactor(reactor, name)
+      @router.handle_next_event_for_reactor(reactor, name)
     end
 
     # Dispatch the next scheduled command from the backend queue.
     #
     # @return [Boolean] true if a command was dispatched, false if queue is empty
     def dispatch_next_command
-      Router.dispatch_next_command
+      @router.dispatch_next_command
     end
 
     # Get the next reactor in round-robin order.
