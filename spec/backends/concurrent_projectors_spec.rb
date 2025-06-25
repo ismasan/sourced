@@ -95,17 +95,22 @@ RSpec.describe 'Processing events concurrently', type: :backend do
       end
     end
 
-    sleep 5
-    # count = 0
-    # while ConcurrencyExamples::STORE.queue.pop
-    #   count += 1
-    #   if count == 220
-    #     break
-    #   end
-    # end
+    limit = Thread.new do
+      sleep 4
+      ConcurrencyExamples::STORE.queue << nil # Signal to stop
+    end
+
+    count = 0
+    while ConcurrencyExamples::STORE.queue.pop
+      count += 1
+      if count == 220
+        break
+      end
+    end
 
     workers.each(&:stop)
     threads.each(&:join)
+    limit.join
 
     expect(ConcurrencyExamples::STORE.data['stream1'][:seq]).to eq(100)
     expect(ConcurrencyExamples::STORE.data['stream1'][:seqs]).to eq((1..100).to_a)
