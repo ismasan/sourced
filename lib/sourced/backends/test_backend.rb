@@ -83,7 +83,7 @@ module Sourced
           evt = backend.events[global_seq]
           offset = @offsets[evt.stream_id]
           if offset.locked
-            raise Sourced::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}" unless row
+            raise Sourced::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}"
           else
             offset.locked = true
             yield
