@@ -5,7 +5,6 @@ require 'json'
 require 'sourced/message'
 require 'sourced/backends/sequel_pub_sub'
 
-Sequel.extension :fiber_concurrency
 Sequel.extension :pg_json if defined?(PG)
 
 module Sourced
@@ -60,6 +59,7 @@ module Sourced
         @offsets_table = table_name(:offsets)
         @consumer_groups_table = table_name(:consumer_groups)
         @events_table = table_name(:events)
+        @setup = false
         logger.info("Connected to #{@db}")
       end
 
@@ -486,6 +486,25 @@ module Sourced
         db[consumer_groups_table].delete
         db[offsets_table].delete
         db[streams_table].delete
+      end
+
+      def uninstall
+        return unless installed?
+
+        raise 'Not in test environment' unless ENV['ENVIRONMENT'] == 'test'
+
+        [offsets_table, commands_table, events_table, consumer_groups_table, streams_table].each do |table|
+          db.drop_table?(table)
+        end
+      end
+
+      # Called after Sourced.configure
+      def setup!(config)
+        return if @setup
+        if config.executor.is_a?(Sourced::AsyncExecutor)
+          Sequel.extension :fiber_concurrency
+        end
+        @setup = true
       end
 
       def install

@@ -79,6 +79,7 @@ module Sourced
   #   end
   def self.configure(&)
     yield config if block_given?
+    config.setup!
     config.freeze
     config
   end
