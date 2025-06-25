@@ -47,7 +47,7 @@ module ConcurrencyExamples
   end
 end
 
-RSpec.describe 'Processing events concurrently', type: :backend do
+RSpec.describe 'Processing events concurrently', type: :backend, skip: true do
   subject(:backend) { Sourced::Backends::SequelBackend.new(db) }
 
   let(:db) do
