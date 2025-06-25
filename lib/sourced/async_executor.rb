@@ -23,6 +23,7 @@ module Sourced
       # @param task [Async::Task] The underlying async task
       def initialize(task)
         @task = task
+        @tasks = []
         freeze
       end
 
@@ -31,8 +32,12 @@ module Sourced
       # @yieldparam block [Proc] The block to execute concurrently
       # @return [Async::Task] The spawned async task
       def spawn(&block)
-        @task.async(&block)
+        @task.async(&block).tap do |t|
+          @tasks << t
+        end
       end
+
+      def wait = @tasks.each(&:wait)
     end
 
     # Return a string representation of this executor
@@ -48,8 +53,10 @@ module Sourced
     # @return [void] Blocks until all spawned tasks complete
     def start(&)
       Sync do |task|
-        yield Task.new(task)
-      end
+        Task.new(task).tap do |t|
+          yield t
+        end
+      end.wait
     end
   end
 end
