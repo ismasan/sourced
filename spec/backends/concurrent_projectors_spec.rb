@@ -58,12 +58,7 @@ RSpec.describe 'Processing events concurrently', type: :backend do
   let(:router) { Sourced::Router.new(backend:) }
 
   before do
-    if backend.installed?
-      # Force drop and recreate tables to get latest schema
-      %w[sourced_event_claims sourced_offsets sourced_commands sourced_events sourced_consumer_groups sourced_streams].each do |table|
-        db.drop_table?(table.to_sym)
-      end
-    end
+    backend.uninstall
     backend.install
 
     router.register ConcurrencyExamples::Projector

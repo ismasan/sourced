@@ -488,6 +488,16 @@ module Sourced
         db[streams_table].delete
       end
 
+      def uninstall
+        return unless installed?
+
+        raise 'Not in test environment' unless ENV['ENVIRONMENT'] == 'test'
+
+        [offsets_table, commands_table, events_table, consumer_groups_table, streams_table].each do |table|
+          db.drop_table?(table)
+        end
+      end
+
       def install
         if @db.class.name == 'Sequel::SQLite::Database'
           raise 'no SQLite support yet'
