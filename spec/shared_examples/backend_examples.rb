@@ -136,14 +136,16 @@ module BackendExamples
         cmd2 = Tests::DoSomething.parse(stream_id: 'as2', created_at: now + 5, payload: { account_id: 1 })
         backend.schedule_commands([cmd1, cmd2], group_id: 'reactor1')
         results = Concurrent::Array.new
-        2.times.map do
-          Thread.new do
-            backend.next_command do |c|
-              sleep 0.01
-              results << c
+        Sourced.config.executor.start do |t|
+          2.times.each do
+            t.spawn do
+              backend.next_command do |c|
+                sleep 0.01
+                results << c
+              end
             end
           end
-        end.map(&:join)
+        end
         expect(results).to match_array([cmd2, cmd1])
       end
 
@@ -179,14 +181,16 @@ module BackendExamples
         backend.schedule_commands([cmd1, cmd2, cmd3], group_id: 'reactor1')
         results = Concurrent::Array.new
 
-        2.times.map do
-          Thread.new do
-            backend.next_command do |c|
-              sleep 0.01
-              results << c
+        Sourced.config.executor.start do |t|
+          2.times.each do
+            t.spawn do
+              backend.next_command do |c|
+                sleep 0.01
+                results << c
+              end
             end
           end
-        end.map(&:join)
+        end
 
         expect(results).to match_array([cmd1, cmd3])
 
@@ -292,14 +296,14 @@ module BackendExamples
 
         # Test that concurrent consumers for the same group
         # never process events for the same stream
-        Sync do |task|
-          task.async do
+        Sourced.config.executor.start do |t|
+          t.spawn do
             backend.reserve_next_for_reactor(reactor1) do |msg|
               sleep 0.01
               group1_messages << msg
             end
           end
-          task.async do
+          t.spawn do
             backend.reserve_next_for_reactor(reactor1) do |msg|
               group1_messages << msg
             end
@@ -522,15 +526,15 @@ module BackendExamples
 
       it 'raises exception if concurrently processed by the same group' do
         expect do
-          Sync do |task|
-            task.async do
+          Sourced.config.executor.start do |t|
+            t.spawn do
               backend.ack_on(reactor.consumer_info.group_id, evt1.id) { sleep 0.01 }
             end
-            task.async do
+            t.spawn do
               backend.ack_on(reactor.consumer_info.group_id, evt2.id) { true }
             end
-          end.to raise_error(Sourced::ConcurrentAckError)
-        end
+          end
+        end.to raise_error(Sourced::ConcurrentAckError)
       end
     end
 
@@ -684,20 +688,20 @@ module BackendExamples
         channel1 = backend.pubsub.subscribe('test_channel')
         received = []
 
-        Sync do |task|
-          task.async do
+        Sourced.config.executor.start do |t|
+          t.spawn do
             channel1.start do |event, _channel|
               received << event
               throw :stop if received.size == 2
             end
           end
-          task.async do
+          t.spawn do
             e1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
             e2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
             backend.pubsub.publish('test_channel', e1)
             backend.pubsub.publish('test_channel', e2)
           end
-        end.wait
+        end
 
         expect(received.map(&:type)).to eq(%w[tests.something_happened1 tests.something_happened1])
         expect(received.map(&:seq)).to eq([1, 2])

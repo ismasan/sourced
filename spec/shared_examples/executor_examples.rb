@@ -23,5 +23,19 @@ module ExecutorExamples
 
       expect(results).to eq([2, 1])
     end
+
+    it 'waits and re-raises errors' do
+      expect do
+        executor.start do |task|
+          task.spawn do
+            raise ArgumentError, 'Test error'
+          end
+
+          task.spawn do
+            
+          end
+        end
+      end.to raise_error(ArgumentError, 'Test error')
+    end
   end
 end
