@@ -49,6 +49,14 @@ module Sourced
       @backend = Backends::TestBackend.new
       @error_strategy = ErrorStrategy.new
       @executor = AsyncExecutor.new
+      @setup = false
+    end
+
+    def setup!
+      return if @setup
+
+      @backend.setup!(self) if @backend.respond_to?(:setup!)
+      @setup = true
     end
 
     # Configure the backend for the app.
@@ -56,12 +64,12 @@ module Sourced
     # @param bnd [BackendInterface]
     def backend=(bnd)
       @backend = case bnd.class.name
-                 when 'Sequel::Postgres::Database', 'Sequel::SQLite::Database'
-                   require 'sourced/backends/sequel_backend'
-                   Sourced::Backends::SequelBackend.new(bnd)
-                 else
-                   BackendInterface.parse(bnd)
-                 end
+      when 'Sequel::Postgres::Database', 'Sequel::SQLite::Database'
+        require 'sourced/backends/sequel_backend'
+        Sourced::Backends::SequelBackend.new(bnd)
+      else
+        BackendInterface.parse(bnd)
+      end
     end
 
     # Configure the executor for the app.
