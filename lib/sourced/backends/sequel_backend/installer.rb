@@ -12,7 +12,8 @@ module Sourced
           streams_table:,
           offsets_table:,
           consumer_groups_table:,
-          events_table:
+          events_table:,
+          claims_table:
         )
           @db = db
           @logger = logger
@@ -21,6 +22,7 @@ module Sourced
           @offsets_table = offsets_table
           @consumer_groups_table = consumer_groups_table
           @events_table = events_table
+          @claims_table = claims_table
         end
 
         def installed?
@@ -28,7 +30,8 @@ module Sourced
             && db.table_exists?(streams_table) \
             && db.table_exists?(consumer_groups_table) \
             && db.table_exists?(offsets_table) \
-            && db.table_exists?(commands_table)
+            && db.table_exists?(commands_table) \
+            && db.table_exists?(claims_table)
         end
 
         def uninstall
@@ -36,7 +39,7 @@ module Sourced
 
           raise 'Not in test environment' unless ENV['ENVIRONMENT'] == 'test'
 
-          [offsets_table, commands_table, events_table, consumer_groups_table, streams_table].each do |table|
+          [offsets_table, commands_table, events_table, claims_table, consumer_groups_table, streams_table].each do |table|
             db.drop_table?(table)
           end
         end
@@ -138,6 +141,17 @@ module Sourced
           end
 
           logger.info("Created table #{commands_table}")
+
+          db.create_table?(claims_table) do
+            primary_key :id, type: :Bignum
+            foreign_key :group_id, _consumer_groups_table, on_delete: :cascade
+            foreign_key :stream_id, _streams_table, on_delete: :cascade
+            Time :created_at, null: false, default: Sequel.function(:now)
+
+            index %i[group_id stream_id], unique: true
+          end
+
+          logger.info("Created table #{claims_table}")
         end
 
         private
@@ -149,7 +163,8 @@ module Sourced
           :streams_table,
           :offsets_table,
           :consumer_groups_table,
-          :events_table
+          :events_table,
+          :claims_table
         )
       end
     end

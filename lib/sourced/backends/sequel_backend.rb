@@ -59,6 +59,7 @@ module Sourced
         @offsets_table = table_name(:offsets)
         @consumer_groups_table = table_name(:consumer_groups)
         @events_table = table_name(:events)
+        @claims_table = table_name(:claims)
         @setup = false
         logger.info("Connected to #{@db}")
       end
@@ -251,8 +252,39 @@ module Sourced
         handled_events = reactor.handled_events.map(&:type)
         now = Time.now
 
+        # Phase 1: Claim stream_id/group_id in short transaction
+        # This claim includes :event, :claim_id and :replaying
+        claim = claim_next_event(group_id, handled_events, now, reactor.consumer_info.start_from.call)
+        return unless claim
+
+        event = deserialize_event(claim)
+
+        # Phase 2: Process event outside of transaction
+        begin
+          ack_event = block_given? ? yield(event, claim[:replaying]) : false
+          if ack_event
+            db.transaction do
+              ack_event(group_id, claim[:stream_id_fk], claim[:global_seq])
+              db[claims_table].where(id: claim[:claim_id]).delete
+            end
+          else
+            db[claims_table].where(id: claim[:claim_id]).delete
+          end
+        rescue StandardError
+          db[claims_table].where(id: claim[:claim_id]).delete
+        end
+
+        event
+      end
+
+      # @param group_id [String] Consumer group ID to claim the next event for
+      # @param handle_events [Array<String>] List of event types to handle
+      # @param now [Time] Current time
+      # @param start_from [Time] Optional starting point for event processing
+      private def claim_next_event(group_id, handled_events, now, start_from)
         db.transaction do
-          start_from = reactor.consumer_info.start_from.call
+          # 1. get next event for this group_id and handled_events
+          # Use FOR UPDATE SKIP LOCKED if supported
           row = if start_from.is_a?(Time)
             db.fetch(sql_for_reserve_next_with_events(handled_events, true), group_id, now, start_from).first
           else
@@ -260,15 +292,19 @@ module Sourced
           end
           return unless row
 
-          event = deserialize_event(row)
+          # 2. Insert claim for this event
+          claim_id = db[claims_table].insert(
+            stream_id: row[:stream_id_fk],
+            group_id: row[:group_id_fk],
+            created_at: now,
+          )
 
-          if block_given? && yield(event, row[:replaying])
-            # ACK if block returns truthy
-            ack_event(group_id, row[:stream_id_fk], row[:global_seq])
-          end
-
-          event
+          row.merge(claim_id:)
         end
+
+      rescue Sequel::UniqueConstraintViolation => e
+        # Another worker has already claimed this event
+        nil
       end
 
       def register_consumer_group(group_id)
@@ -446,6 +482,7 @@ module Sourced
         db[consumer_groups_table].delete
         db[offsets_table].delete
         db[streams_table].delete
+        db[claims_table].delete
       end
 
       # Called after Sourced.configure
@@ -478,7 +515,7 @@ module Sourced
 
       private
 
-      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :commands_table
+      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :commands_table, :claims_table
 
       def installer
         @installer ||= Installer.new(
@@ -488,7 +525,8 @@ module Sourced
           streams_table:,
           offsets_table:,
           consumer_groups_table:,
-          events_table:
+          events_table:,
+          claims_table:
         )
       end
 
@@ -549,6 +587,7 @@ module Sourced
                   e.id,
                   s.stream_id,
                   e.stream_id AS stream_id_fk,
+                  tr.id AS group_id_fk,
                   e.seq,
                   e.type,
                   e.causation_id,
@@ -556,22 +595,19 @@ module Sourced
                   e.metadata,
                   e.payload,
                   e.created_at,
-                  (e.global_seq <= tr.highest_global_seq) AS replaying,
-                  pg_try_advisory_xact_lock(
-                      hashtext(tr.group_id::text),
-                      hashtext(s.id::text)
-                  ) as lock_obtained
+                  (e.global_seq <= tr.highest_global_seq) AS replaying
               FROM target_group tr
               LEFT JOIN latest_offset lo ON true
               JOIN #{events_table} e ON e.global_seq > COALESCE(lo.global_seq, 0)
+              LEFT JOIN #{claims_table} c ON c.stream_id = e.stream_id AND c.group_id = tr.id
               JOIN #{streams_table} s ON e.stream_id = s.id
-              WHERE 1=1
+              WHERE c.id IS NULL -- No existing claim for this event
               #{event_types_sql}#{time_window_sql}
               ORDER BY e.global_seq
           )
           SELECT *
           FROM candidate_events
-          WHERE lock_obtained = true
+          FOR UPDATE SKIP LOCKED
           LIMIT 1;
         SQL
       end
