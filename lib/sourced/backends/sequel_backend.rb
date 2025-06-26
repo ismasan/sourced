@@ -265,18 +265,24 @@ module Sourced
           if ack_event
             db.transaction do
               ack_event(group_id, claim[:stream_id_fk], claim[:global_seq])
-              db[claims_table].where(id: claim[:claim_id]).delete
+              release_claim(claim[:claim_id])
             end
           else
-            db[claims_table].where(id: claim[:claim_id]).delete
+            release_claim(claim[:claim_id])
           end
         rescue StandardError
-          db[claims_table].where(id: claim[:claim_id]).delete
+          release_claim(claim[:claim_id])
+          raise
         end
 
         event
       end
 
+
+      private def release_claim(claim_id)
+        re = db[claims_table].where(id: claim_id).delete
+        logger.debug "AAA RELEASED: #{claim_id} #{re.inspect}"
+      end
       # @param group_id [String] Consumer group ID to claim the next event for
       # @param handle_events [Array<String>] List of event types to handle
       # @param now [Time] Current time
@@ -298,11 +304,12 @@ module Sourced
             group_id: row[:group_id_fk],
             created_at: now,
           )
+          logger.debug "AAA CLAIMED #{row[:stream_id_fk]} / #{row[:group_id_fk]}:#{claim_id}"
 
           row.merge(claim_id:)
         end
 
-      rescue Sequel::UniqueConstraintViolation => e
+      rescue Sequel::UniqueConstraintViolation
         # Another worker has already claimed this event
         nil
       end

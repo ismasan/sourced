@@ -47,7 +47,7 @@ module ConcurrencyExamples
   end
 end
 
-RSpec.describe 'Processing events concurrently', type: :backend, skip: true do
+RSpec.describe 'Processing events concurrently', type: :backend do
   subject(:backend) { Sourced::Backends::SequelBackend.new(db) }
 
   let(:db) do
@@ -91,16 +91,13 @@ RSpec.describe 'Processing events concurrently', type: :backend, skip: true do
     end
 
     limit = Thread.new do
-      sleep 4
+      sleep 10
       ConcurrencyExamples::STORE.queue << nil # Signal to stop
     end
 
     count = 0
-    while ConcurrencyExamples::STORE.queue.pop
+    while (ConcurrencyExamples::STORE.queue.pop && count < 220)
       count += 1
-      if count == 220
-        break
-      end
     end
 
     workers.each(&:stop)
