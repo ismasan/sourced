@@ -288,6 +288,7 @@ module Sourced
       # @param now [Time] Current time
       # @param start_from [Time] Optional starting point for event processing
       private def claim_next_event(group_id, handled_events, now, start_from)
+        global_seq = nil
         db.transaction do
           # 1. get next event for this group_id and handled_events
           # Use FOR UPDATE SKIP LOCKED if supported
@@ -298,6 +299,7 @@ module Sourced
           end
           return unless row
 
+          global_seq = row[:global_seq]
           # 2. Insert claim for this event
           claim_id = db[claims_table].insert(
             stream_id: row[:stream_id_fk],
@@ -311,6 +313,7 @@ module Sourced
 
       rescue Sequel::UniqueConstraintViolation
         # Another worker has already claimed this event
+        logger.debug "AAA Claim for group #{group_id} #{global_seq} already exists, skipping"
         nil
       end
 
@@ -574,49 +577,84 @@ module Sourced
         time_window_sql = with_time_window ? ' AND e.created_at > ?' : ''
 
         <<~SQL
-          WITH target_group AS (
-              SELECT id, group_id, retry_at, highest_global_seq
-              FROM #{consumer_groups_table}
-              WHERE group_id = ?
-              AND status = '#{ACTIVE}'  -- Only active consumer groups
-              AND (retry_at IS NULL OR retry_at <= ?)
-          ),
-          latest_offset AS (
-              SELECT o.global_seq
-              FROM target_group tr
-              LEFT JOIN #{offsets_table} o ON o.group_id = tr.id  -- LEFT JOIN to allow missing offsets
-              ORDER BY o.global_seq DESC
-              LIMIT 1
-          ),
-          candidate_events AS (
-              SELECT
-                  e.global_seq,
-                  e.id,
-                  s.stream_id,
-                  e.stream_id AS stream_id_fk,
-                  tr.id AS group_id_fk,
-                  e.seq,
-                  e.type,
-                  e.causation_id,
-                  e.correlation_id,
-                  e.metadata,
-                  e.payload,
-                  e.created_at,
-                  (e.global_seq <= tr.highest_global_seq) AS replaying
-              FROM target_group tr
-              LEFT JOIN latest_offset lo ON true
-              JOIN #{events_table} e ON e.global_seq > COALESCE(lo.global_seq, 0)
-              LEFT JOIN #{claims_table} c ON c.stream_id = e.stream_id AND c.group_id = tr.id
-              JOIN #{streams_table} s ON e.stream_id = s.id
-              WHERE c.id IS NULL -- No existing claim for this event
+          SELECT 
+                e.global_seq,
+                e.id,
+                s.stream_id,
+                e.stream_id AS stream_id_fk,
+                cg.id AS group_id_fk,
+                e.seq,
+                e.type,
+                e.causation_id,
+                e.correlation_id,
+                e.metadata,
+                e.payload,
+                e.created_at,
+                (e.global_seq <= cg.highest_global_seq) AS replaying
+          FROM sourced_events e
+          JOIN sourced_streams s ON e.stream_id = s.id
+          JOIN sourced_consumer_groups cg ON cg.group_id = ?  -- input parameter
+          LEFT JOIN sourced_offsets o ON o.group_id = cg.id AND o.stream_id = s.id
+          LEFT JOIN sourced_claims c ON c.group_id = cg.id AND c.stream_id = s.id
+          WHERE 
+              -- No active claim exists for this stream/group combination
+              c.id IS NULL
+              -- Event's global_seq must be higher than the stored offset (or no offset exists)
+              AND (o.global_seq IS NULL OR e.global_seq > o.global_seq)
+              -- Only process events for active consumer groups
+              AND cg.status = 'active'
+              -- Only when consumer group is not set to retry
+              AND (cg.retry_at IS NULL OR cg.retry_at <= ?)
               #{event_types_sql}#{time_window_sql}
-              ORDER BY e.global_seq
-          )
-          SELECT *
-          FROM candidate_events
-          FOR UPDATE SKIP LOCKED
+          ORDER BY e.global_seq ASC
           LIMIT 1;
         SQL
+
+        # <<~SQL
+        #   WITH target_group AS (
+        #       SELECT id, group_id, retry_at, highest_global_seq
+        #       FROM #{consumer_groups_table}
+        #       WHERE group_id = ?
+        #       AND status = '#{ACTIVE}'  -- Only active consumer groups
+        #       AND (retry_at IS NULL OR retry_at <= ?)
+        #   ),
+        #   latest_offset AS (
+        #       SELECT o.global_seq, o.stream_id
+        #       FROM target_group tr
+        #       LEFT JOIN #{offsets_table} o ON o.group_id = tr.id  -- LEFT JOIN to allow missing offsets
+        #       ORDER BY o.global_seq DESC
+        #       LIMIT 1
+        #   ),
+        #   candidate_events AS (
+        #       SELECT
+        #           e.global_seq,
+        #           e.id,
+        #           s.stream_id,
+        #           e.stream_id AS stream_id_fk,
+        #           tr.id AS group_id_fk,
+        #           e.seq,
+        #           e.type,
+        #           e.causation_id,
+        #           e.correlation_id,
+        #           e.metadata,
+        #           e.payload,
+        #           e.created_at,
+        #           (e.global_seq <= tr.highest_global_seq) AS replaying
+        #       FROM target_group tr
+        #       LEFT JOIN latest_offset lo ON true
+        #       JOIN #{events_table} e ON e.stream_id = lo.stream_id
+        #       LEFT JOIN #{claims_table} c ON c.stream_id = e.stream_id AND c.group_id = tr.id
+        #       JOIN #{streams_table} s ON e.stream_id = s.id
+        #       WHERE c.id IS NULL -- No existing claim for this event
+        #       AND (lo.global_seq IS NULL OR e.global_seq > lo.global_seq) -- Only events after stream's offset
+        #       #{event_types_sql}#{time_window_sql}
+        #       ORDER BY e.global_seq
+        #   )
+        #   SELECT *
+        #   FROM candidate_events
+        #   FOR UPDATE SKIP LOCKED
+        #   LIMIT 1;
+        # SQL
       end
 
       def sql_for_ack_on
