@@ -59,7 +59,6 @@ module Sourced
         @offsets_table = table_name(:offsets)
         @consumer_groups_table = table_name(:consumer_groups)
         @events_table = table_name(:events)
-        @claims_table = table_name(:claims)
         @setup = false
         logger.info("Connected to #{@db}")
       end
@@ -497,7 +496,6 @@ module Sourced
         db[consumer_groups_table].delete
         db[offsets_table].delete
         db[streams_table].delete
-        db[claims_table].delete
       end
 
       # Called after Sourced.configure
@@ -530,7 +528,7 @@ module Sourced
 
       private
 
-      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :commands_table, :claims_table
+      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :commands_table 
 
       def installer
         @installer ||= Installer.new(
@@ -540,8 +538,7 @@ module Sourced
           streams_table:,
           offsets_table:,
           consumer_groups_table:,
-          events_table:,
-          claims_table:
+          events_table:
         )
       end
 
