@@ -15,14 +15,6 @@ module ConcurrencyExamples
       @mutex = Mutex.new
       @queue = Queue.new
       @data = {}
-      @trace = {}
-    end
-
-    def tt(&block)
-      @mutex.synchronize do
-        h = @trace[Thread.current.object_id] ||= {}
-        yield h
-      end
     end
 
     def get(stream_id)
@@ -113,11 +105,11 @@ RSpec.describe 'Processing events concurrently', type: :backend do
     limit.join
 
     expect(ConcurrencyExamples::STORE.data['stream1'][:seq]).to eq(100)
+    puts "COUNT #{count}"
     puts "Stream1 seqs: #{ConcurrencyExamples::STORE.data['stream1'][:seqs].inspect}"
     puts "Stream1 seqs length: #{ConcurrencyExamples::STORE.data['stream1'][:seqs].length}"
     puts "Expected length: 100"
     puts "Duplicates: #{ConcurrencyExamples::STORE.data['stream1'][:seqs].group_by(&:itself).select {|k,v| v.size > 1 }}"
-    puts JSON.pretty_generate(ConcurrencyExamples::STORE.trace)
     expect(ConcurrencyExamples::STORE.data['stream1'][:seqs]).to eq((1..100).to_a)
     expect(ConcurrencyExamples::STORE.data['stream2'][:seq]).to eq(120)
     expect(ConcurrencyExamples::STORE.data['stream2'][:seqs]).to eq((1..120).to_a)

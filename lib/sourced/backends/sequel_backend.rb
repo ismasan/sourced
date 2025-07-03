@@ -254,24 +254,21 @@ module Sourced
 
         # Phase 1: Claim stream_id/group_id in short transaction
         # This claim includes :event, :claim_id and :replaying
-        claim = claim_next_event(group_id, handled_events, now, reactor.consumer_info.start_from.call)
-        return unless claim
+        row = claim_next_event(group_id, handled_events, now, reactor.consumer_info.start_from.call)
+        return unless row
 
-        event = deserialize_event(claim)
+        event = deserialize_event(row)
 
         # Phase 2: Process event outside of transaction
         begin
-          ack_event = block_given? ? yield(event, claim[:replaying]) : false
-          if ack_event
-            db.transaction do
-              ack_event(group_id, claim[:stream_id_fk], claim[:global_seq])
-              release_claim(claim[:claim_id])
-            end
+          should_ack_event = block_given? ? yield(event, row[:replaying]) : false
+          if should_ack_event
+            ack_event(group_id, row[:stream_id_fk], row[:global_seq])
           else
-            release_claim(claim[:claim_id])
+            release_offset(row[:offset_id])
           end
         rescue StandardError
-          release_claim(claim[:claim_id])
+          release_offset(row[:offset_id])
           raise
         end
 
@@ -279,16 +276,15 @@ module Sourced
       end
 
 
-      private def release_claim(claim_id)
-        re = db[claims_table].where(id: claim_id).delete
-        logger.debug "AAA RELEASED: #{claim_id} #{re.inspect}"
+      private def release_offset(offset_id)
+        db[offsets_table].where(id: offset_id).update(claimed: false, claimed_at: nil)
+        logger.debug "AAA RELEASED: #{offset_id}"
       end
       # @param group_id [String] Consumer group ID to claim the next event for
       # @param handle_events [Array<String>] List of event types to handle
       # @param now [Time] Current time
       # @param start_from [Time] Optional starting point for event processing
       private def claim_next_event(group_id, handled_events, now, start_from)
-        global_seq = nil
         db.transaction do
           # 1. get next event for this group_id and handled_events
           # Use FOR UPDATE SKIP LOCKED if supported
@@ -299,21 +295,28 @@ module Sourced
           end
           return unless row
 
-          global_seq = row[:global_seq]
-          # 2. Insert claim for this event
-          claim_id = db[claims_table].insert(
-            stream_id: row[:stream_id_fk],
-            group_id: row[:group_id_fk],
-            created_at: now,
-          )
-          logger.debug "AAA CLAIMED #{row[:stream_id_fk]} / #{row[:group_id_fk]}:#{claim_id}"
+          if row[:needs_offset_bootstrap]
+            # If no offset exist for this group/stream yet, create the offset
+            # but skip processing. The next worker poll with claim it.
+            db[offsets_table]
+              .insert_conflict
+              .insert(group_id: row[:group_id_fk], stream_id: row[:stream_id_fk], global_seq: 0)
 
-          row.merge(claim_id:)
+            return
+          end
+
+          # An offset exists, and has been locked with FOR UPDATE SKIP LOCKED
+          # while in the same transaction, we claim it
+          db[offsets_table]
+            .where(id: row[:offset_id])
+            .update(claimed: true, claimed_at: now)
+
+          row
         end
 
       rescue Sequel::UniqueConstraintViolation
         # Another worker has already claimed this event
-        logger.debug "AAA Claim for group #{group_id} #{global_seq} already exists, skipping"
+        logger.debug "AAA Claim for group #{group_id} already exists, skipping"
         nil
       end
 
@@ -429,9 +432,11 @@ module Sourced
           db[offsets_table]
             .insert_conflict(
               target: [:group_id, :stream_id],
-              update: { global_seq: Sequel[:excluded][:global_seq] }
+              update: { claimed: false, claimed_at: nil, global_seq: Sequel[:excluded][:global_seq] }
             )
             .insert(
+              claimed: false,
+              claimed_at: nil,
               group_id:,
               stream_id:,
               global_seq:
@@ -578,83 +583,43 @@ module Sourced
 
         <<~SQL
           SELECT 
-                e.global_seq,
-                e.id,
-                s.stream_id,
-                e.stream_id AS stream_id_fk,
-                cg.id AS group_id_fk,
-                e.seq,
-                e.type,
-                e.causation_id,
-                e.correlation_id,
-                e.metadata,
-                e.payload,
-                e.created_at,
-                (e.global_seq <= cg.highest_global_seq) AS replaying
+              e.global_seq,
+              e.id,
+              ss.stream_id,
+              e.stream_id as stream_id_fk,
+              e.seq,
+              e.type,
+              e.created_at,
+              e.causation_id,
+              e.correlation_id,
+              e.metadata,
+              e.payload,
+              so.id as offset_id,
+              cg.id as group_id_fk,
+              (e.global_seq <= cg.highest_global_seq) AS replaying,
+              CASE 
+                  WHEN so.id IS NULL THEN TRUE 
+                  ELSE FALSE 
+              END as needs_offset_bootstrap
           FROM sourced_events e
-          JOIN sourced_streams s ON e.stream_id = s.id
-          JOIN sourced_consumer_groups cg ON cg.group_id = ?  -- input parameter
-          LEFT JOIN sourced_offsets o ON o.group_id = cg.id AND o.stream_id = s.id
-          LEFT JOIN sourced_claims c ON c.group_id = cg.id AND c.stream_id = s.id
-          WHERE 
-              -- No active claim exists for this stream/group combination
-              c.id IS NULL
-              -- Event's global_seq must be higher than the stored offset (or no offset exists)
-              AND (o.global_seq IS NULL OR e.global_seq > o.global_seq)
+          JOIN sourced_streams ss ON e.stream_id = ss.id
+          JOIN sourced_consumer_groups cg ON cg.group_id = ? -- group string id
+          LEFT JOIN (
+              -- Subquery to get lockable offset records
+              SELECT id, group_id, stream_id, global_seq, claimed
+              FROM sourced_offsets
+              WHERE claimed = FALSE
+              FOR UPDATE SKIP LOCKED
+          ) so ON cg.id = so.group_id AND ss.id = so.stream_id
+          WHERE e.global_seq > COALESCE(so.global_seq, 0)
               -- Only process events for active consumer groups
               AND cg.status = 'active'
               -- Only when consumer group is not set to retry
-              AND (cg.retry_at IS NULL OR cg.retry_at <= ?)
+              AND (cg.retry_at IS NULL OR cg.retry_at <= ?) -- Time.now
               #{event_types_sql}#{time_window_sql}
           ORDER BY e.global_seq ASC
           LIMIT 1;
         SQL
-
-        # <<~SQL
-        #   WITH target_group AS (
-        #       SELECT id, group_id, retry_at, highest_global_seq
-        #       FROM #{consumer_groups_table}
-        #       WHERE group_id = ?
-        #       AND status = '#{ACTIVE}'  -- Only active consumer groups
-        #       AND (retry_at IS NULL OR retry_at <= ?)
-        #   ),
-        #   latest_offset AS (
-        #       SELECT o.global_seq, o.stream_id
-        #       FROM target_group tr
-        #       LEFT JOIN #{offsets_table} o ON o.group_id = tr.id  -- LEFT JOIN to allow missing offsets
-        #       ORDER BY o.global_seq DESC
-        #       LIMIT 1
-        #   ),
-        #   candidate_events AS (
-        #       SELECT
-        #           e.global_seq,
-        #           e.id,
-        #           s.stream_id,
-        #           e.stream_id AS stream_id_fk,
-        #           tr.id AS group_id_fk,
-        #           e.seq,
-        #           e.type,
-        #           e.causation_id,
-        #           e.correlation_id,
-        #           e.metadata,
-        #           e.payload,
-        #           e.created_at,
-        #           (e.global_seq <= tr.highest_global_seq) AS replaying
-        #       FROM target_group tr
-        #       LEFT JOIN latest_offset lo ON true
-        #       JOIN #{events_table} e ON e.stream_id = lo.stream_id
-        #       LEFT JOIN #{claims_table} c ON c.stream_id = e.stream_id AND c.group_id = tr.id
-        #       JOIN #{streams_table} s ON e.stream_id = s.id
-        #       WHERE c.id IS NULL -- No existing claim for this event
-        #       AND (lo.global_seq IS NULL OR e.global_seq > lo.global_seq) -- Only events after stream's offset
-        #       #{event_types_sql}#{time_window_sql}
-        #       ORDER BY e.global_seq
-        #   )
-        #   SELECT *
-        #   FROM candidate_events
-        #   FOR UPDATE SKIP LOCKED
-        #   LIMIT 1;
-        # SQL
       end
 
       def sql_for_ack_on

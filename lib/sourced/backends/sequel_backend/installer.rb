@@ -83,6 +83,8 @@ module Sourced
             foreign_key :stream_id, _streams_table, on_delete: :cascade
             Bignum :global_seq, null: false
             Time :created_at, null: false, default: Sequel.function(:now)
+            TrueClass :claimed, null: false, default: false
+            Time :claimed_at, null: true
 
             # Unique constraint for business logic
             index %i[group_id stream_id], unique: true
