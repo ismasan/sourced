@@ -73,7 +73,7 @@ RSpec.describe 'Processing events concurrently', type: :backend do
       ConcurrencyExamples::SomethingHappened.parse(stream_id: 'stream2', seq:, payload: { number: seq })
     end
 
-    all_events = stream1_events + stream2_events
+    all_events = (stream2_events + stream1_events).flatten.compact
     all_events.each do |event|
       backend.append_to_stream(event.stream_id, [event])
     end
@@ -99,12 +99,9 @@ RSpec.describe 'Processing events concurrently', type: :backend do
     workers.each(&:stop)
     threads.each(&:join)
 
+    duplicates = ConcurrencyExamples::STORE.data['stream1'][:seqs].group_by(&:itself).select {|k,v| v.size > 1 }
     expect(ConcurrencyExamples::STORE.data['stream1'][:seq]).to eq(100)
-    puts "COUNT #{count}"
-    puts "Stream1 seqs: #{ConcurrencyExamples::STORE.data['stream1'][:seqs].inspect}"
-    puts "Stream1 seqs length: #{ConcurrencyExamples::STORE.data['stream1'][:seqs].length}"
-    puts "Expected length: 100"
-    puts "Duplicates: #{ConcurrencyExamples::STORE.data['stream1'][:seqs].group_by(&:itself).select {|k,v| v.size > 1 }}"
+    expect(duplicates).to be_empty
     expect(ConcurrencyExamples::STORE.data['stream1'][:seqs]).to eq((1..100).to_a)
     expect(ConcurrencyExamples::STORE.data['stream2'][:seq]).to eq(120)
     expect(ConcurrencyExamples::STORE.data['stream2'][:seqs]).to eq((1..120).to_a)
