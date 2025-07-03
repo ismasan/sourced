@@ -88,6 +88,7 @@ module Sourced
 
             # Unique constraint for business logic
             index %i[group_id stream_id], unique: true
+            index :claimed, where: { claimed: false }, name: "idx_#{_offsets_table}_unclaimed"
             
             # Coverage index for aggregation queries (sql_for_consumer_stats)
             # Covers: GROUP BY group_id + MIN/MAX(global_seq) aggregations
