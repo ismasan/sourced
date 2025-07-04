@@ -268,9 +268,9 @@ module Sourced
       end
     end
 
-    def handle_next_event_for_reactor(reactor, process_name = nil)
-      backend.reserve_next_for_reactor(reactor) do |event, replaying|
-        log_event('handling event', reactor, event, process_name)
+    def handle_next_event_for_reactor(reactor, worker_id = nil)
+      backend.reserve_next_for_reactor(reactor, worker_id:) do |event, replaying|
+        log_event('handling event', reactor, event, worker_id)
         commands = reactor.handle_events([event], replaying:)
         if commands.any?
           # TODO: this schedules commands that will be picked up

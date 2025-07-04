@@ -60,6 +60,7 @@ module Sourced
         @consumer_groups_table = table_name(:consumer_groups)
         @events_table = table_name(:events)
         @setup = false
+        @process_id = [Process.pid, Thread.current.object_id, Fiber.current.object_id].join('-')
         logger.info("Connected to #{@db}")
       end
 
@@ -243,10 +244,11 @@ module Sourced
       #   end
       #
       # @param reactor [Sourced::ReactorInterface]
+      # @option worker_id [String]
       # @yieldparam [Sourced::Message]
       # @yieldparam [Boolean] whether the event is being replayed (ie. it has been processed before)
       # @yieldreturn [Boolean] whether to ACK the event for this reactor group and stream ID.
-      def reserve_next_for_reactor(reactor, &)
+      def reserve_next_for_reactor(reactor, worker_id: @process_id, &)
         group_id = reactor.consumer_info.group_id
         handled_events = reactor.handled_events.map(&:type)
         now = Time.now
@@ -255,7 +257,7 @@ module Sourced
 
         # Phase 1: Claim stream_id/group_id in short transaction
         # This claim includes :event, :claim_id and :replaying
-        row = claim_next_event(group_id, handled_events, now, reactor.consumer_info.start_from.call)
+        row = claim_next_event(group_id, handled_events, now, reactor.consumer_info.start_from.call, worker_id)
 
         # return reserve_next_for_reactor(reactor, &) if row == :retry
         return unless row
@@ -324,7 +326,8 @@ module Sourced
       # @param handle_events [Array<String>] List of event types to handle
       # @param now [Time] Current time
       # @param start_from [Time] Optional starting point for event processing
-      private def claim_next_event(group_id, handled_events, now, start_from)
+      # @param worker_id [String] Unique identifier for the worker claiming the event
+      private def claim_next_event(group_id, handled_events, now, start_from, worker_id)
         db.transaction do
           # 1. get next event for this group_id and handled_events
           # Use FOR UPDATE SKIP LOCKED if supported
@@ -349,7 +352,7 @@ module Sourced
           # while in the same transaction, we claim it
           updated = db[offsets_table]
             .where(id: row[:offset_id])
-            .update(claimed: true, claimed_at: now)
+            .update(claimed: true, claimed_at: now, claimed_by: worker_id)
 
           return nil if updated == 0 # already claimed by another worker
           row

@@ -82,10 +82,12 @@ module Sourced
             Time :created_at, null: false, default: Sequel.function(:now)
             TrueClass :claimed, null: false, default: false
             Time :claimed_at, null: true
+            String :claimed_by, null: true
 
             # Unique constraint for business logic
             index %i[group_id stream_id], unique: true
             index :claimed, where: { claimed: false }, name: "idx_#{_offsets_table}_unclaimed"
+            index [:claimed, :claimed_by, :claimed_at], where: { claimed: true }, name: "idx_#{_offsets_table}_claimed_claimer"
             
             # Coverage index for aggregation queries (sql_for_consumer_stats)
             # Covers: GROUP BY group_id + MIN/MAX(global_seq) aggregations
