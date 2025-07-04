@@ -283,6 +283,9 @@ module Sourced
       end
 
       # Insert missing offsets for a consumer group and all streams.
+      # This runs in advance of claiming events for processing
+      # so that the claim query relies on existing offsets and FOR UPDATE SKIP LOCKED
+      # to prevent concurrent claims on the same stream by different workers.
       private def bootstrap_offsets_for(group_id)
         now = Time.now
         db.transaction do
@@ -290,13 +293,13 @@ module Sourced
           return if group.nil?
 
           # Find streams that don't have offsets for this group
-          # TODO: LIMIT
           missing_streams = db[streams_table]
             .left_join(offsets_table,
               stream_id: :id, 
               group_id: group[:id])
             .where(Sequel[offsets_table][:id] => nil)
             .select(Sequel[streams_table][:id], Sequel[streams_table][:stream_id])
+            .limit(100)
 
           # Prepare offset records for bulk insert
           offset_records = missing_streams.map do |stream|
@@ -310,7 +313,7 @@ module Sourced
           end
 
           if offset_records.any?
-            db[offsets_table].multi_insert(offset_records)
+            db[offsets_table].insert_conflict.multi_insert(offset_records)
           end
           
           offset_records.size
