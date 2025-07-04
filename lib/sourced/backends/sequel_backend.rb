@@ -338,16 +338,6 @@ module Sourced
           end
           return unless row
 
-          if row[:needs_offset_bootstrap]
-            # If no offset exist for this group/stream yet, create the offset
-            # but skip processing. The next worker poll with claim it.
-            db[offsets_table]
-              .insert_conflict
-              .insert(group_id: row[:group_id_fk], stream_id: row[:stream_id_fk], global_seq: 0)
-
-            return nil
-          end
-
           # An offset exists, and has been locked with FOR UPDATE SKIP LOCKED
           # while in the same transaction, we claim it
           updated = db[offsets_table]
@@ -644,67 +634,6 @@ module Sourced
           FOR UPDATE OF so SKIP LOCKED
           LIMIT 1;
         SQL
-
-        # <<~SQL
-        #   -- Step 1: Find the next event (no locking yet)
-        #   SELECT 
-        #       e.global_seq, e.id, ss.stream_id, e.stream_id as stream_id_fk,
-        #       e.seq, e.type, e.created_at, e.causation_id, e.correlation_id,
-        #       e.metadata, e.payload, so.id as offset_id, cg.id as group_id_fk,
-        #       (e.global_seq <= cg.highest_global_seq) AS replaying,
-        #       CASE WHEN so.id IS NULL THEN TRUE ELSE FALSE END as needs_offset_bootstrap
-        #   FROM sourced_events e
-        #   JOIN sourced_streams ss ON e.stream_id = ss.id
-        #   JOIN sourced_consumer_groups cg ON cg.group_id = #{group_id}
-        #   LEFT JOIN sourced_offsets so ON cg.id = so.group_id AND ss.id = so.stream_id
-        #   WHERE e.global_seq > COALESCE(so.global_seq, 0)
-        #     AND (so.claimed = FALSE OR so.claimed IS NULL)
-        #     AND cg.status = 'active'
-        #     AND (cg.retry_at IS NULL OR cg.retry_at <= #{now})
-        #     #{event_types_sql}#{time_window_sql}
-        #   ORDER BY e.global_seq ASC
-        #   LIMIT 1;
-        # SQL
-
-        # <<~SQL
-        #   SELECT 
-        #       e.global_seq,
-        #       e.id,
-        #       ss.stream_id,
-        #       e.stream_id as stream_id_fk,
-        #       e.seq,
-        #       e.type,
-        #       e.created_at,
-        #       e.causation_id,
-        #       e.correlation_id,
-        #       e.metadata,
-        #       e.payload,
-        #       so.id as offset_id,
-        #       cg.id as group_id_fk,
-        #       (e.global_seq <= cg.highest_global_seq) AS replaying,
-        #       CASE 
-        #           WHEN so.id IS NULL THEN TRUE 
-        #           ELSE FALSE 
-        #       END as needs_offset_bootstrap
-        #   FROM sourced_events e
-        #   JOIN sourced_streams ss ON e.stream_id = ss.id
-        #   JOIN sourced_consumer_groups cg ON cg.group_id = ? -- group string id
-        #   LEFT JOIN (
-        #       -- Subquery to get lockable offset records
-        #       SELECT id, group_id, stream_id, global_seq, claimed
-        #       FROM sourced_offsets
-        #       WHERE claimed = FALSE
-        #       FOR UPDATE SKIP LOCKED
-        #   ) so ON cg.id = so.group_id AND ss.id = so.stream_id
-        #   WHERE e.global_seq > COALESCE(so.global_seq, 0)
-        #       -- Only process events for active consumer groups
-        #       AND cg.status = 'active'
-        #       -- Only when consumer group is not set to retry
-        #       AND (cg.retry_at IS NULL OR cg.retry_at <= ?) -- Time.now
-        #       #{event_types_sql}#{time_window_sql}
-        #   ORDER BY e.global_seq ASC
-        #   LIMIT 1;
-        # SQL
       end
 
       def sql_for_ack_on
