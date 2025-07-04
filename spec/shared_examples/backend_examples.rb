@@ -505,7 +505,7 @@ module BackendExamples
         backend.append_to_stream('s1', [evt1, evt2])
       end
 
-      it 'advances a group_id/stream_id offset if not exception' do
+      it 'advances a group_id/stream_id offset if no exception' do
         backend.ack_on(reactor.consumer_info.group_id, evt1.id) { true }
 
         backend.reserve_next_for_reactor(reactor) { true }

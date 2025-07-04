@@ -60,7 +60,6 @@ module Sourced
         @consumer_groups_table = table_name(:consumer_groups)
         @events_table = table_name(:events)
         @setup = false
-        @process_id = [Process.pid, Thread.current.object_id, Fiber.current.object_id].join('-')
         logger.info("Connected to #{@db}")
       end
 
@@ -248,7 +247,8 @@ module Sourced
       # @yieldparam [Sourced::Message]
       # @yieldparam [Boolean] whether the event is being replayed (ie. it has been processed before)
       # @yieldreturn [Boolean] whether to ACK the event for this reactor group and stream ID.
-      def reserve_next_for_reactor(reactor, worker_id: @process_id, &)
+      def reserve_next_for_reactor(reactor, worker_id: nil, &)
+        worker_id ||= [Process.pid, Thread.current.object_id, Fiber.current.object_id].join('-')
         group_id = reactor.consumer_info.group_id
         handled_events = reactor.handled_events.map(&:type)
         now = Time.now
@@ -281,7 +281,7 @@ module Sourced
       end
 
       private def release_offset(offset_id)
-        db[offsets_table].where(id: offset_id).update(claimed: false, claimed_at: nil)
+        db[offsets_table].where(id: offset_id).update(claimed: false, claimed_at: nil, claimed_by: nil)
       end
 
       # Insert missing offsets for a consumer group and all streams.
@@ -463,14 +463,16 @@ module Sourced
           group_id = update_result[0][:id]
 
           # Upsert offset
+          # NOTE: when using #reserve_next_for_reactor,
+          # an offset will always exist for an event
+          # but the synchronous ack_on method can be used with an event
+          # for whose group and stream no offset exists yet.
           db[offsets_table]
             .insert_conflict(
               target: [:group_id, :stream_id],
-              update: { claimed: false, claimed_at: nil, global_seq: Sequel[:excluded][:global_seq] }
+              update: { claimed: false, claimed_at: nil, claimed_by: nil, global_seq: }
             )
             .insert(
-              claimed: false,
-              claimed_at: nil,
               group_id:,
               stream_id:,
               global_seq:
