@@ -138,7 +138,6 @@ module Sourced
         @mutex = Mutex.new
         @in_tx = false
         @tx_id = nil
-        @process_id = [Process.pid, Thread.current.object_id, Fiber.current.object_id].join('-')
       end
 
       def events = @state.events
@@ -283,7 +282,7 @@ module Sourced
         yield
       end
 
-      def reserve_next_for_reactor(reactor, worker_id: @worker_id, &)
+      def reserve_next_for_reactor(reactor, worker_id: Process.pid.to_s, &)
         group_id = reactor.consumer_info.group_id
         start_from = reactor.consumer_info.start_from.call
         transaction do
