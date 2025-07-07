@@ -194,8 +194,8 @@ module Sourced
       # @param events [Array<Sourced::Event>]
       # @option replaying [Boolean] if true, the events are being replayed
       # @return [Array<Sourced::Command>]
-      def handle_events(events, replaying: false)
-        load(events.first.stream_id).handle_events(events)
+      def handle_events(events, replaying: false, backend: Sourced.config.backend)
+        load(events.first.stream_id, backend:).handle_events(events)
       end
 
       # The Decider interface
@@ -204,16 +204,16 @@ module Sourced
       #
       # @param cmd [Sourced::Command]
       # @return [Array<Any, Array<Sourced::Event>]
-      def handle_command(cmd)
-        load(cmd.stream_id).handle_command(cmd)
+      def handle_command(cmd, backend: Sourced.config.backend)
+        load(cmd.stream_id, backend:).handle_command(cmd)
       end
 
       # Load a Actor from event history
       #
       # @param stream_id [String] the stream id
       # @return [Actor]
-      def load(stream_id, upto: nil)
-        new(stream_id).load(upto:)
+      def load(stream_id, upto: nil, backend: Sourced.config.backend)
+        new(stream_id, backend:).load(upto:)
       end
 
       def handled_commands

@@ -252,9 +252,10 @@ module Sourced
       # they belong to
       # OR, on failure I need to mark commands in the bus as failed
       # so that they're ignored by the worker
+      # TODO2: actors shouldn't need a backend instance.
       backend.next_command do |cmd|
         reactor = @decider_lookup.fetch(cmd.class)
-        reactor.handle_command(cmd)
+        reactor.handle_command(cmd, backend:)
         true
       rescue StandardError => e
         logger.warn "[#{PID}]: error handling command #{cmd.class} with reactor #{reactor} #{e}"
