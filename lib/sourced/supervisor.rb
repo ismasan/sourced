@@ -38,11 +38,13 @@ module Sourced
     def initialize(
       logger: Sourced.config.logger, 
       count: 2,
-      executor: Sourced.config.executor
+      executor: Sourced.config.executor,
+      router: Sourced::Router
     )
       @logger = logger
       @count = count
       @executor = executor
+      @router = router
       @workers = []
     end
 
@@ -56,7 +58,8 @@ module Sourced
       logger.info("Starting sync supervisor with #{@count} workers and #{@executor} executor")
       set_signal_handlers
       @workers = @count.times.map do |i|
-        Worker.new(logger:, name: "worker-#{i}")
+        # TODO: worker names using Process.pid, current thread and fiber id
+        Worker.new(logger:, router:, name: "worker-#{i}")
       end
       @executor.start do |task|
         @workers.each do |wrk|
@@ -90,6 +93,6 @@ module Sourced
 
     private
 
-    attr_reader :logger
+    attr_reader :logger, :router
   end
 end
