@@ -201,6 +201,50 @@ module Sourced
         db.transaction(&)
       end
 
+      # Append a single event to a stream, creating the stream if it doesn't exist.
+      # Also automatically increments the sequence number for the stream and event,
+      # without relying on the client passing the right sequence number.
+      # This is used for appending events in order without client-side optimistic concurrency control.
+      # For example commands that will be picked up and handled by a reactor, later.
+      # @param stream_id [String] Unique identifier for the event stream
+      # @param event [Sourced::Message] Event to append to the stream
+      # @option max_retries [Integer] Maximum number of retries on unique constraint violation (default: 3)
+      def append_next_to_stream(stream_id, event, max_retries: 3)
+        retries = 0
+        begin
+          db.transaction do
+            # Update or create a stream.
+            # If updating, increment seq by 1.
+            stream_record = db[streams_table]
+              .insert_conflict(
+                target: :stream_id, 
+                update: { 
+                  seq: Sequel.qualify(streams_table, :seq) + 1,
+                  updated_at: Time.now 
+                }
+              )
+              .returning(:id, :seq)
+              .insert(stream_id:, seq: 1)
+              .first
+
+            # Insert the event into the events table, with the (possibly incremented) seq.
+            row = serialize_event(event, stream_record[:id])
+            row[:seq] = stream_record[:seq]
+            db[events_table].insert(row)
+          end
+
+          true
+        rescue Sequel::UniqueConstraintViolation => e
+          retries += 1
+          if retries <= max_retries
+            sleep(0.001 * retries) # Brief backoff
+            retry
+          else
+            raise Sourced::ConcurrentAppendError, e.message
+          end
+        end
+      end
+
       def append_to_stream(stream_id, events)
         return if events.empty?
 
