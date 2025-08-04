@@ -250,7 +250,7 @@ module Sourced
       def reserve_next_for_reactor(reactor, worker_id: nil, &)
         worker_id ||= [Process.pid, Thread.current.object_id, Fiber.current.object_id].join('-')
         group_id = reactor.consumer_info.group_id
-        handled_events = reactor.handled_events.map(&:type)
+        handled_events = reactor.handled_events.map(&:type).uniq
         now = Time.now
 
         bootstrap_offsets_for(group_id)
