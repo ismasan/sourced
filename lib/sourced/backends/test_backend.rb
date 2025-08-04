@@ -393,6 +393,18 @@ module Sourced
         raise
       end
 
+      # @param stream_id [String] Unique identifier for the event stream
+      # @param event [Sourced::Message] Event to append to the stream
+      # @option max_retries [Integer] Not used in this backend, but kept for interface compatibility
+      def append_next_to_stream(stream_id, event, max_retries: 3)
+        transaction do
+          last_event = @state.events_by_stream_id[stream_id].last
+          last_seq = last_event ? last_event.seq : 0
+          new_seq = last_seq + 1
+          append_to_stream(stream_id, [event.with(seq: new_seq)])
+        end
+      end
+
       def append_to_stream(stream_id, events)
         transaction do
           check_unique_seq!(events)
