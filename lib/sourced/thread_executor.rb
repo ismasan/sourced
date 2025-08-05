@@ -16,7 +16,6 @@ module Sourced
     # Initialize a new thread executor
     # Sets up internal state for tracking spawned threads.
     def initialize
-      @stop_queue = Thread::Queue.new
       @threads = []
     end
 
