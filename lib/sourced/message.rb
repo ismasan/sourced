@@ -177,6 +177,15 @@ module Sourced
       event_class.parse(attrs)
     end
 
+    def correlate(message)
+      attrs = {
+        causation_id: id,
+        correlation_id:,
+        metadata: metadata.merge(message.metadata || Plumb::BLANK_HASH)
+      }
+      message.with(attrs)
+    end
+
     def delay(datetime)
       if datetime < created_at
         raise PastMessageDateError, "Message #{type} can't be delayed to a date in the past"
