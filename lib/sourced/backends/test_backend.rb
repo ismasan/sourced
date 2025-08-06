@@ -120,7 +120,7 @@ module Sourced
               result = yield(evt, replaying)
 
               acker = -> { ack(offset, index) }
-              process_result.(result, acker)
+              process_result.(result, acker, evt)
             end
 
             offset.locked = false
@@ -302,19 +302,25 @@ module Sourced
         end
       end
 
-      private def process_result(result, ack)
+      private def process_result(result, ack, event)
         case result
         when Results::OK
           ack.()
 
         when Results::AppendNext
-          result.each do |stream_id, msg|
-            append_next_to_stream(stream_id, msg)
+          messages = result.messages.map do |msg|
+            event.correlate(msg)
+          end
+          messages.each do |msg|
+            append_next_to_stream(msg.stream_id, msg)
           end
           ack.()
 
         when Results::AppendAfter
-          append_to_stream(result.stream_id, result.messages)
+          messages = result.messages.map do |msg|
+            event.correlate(msg)
+          end
+          append_to_stream(result.stream_id, messages)
           ack.()
 
         when Results::RETRY

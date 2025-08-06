@@ -316,26 +316,7 @@ module Sourced
           # Result handling happens in the same transaction
           # as ACKing the event
           db.transaction do
-            case result
-            when Results::OK
-              ack_event(group_id, row[:stream_id_fk], row[:global_seq])
-
-            when Results::AppendNext
-              result.each do |stream_id, msg|
-                append_next_to_stream(stream_id, msg)
-              end
-              ack_event(group_id, row[:stream_id_fk], row[:global_seq])
-
-            when Results::AppendAfter
-              append_to_stream(result.stream_id, result.messages)
-              ack_event(group_id, row[:stream_id_fk], row[:global_seq])
-
-            when Results::RETRY
-              release_offset(row[:offset_id])
-
-            else
-              raise ArgumentError, "Unexpected Sourced::Results type, but got: #{result.class}"
-            end
+            process_result(group_id, row, result, event)
           end
 
         rescue StandardError
@@ -348,6 +329,35 @@ module Sourced
 
       private def release_offset(offset_id)
         db[offsets_table].where(id: offset_id).update(claimed: false, claimed_at: nil, claimed_by: nil)
+      end
+
+      private def process_result(group_id, row, result, event)
+        case result
+        when Results::OK
+          ack_event(group_id, row[:stream_id_fk], row[:global_seq])
+
+        when Results::AppendNext
+          messages = result.messages.map do |msg|
+            event.correlate(msg)
+          end
+          messages.each do |msg|
+            append_next_to_stream(msg.stream_id, msg)
+          end
+          ack_event(group_id, row[:stream_id_fk], row[:global_seq])
+
+        when Results::AppendAfter
+          messages = result.messages.map do |msg|
+            event.correlate(msg)
+          end
+          append_to_stream(result.stream_id, messages)
+          ack_event(group_id, row[:stream_id_fk], row[:global_seq])
+
+        when Results::RETRY
+          release_offset(row[:offset_id])
+
+        else
+          raise ArgumentError, "Unexpected Sourced::Results type, but got: #{result.class}"
+        end
       end
 
       # Insert missing offsets for a consumer group and all streams.

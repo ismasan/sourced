@@ -478,11 +478,22 @@ module BackendExamples
         end
       end
 
+      let(:evt1) do
+        Tests::SomethingHappened1.parse(
+          stream_id: 's1', 
+          seq: 1, 
+          correlation_id:,
+          metadata: { tid: 'evt1' },
+          payload: { account_id: 1 }
+        )
+      end
+
+      let(:correlation_id) { SecureRandom.uuid }
+
       before do
         backend.register_consumer_group('group1')
 
-        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
-        backend.append_to_stream('s1', [evt1])
+        backend.append_to_stream(evt1.stream_id, [evt1])
       end
 
       describe 'returning Sourced::Results::OK' do
@@ -521,6 +532,13 @@ module BackendExamples
         it 'ACKs processed message' do
           expect(backend.stats.groups.first[:newest_processed]).to eq(1)
         end
+
+        it 'correlates messages and copies metadata' do
+          events = backend.read_event_stream('s1')
+          expect(events.map(&:causation_id)).to eq([evt1.id, evt1.id])
+          expect(events.map(&:correlation_id)).to eq([correlation_id, correlation_id])
+          expect(events.map(&:metadata).map { |m| m[:tid] }).to eq(['evt1', 'evt1'])
+        end
       end
 
       describe 'returning Sourced::Results::AppendAfter' do
@@ -556,6 +574,18 @@ module BackendExamples
           end.to raise_error(StandardError)
 
           expect(backend.read_event_stream('s1').map(&:seq)).to eq([1])
+        end
+
+        it 'correlates messages and copies metadata' do
+          new_message = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+          backend.reserve_next_for_reactor(reactor1) do |_msg|
+            Sourced::Results::AppendAfter.new(new_message.stream_id, [new_message])
+          end
+
+          events = backend.read_event_stream('s1')
+          expect(events.map(&:causation_id)).to eq([evt1.id, evt1.id])
+          expect(events.map(&:correlation_id)).to eq([correlation_id, correlation_id])
+          expect(events.map(&:metadata).map { |m| m[:tid] }).to eq(['evt1', 'evt1'])
         end
       end
     end
