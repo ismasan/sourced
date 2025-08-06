@@ -308,14 +308,36 @@ module Sourced
 
         event = deserialize_event(row)
 
-        # Phase 2: Process event outside of transaction
         begin
-          should_ack_event = block_given? ? yield(event, row[:replaying]) : false
-          if should_ack_event
-            ack_event(group_id, row[:stream_id_fk], row[:global_seq])
-          else
-            release_offset(row[:offset_id])
+          # Phase 2: Process event outside of transaction
+          result = yield(event, row[:replaying])
+
+          # Phase 3: update state depending on result
+          # Result handling happens in the same transaction
+          # as ACKing the event
+          db.transaction do
+            case result
+            when Results::OK
+              ack_event(group_id, row[:stream_id_fk], row[:global_seq])
+
+            when Results::AppendNext
+              result.each do |stream_id, msg|
+                append_next_to_stream(stream_id, msg)
+              end
+              ack_event(group_id, row[:stream_id_fk], row[:global_seq])
+
+            when Results::AppendAfter
+              append_to_stream(result.stream_id, result.messages)
+              ack_event(group_id, row[:stream_id_fk], row[:global_seq])
+
+            when Results::RETRY
+              release_offset(row[:offset_id])
+
+            else
+              raise ArgumentError, "Unexpected Sourced::Results type, but got: #{result.class}"
+            end
           end
+
         rescue StandardError
           release_offset(row[:offset_id])
           raise

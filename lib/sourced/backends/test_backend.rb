@@ -95,7 +95,7 @@ module Sourced
 
         NOOP_FILTER = ->(_) { true } 
 
-        def reserve_next(handled_events, time_window, &)
+        def reserve_next(handled_events, time_window, process_result, &)
           time_filter = time_window.is_a?(Time) ? ->(e) { e.created_at > time_window } : NOOP_FILTER
           evt = nil
           offset = nil
@@ -116,17 +116,26 @@ module Sourced
 
           if evt
             replaying = @highest_index >= index
-            if block_given? && yield(evt, replaying)
-              # ACK reactor/event if block returns truthy
-              offset.index = index
-              @highest_index = index if index > @highest_index
+            if block_given?
+              result = yield(evt, replaying)
+
+              acker = -> { ack(offset, index) }
+              process_result.(result, acker)
             end
+
             offset.locked = false
           end
+
           evt
         end
 
         private
+
+        def ack(offset, index)
+          # ACK reactor/event
+          offset.index = index
+          @highest_index = index if index > @highest_index
+        end
 
         attr_reader :backend
       end
@@ -288,8 +297,31 @@ module Sourced
         transaction do
           group = @state.groups[group_id]
           if group.active? && (group.retry_at.nil? || group.retry_at <= Time.now)
-            group.reserve_next(reactor.handled_events, start_from, &)
+            group.reserve_next(reactor.handled_events, start_from, method(:process_result), &)
           end
+        end
+      end
+
+      private def process_result(result, ack)
+        case result
+        when Results::OK
+          ack.()
+
+        when Results::AppendNext
+          result.each do |stream_id, msg|
+            append_next_to_stream(stream_id, msg)
+          end
+          ack.()
+
+        when Results::AppendAfter
+          append_to_stream(result.stream_id, result.messages)
+          ack.()
+
+        when Results::RETRY
+          # Don't ack
+
+        else
+          raise ArgumentError, "Unexpected Sourced::Results type, but got: #{result.class}"
         end
       end
 
