@@ -356,7 +356,7 @@ module Sourced
           release_offset(row[:offset_id])
 
         else
-          raise ArgumentError, "Unexpected Sourced::Results type, but got: #{result.class}"
+          raise ArgumentError, "Unexpected Sourced::Results type, but got: #{result.class}. Group #{group_id}. Message #{event}"
         end
       end
 
