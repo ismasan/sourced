@@ -25,7 +25,7 @@ module RouterTest
       c.async!
     end
 
-    def self.handled_events
+    def self.handled_messages
       [ItemAdded, AddItem, NextCommand]
     end
 
@@ -44,7 +44,7 @@ module RouterTest
     end
 
     # The Reactor interface
-    def self.handled_events
+    def self.handled_messages
       [ItemAdded]
     end
 
@@ -61,7 +61,7 @@ module RouterTest
     end
 
     # The Reactor interface
-    def self.handled_events
+    def self.handled_messages
       []
     end
 
@@ -74,7 +74,7 @@ module RouterTest
   class ReactorWithNoArgs
     extend Sourced::Consumer
 
-    def self.handled_events
+    def self.handled_messages
       [ItemAdded]
     end
 
@@ -86,7 +86,7 @@ module RouterTest
   class ReactorWithReplayingOnly
     extend Sourced::Consumer
 
-    def self.handled_events
+    def self.handled_messages
       [ItemAdded]
     end
 
@@ -98,7 +98,7 @@ module RouterTest
   class ReactorWithHistoryOnly
     extend Sourced::Consumer
 
-    def self.handled_events
+    def self.handled_messages
       [ItemAdded]
     end
 
@@ -110,7 +110,7 @@ module RouterTest
   class ReactorWithBothArgs
     extend Sourced::Consumer
 
-    def self.handled_events
+    def self.handled_messages
       [ItemAdded]
     end
 

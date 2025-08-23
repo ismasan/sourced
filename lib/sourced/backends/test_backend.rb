@@ -95,7 +95,7 @@ module Sourced
 
         NOOP_FILTER = ->(_) { true } 
 
-        def reserve_next(handled_events, time_window, process_result, &)
+        def reserve_next(handled_messages, time_window, process_result, &)
           time_filter = time_window.is_a?(Time) ? ->(e) { e.created_at > time_window } : NOOP_FILTER
           evt = nil
           offset = nil
@@ -105,7 +105,7 @@ module Sourced
             offset = @offsets[e.stream_id]
             if offset.locked # stream locked by another consumer in the group
               next
-            elsif idx > offset.index && handled_events.include?(e.class) && time_filter.call(e) # new event for the stream
+            elsif idx > offset.index && handled_messages.include?(e.class) && time_filter.call(e) # new event for the stream
               evt = e
               offset.locked = true
               index = idx
@@ -297,7 +297,7 @@ module Sourced
         transaction do
           group = @state.groups[group_id]
           if group.active? && (group.retry_at.nil? || group.retry_at <= Time.now)
-            group.reserve_next(reactor.handled_events, start_from, method(:process_result), &)
+            group.reserve_next(reactor.handled_messages, start_from, method(:process_result), &)
           end
         end
       end
