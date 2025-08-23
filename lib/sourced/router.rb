@@ -332,14 +332,7 @@ module Sourced
         log_event('handling event', reactor, event, worker_id)
         
         # Build keyword arguments hash based on what the reactor's #handle method expects
-        kargs = kargs_for_handle[reactor].each.with_object({}) do |name, hash|
-          case name
-          when :replaying
-            hash[name] = replaying
-          when :history
-            hash[name] = backend.read_event_stream(event.stream_id)
-          end
-        end
+        kargs = build_reactor_handle_args(reactor, event, replaying)
 
         # Call the reactor's handle method with the event and any requested keyword arguments
         result = reactor.handle(event, **kargs)
@@ -359,6 +352,24 @@ module Sourced
     end
 
     private
+
+    # Build keyword arguments hash for calling a reactor's #handle method.
+    # Only includes arguments that the reactor's method signature actually declares.
+    #
+    # @param reactor [Class] The reactor class 
+    # @param event [Event] The event being processed
+    # @param replaying [Boolean] Whether this is a replay operation
+    # @return [Hash] Hash of keyword arguments to pass to reactor.handle
+    def build_reactor_handle_args(reactor, event, replaying)
+      kargs_for_handle[reactor].each.with_object({}) do |name, hash|
+        case name
+        when :replaying
+          hash[name] = replaying
+        when :history
+          hash[name] = backend.read_event_stream(event.stream_id)
+        end
+      end
+    end
 
     def log_event(label, reactor, event, process_name = PID)
       logger.info "[#{process_name}]: #{reactor.consumer_info.group_id} #{label} #{event_info(event)}"
