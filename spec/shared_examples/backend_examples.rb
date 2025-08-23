@@ -237,7 +237,7 @@ module BackendExamples
             )
           end
 
-          def self.handled_events
+          def self.handled_messages
             [Tests::SomethingHappened1]
           end
         end
@@ -270,7 +270,7 @@ module BackendExamples
             Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
           end
 
-          def self.handled_events
+          def self.handled_messages
             [Tests::SomethingHappened1]
           end
         end
@@ -280,7 +280,7 @@ module BackendExamples
             Sourced::Consumer::ConsumerInfo.new(group_id: 'group2')
           end
 
-          def self.handled_events
+          def self.handled_messages
             [Tests::SomethingHappened1]
           end
         end
@@ -290,7 +290,7 @@ module BackendExamples
             Sourced::Consumer::ConsumerInfo.new(group_id: 'group3')
           end
 
-          def self.handled_events
+          def self.handled_messages
             [Tests::SomethingHappened1]
           end
         end
@@ -368,7 +368,7 @@ module BackendExamples
             Sourced::Consumer::ConsumerInfo.new(group_id: 'group4')
           end
 
-          def self.handled_events
+          def self.handled_messages
             [Tests::SomethingHappened2]
           end
         end
@@ -427,7 +427,7 @@ module BackendExamples
             Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
           end
 
-          def self.handled_events
+          def self.handled_messages
             [Tests::SomethingHappened1]
           end
         end
@@ -472,7 +472,7 @@ module BackendExamples
             Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
           end
 
-          def self.handled_events
+          def self.handled_messages
             [Tests::SomethingHappened1]
           end
         end
@@ -602,7 +602,7 @@ module BackendExamples
             Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
           end
 
-          def self.handled_events
+          def self.handled_messages
             [Tests::SomethingHappened1]
           end
         end
@@ -641,7 +641,7 @@ module BackendExamples
             Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
           end
 
-          def self.handled_events
+          def self.handled_messages
             [Tests::SomethingHappened1]
           end
         end

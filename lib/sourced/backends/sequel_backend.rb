@@ -264,7 +264,7 @@ module Sourced
         raise Sourced::ConcurrentAppendError, e.message
       end
 
-      # Reserve next event for a reactor, based on the reactor's #handled_events list
+      # Reserve next event for a reactor, based on the reactor's #handled_messages list
       # This fetches the next un-acknowledged event for the reactor, and processes it in a transaction
       # which aquires a lock on the event's stream_id and the reactor's group_id
       # So that no other reactor instance in the same group can process the same stream concurrently.
@@ -294,14 +294,14 @@ module Sourced
       def reserve_next_for_reactor(reactor, worker_id: nil, &)
         worker_id ||= [Process.pid, Thread.current.object_id, Fiber.current.object_id].join('-')
         group_id = reactor.consumer_info.group_id
-        handled_events = reactor.handled_events.map(&:type).uniq
+        handled_messages = reactor.handled_messages.map(&:type).uniq
         now = Time.now
 
         bootstrap_offsets_for(group_id)
 
         # Phase 1: Claim stream_id/group_id in short transaction
         # This claim includes :event, :claim_id and :replaying
-        row = claim_next_event(group_id, handled_events, now, reactor.consumer_info.start_from.call, worker_id)
+        row = claim_next_event(group_id, handled_messages, now, reactor.consumer_info.start_from.call, worker_id)
 
         # return reserve_next_for_reactor(reactor, &) if row == :retry
         return unless row
@@ -399,18 +399,18 @@ module Sourced
       end
 
       # @param group_id [String] Consumer group ID to claim the next event for
-      # @param handle_events [Array<String>] List of event types to handle
+      # @param handle_messages [Array<String>] List of message types to handle
       # @param now [Time] Current time
       # @param start_from [Time] Optional starting point for event processing
       # @param worker_id [String] Unique identifier for the worker claiming the event
-      private def claim_next_event(group_id, handled_events, now, start_from, worker_id)
+      private def claim_next_event(group_id, handled_messages, now, start_from, worker_id)
         db.transaction do
-          # 1. get next event for this group_id and handled_events
+          # 1. get next event for this group_id and handled_messages
           # Use FOR UPDATE SKIP LOCKED if supported
           row = if start_from.is_a?(Time)
-            db.fetch(sql_for_reserve_next_with_events(handled_events, group_id:, now:, start_from:)).first
+            db.fetch(sql_for_reserve_next_with_events(handled_messages, group_id:, now:, start_from:)).first
           else
-            db.fetch(sql_for_reserve_next_with_events(handled_events, group_id:, now:)).first
+            db.fetch(sql_for_reserve_next_with_events(handled_messages, group_id:, now:)).first
           end
           return unless row
 
@@ -686,8 +686,8 @@ module Sourced
         SQL
       end
 
-      def sql_for_reserve_next_with_events(handled_events, group_id:, now:, start_from: nil)
-        event_types = handled_events.map { |e| "'#{e}'" }
+      def sql_for_reserve_next_with_events(handled_messages, group_id:, now:, start_from: nil)
+        event_types = handled_messages.map { |e| "'#{e}'" }
         now = db.literal(now)
         group_id = db.literal(group_id)
         event_types_sql = event_types.any? ? " AND e.type IN(#{event_types.join(',')})" : ''
