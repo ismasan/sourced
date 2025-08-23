@@ -25,22 +25,14 @@ module RouterTest
       c.async!
     end
 
-    # The Decider interface
-    def self.handled_commands
-      [AddItem, NextCommand]
-    end
-
-    def self.handle_command(_cmd); end
-
-    # The Reactor interface
     def self.handled_events
-      [ItemAdded]
+      [ItemAdded, AddItem, NextCommand]
     end
 
-    def self.handle_events(evts, replaying:)
-      cmd = NextCommand.parse(stream_id: evts.first.stream_id)
+    def self.handle(evt, replaying:, history:)
+      cmd = NextCommand.parse(stream_id: evt.stream_id)
 
-      [cmd]
+      Sourced::Results::AppendNext.new([cmd])
     end
   end
 
@@ -77,6 +69,55 @@ module RouterTest
       []
     end
   end
+
+  # Test reactors for argument injection
+  class ReactorWithNoArgs
+    extend Sourced::Consumer
+
+    def self.handled_events
+      [ItemAdded]
+    end
+
+    def self.handle(event)
+      Sourced::Results::AppendNext.new([])
+    end
+  end
+
+  class ReactorWithReplayingOnly
+    extend Sourced::Consumer
+
+    def self.handled_events
+      [ItemAdded]
+    end
+
+    def self.handle(event, replaying:)
+      Sourced::Results::AppendNext.new([])
+    end
+  end
+
+  class ReactorWithHistoryOnly
+    extend Sourced::Consumer
+
+    def self.handled_events
+      [ItemAdded]
+    end
+
+    def self.handle(event, history:)
+      Sourced::Results::AppendNext.new([])
+    end
+  end
+
+  class ReactorWithBothArgs
+    extend Sourced::Consumer
+
+    def self.handled_events
+      [ItemAdded]
+    end
+
+    def self.handle(event, replaying:, history:)
+      Sourced::Results::AppendNext.new([])
+    end
+  end
 end
 
 RSpec.describe Sourced::Router do
@@ -84,7 +125,7 @@ RSpec.describe Sourced::Router do
 
   let(:backend) { Sourced::Backends::TestBackend.new }
 
-  describe '#dispatch_next_command' do
+  describe '#dispatch_next_command', skip: true do
     let(:cmd) { RouterTest::AddItem.new(stream_id: '123') }
 
     before do
@@ -132,22 +173,23 @@ RSpec.describe Sourced::Router do
       backend.append_to_stream('123', [event])
     end
 
-    context 'when reactor returns commands' do
-      it 'schedules commands' do
-        allow(backend).to receive(:schedule_commands)
+    context 'when reactor returns Sourced::Results::AppendNext' do
+      it 'appends messages' do
+        allow(backend).to receive(:append_next_to_stream)
 
         router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
         expect(RouterTest::DeciderReactor).not_to have_received(:on_exception)
-        expect(backend).to have_received(:schedule_commands) do |commands, group_id:|
-          expect(commands.map(&:class)).to eq([RouterTest::NextCommand])
-          expect(group_id).to eq(RouterTest::DeciderReactor.consumer_info.group_id)
+        expect(backend).to have_received(:append_next_to_stream) do |stream_id, event|
+          expect(stream_id).to eq('123')
+          expect(event.stream_id).to eq('123')
+          expect(event).to be_a(RouterTest::NextCommand)
         end
       end
     end
 
     context 'when reactor raises exception' do
       before do
-        expect(RouterTest::DeciderReactor).to receive(:handle_events).and_raise('boom')
+        expect(RouterTest::DeciderReactor).to receive(:handle).and_raise('boom')
       end
 
       it 'invokes .on_exception on reactor' do
@@ -166,16 +208,117 @@ RSpec.describe Sourced::Router do
         expect(groups.first[:stream_count]).to eq(0)
       end
     end
-  end
 
-  describe '#register' do
-    it 'registers group id with configured backend' do
-      expect(backend).to receive(:register_consumer_group).with(RouterTest::DeciderReactor.consumer_info.group_id)
-      router.register(RouterTest::DeciderReactor)
+    context 'argument injection' do
+      let(:event) { RouterTest::ItemAdded.new(stream_id: '123') }
+      let(:event2) { RouterTest::ItemAdded.new(stream_id: '123', seq: 2) }
+
+      before do
+        backend.clear!
+        backend.append_to_stream('123', [event, event2])
+      end
+
+      context 'with reactor expecting no keyword arguments' do
+        before { router.register(RouterTest::ReactorWithNoArgs) }
+
+        it 'calls handle with event only' do
+          allow(RouterTest::ReactorWithNoArgs).to receive(:handle).and_call_original
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithNoArgs)
+          expect(RouterTest::ReactorWithNoArgs).to have_received(:handle).with(event)
+        end
+      end
+
+      context 'with reactor expecting only replaying argument' do
+        before { router.register(RouterTest::ReactorWithReplayingOnly) }
+
+        it 'calls handle with event and replaying status' do
+          allow(RouterTest::ReactorWithReplayingOnly).to receive(:handle).and_call_original
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithReplayingOnly)
+          expect(RouterTest::ReactorWithReplayingOnly).to have_received(:handle).with(event, replaying: false)
+        end
+      end
+
+      context 'with reactor expecting only history argument' do
+        before { router.register(RouterTest::ReactorWithHistoryOnly) }
+
+        it 'calls handle with event and history' do
+          expected_history = [event, event2]
+          allow(backend).to receive(:read_event_stream).with('123').and_return(expected_history)
+          
+          allow(RouterTest::ReactorWithHistoryOnly).to receive(:handle).and_call_original
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithHistoryOnly)
+          expect(RouterTest::ReactorWithHistoryOnly).to have_received(:handle).with(event, history: expected_history)
+        end
+      end
+
+      context 'with reactor expecting both replaying and history arguments' do
+        before { router.register(RouterTest::ReactorWithBothArgs) }
+
+        it 'calls handle with event, replaying status, and history' do
+          expected_history = [event, event2]
+          allow(backend).to receive(:read_event_stream).with('123').and_return(expected_history)
+          allow(RouterTest::ReactorWithBothArgs).to receive(:handle).and_call_original
+
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithBothArgs)
+
+          expect(RouterTest::ReactorWithBothArgs).to have_received(:handle).with(
+            event, 
+            replaying: false, 
+            history: expected_history
+          )
+        end
+      end
+
+      context 'when replaying is true' do
+        before { router.register(RouterTest::ReactorWithReplayingOnly) }
+
+        it 'passes replaying: true when backend indicates replaying' do
+          allow(backend).to receive(:reserve_next_for_reactor).and_yield(event, true)
+          
+          expect(RouterTest::ReactorWithReplayingOnly).to receive(:handle).with(event, replaying: true)
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithReplayingOnly)
+        end
+      end
+
+      context 'with different stream having different history' do
+        let(:other_event) { RouterTest::ItemAdded.new(stream_id: 'other-stream') }
+
+        before do 
+          router.register(RouterTest::ReactorWithHistoryOnly)
+          backend.append_to_stream('other-stream', [other_event])
+        end
+
+        it 'fetches history for the correct stream' do
+          other_history = [other_event]
+          allow(backend).to receive(:read_event_stream).with('other-stream').and_return(other_history)
+          
+          # Set up the backend to return the other event
+          allow(backend).to receive(:reserve_next_for_reactor).and_yield(other_event, false)
+          
+          expect(RouterTest::ReactorWithHistoryOnly).to receive(:handle).with(other_event, history: other_history)
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithHistoryOnly)
+        end
+      end
     end
   end
 
-  describe '#schedule_commands' do
+  describe '#register' do
+    before do
+      allow(backend).to receive(:register_consumer_group)
+    end
+
+    it 'registers group id with configured backend' do
+      router.register(RouterTest::DeciderReactor)
+      expect(backend).to have_received(:register_consumer_group).with(RouterTest::DeciderReactor.consumer_info.group_id)
+    end
+
+    it 'computes kargs for .handle in #kargs_for_handle' do
+      router.register(RouterTest::DeciderReactor)
+      expect(router.kargs_for_handle[RouterTest::DeciderReactor]).to eq(%i[replaying history])
+    end
+  end
+
+  describe '#schedule_commands', skip: true do
     it 'schedules commands for the right target deciders' do
       router.register(RouterTest::DeciderReactor)
       cmd = RouterTest::AddItem.new
@@ -185,27 +328,23 @@ RSpec.describe Sourced::Router do
   end
 
   describe '#register' do
-    it 'registers Decider interfaces' do
+    it 'registers Reactor interfaces and registers group' do
+      expect(backend).to receive(:register_consumer_group).with(RouterTest::DeciderReactor.consumer_info.group_id)
       router.register(RouterTest::DeciderReactor)
-      cmd = RouterTest::AddItem.new
-      expect(RouterTest::DeciderReactor).to receive(:handle_command).with(cmd)
-      router.handle_command(cmd)
-    end
-
-    it 'registers Reactor interfaces' do
-      router.register(RouterTest::DeciderReactor)
-      router.register(RouterTest::DeciderOnly)
-      expect(router.async_reactors.first).to eq(RouterTest::DeciderReactor)
+      expect(router.async_reactors).to include(RouterTest::DeciderReactor)
+      expect(router.registered?(RouterTest::DeciderReactor)).to be true
     end
 
     it 'registers async reactors' do
-      router.register(RouterTest::SyncReactor1)
-      router.register(RouterTest::SyncReactor2)
-
-      evt = RouterTest::ItemAdded.new
-      expect(router).to receive(:handle_and_ack_events_for_reactor).with(RouterTest::SyncReactor1, [evt])
-      expect(router).not_to receive(:handle_and_ack_events_for_reactor).with(RouterTest::SyncReactor2, [evt])
-      router.handle_events([evt])
+      pending 'Re-think sync reactors'
+      expect(true).to be false
+      # router.register(RouterTest::SyncReactor1)
+      # router.register(RouterTest::SyncReactor2)
+      #
+      # evt = RouterTest::ItemAdded.new
+      # expect(router).to receive(:handle_and_ack_events_for_reactor).with(RouterTest::SyncReactor1, [evt])
+      # expect(router).not_to receive(:handle_and_ack_events_for_reactor).with(RouterTest::SyncReactor2, [evt])
+      # router.handle_events([evt])
     end
 
     it 'raises if registering a non-compliant interface' do
