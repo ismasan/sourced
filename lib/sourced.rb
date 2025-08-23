@@ -147,14 +147,14 @@ module Sourced
   
   # Interface that event handlers (Reactors) must implement.
   # @!attribute [r] consumer_info
-  #   @return [Hash] Consumer group information for this reactor
+  #   @return [Sourced::Consumer::ConsumerInfo] Consumer group information for this reactor
   # @!attribute [r] handled_events
   #   @return [Array<Class>] Event classes this reactor handles
-  # @!attribute [r] handle_events
+  # @!attribute [r] handle
   #   @return [Method] Method to handle incoming events
   # @!attribute [r] on_exception
   #   @return [Method] Method to handle exceptions during event processing
-  ReactorInterface = Types::Interface[:consumer_info, :handled_events, :handle_events, :on_exception]
+  ReactorInterface = Types::Interface[:handle, :consumer_info, :handled_events, :on_exception]
 end
 
 require 'sourced/consumer'

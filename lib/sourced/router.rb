@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'singleton'
+require 'sourced/injector'
 
 module Sourced
   # The Router is the central dispatch mechanism in Sourced, responsible for:
@@ -20,9 +21,6 @@ module Sourced
   #   command = CreateSomething.new(stream_id: 'test', payload: {})
   #   Sourced::Router.handle_command(command)
   class Router
-    # Raised when attempting to handle a command with no registered handler
-    UnregisteredCommandError = Class.new(StandardError)
-
     include Singleton
 
     PID = Process.pid
@@ -108,7 +106,7 @@ module Sourced
     #   @return [Object] The configured backend for event storage
     # @!attribute [r] logger
     #   @return [Object] The configured logger instance
-    attr_reader :sync_reactors, :async_reactors, :backend, :logger
+    attr_reader :sync_reactors, :async_reactors, :backend, :logger, :kargs_for_handle
 
     # Initialize a new Router instance.
     # @param backend [Object] Backend for event storage (defaults to configured backend)
@@ -117,58 +115,85 @@ module Sourced
       @backend = backend
       @logger = logger
       @registered_lookup = {}
-      @decider_lookup = {}
+      @decider_lookup = {} # <= TODO this is for deprecated command handlers. Remove.
+      @kargs_for_handle = {}
       @sync_reactors = Set.new
       @async_reactors = Set.new
     end
 
-    # Register an actor or projector with the router.
-    # Components implementing DeciderInterface can handle commands.
-    # Components implementing ReactorInterface can handle events.
-    # A single class can implement both interfaces.
+    # Register a Reactor with the router.
+    # 
+    # During registration, the router analyzes the reactor's #handle method signature
+    # and stores the expected keyword arguments for automatic injection during event processing.
+    # This enables reactors to declare exactly what contextual information they need.
     #
-    # @param thing [Class] Actor or Projector class to register
+    # @param thing [Class] Reactor object to register.
     # @return [void]
     # @raise [InvalidReactorError] if the class doesn't implement required interfaces
+    # 
     # @example Register an actor that handles both commands and events
     #   router.register(CartActor)
-    # @example Register a projector that only handles events
-    #   router.register(CartListingsProjector)
+    #
+    # @example Reactors with different argument requirements
+    #   # Reactor that only needs the event
+    #   class SimpleReactor
+    #     def self.handle(event)
+    #       # Process event
+    #     end
+    #   end
+    #
+    #   # Reactor that needs to know if it's replaying events
+    #   class ReplayAwareReactor  
+    #     def self.handle(event, replaying:)
+    #       return if replaying  # Skip during replay
+    #       # Process event normally
+    #     end
+    #   end
+    #
+    #   # Reactor that needs access to full event history
+    #   class HistoryReactor
+    #     def self.handle(event, history:)
+    #       # Analyze event in context of full stream history
+    #     end
+    #   end
+    #
+    #   # Reactor that needs both pieces of context
+    #   class FullContextReactor
+    #     def self.handle(event, replaying:, history:)
+    #       return if replaying
+    #       # Process with full context
+    #     end
+    #   end
     def register(thing)
-      regs = 0
-      if DeciderInterface === thing
-        regs += 1
-        thing.handled_commands.each do |cmd_type|
-          @decider_lookup[cmd_type] = thing
-        end
+      unless ReactorInterface === thing
+        raise InvalidReactorError, "#{thing.inspect} is not a valid Reactor interface"
       end
 
-      if ReactorInterface === thing
-        regs += 1
+      # Analyze the reactor's #handle method signature and store expected keyword arguments
+      # for automatic injection during event processing
+      @kargs_for_handle[thing] = Injector.resolve_args(thing, :handle)
 
-        if thing.consumer_info.async
-          @async_reactors << thing
-        else
-          @sync_reactors << thing
-        end
-      end
-
-      if regs.positive?
-        group_id = thing.consumer_info.group_id
-        @registered_lookup[group_id] = true
-        backend.register_consumer_group(group_id)
+      if thing.consumer_info.async
+        @async_reactors << thing
       else
-        raise InvalidReactorError, "#{thing.inspect} is not a valid Decider or Reactor interface"
+        @sync_reactors << thing
       end
+
+      group_id = thing.consumer_info.group_id
+      @registered_lookup[group_id] = true
+      backend.register_consumer_group(group_id)
     end
 
     def registered?(thing)
       !!@registered_lookup[thing.consumer_info.group_id]
     end
 
-    # Schedule commands for background processing by registered actors.
-    # Commands are grouped by their target reactor's consumer group ID to ensure
-    # proper ordering and that only commands for active reactors are fetched.
+    # TODO: commands will just be messages now
+    # and the #handle_command interface will be removed
+    # I need to re-think what sync command handling will look like
+    # There's also no constraint that only a single Reactor can handle a message
+    # So we either pass the command to a specific reactor, or to all reactors that handle it,
+    # and have them all return results, then we pass the results to the backend
     #
     # @param commands [Array<Command>] Commands to schedule for processing
     # @return [void]
@@ -183,7 +208,7 @@ module Sourced
       commands = Array(commands)
       grouped = commands.group_by do |cmd| 
         reactor = @decider_lookup[cmd.class]
-        raise UnregisteredCommandError, "No reactor registered for command #{cmd.class}" unless reactor
+        # raise UnregisteredCommandError, "No reactor registered for command #{cmd.class}" unless reactor
 
         reactor.consumer_info.group_id
       end
@@ -221,6 +246,8 @@ module Sourced
       end
     end
 
+    # TODO: re-think "sync mode" based on new #handle(event) => Sourced::Results interface
+    #
     # When in sync mode, we want both events
     # and any resulting commands to be processed syncronously
     # and in the same transaction as events are appended to store.
@@ -242,6 +269,10 @@ module Sourced
       end
     end
 
+    # TODO: this will be removed.
+    # All messages will be handled by #handle_next_event_for_reactor below.
+    # We still want to schedule appending messages in the future.
+    #
     # These two are invoked by background workers
     # Here we want to handle exceptions
     # and trigger retries if needed
@@ -269,26 +300,61 @@ module Sourced
       end
     end
 
+    # Handle the next available event for a specific reactor with automatic argument injection.
+    #
+    # This method performs argument injection based on the reactor's #handle method signature
+    # that was analyzed during registration. Only the arguments that the reactor actually
+    # declared in its method signature will be provided, enabling reactors to opt into
+    # exactly the contextual information they need.
+    #
+    # @param reactor [Class] The reactor class to get events for
+    # @param worker_id [String, nil] Optional process identifier for logging
+    # @return [Boolean] true if an event was handled, false if no events available
+    #
+    # @example Argument injection behavior
+    #   # For a reactor with signature: def handle(event)
+    #   # Called as: reactor.handle(event)
+    #   
+    #   # For a reactor with signature: def handle(event, replaying:)
+    #   # Called as: reactor.handle(event, replaying: false)  # or true during replay
+    #   
+    #   # For a reactor with signature: def handle(event, history:) 
+    #   # Called as: reactor.handle(event, history: [event1, event2, ...])
+    #   
+    #   # For a reactor with signature: def handle(event, replaying:, history:)
+    #   # Called as: reactor.handle(event, replaying: false, history: [...])
+    #
+    # Available injectable arguments:
+    # - :replaying - Boolean indicating if this is a replay operation
+    # - :history - Array of all events in the stream up to this point
     def handle_next_event_for_reactor(reactor, worker_id = nil)
       backend.reserve_next_for_reactor(reactor, worker_id:) do |event, replaying|
         log_event('handling event', reactor, event, worker_id)
-        commands = reactor.handle_events([event], replaying:)
-        if commands.any?
-          # TODO: this schedules commands that will be picked up
-          # by #dispatch_next_command above on the worker's next tick
-          schedule_commands(commands)
+        
+        # Build keyword arguments hash based on what the reactor's #handle method expects
+        kargs = kargs_for_handle[reactor].each.with_object({}) do |name, hash|
+          case name
+          when :replaying
+            hash[name] = replaying
+          when :history
+            hash[name] = backend.read_event_stream(event.stream_id)
+          end
         end
 
-        event
-      rescue UnregisteredCommandError
-        raise
+        # Call the reactor's handle method with the event and any requested keyword arguments
+        result = reactor.handle(event, **kargs)
+        # TODO2: reactor.handle
+        # should return an Array of results
+        # including a type to run "sync" operations
+
+        result
       rescue StandardError => e
         logger.warn "[#{PID}]: error handling event #{event.class} with reactor #{reactor} #{e}"
         backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
           reactor.on_exception(e, event, group)
         end
         # Do not ACK event for reactor
-        false
+        Results::RETRY
       end
     end
 
