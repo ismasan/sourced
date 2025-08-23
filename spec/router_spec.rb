@@ -118,6 +118,18 @@ module RouterTest
       Sourced::Results::AppendNext.new([])
     end
   end
+
+  class ReactorWithLogger
+    extend Sourced::Consumer
+
+    def self.handled_messages
+      [ItemAdded]
+    end
+
+    def self.handle(event, logger:)
+      Sourced::Results::AppendNext.new([])
+    end
+  end
 end
 
 RSpec.describe Sourced::Router do
@@ -297,6 +309,16 @@ RSpec.describe Sourced::Router do
           
           expect(RouterTest::ReactorWithHistoryOnly).to receive(:handle).with(other_event, history: other_history)
           router.handle_next_event_for_reactor(RouterTest::ReactorWithHistoryOnly)
+        end
+      end
+
+      context 'with reactor expecting logger argument' do
+        before { router.register(RouterTest::ReactorWithLogger) }
+
+        it 'calls handle with event and router logger' do
+          allow(RouterTest::ReactorWithLogger).to receive(:handle).and_call_original
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithLogger)
+          expect(RouterTest::ReactorWithLogger).to have_received(:handle).with(event, logger: router.logger)
         end
       end
     end
