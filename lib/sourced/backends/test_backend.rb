@@ -308,19 +308,13 @@ module Sourced
           ack.()
 
         when Actions::AppendNext
-          messages = action.messages.map do |msg|
-            event.correlate(msg)
-          end
-          messages.each do |msg|
+          correlate(event, action.messages).each do |msg|
             append_next_to_stream(msg.stream_id, msg)
           end
           ack.()
 
         when Actions::AppendAfter
-          messages = action.messages.map do |msg|
-            event.correlate(msg)
-          end
-          append_to_stream(action.stream_id, messages)
+          append_to_stream(action.stream_id, correlate(event, action.messages))
           ack.()
 
         when Actions::RETRY
@@ -329,6 +323,10 @@ module Sourced
         else
           raise ArgumentError, "Unexpected Sourced::Actions type, but got: #{action.class}"
         end
+      end
+
+      private def correlate(source_message, messages)
+        messages.map { |e| source_message.correlate(e) }
       end
 
       def ack_on(group_id, event_id, &)
