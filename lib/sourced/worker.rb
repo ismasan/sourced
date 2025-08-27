@@ -59,7 +59,7 @@ module Sourced
       # to populate this array according to the weight
       # so that some reactors are picked more often than others
       @reactors = @router.async_reactors.filter do |r|
-        r.handled_events.any? || r.handled_commands.any?
+        r.handled_messages.any? || r.handled_commands.any?
       end.to_a.shuffle
       @reactor_index = 0
     end
