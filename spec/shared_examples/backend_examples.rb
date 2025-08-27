@@ -248,11 +248,11 @@ module BackendExamples
 
         backend.reserve_next_for_reactor(reactor1) do |msg|
           messages << msg
-          Sourced::Results::OK
+          Sourced::Actions::OK
         end
         backend.reserve_next_for_reactor(reactor1) do |msg|
           messages << msg
-          Sourced::Results::OK
+          Sourced::Actions::OK
         end
 
         expect(messages).to eq([evt_a2])
@@ -315,13 +315,13 @@ module BackendExamples
             backend.reserve_next_for_reactor(reactor1) do |msg|
               sleep 0.01
               group1_messages << msg
-              Sourced::Results::OK
+              Sourced::Actions::OK
             end
           end
           t.spawn do
             backend.reserve_next_for_reactor(reactor1) do |msg|
               group1_messages << msg
-              Sourced::Results::OK
+              Sourced::Actions::OK
             end
           end
         end
@@ -331,7 +331,7 @@ module BackendExamples
         # Test that separate groups have their own cursors on streams
         backend.reserve_next_for_reactor(reactor2) do |msg|
           group2_messages << msg
-          Sourced::Results::OK
+          Sourced::Actions::OK
         end
 
         expect(group2_messages).to eq([evt_a1])
@@ -339,16 +339,16 @@ module BackendExamples
         # Test stopped reactors are ignored
         backend.reserve_next_for_reactor(reactor3) do |msg|
           group3_messages << msg
-          Sourced::Results::OK
+          Sourced::Actions::OK
         end
 
         expect(group3_messages).to eq([])
 
         # Test that NOOP handlers still advance the cursor
-        backend.reserve_next_for_reactor(reactor2) { |_msg| Sourced::Results::OK }
+        backend.reserve_next_for_reactor(reactor2) { |_msg| Sourced::Actions::OK }
 
         # Test returning RETRY does not advance the cursor
-        backend.reserve_next_for_reactor(reactor2) { |_msg| Sourced::Results::RETRY }
+        backend.reserve_next_for_reactor(reactor2) { |_msg| Sourced::Actions::RETRY }
 
         # Verify state of groups with stats
         stats = backend.stats
@@ -396,7 +396,7 @@ module BackendExamples
 
         backend.reserve_next_for_reactor(reactor4) do |msg|
           group4_messages << msg
-          Sourced::Results::OK
+          Sourced::Actions::OK
         end
 
         expect(group4_messages).to eq([evt_a3])
@@ -409,10 +409,10 @@ module BackendExamples
         ])
 
         #  Test that #reserve_next_for returns next event, or nil
-        evt = backend.reserve_next_for_reactor(reactor2) { Sourced::Results::OK }
+        evt = backend.reserve_next_for_reactor(reactor2) { Sourced::Actions::OK }
         expect(evt).to eq(evt_b1)
 
-        evt = backend.reserve_next_for_reactor(reactor2) { Sourced::Results::OK }
+        evt = backend.reserve_next_for_reactor(reactor2) { Sourced::Actions::OK }
         expect(evt).to be(nil)
       end
     end
@@ -440,14 +440,14 @@ module BackendExamples
         backend.reserve_next_for_reactor(reactor1) do |msg, is_replaying|
           messages << msg
           replaying << is_replaying
-          Sourced::Results::OK
+          Sourced::Actions::OK
         end
 
         # This is a noop since the event is already processed
         backend.reserve_next_for_reactor(reactor1) do |msg, is_replaying|
           messages << msg
           replaying << is_replaying
-          Sourced::Results::OK
+          Sourced::Actions::OK
         end
 
         expect(messages).to eq([evt_a1])
@@ -457,7 +457,7 @@ module BackendExamples
         backend.reserve_next_for_reactor(reactor1) do |msg, is_replaying|
           messages << msg
           replaying << is_replaying
-          Sourced::Results::OK
+          Sourced::Actions::OK
         end
 
         expect(messages).to eq([evt_a1, evt_a1])
@@ -496,30 +496,30 @@ module BackendExamples
         backend.append_to_stream(evt1.stream_id, [evt1])
       end
 
-      describe 'returning Sourced::Results::OK' do
+      describe 'returning Sourced::Actions::OK' do
         it 'ACKS the message' do
           backend.reserve_next_for_reactor(reactor1) do |_msg|
-            Sourced::Results::OK
+            Sourced::Actions::OK
           end
 
           expect(backend.stats.groups.first[:newest_processed]).to eq(1)
         end
       end
 
-      describe 'returning Sourced::Results::RETRY' do
+      describe 'returning Sourced::Actions::RETRY' do
         it 'does not ACK the message' do
           backend.reserve_next_for_reactor(reactor1) do |_msg|
-            Sourced::Results::RETRY
+            Sourced::Actions::RETRY
           end
 
           expect(backend.stats.groups.first[:newest_processed]).to eq(0)
         end
       end
 
-      describe 'returning Sourced::Results::AppendNext' do
+      describe 'returning Sourced::Actions::AppendNext' do
         before do
           backend.reserve_next_for_reactor(reactor1) do |_msg|
-            Sourced::Results::AppendNext.new([Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 2 })])
+            Sourced::Actions::AppendNext.new([Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 2 })])
           end
         end
 
@@ -541,11 +541,11 @@ module BackendExamples
         end
       end
 
-      describe 'returning Sourced::Results::AppendAfter' do
+      describe 'returning Sourced::Actions::AppendAfter' do
         it 'appends messages to stream if sequence do not conflict' do
           new_message = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
           backend.reserve_next_for_reactor(reactor1) do |_msg|
-            Sourced::Results::AppendAfter.new(new_message.stream_id, [new_message])
+            Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message])
           end
 
           events = backend.read_event_stream('s1')
@@ -557,7 +557,7 @@ module BackendExamples
           new_message = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 2 })
           expect do
             backend.reserve_next_for_reactor(reactor1) do |_msg|
-              Sourced::Results::AppendAfter.new(new_message.stream_id, [new_message])
+              Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message])
             end
           end.to raise_error(Sourced::ConcurrentAppendError)
         end
@@ -569,7 +569,7 @@ module BackendExamples
 
           expect do
             backend.reserve_next_for_reactor(reactor1) do |_msg|
-              Sourced::Results::AppendAfter.new(new_message.stream_id, [new_message])
+              Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message])
             end
           end.to raise_error(StandardError)
 
@@ -579,7 +579,7 @@ module BackendExamples
         it 'correlates messages and copies metadata' do
           new_message = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
           backend.reserve_next_for_reactor(reactor1) do |_msg|
-            Sourced::Results::AppendAfter.new(new_message.stream_id, [new_message])
+            Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message])
           end
 
           events = backend.read_event_stream('s1')
@@ -616,7 +616,7 @@ module BackendExamples
 
         backend.reserve_next_for_reactor(reactor1) do |msg|
           messages << msg
-          Sourced::Results::OK
+          Sourced::Actions::OK
         end
 
         expect(messages.any?).to be(false)
@@ -627,7 +627,7 @@ module BackendExamples
 
         backend.reserve_next_for_reactor(reactor1) do |msg|
           messages << msg
-          Sourced::Results::OK
+          Sourced::Actions::OK
         end
 
         expect(messages.any?).to be(true)
@@ -657,7 +657,7 @@ module BackendExamples
       it 'advances a group_id/stream_id offset if no exception' do
         backend.ack_on(reactor.consumer_info.group_id, evt1.id) { true }
 
-        backend.reserve_next_for_reactor(reactor) { Sourced::Results::OK }
+        backend.reserve_next_for_reactor(reactor) { Sourced::Actions::OK }
 
         expect(backend.stats.groups.first[:oldest_processed]).to eq(2)
       end

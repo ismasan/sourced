@@ -158,7 +158,7 @@ module Sourced
 end
 
 require 'sourced/consumer'
-require 'sourced/results'
+require 'sourced/actions'
 require 'sourced/evolve'
 require 'sourced/react'
 require 'sourced/sync'

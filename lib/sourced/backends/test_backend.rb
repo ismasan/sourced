@@ -95,7 +95,7 @@ module Sourced
 
         NOOP_FILTER = ->(_) { true } 
 
-        def reserve_next(handled_messages, time_window, process_result, &)
+        def reserve_next(handled_messages, time_window, process_action, &)
           time_filter = time_window.is_a?(Time) ? ->(e) { e.created_at > time_window } : NOOP_FILTER
           evt = nil
           offset = nil
@@ -120,7 +120,7 @@ module Sourced
               result = yield(evt, replaying)
 
               acker = -> { ack(offset, index) }
-              process_result.(result, acker, evt)
+              process_action.(result, acker, evt)
             end
 
             offset.locked = false
@@ -297,18 +297,18 @@ module Sourced
         transaction do
           group = @state.groups[group_id]
           if group.active? && (group.retry_at.nil? || group.retry_at <= Time.now)
-            group.reserve_next(reactor.handled_messages, start_from, method(:process_result), &)
+            group.reserve_next(reactor.handled_messages, start_from, method(:process_action), &)
           end
         end
       end
 
-      private def process_result(result, ack, event)
-        case result
-        when Results::OK
+      private def process_action(action, ack, event)
+        case action
+        when Actions::OK
           ack.()
 
-        when Results::AppendNext
-          messages = result.messages.map do |msg|
+        when Actions::AppendNext
+          messages = action.messages.map do |msg|
             event.correlate(msg)
           end
           messages.each do |msg|
@@ -316,18 +316,18 @@ module Sourced
           end
           ack.()
 
-        when Results::AppendAfter
-          messages = result.messages.map do |msg|
+        when Actions::AppendAfter
+          messages = action.messages.map do |msg|
             event.correlate(msg)
           end
-          append_to_stream(result.stream_id, messages)
+          append_to_stream(action.stream_id, messages)
           ack.()
 
-        when Results::RETRY
+        when Actions::RETRY
           # Don't ack
 
         else
-          raise ArgumentError, "Unexpected Sourced::Results type, but got: #{result.class}"
+          raise ArgumentError, "Unexpected Sourced::Actions type, but got: #{action.class}"
         end
       end
 

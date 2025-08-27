@@ -347,7 +347,7 @@ module Sourced
           reactor.on_exception(e, event, group)
         end
         # Do not ACK event for reactor
-        Results::RETRY
+        Actions::RETRY
       end
     end
 
