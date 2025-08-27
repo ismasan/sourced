@@ -18,6 +18,10 @@ module Sourced
         freeze
       end
 
+      def ==(other)
+        other.is_a?(self.class) && messages == other.messages
+      end
+
       def each(&block)
         return enum_for(:each) unless block_given?
 
