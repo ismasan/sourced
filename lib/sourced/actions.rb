@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Sourced
-  module Results
+  module Actions
     RETRY = Object.new.freeze
     OK = Object.new.freeze
 

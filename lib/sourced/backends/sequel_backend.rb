@@ -310,13 +310,13 @@ module Sourced
 
         begin
           # Phase 2: Process event outside of transaction
-          result = yield(event, row[:replaying])
+          action = yield(event, row[:replaying])
 
           # Phase 3: update state depending on result
           # Result handling happens in the same transaction
           # as ACKing the event
           db.transaction do
-            process_result(group_id, row, result, event)
+            process_action(group_id, row, action, event)
           end
 
         rescue StandardError
@@ -331,13 +331,13 @@ module Sourced
         db[offsets_table].where(id: offset_id).update(claimed: false, claimed_at: nil, claimed_by: nil)
       end
 
-      private def process_result(group_id, row, result, event)
-        case result
-        when Results::OK
+      private def process_action(group_id, row, action, event)
+        case action
+        when Actions::OK
           ack_event(group_id, row[:stream_id_fk], row[:global_seq])
 
-        when Results::AppendNext
-          messages = result.messages.map do |msg|
+        when Actions::AppendNext
+          messages = action.messages.map do |msg|
             event.correlate(msg)
           end
           messages.each do |msg|
@@ -345,18 +345,18 @@ module Sourced
           end
           ack_event(group_id, row[:stream_id_fk], row[:global_seq])
 
-        when Results::AppendAfter
-          messages = result.messages.map do |msg|
+        when Actions::AppendAfter
+          messages = action.messages.map do |msg|
             event.correlate(msg)
           end
-          append_to_stream(result.stream_id, messages)
+          append_to_stream(action.stream_id, messages)
           ack_event(group_id, row[:stream_id_fk], row[:global_seq])
 
-        when Results::RETRY
+        when Actions::RETRY
           release_offset(row[:offset_id])
 
         else
-          raise ArgumentError, "Unexpected Sourced::Results type, but got: #{result.class}. Group #{group_id}. Message #{event}"
+          raise ArgumentError, "Unexpected Sourced::Actions type, but got: #{action.class}. Group #{group_id}. Message #{event}"
         end
       end
 

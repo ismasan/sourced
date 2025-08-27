@@ -32,7 +32,7 @@ module RouterTest
     def self.handle(evt, replaying:, history:)
       cmd = NextCommand.parse(stream_id: evt.stream_id)
 
-      Sourced::Results::AppendNext.new([cmd])
+      Sourced::Actions::AppendNext.new([cmd])
     end
   end
 
@@ -79,7 +79,7 @@ module RouterTest
     end
 
     def self.handle(event)
-      Sourced::Results::AppendNext.new([])
+      Sourced::Actions::AppendNext.new([])
     end
   end
 
@@ -91,7 +91,7 @@ module RouterTest
     end
 
     def self.handle(event, replaying:)
-      Sourced::Results::AppendNext.new([])
+      Sourced::Actions::AppendNext.new([])
     end
   end
 
@@ -103,7 +103,7 @@ module RouterTest
     end
 
     def self.handle(event, history:)
-      Sourced::Results::AppendNext.new([])
+      Sourced::Actions::AppendNext.new([])
     end
   end
 
@@ -115,7 +115,7 @@ module RouterTest
     end
 
     def self.handle(event, replaying:, history:)
-      Sourced::Results::AppendNext.new([])
+      Sourced::Actions::AppendNext.new([])
     end
   end
 
@@ -127,7 +127,7 @@ module RouterTest
     end
 
     def self.handle(event, logger:)
-      Sourced::Results::AppendNext.new([])
+      Sourced::Actions::AppendNext.new([])
     end
   end
 end
@@ -185,7 +185,7 @@ RSpec.describe Sourced::Router do
       backend.append_to_stream('123', [event])
     end
 
-    context 'when reactor returns Sourced::Results::AppendNext' do
+    context 'when reactor returns Sourced::Actions::AppendNext' do
       it 'appends messages' do
         allow(backend).to receive(:append_next_to_stream)
 
