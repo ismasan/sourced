@@ -6,6 +6,10 @@ module Sourced
 
     UnknownMessageError = Class.new(StandardError)
 
+    def self.step_key(step_name, args)
+      [step_name, args].hash.to_s
+    end
+
     def self.inherited(child)
       cname = child.name.to_s.gsub(/::/, '.')
         .gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
@@ -21,15 +25,18 @@ module Sourced
       end)
       child.const_set(:WorkflowFailed, Sourced::Event.define("#{cname}.workflow.failed"))
       child.const_set(:StepStarted, Sourced::Event.define("#{cname}.step.started") do
+        attribute :key, String
         attribute :step_name, Sourced::Types::Lax::Symbol
         attribute :args, Sourced::Types::Array.default([].freeze)
       end)
       child.const_set(:StepFailed, Sourced::Event.define("#{cname}.step.failed") do
+        attribute :key, String
         attribute :step_name, Sourced::Types::Lax::Symbol
         attribute :error_class, String
         attribute :backtrace, Sourced::Types::Array[String]
       end)
       child.const_set(:StepComplete, Sourced::Event.define("#{cname}.step.complete") do
+        attribute :key, String
         attribute :step_name, Sourced::Types::Lax::Symbol
         attribute :output, Sourced::Types::Any
       end)
@@ -87,7 +94,9 @@ module Sourced
       source_method = :"__durable_source_#{method_name}"
       alias_method source_method, method_name
       define_method method_name do |*args|
-        cached = @lookup[method_name]
+        key = self.class.step_key(method_name, args)
+        cached = @lookup[key]
+
         case cached&.status
         when :complete
           cached.output
@@ -96,26 +105,26 @@ module Sourced
             output = send(source_method, *args)
             @new_events << self.class::StepComplete.parse(
               stream_id: id, 
-              payload: { step_name: method_name, output: }
+              payload: { key:, step_name: method_name, output: }
             )
             throw :halt
           rescue StandardError => e
             @new_events << self.class::StepFailed.parse(
               stream_id: id, 
-              payload: { step_name: method_name, error_class: e.class.to_s, backtrace: e.backtrace }
+              payload: { key:, step_name: method_name, error_class: e.class.to_s, backtrace: e.backtrace }
             )
             throw :halt
           end
         when :failed # retry. Exponential backoff, etc
           @new_events << self.class::StepStarted.parse(
             stream_id: id, 
-            payload: { step_name: method_name, args: }
+            payload: { key:, step_name: method_name, args: }
           )
           throw :halt
         when nil # first call. Schedule StepStarted
           @new_events << self.class::StepStarted.parse(
             stream_id: id, 
-            payload: { step_name: method_name, args: }
+            payload: { key:, step_name: method_name, args: }
           )
           throw :halt
         end
@@ -168,11 +177,11 @@ module Sourced
       when self.class::WorkflowFailed
         @status = :failed
       when self.class::StepStarted
-        @lookup[event.payload.step_name] = Step.build
+        @lookup[event.payload.key] = Step.build
       when self.class::StepFailed
-        @lookup[event.payload.step_name].fail_with(event.payload.backtrace)
+        @lookup[event.payload.key].fail_with(event.payload.backtrace)
       when self.class::StepComplete
-        @lookup[event.payload.step_name].complete_with(event.payload.output)
+        @lookup[event.payload.key].complete_with(event.payload.output)
       when self.class::WorkflowComplete
         @status = :complete
         @output = event.payload.output
