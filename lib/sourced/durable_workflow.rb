@@ -4,34 +4,44 @@ module Sourced
   class DurableWorkflow
     extend Sourced::Consumer
 
-    WorkflowStarted = Sourced::Event.define('durable.workflow.started') do
-      attribute :args, Sourced::Types::Array.default([].freeze)
-    end
-    WorkflowComplete = Sourced::Event.define('durable.workflow.complete') do
-      attribute :output, Sourced::Types::Any
-    end
-    WorkflowFailed = Sourced::Event.define('durable.workflow.failed')
-    StepStarted = Sourced::Event.define('durable.step.started') do
-      attribute :step_name, Sourced::Types::Lax::Symbol
-      attribute :args, Sourced::Types::Array.default([].freeze)
-    end
-    StepFailed = Sourced::Event.define('durable.step.failed') do
-      attribute :step_name, Sourced::Types::Lax::Symbol
-      attribute :error_class, String
-      attribute :backtrace, Sourced::Types::Array[String]
-    end
-    StepComplete = Sourced::Event.define('durable.step.complete') do
-      attribute :step_name, Sourced::Types::Lax::Symbol
-      attribute :output, Sourced::Types::Any
+    UnknownMessageError = Class.new(StandardError)
+
+    def self.inherited(child)
+      cname = child.name.to_s.gsub(/::/, '.')
+        .gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
+        .gsub(/([a-z\d])([A-Z])/, '\1_\2')
+        .tr("-", "_")
+        .downcase
+
+      child.const_set(:WorkflowStarted, Sourced::Event.define("#{cname}.workflow.started") do
+        attribute :args, Sourced::Types::Array.default([].freeze)
+      end)
+      child.const_set(:WorkflowComplete, Sourced::Event.define("#{cname}.workflow.complete") do
+        attribute :output, Sourced::Types::Any
+      end)
+      child.const_set(:WorkflowFailed, Sourced::Event.define("#{cname}.workflow.failed"))
+      child.const_set(:StepStarted, Sourced::Event.define("#{cname}.step.started") do
+        attribute :step_name, Sourced::Types::Lax::Symbol
+        attribute :args, Sourced::Types::Array.default([].freeze)
+      end)
+      child.const_set(:StepFailed, Sourced::Event.define("#{cname}.step.failed") do
+        attribute :step_name, Sourced::Types::Lax::Symbol
+        attribute :error_class, String
+        attribute :backtrace, Sourced::Types::Array[String]
+      end)
+      child.const_set(:StepComplete, Sourced::Event.define("#{cname}.step.complete") do
+        attribute :step_name, Sourced::Types::Lax::Symbol
+        attribute :output, Sourced::Types::Any
+      end)
     end
 
     def self.handled_messages
       [
-        WorkflowStarted,
-        WorkflowComplete,
-        StepStarted,
-        StepFailed,
-        StepComplete
+        self::WorkflowStarted,
+        self::WorkflowComplete,
+        self::StepStarted,
+        self::StepFailed,
+        self::StepComplete
       ]
     end
 
@@ -68,7 +78,7 @@ module Sourced
 
     def self.execute(*args)
       stream_id = "workflow-#{SecureRandom.uuid}"
-      evt = WorkflowStarted.parse(stream_id:, payload: { args: })
+      evt = self::WorkflowStarted.parse(stream_id:, payload: { args: })
       Sourced.config.backend.append_next_to_stream(stream_id, evt)
       Waiter.new(self, stream_id, backend: Sourced.config.backend)
     end
@@ -84,26 +94,26 @@ module Sourced
         when :started # ready to call.
           begin
             output = send(source_method, *args)
-            @new_events << StepComplete.parse(
+            @new_events << self.class::StepComplete.parse(
               stream_id: id, 
               payload: { step_name: method_name, output: }
             )
             throw :halt
           rescue StandardError => e
-            @new_events << StepFailed.parse(
+            @new_events << self.class::StepFailed.parse(
               stream_id: id, 
               payload: { step_name: method_name, error_class: e.class.to_s, backtrace: e.backtrace }
             )
             throw :halt
           end
         when :failed # retry. Exponential backoff, etc
-          @new_events << StepStarted.parse(
+          @new_events << self.class::StepStarted.parse(
             stream_id: id, 
             payload: { step_name: method_name, args: }
           )
           throw :halt
         when nil # first call. Schedule StepStarted
-          @new_events << StepStarted.parse(
+          @new_events << self.class::StepStarted.parse(
             stream_id: id, 
             payload: { step_name: method_name, args: }
           )
@@ -152,22 +162,22 @@ module Sourced
     def __evolve(event)
       @id = event.stream_id
       case event
-      when WorkflowStarted
+      when self.class::WorkflowStarted
         @args = event.payload.args
         @status = :started
-      when WorkflowFailed
+      when self.class::WorkflowFailed
         @status = :failed
-      when StepStarted
+      when self.class::StepStarted
         @lookup[event.payload.step_name] = Step.build
-      when StepFailed
+      when self.class::StepFailed
         @lookup[event.payload.step_name].fail_with(event.payload.backtrace)
-      when StepComplete
+      when self.class::StepComplete
         @lookup[event.payload.step_name].complete_with(event.payload.output)
-      when WorkflowComplete
+      when self.class::WorkflowComplete
         @status = :complete
         @output = event.payload.output
       else
-        raise "No idea how to handle #{event.inspect}"
+        raise UnknownMessageError, "No idea how to handle #{event.inspect}"
       end
     end
 
@@ -176,7 +186,7 @@ module Sourced
 
       catch(:halt) do
         output = execute(*@args)
-        @new_events << WorkflowComplete.parse(
+        @new_events << self.class::WorkflowComplete.parse(
           stream_id: id,
           payload: { output: }
         )

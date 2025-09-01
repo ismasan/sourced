@@ -29,6 +29,9 @@ module DurableTests
       Geolocator.locate(ip)
     end
   end
+
+  class AnotherTask < Sourced::DurableWorkflow
+  end
 end
 
 RSpec.describe Sourced::DurableWorkflow do
@@ -81,21 +84,25 @@ RSpec.describe Sourced::DurableWorkflow do
   context 'with previously successful step' do
     it 'does not invoke step again, using cached result instead' do
       history = build_history([
-        [DurableTests::Task::WorkflowStarted, stream_id, args: [name]],
-        [DurableTests::Task::StepStarted, stream_id, step_name: :get_ip, args: []],
-        [DurableTests::Task::StepComplete, stream_id, step_name: :get_ip, output: '11.111.111'],
-        [DurableTests::Task::StepStarted, stream_id, step_name: :geolocate, args: ['11.111.111']],
+        [DurableTests::Task::WorkflowStarted, stream_id, args: [name]                                 ],
+        [DurableTests::Task::StepStarted,     stream_id, step_name: :get_ip, args: []                 ],
+        [DurableTests::Task::StepComplete,    stream_id, step_name: :get_ip, output: '11.111.111'     ],
+        [DurableTests::Task::StepStarted,     stream_id, step_name: :geolocate, args: ['11.111.111']  ],
       ])
 
+      # IPResolver's output is already in history
       expect(DurableTests::IPResolver).not_to receive(:resolve)
+      # Geolocator hasn't been invoked yet
       expect(DurableTests::Geolocator).to receive(:locate).with('11.111.111').and_return 'Santiago, Chile'
 
+      # Handle last message and produce new messages until workflow completes.
       until history.last.is_a?(DurableTests::Task::WorkflowComplete)
         next_action = DurableTests::Task.handle(history.last, history:)
         expect(next_action).to be_a Sourced::Actions::AppendAfter
         history += next_action.messages
       end
 
+      # Load current task state from history
       task = DurableTests::Task.from(history)
       expect(task.status).to eq(:complete)
       expect(task.output).to eq('Hello Joe, your IP is 11.111.111 and its location is Santiago, Chile')
@@ -118,6 +125,16 @@ RSpec.describe Sourced::DurableWorkflow do
     end
   end
 
+  context 'with a different workflow handling irrelevant messages' do
+    it 'blows up' do
+      started = DurableTests::AnotherTask::WorkflowStarted.parse(stream_id:, payload: { args: [name] })
+      history = [started]
+
+      expect {
+        DurableTests::Task.handle(history.last, history:)
+      }.to raise_error(Sourced::DurableWorkflow::UnknownMessageError)
+    end
+  end
   private
 
   # assert_messages(
