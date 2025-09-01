@@ -10,6 +10,7 @@ module Sourced
     WorkflowComplete = Sourced::Event.define('durable.workflow.complete') do
       attribute :output, Sourced::Types::Any
     end
+    WorkflowFailed = Sourced::Event.define('durable.workflow.failed')
     StepStarted = Sourced::Event.define('durable.step.started') do
       attribute :step_name, Sourced::Types::Lax::Symbol
       attribute :args, Sourced::Types::Array.default([].freeze)
@@ -96,7 +97,6 @@ module Sourced
             throw :halt
           end
         when :failed # retry. Exponential backoff, etc
-          sleep 1
           @new_events << StepStarted.parse(
             stream_id: id, 
             payload: { step_name: method_name, args: }
@@ -155,6 +155,8 @@ module Sourced
       when WorkflowStarted
         @args = event.payload.args
         @status = :started
+      when WorkflowFailed
+        @status = :failed
       when StepStarted
         @lookup[event.payload.step_name] = Step.build
       when StepFailed
@@ -170,7 +172,7 @@ module Sourced
     end
 
     def __handle(message)
-      return Sourced::Actions::OK if @status == :complete
+      return Sourced::Actions::OK if @status == :complete || @status == :failed
 
       catch(:halt) do
         output = execute(*@args)
