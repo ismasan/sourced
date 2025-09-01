@@ -90,7 +90,7 @@ module Sourced
       Waiter.new(self, stream_id, backend: Sourced.config.backend)
     end
 
-    def self.durable(method_name)
+    def self.durable(method_name, retries: nil)
       source_method = :"__durable_source_#{method_name}"
       alias_method source_method, method_name
       define_method method_name do |*args|
@@ -113,6 +113,10 @@ module Sourced
               stream_id: id, 
               payload: { key:, step_name: method_name, error_class: e.class.to_s, backtrace: e.backtrace }
             )
+            if retries && cached.attempts == retries
+              @new_events << self.class::WorkflowFailed.parse(stream_id: id)
+            end
+
             throw :halt
           end
         when :failed # retry. Exponential backoff, etc
@@ -120,6 +124,7 @@ module Sourced
             stream_id: id, 
             payload: { key:, step_name: method_name, args: }
           )
+
           throw :halt
         when nil # first call. Schedule StepStarted
           @new_events << self.class::StepStarted.parse(
@@ -131,9 +136,14 @@ module Sourced
       end
     end
 
-    Step = Struct.new(:status, :backtrace, :output) do
+    Step = Struct.new(:status, :backtrace, :output, :attempts) do
       def self.build
-        new(:started, [], nil)
+        new(:started, [], nil, 0)
+      end
+
+      def start
+        self.status = :started
+        self.attempts += 1
       end
 
       def fail_with(backtrace)
@@ -170,6 +180,7 @@ module Sourced
 
     def __evolve(event)
       @id = event.stream_id
+
       case event
       when self.class::WorkflowStarted
         @args = event.payload.args
@@ -177,7 +188,7 @@ module Sourced
       when self.class::WorkflowFailed
         @status = :failed
       when self.class::StepStarted
-        @lookup[event.payload.key] = Step.build
+        (@lookup[event.payload.key] ||= Step.build).start
       when self.class::StepFailed
         @lookup[event.payload.key].fail_with(event.payload.backtrace)
       when self.class::StepComplete
