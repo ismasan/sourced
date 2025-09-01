@@ -59,9 +59,9 @@ module Sourced
     class Waiter
       attr_reader :stream_id, :instance
 
-      def initialize(reactor, stream_id, backend: Sourced.config.backend)
+      def initialize(reactor, stream_id, backend: Sourced.config.backend, logger: Sourced.config.logger)
         @reactor, @stream_id, @backend = reactor, stream_id, backend
-        @instance = @reactor.new(@stream_id)
+        @instance = @reactor.new(logger:)
         @value = nil
       end
 
