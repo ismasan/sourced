@@ -32,6 +32,20 @@ module DurableTests
 
   class AnotherTask < Sourced::DurableWorkflow
   end
+
+  class Doubler
+    def self.double(num) = num * 2
+  end
+
+  class MultiArgTask < Sourced::DurableWorkflow
+    def execute
+      double(2) + double(4) + double(2)
+    end
+
+    durable def double(num)
+      Doubler.double(num)
+    end
+  end
 end
 
 RSpec.describe Sourced::DurableWorkflow do
@@ -51,10 +65,10 @@ RSpec.describe Sourced::DurableWorkflow do
 
       assert_messages(history, [
         [DurableTests::Task::WorkflowStarted, stream_id, args: [name]],
-        [DurableTests::Task::StepStarted, stream_id, step_name: :get_ip, args: []],
-        [DurableTests::Task::StepComplete, stream_id, step_name: :get_ip, output: '11.111.111'],
-        [DurableTests::Task::StepStarted, stream_id, step_name: :geolocate, args: ['11.111.111']],
-        [DurableTests::Task::StepComplete, stream_id, step_name: :geolocate, output: 'London, UK'],
+        [DurableTests::Task::StepStarted, stream_id, key: Sourced::Types::Any, step_name: :get_ip, args: []],
+        [DurableTests::Task::StepComplete, stream_id, key: Sourced::Types::Any, step_name: :get_ip, output: '11.111.111'],
+        [DurableTests::Task::StepStarted, stream_id, key: Sourced::Types::Any, step_name: :geolocate, args: ['11.111.111']],
+        [DurableTests::Task::StepComplete, stream_id, key: Sourced::Types::Any, step_name: :geolocate, output: 'London, UK'],
         [DurableTests::Task::WorkflowComplete, stream_id, output: 'Hello Joe, your IP is 11.111.111 and its location is London, UK']
       ])
     end
@@ -85,9 +99,9 @@ RSpec.describe Sourced::DurableWorkflow do
     it 'does not invoke step again, using cached result instead' do
       history = build_history([
         [DurableTests::Task::WorkflowStarted, stream_id, args: [name]                                 ],
-        [DurableTests::Task::StepStarted,     stream_id, step_name: :get_ip, args: []                 ],
-        [DurableTests::Task::StepComplete,    stream_id, step_name: :get_ip, output: '11.111.111'     ],
-        [DurableTests::Task::StepStarted,     stream_id, step_name: :geolocate, args: ['11.111.111']  ],
+        [DurableTests::Task::StepStarted,     stream_id, key: Sourced::DurableWorkflow.step_key(:get_ip, []), step_name: :get_ip, args: []                 ],
+        [DurableTests::Task::StepComplete,    stream_id, key: Sourced::DurableWorkflow.step_key(:get_ip, []), step_name: :get_ip, output: '11.111.111'     ],
+        [DurableTests::Task::StepStarted,     stream_id, key: Sourced::DurableWorkflow.step_key(:geolocate, ['11.111.111']), step_name: :geolocate, args: ['11.111.111']  ],
       ])
 
       # IPResolver's output is already in history
@@ -113,12 +127,12 @@ RSpec.describe Sourced::DurableWorkflow do
     it 'does not try again' do
       history = build_history([
         [DurableTests::Task::WorkflowStarted, stream_id, args: [name]],
-        [DurableTests::Task::StepStarted, stream_id, step_name: :get_ip, args: []],
-        [DurableTests::Task::StepFailed, stream_id, step_name: :get_ip, error_class: 'NewtworkError', backtrace: []],
+        [DurableTests::Task::StepStarted, stream_id, key: Sourced::DurableWorkflow.step_key(:get_ip, []), step_name: :get_ip, args: []],
+        [DurableTests::Task::StepFailed, stream_id, key: Sourced::DurableWorkflow.step_key(:get_ip, []), step_name: :get_ip, error_class: 'NewtworkError', backtrace: []],
         [DurableTests::Task::WorkflowFailed, stream_id, nil],
       ])
 
-      step_started = DurableTests::Task::StepStarted.parse(stream_id:, payload: { step_name: :get_ip, args: [] })
+      step_started = DurableTests::Task::StepStarted.parse(stream_id:, payload: { key: Sourced::DurableWorkflow.step_key(:get_ip, []), step_name: :get_ip, args: [] })
 
       next_action = DurableTests::Task.handle(step_started, history:)
       expect(next_action).to eq(Sourced::Actions::OK)
@@ -135,6 +149,26 @@ RSpec.describe Sourced::DurableWorkflow do
       }.to raise_error(Sourced::DurableWorkflow::UnknownMessageError)
     end
   end
+
+  describe 'caching method calls by signature' do
+    it 'only invokes methods with the same arguments once per workflow' do
+      started = DurableTests::MultiArgTask::WorkflowStarted.parse(stream_id:, payload: { args: [] })
+      history = [started]
+
+      allow(DurableTests::Doubler).to receive(:double).and_call_original
+
+      until history.last.is_a?(DurableTests::MultiArgTask::WorkflowComplete)
+        next_action = DurableTests::MultiArgTask.handle(history.last, history:)
+        expect(next_action).to be_a Sourced::Actions::AppendAfter
+        history += next_action.messages
+      end
+
+      expect(history.last.payload.output).to eq(16)
+      expect(DurableTests::Doubler).to have_received(:double).with(2).once
+      expect(DurableTests::Doubler).to have_received(:double).with(4).once
+    end
+  end
+
   private
 
   # assert_messages(
