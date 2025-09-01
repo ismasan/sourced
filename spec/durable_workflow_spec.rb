@@ -104,6 +104,17 @@ RSpec.describe Sourced::DurableWorkflow do
 
   context 'when workflow is finally failed' do
     it 'does not try again' do
+      history = build_history([
+        [DurableTests::Task::WorkflowStarted, stream_id, args: [name]],
+        [DurableTests::Task::StepStarted, stream_id, step_name: :get_ip, args: []],
+        [DurableTests::Task::StepFailed, stream_id, step_name: :get_ip, error_class: 'NewtworkError', backtrace: []],
+        [DurableTests::Task::WorkflowFailed, stream_id, nil],
+      ])
+
+      step_started = DurableTests::Task::StepStarted.parse(stream_id:, payload: { step_name: :get_ip, args: [] })
+
+      next_action = DurableTests::Task.handle(step_started, history:)
+      expect(next_action).to eq(Sourced::Actions::OK)
     end
   end
 
