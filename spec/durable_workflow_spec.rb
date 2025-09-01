@@ -46,6 +46,18 @@ module DurableTests
       Doubler.double(num)
     end
   end
+
+  class Retryable < Sourced::DurableWorkflow
+    def execute
+      compute
+    end
+
+    def compute
+      raise 'nope'
+    end
+
+    durable :compute, retries: 2
+  end
 end
 
 RSpec.describe Sourced::DurableWorkflow do
@@ -166,6 +178,31 @@ RSpec.describe Sourced::DurableWorkflow do
       expect(history.last.payload.output).to eq(16)
       expect(DurableTests::Doubler).to have_received(:double).with(2).once
       expect(DurableTests::Doubler).to have_received(:double).with(4).once
+    end
+  end
+
+  describe 'limited retries' do
+    it 'retries the configured number of times until it fails the workflow' do
+      started = DurableTests::Retryable::WorkflowStarted.parse(stream_id:, payload: { args: [] })
+      history = [started]
+
+      # until history.last.is_a?(DurableTests::MultiArgTask::WorkflowFailed)
+      6.times do
+        next_action = DurableTests::Retryable.handle(history.last, history:)
+        history += next_action.messages if next_action.respond_to?(:messages)
+      end
+
+      task = DurableTests::Retryable.from(history)
+      expect(task.status).to eq(:failed)
+
+      expect(history.map(&:class)).to eq([
+        DurableTests::Retryable::WorkflowStarted,
+        DurableTests::Retryable::StepStarted,
+        DurableTests::Retryable::StepFailed,
+        DurableTests::Retryable::StepStarted,
+        DurableTests::Retryable::StepFailed,
+        DurableTests::Retryable::WorkflowFailed
+      ])
     end
   end
 
