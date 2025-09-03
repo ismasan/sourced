@@ -178,9 +178,9 @@ module Sourced
           @scheduled_messages = scheduled_messages
         end
 
-        ScheduledMessageRecord = Data.define(:message, :at) do
+        ScheduledMessageRecord = Data.define(:message, :at, :position) do
           def <=>(other)
-            self.at <=> other.at
+            self.position <=> other.position
           end
         end
 
@@ -195,7 +195,11 @@ module Sourced
         end
 
         def schedule_messages(messages, at: Time.now)
-          records = messages.map { |a| ScheduledMessageRecord.new(a, at) }
+          counter = @scheduled_messages.size
+          records = messages.map do |a| 
+            counter += 1
+            ScheduledMessageRecord.new(a, at, [at, counter])
+          end
           @scheduled_messages += records
           @scheduled_messages.sort!
         end
@@ -404,9 +408,14 @@ module Sourced
         true
       end
 
-      def next_scheduled_messages(&)
+      def update_schedule!
         transaction do
-          @state.next_scheduled_messages(&)
+          @state.next_scheduled_messages do |scheduled_messages|
+            scheduled_messages.each do |m|
+              append_next_to_stream(m.stream_id, m)
+            end
+            scheduled_messages.size
+          end
         end
       end
 
