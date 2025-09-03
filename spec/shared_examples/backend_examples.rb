@@ -70,68 +70,33 @@ module BackendExamples
       end
     end
 
-    describe '#schedule_messages and #next_scheduled_messages' do
-      it 'schedules message and fetches it back' do
-        cmd = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        expect(backend.schedule_messages([cmd])).to be(true)
-        scheduled_messages = []
-        backend.next_scheduled_messages do |msgs|
-          scheduled_messages += msgs
-        end
-        expect(scheduled_messages).to eq([cmd])
-
-        # No more messages to claim
-        backend.next_scheduled_messages do |msgs|
-          scheduled_messages += msgs
-        end
-        expect(scheduled_messages).to eq([cmd])
-      end
-
-      it 'schedules messages in the future' do
+    describe '#schedule_messages and #update_schedule!' do
+      it 'schedules messages to be read in the future' do
         now = Time.now
 
-        cmd1 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        cmd2 = Tests::DoSomething.parse(stream_id: 's2', payload: { account_id: 1 })
-        cmd3 = Tests::DoSomething.parse(stream_id: 's2', payload: { account_id: 1 })
+        msg0 = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 0 })
+        msg1 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
+        msg2 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 2 })
+        msg3 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 3 })
 
-        backend.schedule_messages([cmd1, cmd2], at: now)
-        backend.schedule_messages([cmd3], at: now + 10)
+        backend.append_to_stream('s1', [msg0])
+        backend.schedule_messages([msg1, msg2], at: now + 2)
+        backend.schedule_messages([msg3], at: now + 10)
 
-        scheduled_messages = []
+        backend.update_schedule!
+        expect(backend.read_event_stream('s1')).to eq([msg0])
 
-        backend.next_scheduled_messages do |msgs|
-          scheduled_messages += msgs
+        Timecop.freeze(now + 3) do
+          backend.update_schedule!
+          expect(backend.read_event_stream('s1').map(&:id)).to eq([msg0, msg1, msg2].map(&:id))
         end
-
-        expect(scheduled_messages).to eq([cmd1, cmd2])
 
         Timecop.freeze(now + 11) do
-          backend.next_scheduled_messages do |msgs|
-            scheduled_messages += msgs
-          end
-
-          expect(scheduled_messages).to eq([cmd1, cmd2, cmd3])
+          backend.update_schedule!
+          messages = backend.read_event_stream('s1')
+          expect(messages.map(&:id)).to eq([msg0, msg1, msg2, msg3].map(&:id))
+          expect(messages.map(&:seq)).to eq([1, 2, 3, 4])
         end
-      end
-
-      it 'does not delete actions if handler raises' do
-        cmd = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
-        expect(backend.schedule_messages([cmd])).to be(true)
-        scheduled_messages = []
-
-        begin
-          backend.next_scheduled_messages do |msgs|
-            raise 'boom'
-          end
-        rescue StandardError
-          nil
-        end
-
-        backend.next_scheduled_messages do |msgs|
-          scheduled_messages += msgs
-        end
-
-        expect(scheduled_messages).to eq([cmd])
       end
     end
 
