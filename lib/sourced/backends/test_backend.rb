@@ -156,7 +156,7 @@ module Sourced
       end
 
       class State
-        attr_reader :events, :groups, :events_by_correlation_id, :events_by_stream_id, :stream_id_seq_index, :streams
+        attr_reader :events, :groups, :events_by_correlation_id, :events_by_stream_id, :stream_id_seq_index, :streams, :scheduled_messages
 
         def initialize(
           events: [], 
@@ -164,7 +164,8 @@ module Sourced
           events_by_correlation_id: Hash.new { |h, k| h[k] = [] }, 
           events_by_stream_id: Hash.new { |h, k| h[k] = [] },
           stream_id_seq_index: {},
-          streams: {}
+          streams: {},
+          scheduled_messages: []
         )
 
           @events = events
@@ -174,6 +175,13 @@ module Sourced
           @events_by_stream_id = events_by_stream_id
           @stream_id_seq_index = stream_id_seq_index
           @streams = streams
+          @scheduled_messages = scheduled_messages
+        end
+
+        ScheduledMessageRecord = Data.define(:message, :at) do
+          def <=>(other)
+            self.at <=> other.at
+          end
         end
 
         Stream = Data.define(:stream_id, :seq, :updated_at) do
@@ -184,6 +192,22 @@ module Sourced
         def upsert_stream(stream_id, seq)
           str = Stream.new(stream_id, seq, Time.now)
           @streams[stream_id] = str
+        end
+
+        def schedule_messages(messages, at: Time.now)
+          records = messages.map { |a| ScheduledMessageRecord.new(a, at) }
+          @scheduled_messages += records
+          @scheduled_messages.sort!
+        end
+
+        def next_scheduled_messages(&)
+          now = Time.now
+          next_records, @scheduled_messages = @scheduled_messages.partition do |r|
+            r.at <= now
+          end
+          next_messages = next_records.map(&:message)
+          yield next_messages if next_messages.any?
+          next_messages
         end
 
         def next_command(&reserve)
@@ -221,7 +245,8 @@ module Sourced
             events_by_correlation_id: deep_dup(events_by_correlation_id),
             events_by_stream_id: deep_dup(events_by_stream_id),
             stream_id_seq_index: deep_dup(stream_id_seq_index),
-            streams: streams.dup
+            streams: streams.dup,
+            scheduled_messages: scheduled_messages.dup
           )
         end
 
@@ -372,6 +397,17 @@ module Sourced
           group.reset!
         end
         true
+      end
+
+      def schedule_messages(messages, at: Time.now)
+        @state.schedule_messages(messages, at:)
+        true
+      end
+
+      def next_scheduled_messages(&)
+        transaction do
+          @state.next_scheduled_messages(&)
+        end
       end
 
       def schedule_commands(commands, group_id:)

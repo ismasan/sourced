@@ -70,6 +70,71 @@ module BackendExamples
       end
     end
 
+    describe '#schedule_messages and #next_scheduled_messages' do
+      it 'schedules message and fetches it back' do
+        cmd = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
+        expect(backend.schedule_messages([cmd])).to be(true)
+        scheduled_messages = []
+        backend.next_scheduled_messages do |msgs|
+          scheduled_messages += msgs
+        end
+        expect(scheduled_messages).to eq([cmd])
+
+        # No more messages to claim
+        backend.next_scheduled_messages do |msgs|
+          scheduled_messages += msgs
+        end
+        expect(scheduled_messages).to eq([cmd])
+      end
+
+      it 'schedules messages in the future' do
+        now = Time.now
+
+        cmd1 = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
+        cmd2 = Tests::DoSomething.parse(stream_id: 's2', payload: { account_id: 1 })
+        cmd3 = Tests::DoSomething.parse(stream_id: 's2', payload: { account_id: 1 })
+
+        backend.schedule_messages([cmd1, cmd2], at: now)
+        backend.schedule_messages([cmd3], at: now + 10)
+
+        scheduled_messages = []
+
+        backend.next_scheduled_messages do |msgs|
+          scheduled_messages += msgs
+        end
+
+        expect(scheduled_messages).to eq([cmd1, cmd2])
+
+        Timecop.freeze(now + 11) do
+          backend.next_scheduled_messages do |msgs|
+            scheduled_messages += msgs
+          end
+
+          expect(scheduled_messages).to eq([cmd1, cmd2, cmd3])
+        end
+      end
+
+      it 'does not delete actions if handler raises' do
+        cmd = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
+        expect(backend.schedule_messages([cmd])).to be(true)
+        scheduled_messages = []
+
+        begin
+          backend.next_scheduled_messages do |msgs|
+            raise 'boom'
+          end
+        rescue StandardError
+          nil
+        end
+
+        backend.next_scheduled_messages do |msgs|
+          scheduled_messages += msgs
+        end
+
+        expect(scheduled_messages).to eq([cmd])
+      end
+    end
+
     describe '#schedule_commands and #next_command' do
       it 'schedules command and fetches it back' do
         cmd = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
