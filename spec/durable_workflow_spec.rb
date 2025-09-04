@@ -58,6 +58,28 @@ module DurableTests
 
     durable :compute, retries: 2
   end
+
+  class WithContext < Sourced::DurableWorkflow
+    context do
+      { index: 0, results: [] }
+    end
+
+    def execute
+      @numbers = [1, 2, 3, 4, 5]
+      iterate
+      context[:results]
+    end
+
+    durable def iterate
+      index = context[:index]
+      @numbers[index..].each do |n|
+        # Simulate a failure on the first run
+        raise 'oopsie!' if n == 3 && index == 0
+        context[:index] += 1
+        context[:results] << n * 2
+      end
+    end
+  end
 end
 
 RSpec.describe Sourced::DurableWorkflow do
@@ -205,6 +227,33 @@ RSpec.describe Sourced::DurableWorkflow do
       ])
     end
   end
+
+  context 'with context preserved across failures' do
+    it 'tracks context changes in event history' do
+      started = DurableTests::WithContext::WorkflowStarted.parse(stream_id:, seq: 1, payload: {})
+      history = [started]
+
+      until history.last.is_a?(DurableTests::WithContext::WorkflowComplete)
+        next_action = DurableTests::WithContext.handle(history.last, history:)
+        history += next_action.messages
+      end
+
+      task = DurableTests::WithContext.from(history)
+      expect(task.output).to eq([2, 4, 6, 8, 10])
+
+      assert_messages(history, [
+        [DurableTests::WithContext::WorkflowStarted, stream_id, args: []],
+        [DurableTests::WithContext::StepStarted, stream_id, step_name: :iterate, args: []],
+        [DurableTests::WithContext::StepFailed, stream_id, step_name: :iterate, error_class: 'RuntimeError', backtrace: DurableTests::FilledStringArray],
+        [DurableTests::WithContext::ContextUpdated, stream_id, context: { index: 2, results: [2, 4] }],
+        [DurableTests::WithContext::StepStarted, stream_id, step_name: :iterate, args: []],
+        [DurableTests::WithContext::StepComplete, stream_id, step_name: :iterate, output: [3, 4, 5]],
+        [DurableTests::WithContext::ContextUpdated, stream_id, context: { index: 5, results: [2, 4, 6, 8, 10] }],
+        [DurableTests::WithContext::WorkflowComplete, stream_id, output: [2, 4, 6, 8, 10]],
+      ])
+    end
+  end
+
 
   private
 
