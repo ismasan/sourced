@@ -20,6 +20,9 @@ module Sourced
       child.const_set(:WorkflowStarted, Sourced::Event.define("#{cname}.workflow.started") do
         attribute :args, Sourced::Types::Array.default([].freeze)
       end)
+      child.const_set(:ContextUpdated, Sourced::Event.define("#{cname}.context.updated") do
+        attribute :context, Sourced::Types::Any
+      end)
       child.const_set(:WorkflowComplete, Sourced::Event.define("#{cname}.workflow.complete") do
         attribute :output, Sourced::Types::Any
       end)
@@ -66,11 +69,11 @@ module Sourced
       end
 
       def wait
-        while instance.status != :complete
+        while instance.status != :complete || instance.status != :failed
           sleep 0.1
           load
         end
-        instance.output
+        instance
       end
 
       def load
@@ -88,6 +91,10 @@ module Sourced
       evt = self::WorkflowStarted.parse(stream_id:, payload: { args: })
       Sourced.config.backend.append_next_to_stream(stream_id, evt)
       Waiter.new(self, stream_id, backend: Sourced.config.backend)
+    end
+
+    def self.context(&block)
+      define_method :initial_context, &block
     end
 
     def self.durable(method_name, retries: nil)
@@ -159,17 +166,22 @@ module Sourced
       end
     end
 
-    attr_reader :id, :args, :output, :status
+    attr_reader :id, :seq, :context, :args, :output, :status
 
     def initialize(logger: nil)
       @id = nil
+      @seq = 0
       @logger = logger
       @status = :new
       @args = []
       @output = nil
       @lookup = {}
       @new_events = []
+      @initial_context = nil
+      @context = initial_context
     end
+
+    def initial_context = nil
 
     def __from(history)
       history.each do |event|
@@ -180,8 +192,11 @@ module Sourced
 
     def __evolve(event)
       @id = event.stream_id
+      @seq = event.seq
 
       case event
+      when self.class::ContextUpdated
+        @context = deep_dup(event.payload.context)
       when self.class::WorkflowStarted
         @args = event.payload.args
         @status = :started
@@ -204,17 +219,44 @@ module Sourced
     def __handle(message)
       return Sourced::Actions::OK if @status == :complete || @status == :failed
 
+      # TODO: all this deep-duping is not efficient.
+      @initial_context = deep_dup(@context)
+
+      completed = false
+      output = nil
+
       catch(:halt) do
         output = execute(*@args)
-        @new_events << self.class::WorkflowComplete.parse(
-          stream_id: id,
-          payload: { output: }
-        )
+        completed = true
       end
 
-      last_seq = message.seq
+      # If any step updated context, even on failure
+      # make sure to log a ContextUpdated event to keep track of that state
+      @new_events << self.class::ContextUpdated.parse(
+        stream_id: id,
+        payload: { context: deep_dup(@context) }
+      ) if @context != @initial_context
+
+      @new_events << self.class::WorkflowComplete.parse(
+        stream_id: id,
+        payload: { output: }
+      ) if completed
+
+      last_seq = @seq
       events = @new_events.map { |e| e.with(seq: last_seq += 1 )}
       Sourced::Actions::AppendAfter.new(id, events)
+    end
+
+    private
+
+    attr_reader :logger
+
+    def deep_dup(hash)
+      return hash.dup unless hash.is_a?(Hash)
+
+      hash.each.with_object({}) do |(k, v), new_hash|
+        new_hash[k] = deep_dup(v)
+      end
     end
   end
 end
