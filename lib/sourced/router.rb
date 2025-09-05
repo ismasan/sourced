@@ -96,6 +96,8 @@ module Sourced
       def handle_next_event_for_reactor(reactor, process_name = nil)
         instance.handle_next_event_for_reactor(reactor, process_name)
       end
+
+      def backend = instance.backend
     end
 
     # @!attribute [r] sync_reactors
