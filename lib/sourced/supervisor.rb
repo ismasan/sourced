@@ -39,7 +39,7 @@ module Sourced
     def initialize(
       logger: Sourced.config.logger, 
       count: 2,
-      housekeeping_count: 10,
+      housekeeping_count: 1,
       executor: Sourced.config.executor,
       router: Sourced::Router
     )
