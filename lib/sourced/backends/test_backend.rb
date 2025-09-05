@@ -348,6 +348,7 @@ module Sourced
 
         when Actions::Schedule
           schedule_messages correlate(event, action.messages), at: action.at
+          ack.()
 
         when Actions::RETRY
           # Don't ack
