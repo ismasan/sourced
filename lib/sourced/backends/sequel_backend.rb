@@ -55,6 +55,7 @@ module Sourced
         @logger = logger
         @prefix = prefix
         @commands_table = table_name(:commands)
+        @scheduled_messages_table = table_name(:scheduled_messages)
         @streams_table = table_name(:streams)
         @offsets_table = table_name(:offsets)
         @consumer_groups_table = table_name(:consumer_groups)
@@ -199,6 +200,58 @@ module Sourced
 
       def transaction(&)
         db.transaction(&)
+      end
+
+      def schedule_messages(messages, at:)
+        return false if messages.empty?
+
+        now = Time.now
+        rows = messages.map do |m|
+          message_data = m.to_h
+          message_data[:metadata] = message_data[:metadata].merge(scheduled_at: now)
+          { created_at: now, available_at: at, message: JSON.dump(message_data) }
+        end
+
+        transaction do
+          db[scheduled_messages_table].multi_insert(rows)
+        end
+
+        true
+      end
+
+      def update_schedule!
+        now = Time.now
+
+        transaction do
+          rows = db[scheduled_messages_table]
+            .where { available_at <= now }
+            .order(:id)
+            .limit(100)
+            .for_update
+            .skip_locked
+            .all
+
+          return 0 if rows.empty?
+
+          # Process all messages
+          messages = rows.map do |r|
+            data = JSON.parse(r[:message], symbolize_names: true)
+            data[:created_at] = now
+            Message.from(data)
+          end
+
+          # TODO: appending one-by-one is very bad
+          # Fix #append_next_to_stream to support multiple messages
+          messages.each do |m|
+            append_next_to_stream(m.stream_id, m)
+          end
+
+          # Batch delete all processed messages
+          row_ids = rows.map { |m| m[:id] }
+          db[scheduled_messages_table].where(id: row_ids).delete
+
+          rows.size
+        end
       end
 
       # Append a single event to a stream, creating the stream if it doesn't exist.
@@ -641,13 +694,14 @@ module Sourced
 
       private
 
-      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :commands_table 
+      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :commands_table, :scheduled_messages_table
 
       def installer
         @installer ||= Installer.new(
           @db,
           logger:,
           commands_table:,
+          scheduled_messages_table:,
           streams_table:,
           offsets_table:,
           consumer_groups_table:,

@@ -98,6 +98,22 @@ module BackendExamples
           expect(messages.map(&:seq)).to eq([1, 2, 3, 4])
         end
       end
+
+      it 'blocks concurrent workers from selecting the same messages' do
+        now = Time.now - 10
+        cmd1 = Tests::DoSomething.parse(stream_id: 'as1', payload: { account_id: 1 })
+        cmd2 = Tests::DoSomething.parse(stream_id: 'as1', payload: { account_id: 1 })
+        backend.schedule_messages([cmd1, cmd2], at: now)
+        Sourced.config.executor.start do |t|
+          2.times.each do
+            t.spawn do
+              backend.update_schedule!
+            end
+          end
+        end
+
+        expect(backend.read_event_stream('as1').map(&:id)).to eq([cmd1, cmd2].map(&:id))
+      end
     end
 
     describe '#schedule_commands and #next_command' do
