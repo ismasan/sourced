@@ -46,11 +46,11 @@ module Sourced
     end
 
     class Schedule
-      # TBD
-    end
+      attr_reader :messages, :at
 
-    class Sync
-      # TBD
+      def initialize(messages, at:)
+        @messages, @at = messages, at
+      end
     end
   end
 end
