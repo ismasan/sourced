@@ -80,6 +80,22 @@ module DurableTests
       end
     end
   end
+
+  class WithDelay < Sourced::DurableWorkflow
+    def execute
+      name = get_name
+      wait 10 # seconds
+      notify(name)
+    end
+
+    durable def get_name
+      'Joe'
+    end
+
+    durable def notify(name)
+      true
+    end
+  end
 end
 
 RSpec.describe Sourced::DurableWorkflow do
@@ -251,6 +267,55 @@ RSpec.describe Sourced::DurableWorkflow do
         [DurableTests::WithContext::ContextUpdated, stream_id, context: { index: 5, results: [2, 4, 6, 8, 10] }],
         [DurableTests::WithContext::WorkflowComplete, stream_id, output: [2, 4, 6, 8, 10]],
       ])
+    end
+  end
+
+  describe '#wait' do
+    it 'schedules a WaitStarted and WaitEnded combo' do
+      now = Time.now
+
+      Timecop.freeze(now) do
+        started = DurableTests::WithDelay::WorkflowStarted.parse(stream_id:, seq: 1, payload: {})
+        history = [started]
+
+        next_action = DurableTests::WithDelay.handle(history.last, history:)
+        history += next_action.messages # StepStarted
+
+        next_action = DurableTests::WithDelay.handle(history.last, history:)
+        history += next_action.messages # StepComplete
+
+        next_action = DurableTests::WithDelay.handle(history.last, history:)
+        history += next_action.messages # WaitStarted
+
+        expect(history.last).to be_a(DurableTests::WithDelay::WaitStarted)
+        expect(history.last.payload.at).to eq(now + 10)
+
+        # Now handle the WaitStarted to produce a scheduled event
+        next_action = DurableTests::WithDelay.handle(history.last, history:)
+        expect(next_action).to be_a(Sourced::Actions::Schedule)
+        expect(next_action.at).to eq(now + 10)
+        expect(next_action.messages.first).to be_a(DurableTests::WithDelay::WaitEnded)
+        expect(next_action.messages.first.stream_id).to eq(stream_id)
+
+        # Now handle the scheduled event
+        history << next_action.messages.first
+
+        until history.last.is_a?(DurableTests::WithDelay::WorkflowComplete)
+          next_action = DurableTests::WithDelay.handle(history.last, history:)
+          history += next_action.messages
+        end
+
+        expect(history.map(&:class)).to eq([
+          DurableTests::WithDelay::WorkflowStarted,
+          DurableTests::WithDelay::StepStarted,
+          DurableTests::WithDelay::StepComplete,
+          DurableTests::WithDelay::WaitStarted,
+          DurableTests::WithDelay::WaitEnded,
+          DurableTests::WithDelay::StepStarted,
+          DurableTests::WithDelay::StepComplete,
+          DurableTests::WithDelay::WorkflowComplete
+        ])
+      end
     end
   end
 
