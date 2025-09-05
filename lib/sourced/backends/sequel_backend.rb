@@ -410,6 +410,8 @@ module Sourced
             event.correlate(msg)
           end
           schedule_messages(messages, at: action.at)
+          ack_event(group_id, row[:stream_id_fk], row[:global_seq])
+
         when Actions::RETRY
           release_offset(row[:offset_id])
 

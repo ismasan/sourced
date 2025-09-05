@@ -336,6 +336,16 @@ module BackendExamples
           expect(messages[1]).to be_a(Tests::SomethingHappened1)
           expect(messages[1].causation_id).to eq(messages[0].id)
           expect(messages[1].correlation_id).to eq(messages[0].correlation_id)
+
+          # Check that initial message cmd_a was ACKed already
+          # it won't be claimed again
+          # only the new evt_b can be claimed now
+          list = []
+          backend.reserve_next_for_reactor(reactor1) do |msg|
+            list << msg
+            Sourced::Actions::OK
+          end
+          expect(list.map(&:id)).to eq([evt_b.id])
         end
       end
 
