@@ -3,6 +3,7 @@
 require 'async'
 require 'console'
 require 'sourced/worker'
+require 'sourced/house_keeper'
 
 module Sourced
   # The Supervisor manages a pool of background workers that process events and commands.
@@ -38,11 +39,13 @@ module Sourced
     def initialize(
       logger: Sourced.config.logger, 
       count: 2,
+      housekeeping_count: 10,
       executor: Sourced.config.executor,
       router: Sourced::Router
     )
       @logger = logger
       @count = count
+      @housekeeping_count = housekeeping_count
       @executor = executor
       @router = router
       @workers = []
@@ -57,11 +60,23 @@ module Sourced
     def start
       logger.info("Starting sync supervisor with #{@count} workers and #{@executor} executor")
       set_signal_handlers
+
+      @housekeepers = @housekeeping_count.times.map do |i|
+        HouseKeeper.new(logger:, backend: router.backend, name: "HouseKeeper-#{i}")
+      end
+
       @workers = @count.times.map do |i|
         # TODO: worker names using Process.pid, current thread and fiber id
         Worker.new(logger:, router:, name: "worker-#{i}")
       end
+
       @executor.start do |task|
+        @housekeepers.each do |hk|
+          task.spawn do
+            hk.work
+          end
+        end
+
         @workers.each do |wrk|
           task.spawn do
             wrk.poll
@@ -76,8 +91,9 @@ module Sourced
     #
     # @return [void]
     def stop
-      logger.info("Stopping #{@workers.size} workers")
+      logger.info("Stopping #{@workers.size} workers and #{@housekeepers.size} house-keepers")
       @workers.each(&:stop)
+      @housekeepers.each(&:stop)
       logger.info('All workers stopped')
     end
 
