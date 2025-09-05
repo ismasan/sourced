@@ -43,6 +43,11 @@ module Sourced
         attribute :step_name, Sourced::Types::Lax::Symbol
         attribute :output, Sourced::Types::Any
       end)
+      child.const_set(:WaitStarted, Sourced::Event.define("#{cname}.wait.started") do
+        attribute :count, Integer
+        attribute :at, Sourced::Types::Forms::Time
+      end)
+      child.const_set(:WaitEnded, Sourced::Event.define("#{cname}.wait.ended"))
     end
 
     def self.handled_messages
@@ -51,7 +56,9 @@ module Sourced
         self::WorkflowComplete,
         self::StepStarted,
         self::StepFailed,
-        self::StepComplete
+        self::StepComplete,
+        self::WaitStarted,
+        self::WaitEnded
       ]
     end
 
@@ -177,6 +184,8 @@ module Sourced
       @output = nil
       @lookup = {}
       @new_events = []
+      @wait_count = 0
+      @waiters = []
       @initial_context = nil
       @context = initial_context
     end
@@ -206,6 +215,11 @@ module Sourced
         (@lookup[event.payload.key] ||= Step.build).start
       when self.class::StepFailed
         @lookup[event.payload.key].fail_with(event.payload.backtrace)
+      when self.class::WaitStarted
+        @waiters[event.payload.count] = true
+        @waiting = true
+      when self.class::WaitEnded
+        @waiting = false
       when self.class::StepComplete
         @lookup[event.payload.key].complete_with(event.payload.output)
       when self.class::WorkflowComplete
@@ -218,6 +232,14 @@ module Sourced
 
     def __handle(message)
       return Sourced::Actions::OK if @status == :complete || @status == :failed
+
+      if message.is_a?(self.class::WaitStarted)
+        evt = self.class::WaitEnded.parse(stream_id: id)
+        return Sourced::Actions::Schedule.new([evt], at: message.payload.at)
+      end
+
+      # Raise if @waiting ?
+      # we don't allow handling any new messages until wait has ended.
 
       # TODO: all this deep-duping is not efficient.
       @initial_context = deep_dup(@context)
@@ -250,6 +272,21 @@ module Sourced
     private
 
     attr_reader :logger
+
+    def wait(seconds)
+      @wait_count += 1
+
+      if @waiters[@wait_count] # we're already waiting for this method call
+        return seconds
+      else # first time we call this method
+        @new_events << self.class::WaitStarted.parse(
+          stream_id: id,
+          payload: { count: @wait_count, at: Time.now + seconds }
+        )
+
+        throw :halt
+      end
+    end
 
     def deep_dup(hash)
       return hash.dup unless hash.is_a?(Hash)
