@@ -405,6 +405,11 @@ module Sourced
           append_to_stream(action.stream_id, messages)
           ack_event(group_id, row[:stream_id_fk], row[:global_seq])
 
+        when Actions::Schedule
+          messages = action.messages.map do |msg|
+            event.correlate(msg)
+          end
+          schedule_messages(messages, at: action.at)
         when Actions::RETRY
           release_offset(row[:offset_id])
 

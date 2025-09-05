@@ -346,6 +346,9 @@ module Sourced
           append_to_stream(action.stream_id, correlate(event, action.messages))
           ack.()
 
+        when Actions::Schedule
+          schedule_messages correlate(event, action.messages), at: action.at
+
         when Actions::RETRY
           # Don't ack
 

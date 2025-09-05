@@ -304,7 +304,42 @@ module BackendExamples
         expect(messages).to eq([evt_a2])
       end
 
-      it 'schedules messages and reserves them in order of arrival' do
+      it 'schedules messages and handles them in the future, setting correlation IDs properly' do
+        cmd_a = Tests::DoSomething.parse(stream_id: 's1', correlation_id: SecureRandom.uuid, seq: 1, payload: { account_id: 1 })
+        evt_b = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+
+        reactor1 = Class.new do
+          def self.consumer_info
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
+          end
+
+          def self.handled_messages
+            [Tests::DoSomething, Tests::SomethingHappened1]
+          end
+        end
+
+        backend.register_consumer_group('group1')
+        backend.append_to_stream('s1', [cmd_a])
+
+        now = Time.now
+
+        backend.reserve_next_for_reactor(reactor1) do |msg|
+          Sourced::Actions::Schedule.new([evt_b], at: now + 10)
+        end
+
+        expect(backend.read_event_stream('s1')).to eq([cmd_a])
+
+        Timecop.freeze(now + 11) do
+          backend.update_schedule!
+          messages = backend.read_event_stream('s1')
+          expect(messages.map(&:id)).to eq([cmd_a, evt_b].map(&:id))
+          expect(messages[1]).to be_a(Tests::SomethingHappened1)
+          expect(messages[1].causation_id).to eq(messages[0].id)
+          expect(messages[1].correlation_id).to eq(messages[0].correlation_id)
+        end
+      end
+
+      it 'appends messages and reserves them in order of arrival' do
         cmd_a = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         cmd_b = Tests::DoSomething.parse(stream_id: 's2', seq: 1, payload: { account_id: 2 })
         evt_a1 = cmd_a.with(metadata: { tid: 'evt_a1' }).follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd_a.payload.account_id)
