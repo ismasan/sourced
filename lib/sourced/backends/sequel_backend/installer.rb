@@ -9,6 +9,7 @@ module Sourced
           db,
           logger:,
           commands_table:,
+          scheduled_messages_table:,
           streams_table:,
           offsets_table:,
           consumer_groups_table:,
@@ -17,6 +18,7 @@ module Sourced
           @db = db
           @logger = logger
           @commands_table = commands_table
+          @scheduled_messages_table = scheduled_messages_table
           @streams_table = streams_table
           @offsets_table = offsets_table
           @consumer_groups_table = consumer_groups_table
@@ -28,6 +30,7 @@ module Sourced
             && db.table_exists?(streams_table) \
             && db.table_exists?(consumer_groups_table) \
             && db.table_exists?(offsets_table) \
+            && db.table_exists?(scheduled_messages_table) \
             && db.table_exists?(commands_table)
         end
 
@@ -36,7 +39,7 @@ module Sourced
 
           raise 'Not in test environment' unless ENV['ENVIRONMENT'] == 'test'
 
-          [offsets_table, commands_table, events_table, consumer_groups_table, streams_table].each do |table|
+          [offsets_table, commands_table, scheduled_messages_table, events_table, consumer_groups_table, streams_table].each do |table|
             db.drop_table?(table)
           end
         end
@@ -143,6 +146,17 @@ module Sourced
           end
 
           logger.info("Created table #{commands_table}")
+
+          _scheduled_messages_table = scheduled_messages_table
+
+          db.create_table?(scheduled_messages_table) do
+            primary_key :id
+            Time :created_at, null: false
+            Time :available_at, null: false
+            column :message, :jsonb
+
+            index :available_at
+          end
         end
 
         private
@@ -151,6 +165,7 @@ module Sourced
           :db, 
           :logger, 
           :commands_table, 
+          :scheduled_messages_table,
           :streams_table,
           :offsets_table,
           :consumer_groups_table,
