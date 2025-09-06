@@ -337,8 +337,9 @@ module Sourced
           ack.()
 
         when Actions::AppendNext
-          correlate(event, action.messages).each do |msg|
-            append_next_to_stream(msg.stream_id, msg)
+          messages = correlate(event, action.messages)
+          messages.group_by(&:stream_id).each do |stream_id, stream_messages|
+            append_next_to_stream(stream_id, stream_messages)
           end
           ack.()
 
@@ -415,8 +416,8 @@ module Sourced
       def update_schedule!
         transaction do
           @state.next_scheduled_messages do |scheduled_messages|
-            scheduled_messages.each do |m|
-              append_next_to_stream(m.stream_id, m)
+            scheduled_messages.group_by(&:stream_id).each do |stream_id, stream_messages|
+              append_next_to_stream(stream_id, stream_messages)
             end
             scheduled_messages.size
           end
@@ -479,14 +480,22 @@ module Sourced
       end
 
       # @param stream_id [String] Unique identifier for the event stream
-      # @param event [Sourced::Message] Event to append to the stream
+      # @param events [Sourced::Message, Array<Sourced::Message>] Event(s) to append to the stream
       # @option max_retries [Integer] Not used in this backend, but kept for interface compatibility
-      def append_next_to_stream(stream_id, event, max_retries: 3)
+      def append_next_to_stream(stream_id, events, max_retries: 3)
+        # Handle both single event and array of events
+        events_array = Array(events)
+        return true if events_array.empty?
+
         transaction do
           last_event = @state.events_by_stream_id[stream_id].last
           last_seq = last_event ? last_event.seq : 0
-          new_seq = last_seq + 1
-          append_to_stream(stream_id, [event.with(seq: new_seq)])
+          
+          events_with_seq = events_array.map.with_index do |event, index|
+            event.with(seq: last_seq + index + 1)
+          end
+          
+          append_to_stream(stream_id, events_with_seq)
         end
       end
 

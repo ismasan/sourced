@@ -240,10 +240,9 @@ module Sourced
             Message.from(data)
           end
 
-          # TODO: appending one-by-one is very bad
-          # Fix #append_next_to_stream to support multiple messages
-          messages.each do |m|
-            append_next_to_stream(m.stream_id, m)
+          # Append events to each stream
+          messages.group_by(&:stream_id).each do |stream_id, stream_messages|
+            append_next_to_stream(stream_id, stream_messages)
           end
 
           # Batch delete all processed messages
@@ -254,36 +253,51 @@ module Sourced
         end
       end
 
-      # Append a single event to a stream, creating the stream if it doesn't exist.
-      # Also automatically increments the sequence number for the stream and event,
-      # without relying on the client passing the right sequence number.
+      # Append one or more events to a stream, creating the stream if it doesn't exist.
+      # Also automatically increments the sequence number for the stream and events,
+      # without relying on the client passing the right sequence numbers.
       # This is used for appending events in order without client-side optimistic concurrency control.
       # For example commands that will be picked up and handled by a reactor, later.
       # @param stream_id [String] Unique identifier for the event stream
-      # @param event [Sourced::Message] Event to append to the stream
+      # @param events [Sourced::Message, Array<Sourced::Message>] Event(s) to append to the stream
       # @option max_retries [Integer] Maximum number of retries on unique constraint violation (default: 3)
-      def append_next_to_stream(stream_id, event, max_retries: 3)
+      def append_next_to_stream(stream_id, events, max_retries: 3)
+        # Handle both single event and array of events
+        events_array = Array(events)
+        return true if events_array.empty?
+
         retries = 0
         begin
           db.transaction do
             # Update or create a stream.
-            # If updating, increment seq by 1.
+            # If updating, increment seq by the number of events being added.
+            events_count = events_array.size
             stream_record = db[streams_table]
               .insert_conflict(
                 target: :stream_id, 
                 update: { 
-                  seq: Sequel.qualify(streams_table, :seq) + 1,
+                  seq: Sequel.qualify(streams_table, :seq) + events_count,
                   updated_at: Time.now 
                 }
               )
               .returning(:id, :seq)
-              .insert(stream_id:, seq: 1)
+              .insert(stream_id:, seq: events_count)
               .first
 
-            # Insert the event into the events table, with the (possibly incremented) seq.
-            row = serialize_event(event, stream_record[:id])
-            row[:seq] = stream_record[:seq]
-            db[events_table].insert(row)
+            # Calculate the starting sequence number for this batch
+            # If stream existed, seq will be the new max seq after increment
+            # If stream was created, seq will be events_count
+            starting_seq = stream_record[:seq] - events_count + 1
+
+            # Prepare rows for bulk insert with incrementing sequence numbers
+            rows = events_array.map.with_index do |event, index|
+              row = serialize_event(event, stream_record[:id])
+              row[:seq] = starting_seq + index
+              row
+            end
+
+            # Bulk insert all events
+            db[events_table].multi_insert(rows)
           end
 
           true
@@ -393,8 +407,8 @@ module Sourced
           messages = action.messages.map do |msg|
             event.correlate(msg)
           end
-          messages.each do |msg|
-            append_next_to_stream(msg.stream_id, msg)
+          messages.group_by(&:stream_id).each do |stream_id, stream_messages|
+            append_next_to_stream(stream_id, stream_messages)
           end
           ack_event(group_id, row[:stream_id_fk], row[:global_seq])
 
