@@ -9,6 +9,7 @@ module Sourced
           db,
           logger:,
           commands_table:,
+          workers_table:,
           scheduled_messages_table:,
           streams_table:,
           offsets_table:,
@@ -19,6 +20,7 @@ module Sourced
           @logger = logger
           @commands_table = commands_table
           @scheduled_messages_table = scheduled_messages_table
+          @workers_table = workers_table
           @streams_table = streams_table
           @offsets_table = offsets_table
           @consumer_groups_table = consumer_groups_table
@@ -31,7 +33,8 @@ module Sourced
             && db.table_exists?(consumer_groups_table) \
             && db.table_exists?(offsets_table) \
             && db.table_exists?(scheduled_messages_table) \
-            && db.table_exists?(commands_table)
+            && db.table_exists?(commands_table) \
+            && db.table_exists?(workers_table)
         end
 
         def uninstall
@@ -39,7 +42,7 @@ module Sourced
 
           raise 'Not in test environment' unless ENV['ENVIRONMENT'] == 'test'
 
-          [offsets_table, commands_table, scheduled_messages_table, events_table, consumer_groups_table, streams_table].each do |table|
+          [offsets_table, commands_table, scheduled_messages_table, events_table, consumer_groups_table, streams_table, workers_table].each do |table|
             db.drop_table?(table)
           end
         end
@@ -157,6 +160,18 @@ module Sourced
 
             index :available_at
           end
+
+          logger.info("Created table #{scheduled_messages_table}")
+
+          db.create_table?(workers_table) do
+            String :id, primary_key: true, null: false
+            Time :last_seen, null: false, index: true
+            String :pid, null: true
+            String :host, null: true
+            column :info, :jsonb
+          end
+
+          logger.info("Created table #{workers_table}")
         end
 
         private
@@ -166,6 +181,7 @@ module Sourced
           :logger, 
           :commands_table, 
           :scheduled_messages_table,
+          :workers_table,
           :streams_table,
           :offsets_table,
           :consumer_groups_table,
