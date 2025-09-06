@@ -246,6 +246,16 @@ module Sourced
         events
       end
 
+      # No-op heartbeats for test backend
+      def worker_heartbeat(worker_ids, at: Time.now)
+        Array(worker_ids).size
+      end
+
+      # No-op stale claim release for test backend
+      def release_stale_claims(ttl_seconds: 120)
+        0
+      end
+
       private
 
       def check_unique_seq!(events)

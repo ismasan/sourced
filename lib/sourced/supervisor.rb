@@ -55,6 +55,7 @@ module Sourced
     # This method blocks until the supervisor receives a shutdown signal.
     # Workers are spawned as concurrent tasks using the configured executor 
     # and will begin polling for events and commands immediately.
+    # TODO: consistently inject config, defaulting to Sourced.config values
     #
     # @return [void] Blocks until interrupted by signal
     def start
@@ -62,7 +63,16 @@ module Sourced
       set_signal_handlers
 
       @housekeepers = @housekeeping_count.times.map do |i|
-        HouseKeeper.new(logger:, backend: router.backend, name: "HouseKeeper-#{i}")
+        HouseKeeper.new(
+          logger:,
+          backend: router.backend,
+          name: "HouseKeeper-#{i}",
+          interval: Sourced.config.housekeeping_interval,
+          heartbeat_interval: Sourced.config.housekeeping_heartbeat_interval,
+          claim_ttl_seconds: Sourced.config.housekeeping_claim_ttl_seconds,
+          # Provide live worker IDs for heartbeats
+          worker_ids_provider: -> { @workers.map(&:name) }
+        )
       end
 
       @workers = @count.times.map do |i|

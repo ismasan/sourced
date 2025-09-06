@@ -55,6 +55,7 @@ module Sourced
         @logger = logger
         @prefix = prefix
         @commands_table = table_name(:commands)
+        @workers_table = table_name(:workers)
         @scheduled_messages_table = table_name(:scheduled_messages)
         @streams_table = table_name(:streams)
         @offsets_table = table_name(:offsets)
@@ -250,6 +251,40 @@ module Sourced
           db[scheduled_messages_table].where(id: row_ids).delete
 
           rows.size
+        end
+      end
+
+      # Record heartbeats for a set of worker IDs.
+      # Accepts a String or an Array<String>. Returns number of rows touched.
+      def worker_heartbeat(worker_ids, at: Time.now)
+        ids = Array(worker_ids).uniq
+        return 0 if ids.empty?
+
+        rows = ids.map { |id| { id:, last_seen: at } }
+        db.transaction do
+          db[workers_table]
+            .insert_conflict(target: :id, update: { last_seen: at })
+            .multi_insert(rows)
+        end
+        ids.size
+      end
+
+      # Release stale claims for workers that have not heartbeated within ttl_seconds.
+      # Returns the number of offsets rows updated.
+      def release_stale_claims(ttl_seconds: 120)
+        cutoff = Time.now - ttl_seconds
+
+        db.transaction do
+          stale_workers = db[workers_table]
+            .where { last_seen <= cutoff }
+            .select(:id)
+
+          ds = db[offsets_table]
+            .where(claimed: true)
+            .where { claimed_at <= cutoff }
+            .where(claimed_by: stale_workers)
+
+          ds.update(claimed: false, claimed_at: nil, claimed_by: nil)
         end
       end
 
@@ -717,13 +752,14 @@ module Sourced
 
       private
 
-      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :commands_table, :scheduled_messages_table
+      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :commands_table, :scheduled_messages_table, :workers_table
 
       def installer
         @installer ||= Installer.new(
           @db,
           logger:,
           commands_table:,
+          workers_table:,
           scheduled_messages_table:,
           streams_table:,
           offsets_table:,
