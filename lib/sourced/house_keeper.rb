@@ -31,7 +31,12 @@ module Sourced
       sleep rand(5)
       logger.info "HouseKeeper #{name}: starting"
 
+      # Reap stale claims on startup (from previous runs where workers were killed)
+      released = backend.release_stale_claims(ttl_seconds: @claim_ttl_seconds)
+      logger.info "HouseKeeper #{name}: startup cleanup released #{released} stale claims" if released && released > 0
+
       last_heartbeat = Time.at(0)
+      last_stale_reaping = Time.now
       while @running
         sleep @interval
 
@@ -49,9 +54,12 @@ module Sourced
           last_heartbeat = now
         end
 
-        # 3) Reap stale claims
-        released = backend.release_stale_claims(ttl_seconds: @claim_ttl_seconds)
-        logger.info "HouseKeeper #{name}: released #{released} stale claims" if released && released > 0
+        # 3) Reap stale claims (only every claim_ttl_seconds, since claims can't be stale until then)
+        if now - last_stale_reaping >= @claim_ttl_seconds
+          released = backend.release_stale_claims(ttl_seconds: @claim_ttl_seconds)
+          logger.info "HouseKeeper #{name}: released #{released} stale claims" if released && released > 0
+          last_stale_reaping = now
+        end
       end
 
       logger.info "HouseKeeper #{name}: stopped"
