@@ -313,16 +313,18 @@ module Sourced
       end
 
       def append_to_stream(stream_id, events)
-        return if events.empty?
+        # Handle both single event and array of events
+        events_array = Array(events)
+        return false if events_array.empty?
 
-        if events.map(&:stream_id).uniq.size > 1
+        if events_array.map(&:stream_id).uniq.size > 1
           raise ArgumentError, 'Events must all belong to the same stream'
         end
 
         db.transaction do
-          seq = events.last.seq
+          seq = events_array.last.seq
           id = db[streams_table].insert_conflict(target: :stream_id, update: { seq:, updated_at: Time.now }).insert(stream_id:, seq:)
-          rows = events.map { |e| serialize_event(e, id) }
+          rows = events_array.map { |e| serialize_event(e, id) }
           db[events_table].multi_insert(rows)
         end
 

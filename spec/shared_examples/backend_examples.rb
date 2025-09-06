@@ -250,7 +250,7 @@ module BackendExamples
     describe '#append_next_to_stream' do
       it 'appends single event to stream incrementing :seq automatically' do
         evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
-        backend.append_to_stream('s1', [evt1])
+        backend.append_to_stream('s1', evt1)
         evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 2 })
         expect(backend.append_next_to_stream('s1', evt2)).to be(true)
         events = backend.read_event_stream('s1')
@@ -260,7 +260,7 @@ module BackendExamples
 
       it 'appends multiple events to stream incrementing :seq automatically' do
         evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
-        backend.append_to_stream('s1', [evt1])
+        backend.append_to_stream('s1', evt1)
         
         evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 2 })
         evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 3 })
@@ -829,13 +829,38 @@ module BackendExamples
     end
 
     describe '#append_to_stream' do
+      it 'accepts a single event' do
+        evt = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        expect(backend.append_to_stream('s1', evt)).to be(true)
+        
+        events = backend.read_event_stream('s1')
+        expect(events.size).to eq(1)
+        expect(events.first).to eq(evt)
+      end
+
+      it 'accepts an array of events' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        expect(backend.append_to_stream('s1', [evt1, evt2])).to be(true)
+        
+        events = backend.read_event_stream('s1')
+        expect(events.size).to eq(2)
+        expect(events).to eq([evt1, evt2])
+      end
+
+      it 'handles empty array' do
+        expect(backend.append_to_stream('s1', [])).to be(false)
+        events = backend.read_event_stream('s1')
+        expect(events).to eq([])
+      end
+
       it 'fails if duplicate [stream_id, seq]' do
         evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
-        backend.append_to_stream('s1', [evt1])
+        backend.append_to_stream('s1', evt1)
 
         expect do
-          backend.append_to_stream('s1', [evt2])
+          backend.append_to_stream('s1', evt2)
         end.to raise_error(Sourced::ConcurrentAppendError)
       end
     end
