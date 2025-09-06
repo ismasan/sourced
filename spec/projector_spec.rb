@@ -175,7 +175,7 @@ RSpec.describe Sourced::Projector do
       e2 = ProjectorTest::Added.parse(stream_id: '111', seq: 2, payload: { amount: 5 })
       e3 = ProjectorTest::Added.parse(stream_id: '111', seq: 3, payload: { amount: 7 })
 
-      Sourced.config.backend.append_to_stream('111', [e1])
+      Sourced.config.backend.append_to_stream('111', e1)
 
       result = ProjectorTest::EventSourced.handle_events([e2, e3], replaying: false)
 

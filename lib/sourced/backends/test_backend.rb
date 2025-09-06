@@ -500,10 +500,14 @@ module Sourced
       end
 
       def append_to_stream(stream_id, events)
-        transaction do
-          check_unique_seq!(events)
+        # Handle both single event and array of events
+        events_array = Array(events)
+        return false if events_array.empty?
 
-          events.each do |event|
+        transaction do
+          check_unique_seq!(events_array)
+
+          events_array.each do |event|
             @state.events_by_correlation_id[event.correlation_id] << event
             @state.events_by_stream_id[stream_id] << event
             @state.events << event

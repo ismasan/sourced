@@ -182,7 +182,7 @@ RSpec.describe Sourced::Router do
       router.register(RouterTest::DeciderReactor)
 
       allow(RouterTest::DeciderReactor).to receive(:on_exception)
-      backend.append_to_stream('123', [event])
+      backend.append_to_stream('123', event)
     end
 
     context 'when reactor returns Sourced::Actions::AppendNext' do
@@ -191,8 +191,10 @@ RSpec.describe Sourced::Router do
 
         router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
         expect(RouterTest::DeciderReactor).not_to have_received(:on_exception)
-        expect(backend).to have_received(:append_next_to_stream) do |stream_id, event|
+        expect(backend).to have_received(:append_next_to_stream) do |stream_id, events|
           expect(stream_id).to eq('123')
+          expect(events.size).to eq(1)
+          event = events.first
           expect(event.stream_id).to eq('123')
           expect(event).to be_a(RouterTest::NextCommand)
         end
@@ -297,7 +299,7 @@ RSpec.describe Sourced::Router do
 
         before do 
           router.register(RouterTest::ReactorWithHistoryOnly)
-          backend.append_to_stream('other-stream', [other_event])
+          backend.append_to_stream('other-stream', other_event)
         end
 
         it 'fetches history for the correct stream' do
