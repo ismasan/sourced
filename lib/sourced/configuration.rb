@@ -46,7 +46,12 @@ module Sourced
     # interval: main loop tick for housekeeping (seconds)
     # heartbeat interval: how often to record heartbeats (seconds)
     # claim_ttl_seconds: how long before a worker is considered dead for claim release
-    attr_accessor :housekeeping_interval, :housekeeping_heartbeat_interval, :housekeeping_claim_ttl_seconds
+    attr_accessor(
+      :housekeeping_interval, 
+      :housekeeping_heartbeat_interval, 
+      :housekeeping_claim_ttl_seconds
+    )
+
     attr_reader :backend, :executor
 
     def initialize

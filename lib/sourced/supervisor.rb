@@ -40,12 +40,18 @@ module Sourced
       logger: Sourced.config.logger, 
       count: 2,
       housekeeping_count: 1,
+      housekeeping_interval: Sourced.config.housekeeping_interval,
+      housekeeping_heartbeat_interval: Sourced.config.housekeeping_heartbeat_interval,
+      housekeeping_claim_ttl_seconds: Sourced.config.housekeeping_claim_ttl_seconds,
       executor: Sourced.config.executor,
       router: Sourced::Router
     )
       @logger = logger
       @count = count
       @housekeeping_count = housekeeping_count
+      @housekeeping_interval = housekeeping_interval
+      @housekeeping_heartbeat_interval = housekeeping_heartbeat_interval
+      @housekeeping_claim_ttl_seconds = housekeeping_claim_ttl_seconds
       @executor = executor
       @router = router
       @workers = []
@@ -67,9 +73,9 @@ module Sourced
           logger:,
           backend: router.backend,
           name: "HouseKeeper-#{i}",
-          interval: Sourced.config.housekeeping_interval,
-          heartbeat_interval: Sourced.config.housekeeping_heartbeat_interval,
-          claim_ttl_seconds: Sourced.config.housekeeping_claim_ttl_seconds,
+          interval: @housekeeping_interval,
+          heartbeat_interval: @housekeeping_heartbeat_interval,
+          claim_ttl_seconds: @housekeeping_claim_ttl_seconds,
           # Provide live worker IDs for heartbeats
           worker_ids_provider: -> { @workers.map(&:name) }
         )
