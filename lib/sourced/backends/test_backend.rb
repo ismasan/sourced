@@ -47,25 +47,25 @@ module Sourced
 
       private def process_action(action, ack, event)
         case action
-        when Actions::OK
+        in Actions::OK
           ack.()
 
-        when Actions::AppendNext
-          messages = correlate(event, action.messages)
+        in [:append_next, Array => messages] #Actions::AppendNext
+          messages = correlate(event, messages)
           messages.group_by(&:stream_id).each do |stream_id, stream_messages|
             append_next_to_stream(stream_id, stream_messages)
           end
           ack.()
 
-        when Actions::AppendAfter
-          append_to_stream(action.stream_id, correlate(event, action.messages))
+        in [:append_after, stream_id, Array => messages] # Actions::AppendAfter
+          append_to_stream(stream_id, correlate(event, messages))
           ack.()
 
-        when Actions::Schedule
-          schedule_messages correlate(event, action.messages), at: action.at
+        in [:schedule, Array => messages, Time => at] # Actions::Schedule
+          schedule_messages correlate(event, messages), at: at
           ack.()
 
-        when Actions::RETRY
+        in Actions::RETRY
           # Don't ack
 
         else

@@ -437,11 +437,11 @@ module Sourced
 
       private def process_action(group_id, row, action, event)
         case action
-        when Actions::OK
+        in Actions::OK
           ack_event(group_id, row[:stream_id_fk], row[:global_seq])
 
-        when Actions::AppendNext
-          messages = action.messages.map do |msg|
+        in [:append_next, Array => messages] #Actions::AppendNext
+          messages = messages.map do |msg|
             event.correlate(msg)
           end
           messages.group_by(&:stream_id).each do |stream_id, stream_messages|
@@ -449,21 +449,21 @@ module Sourced
           end
           ack_event(group_id, row[:stream_id_fk], row[:global_seq])
 
-        when Actions::AppendAfter
-          messages = action.messages.map do |msg|
+        in [:append_after, stream_id, Array => messages] # Actions::AppendAfter
+          messages = messages.map do |msg|
             event.correlate(msg)
           end
-          append_to_stream(action.stream_id, messages)
+          append_to_stream(stream_id, messages)
           ack_event(group_id, row[:stream_id_fk], row[:global_seq])
 
-        when Actions::Schedule
-          messages = action.messages.map do |msg|
+        in [:schedule, Array => messages, Time => at] # Actions::Schedule
+          messages = messages.map do |msg|
             event.correlate(msg)
           end
-          schedule_messages(messages, at: action.at)
+          schedule_messages(messages, at: at)
           ack_event(group_id, row[:stream_id_fk], row[:global_seq])
 
-        when Actions::RETRY
+        in Actions::RETRY
           release_offset(row[:offset_id])
 
         else
