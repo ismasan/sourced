@@ -2,8 +2,8 @@
 
 module Sourced
   module Actions
-    RETRY = Object.new.freeze
-    OK = Object.new.freeze
+    RETRY = [:retry].freeze
+    OK = [:ok].freeze
 
     # Append mesages to event store
     # using Backend#append_next_to_stream
@@ -22,6 +22,8 @@ module Sourced
         other.is_a?(self.class) && messages == other.messages
       end
 
+      def deconstruct = [:append_next, messages]
+
       def each(&block)
         return enum_for(:each) unless block_given?
 
@@ -34,7 +36,7 @@ module Sourced
     # Append messages to a stream in event store
     # expecting messages to be in order
     # and with correct sequence numbers.
-    # The backnd will raise an error if mesages with same sequence
+    # The backend will raise an error if mesages with same sequence
     # exist in the store (ie optimistic concurrency control).
     class AppendAfter
       attr_reader :stream_id, :messages
@@ -43,6 +45,8 @@ module Sourced
         @stream_id = stream_id
         @messages = messages
       end
+
+      def deconstruct = [:append_after, stream_id, messages]
     end
 
     class Schedule
@@ -51,6 +55,8 @@ module Sourced
       def initialize(messages, at:)
         @messages, @at = messages, at
       end
+
+      def deconstruct = [:schedule, messages, at]
     end
   end
 end

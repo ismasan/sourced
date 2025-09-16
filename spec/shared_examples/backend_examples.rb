@@ -662,6 +662,16 @@ module BackendExamples
         end
       end
 
+      describe 'returning destructured actions' do
+        it 'works' do
+          backend.reserve_next_for_reactor(reactor1) do |_msg|
+            [:append_next, [Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 2 })]]
+          end
+
+          expect(backend.stats.groups.first[:newest_processed]).to eq(1)
+        end
+      end
+
       describe 'returning Sourced::Actions::AppendAfter' do
         it 'appends messages to stream if sequence do not conflict' do
           new_message = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
