@@ -7,14 +7,14 @@ module Sourced
   # a piece of state based on events.
   # More here: https://ismaelcelis.com/posts/decide-evolve-react-pattern-in-ruby/#2-evolve
   #
-  # From the outside, this mixin exposes the Reactor interface
-  #
-  #  .handle_events(Array<Sourced::Event>) Array<Sourced::Command>
-  #
   # Example:
   #
   #  class Projector
   #    include Sourced::Evolve
+  #
+  #    state do
+  #      { status: 'new' }
+  #    end
   #
   #    event SomethingHappened do |state, event|
   #      state[:status] = 'done'
@@ -22,9 +22,12 @@ module Sourced
   #  end
   #
   #  pr = Projector.new
-  #  state = { status: 'new' }
-  #  state = pr.evolve(state, [SomethingHappened.new])
+  #  state = pr.evolve([SomethingHappened.new])
   #  state[:status] # => 'done'
+  #
+  # From the outside, this mixin exposes .handled_messages_for_evolve
+  #
+  #  .handled_messages_for_evolve() Array<Sourced::Message>
   #
   # It also provides a .before_evolve and .evolve_all macros
   # See comments in code for details.
@@ -37,14 +40,25 @@ module Sourced
       base.extend ClassMethods
     end
 
+    # Initialize in-memory state for this evolver.
+    # Override this method to provide a custom initial state.
+    # @param id [String] the stream id
+    # @return [Any] the initial state
+    def init_state
+      nil
+    end
+
+    def state
+      @state ||= init_state
+    end
+
     # Apply a list of events to a piece of state
     # by running event handlers registered in this class
     # via the .event macro.
     #
-    # @param state [Object]
-    # @param events [Array<Sourced::Event>]
+    # @param events [Array<Sourced::Message>]
     # @return [Object]
-    def evolve(state, events)
+    def evolve(events)
       events.each do |event|
         method_name = Sourced.message_method_name(Evolve::PREFIX, event.class.to_s)
         if respond_to?(method_name)
@@ -63,19 +77,24 @@ module Sourced
     module ClassMethods
       def inherited(subclass)
         super
-        handled_events_for_evolve.each do |evt_type|
-          subclass.handled_events_for_evolve << evt_type
+        handled_messages_for_evolve.each do |evt_type|
+          subclass.handled_messages_for_evolve << evt_type
         end
       end
 
-      # The Reactor interface
-      # expected by Worker
-      def handle_events(_events, replaying: false)
-        raise NotImplementedError, "implement .handle_events(Array<Event>, replaying: Boolean) in #{self}"
+      def handled_messages_for_evolve
+        @handled_messages_for_evolve ||= []
       end
 
-      def handled_events_for_evolve
-        @handled_events_for_evolve ||= []
+      # Define an initial state factory for this evolver.
+      # @example
+      #
+      #   state do
+      #     { status: 'new' }
+      #   end
+      #
+      def state(&blk)
+        define_method(:init_state, &blk)
       end
 
       # This module only accepts registering event handlers
@@ -97,7 +116,7 @@ module Sourced
                 "Invalid argument #{event_class.inspect} for #{self}.event"
         end
 
-        handled_events_for_evolve << event_class
+        handled_messages_for_evolve << event_class
         block = NOOP_HANDLER unless block_given?
         define_method(Sourced.message_method_name(Evolve::PREFIX, event_class.to_s), &block)
       end
@@ -117,14 +136,14 @@ module Sourced
       #     state.updated_at = event.created_at
       #   end
       #
-      #   # From another Evolver that responds to #handled_events_for_evolve
+      #   # From another Evolver that responds to #handled_messages_for_evolve
       #   evolve_all CartAggregate do |state, event|
       #     state.updated_at = event.created_at
       #   end
       #
-      # @param event_list [Array<Sourced::Message>, #handled_events_for_evolve() [Array<Sourced::Message>}]
+      # @param event_list [Array<Sourced::Message>, #handled_messages_for_evolve() [Array<Sourced::Message>}]
       def evolve_all(event_list, &block)
-        event_list = event_list.handled_events_for_evolve if event_list.respond_to?(:handled_events_for_evolve)
+        event_list = event_list.handled_messages_for_evolve if event_list.respond_to?(:handled_messages_for_evolve)
         event_list.each do |event_type|
           event(event_type, &block)
         end
