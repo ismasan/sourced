@@ -31,26 +31,26 @@ class ReactTestReactor
 end
 
 RSpec.describe Sourced::React do
-  specify '.react returns commands' do
+  specify '#react returns AppendNext action with commands' do
     evt1 = ReactTestReactor::Event1.new(stream_id: '1', seq: 1)
     evt2 = ReactTestReactor::Event2.new(stream_id: '1', seq: 2)
     commands = ReactTestReactor.new.react([evt1, evt2])
     expect(commands.map(&:class)).to eq([
-                                          ReactTestReactor::Cmd1,
-                                          ReactTestReactor::Cmd2,
-                                          ReactTestReactor::Cmd3
-                                        ])
+      ReactTestReactor::Cmd1,
+      ReactTestReactor::Cmd2,
+      ReactTestReactor::Cmd3
+    ])
     expect(commands.map { |e| e.metadata[:producer] }).to eq(%w[ReactTestReactor ReactTestReactor ReactTestReactor])
     expect(commands.first.causation_id).to eq(evt1.id)
     expect(commands.last.causation_id).to eq(evt2.id)
     expect(commands.last.metadata[:greeting]).to eq('Hi!')
   end
 
-  specify '.handled_events_for_react' do
-    expect(ReactTestReactor.handled_events_for_react).to eq([
-                                                              ReactTestReactor::Event1,
-                                                              ReactTestReactor::Event2,
-                                                              ReactTestReactor::Event3
-                                                            ])
+  specify '.handled_messages_for_react' do
+    expect(ReactTestReactor.handled_messages_for_react).to eq([
+      ReactTestReactor::Event1,
+      ReactTestReactor::Event2,
+      ReactTestReactor::Event3
+    ])
   end
 end

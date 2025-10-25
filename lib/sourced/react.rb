@@ -2,14 +2,10 @@
 
 module Sourced
   # This mixin provides a .react macro to register
-  # event handlers for a class
-  # These event handlers are "reactions", ie. they react to
-  # events by producing new commands which will initiate new Decider flows.
+  # message handlers for a class
+  # These message handlers are "reactions", ie. they react to
+  # messages by producing new commands which will initiate new Decider flows.
   # More here: https://ismaelcelis.com/posts/decide-evolve-react-pattern-in-ruby/#3-react
-  #
-  # From the outside, this mixin exposes the Reactor interface
-  #
-  #  .handle_events(Array<Sourced::Event>) Array<Sourced::Command>
   #
   # Example:
   #
@@ -126,8 +122,8 @@ module Sourced
     module ClassMethods
       def inherited(subclass)
         super
-        handled_events_for_react.each do |evt_type|
-          subclass.handled_events_for_react << evt_type
+        handled_messages_for_react.each do |evt_type|
+          subclass.handled_messages_for_react << evt_type
         end
       end
 
@@ -136,14 +132,8 @@ module Sourced
         Sourced::Consumer::ConsumerInfo.new(group_id: name)
       end
 
-      # These two are the Reactor interface
-      # expected by Worker
-      def handle_events(_events, replaying: false)
-        raise NotImplementedError, "implement .handle_events(Array<Event>, replaying: Boolean) in #{self}"
-      end
-
-      def handled_events_for_react
-        @handled_events_for_react ||= []
+      def handled_messages_for_react
+        @handled_messages_for_react ||= []
       end
 
       # Define a reaction to an event
@@ -172,12 +162,13 @@ module Sourced
           return reaction_with_state(event_class, &block)
         end
 
+        __validate_message_for_reaction!(event_class)
         unless event_class.is_a?(Class) && event_class < Sourced::Message
           raise ArgumentError,
                 "Invalid argument #{event_class.inspect} for #{self}.reaction"
         end
 
-        handled_events_for_react << event_class
+        handled_messages_for_react << event_class
         define_method(Sourced.message_method_name(React::PREFIX, event_class.to_s), &block) if block_given?
       end
 
@@ -188,7 +179,7 @@ module Sourced
         if event_class.nil?
           # register a reaction for all handled events
           # except ones that have custom handlers
-          handled_events_for_evolve.each do |evt_class|
+          handled_messages_for_evolve.each do |evt_class|
             method_name = Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, evt_class.to_s)
             if !instance_methods.include?(method_name.to_sym)
               reaction_with_state(evt_class, &block)
@@ -198,6 +189,7 @@ module Sourced
           return
         end
 
+        __validate_message_for_reaction!(event_class)
         unless event_class.is_a?(Class) && event_class < Sourced::Message
           raise ArgumentError,
                 "Invalid argument #{event_class.inspect} for #{self}.reaction_with_state"
@@ -205,8 +197,15 @@ module Sourced
 
         raise ArgumentError, '.reaction_with_state expects a block with |state, event|' unless block.arity == 2
 
-        handled_events_for_react << event_class
+        handled_messages_for_react << event_class
         define_method(Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, event_class.to_s), &block) if block_given?
+      end
+
+      # Run this hook before registering a reaction
+      # Actor can override this to make sure that the same message is not
+      # also handled as a command
+      def __validate_message_for_reaction!(event_class)
+        # no-op.
       end
     end
   end

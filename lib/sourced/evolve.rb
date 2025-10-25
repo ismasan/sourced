@@ -42,7 +42,6 @@ module Sourced
 
     # Initialize in-memory state for this evolver.
     # Override this method to provide a custom initial state.
-    # @param id [String] the stream id
     # @return [Any] the initial state
     def init_state
       nil
@@ -61,6 +60,10 @@ module Sourced
     def evolve(events)
       events.each do |event|
         method_name = Sourced.message_method_name(Evolve::PREFIX, event.class.to_s)
+        # We might be evolving old events in history
+        # even if we don't have handlers for them anymore
+        # we still need to increment seq
+        __update_on_evolve(event)
         if respond_to?(method_name)
           before_evolve(state, event)
           send(method_name, state, event)
@@ -72,6 +75,10 @@ module Sourced
 
     private def before_evolve(*_)
       nil
+    end
+
+    private def __update_on_evolve(event)
+      # Noop
     end
 
     module ClassMethods
