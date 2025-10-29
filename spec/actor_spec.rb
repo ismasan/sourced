@@ -9,7 +9,9 @@ module TestDomain
     attribute :name, String
   end
 
-  Notify = Sourced::Message.define('actor.todos.notify')
+  Notify = Sourced::Message.define('actor.todos.notify') do
+    attribute :item_count, Integer
+  end
 
   ListStarted = Sourced::Message.define('actor.todos.started')
   ArchiveRequested = Sourced::Message.define('actor.todos.archive_requested')
@@ -38,11 +40,11 @@ module TestDomain
       list.items << event.payload
     end
 
-    reaction ListStarted do |event, state|
+    reaction ListStarted do |list, event|
     end
 
-    reaction :item_added do |event|
-      stream_for(event).command Notify
+    reaction :item_added do |list, event|
+      stream_for(event).command Notify, item_count: list.items.size
     end
   end
 end
@@ -129,6 +131,7 @@ RSpec.describe Sourced::Actor do
         expect(result).to be_a(Sourced::Actions::AppendNext)
         expect(result.messages.map(&:stream_id)).to eq([stream_id])
         expect(result.messages.map(&:class)).to eq([TestDomain::Notify])
+        expect(result.messages.first.payload.item_count).to eq(1)
       end
     end
   end

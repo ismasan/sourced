@@ -8,15 +8,19 @@ class ReactTestReactor
   Event1 = Sourced::Message.define('reacttest.event1')
   Event2 = Sourced::Message.define('reacttest.event2')
   Event3 = Sourced::Message.define('reacttest.event3')
-  Cmd1 = Sourced::Message.define('reacttest.cmd1')
+  Cmd1 = Sourced::Message.define('reacttest.cmd1') do
+    attribute :name, String
+  end
   Cmd2 = Sourced::Message.define('reacttest.cmd2')
   Cmd3 = Sourced::Message.define('reacttest.cmd3')
 
-  reaction Event1 do |event|
-    stream_for(event).command Cmd1
+  def state = { name: 'test' }
+
+  reaction Event1 do |state, event|
+    stream_for(event).command Cmd1, name: state[:name]
   end
 
-  reaction Event2 do |event|
+  reaction Event2 do |_state, event|
     stream = stream_for(event)
 
     stream.command Cmd2
@@ -25,7 +29,7 @@ class ReactTestReactor
     end
   end
 
-  reaction Event3 do |_event|
+  reaction Event3 do |_state, _event|
     nil
   end
 end
@@ -42,6 +46,7 @@ RSpec.describe Sourced::React do
     ])
     expect(commands.map { |e| e.metadata[:producer] }).to eq(%w[ReactTestReactor ReactTestReactor ReactTestReactor])
     expect(commands.first.causation_id).to eq(evt1.id)
+    expect(commands.first.payload.name).to eq('test')
     expect(commands.last.causation_id).to eq(evt2.id)
     expect(commands.last.metadata[:greeting]).to eq('Hi!')
   end

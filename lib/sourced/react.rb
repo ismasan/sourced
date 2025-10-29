@@ -12,17 +12,28 @@ module Sourced
   #  class Saga
   #    include Sourced::React
   #
+  #    # Host class must implement a #state method
+  #    # which will be passed to reaction handlers
+  #    attr_reader :state
+  #
+  #    def initialize(id:)
+  #      @state = { id: }
+  #    end
+  #
   #    # React to an event and return a new command.
   #    # This command will be scheduled for processing by a Decider.
   #    # Using Sourced::Event#follow copies over metadata from the event
   #    # including causation and correlation IDs.
-  #    reaction SomethingHappened do |event|
+  #    reaction SomethingHappened do |state, event|
   #      event.follow(DoSomethingElse, field1: 'value1')
   #    end
   #  end
+  #
+  #  saga = Saga.new(id: '123')
+  #  commands = saga.react([something_happened])
+  #
   module React
     PREFIX = 'reaction'
-    REACTION_WITH_STATE_PREFIX = 'reaction_with_state'
 
     def self.included(base)
       super
@@ -74,13 +85,6 @@ module Sourced
     def react(events)
       __handling_reactions(events) do |event|
         method_name = Sourced.message_method_name(React::PREFIX, event.class.to_s)
-        send(method_name, event) if respond_to?(method_name)
-      end
-    end
-
-    def react_with_state(events, state)
-      __handling_reactions(events) do |event|
-        method_name = Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, event.class.to_s)
         send(method_name, state, event) if respond_to?(method_name)
       end
     end
@@ -138,15 +142,14 @@ module Sourced
 
       # Define a reaction to an event
       # @example
-      #   reaction SomethingHappened do |event|
+      #   reaction SomethingHappened do |state, event|
       #     stream = stream_for(event)
       #     # stream = stream_for("new-stream-id")
       #     stream.command DoSomethingElse
       #   end
       #
-      # If the block defines two arguments, it will be registered as a reaction with state.
+      # The host class is expected to define a #state method
       # These handlers will load the decider's state from past events, and yield the state and the event to the block.
-      # See .reaction_with_state
       # @example
       #   reaction SomethingHappened do |state, event|
       #     if state[:count] % 3 == 0
@@ -155,13 +158,9 @@ module Sourced
       #   end
       #
       # @param event_class [Class<Sourced::Message>]
-      # @yield [Sourced::Event]
+      # @yield [Object, Sourced::Event]
       # @return [void]
       def reaction(event_class = nil, &block)
-        if block_given? && block.arity == 2 # state, event
-          return reaction_with_state(event_class, &block)
-        end
-
         __validate_message_for_reaction!(event_class)
         unless event_class.is_a?(Class) && event_class < Sourced::Message
           raise ArgumentError,
@@ -170,35 +169,6 @@ module Sourced
 
         handled_messages_for_react << event_class
         define_method(Sourced.message_method_name(React::PREFIX, event_class.to_s), &block) if block_given?
-      end
-
-      # @param event_name [Class]
-      # @yield [Object, Sourced::Event]
-      # @return [void]
-      def reaction_with_state(event_class = nil, &block)
-        if event_class.nil?
-          # register a reaction for all handled events
-          # except ones that have custom handlers
-          handled_messages_for_evolve.each do |evt_class|
-            method_name = Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, evt_class.to_s)
-            if !instance_methods.include?(method_name.to_sym)
-              reaction_with_state(evt_class, &block)
-            end
-          end
-
-          return
-        end
-
-        __validate_message_for_reaction!(event_class)
-        unless event_class.is_a?(Class) && event_class < Sourced::Message
-          raise ArgumentError,
-                "Invalid argument #{event_class.inspect} for #{self}.reaction_with_state"
-        end
-
-        raise ArgumentError, '.reaction_with_state expects a block with |state, event|' unless block.arity == 2
-
-        handled_messages_for_react << event_class
-        define_method(Sourced.message_method_name(React::REACTION_WITH_STATE_PREFIX, event_class.to_s), &block) if block_given?
       end
 
       # Run this hook before registering a reaction

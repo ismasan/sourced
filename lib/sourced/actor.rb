@@ -7,7 +7,6 @@ module Sourced
     extend Consumer
 
     PREFIX = 'decide'
-    REACTION_WITH_STATE_PREFIX = 'reaction_with_state'
 
     UndefinedMessageError = Class.new(KeyError)
     Error = Class.new(StandardError)
@@ -181,40 +180,23 @@ module Sourced
       # See Sourced::React#reaction
       # TODO: should this be defined in Evolve?
       # @example
-      #   reaction :item_added do |event|
+      #   reaction :item_added do |state, event|
       #     stream = stream_for(event)
       #     stream.command :do_something
       #   end
       #
-      #   reaction ItemAdded do |event|
+      #   reaction ItemAdded do |state, event|
       #     stream = stream_for(event)
       #     stream.command DoSomething
       #   end
       #
-      # If the block has two arguments, it will be registered as a reaction with state.
-      # These handlers will load the decider's state from past events, and yield the state and the event to the block.
-      # See .reaction_with_state
-      # @example
-      #   reaction :item_added do |state, event|
-      #     if state[:count] % 3 == 0
-      #       steam_for(event).command DoSomething
-      #     end
-      #   end
-      #
       # @param event_name [nil, Symbol, Class]
-      # @yield [Sourced::Event]
+      # @yield [Object, Sourced::Event]
       # @return [void]
       def reaction(event_name = nil, &block)
-        if block_given? && block.arity == 2 # state, event
-          return reaction_with_state(event_name, &block)
-        end
+        event_name = self::Event.registry[__message_type(event_name)] if event_name.is_a?(Symbol)
 
-        if event_name.is_a?(Symbol)
-          event_class = self::Event.registry[__message_type(event_name)]
-          super(event_class, &block)
-        else
-          super
-        end
+        super(event_name, &block)
       end
 
       # The Reactor interface
