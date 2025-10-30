@@ -5,6 +5,16 @@ module Sourced
     RETRY = [:retry].freeze
     OK = [:ok].freeze
 
+    class Multiple
+      attr_reader :actions
+
+      def initialize(actions)
+        @actions = actions
+      end
+
+      def deconstruct = [:multiple, @actions]
+    end
+
     # Append mesages to event store
     # using Backend#append_next_to_stream
     # which auto-increments stream sequence

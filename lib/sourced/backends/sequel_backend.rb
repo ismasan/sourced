@@ -440,6 +440,11 @@ module Sourced
         in Actions::OK
           ack_event(group_id, row[:stream_id_fk], row[:global_seq])
 
+        in [:multiple, actions]
+          actions.each do |a| 
+            process_action(group_id, row, a, event)
+          end
+
         in [:append_next, Array => messages] #Actions::AppendNext
           messages = messages.map do |msg|
             event.correlate(msg)
