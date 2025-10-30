@@ -379,6 +379,41 @@ module BackendExamples
         end
       end
 
+      it 'handles an Actions::Multiple' do
+        cmd_a = Tests::DoSomething.parse(stream_id: 's1', correlation_id: SecureRandom.uuid, seq: 1, payload: { account_id: 1 })
+        evt_b = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 2 })
+        evt_c = Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 3 })
+
+        reactor1 = Class.new do
+          def self.consumer_info
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
+          end
+
+          def self.handled_messages
+            [Tests::DoSomething, Tests::SomethingHappened1]
+          end
+        end
+
+        backend.append_to_stream('s1', [cmd_a])
+        backend.register_consumer_group('group1')
+        now = Time.now
+
+        backend.reserve_next_for_reactor(reactor1) do |msg|
+          action1 = Sourced::Actions::AppendNext.new([evt_b])
+          action2 = Sourced::Actions::Schedule.new([evt_c], at: now + 10)
+          Sourced::Actions::Multiple.new([action1, action2])
+        end
+
+        messages = backend.read_event_stream('s1')
+        expect(messages.map(&:id)).to eq([cmd_a, evt_b].map(&:id))
+
+        Timecop.freeze(now + 11) do
+          backend.update_schedule!
+          messages = backend.read_event_stream('s1')
+          expect(messages.map(&:id)).to eq([cmd_a, evt_b, evt_c].map(&:id))
+        end
+      end
+
       it 'appends messages and reserves them in order of arrival' do
         cmd_a = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         cmd_b = Tests::DoSomething.parse(stream_id: 's2', seq: 1, payload: { account_id: 2 })
@@ -586,7 +621,7 @@ module BackendExamples
       end
     end
 
-    context '#reserve_next_for_reactor handling Sourced::Results types' do
+    context '#reserve_next_for_reactor handling Sourced::Actions types' do
       let(:reactor1) do
         Class.new do
           def self.consumer_info

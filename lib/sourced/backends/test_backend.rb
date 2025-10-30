@@ -50,6 +50,11 @@ module Sourced
         in Actions::OK
           ack.()
 
+        in [:multiple, actions]
+          actions.each do |a| 
+            process_action(a, ack, event)
+          end
+
         in [:append_next, Array => messages] #Actions::AppendNext
           messages = correlate(event, messages)
           messages.group_by(&:stream_id).each do |stream_id, stream_messages|
