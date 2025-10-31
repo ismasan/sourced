@@ -186,7 +186,15 @@ module Sourced
       message.with(attrs)
     end
 
-    def delay(datetime)
+    # A copy of a message with a new stream_id
+    # @param stream_id [String, #stream_id]
+    # @return [Message]
+    def to(stream_id)
+      stream_id = stream_id.stream_id if stream_id.respond_to?(:stream_id)
+      with(stream_id:)
+    end
+
+    def at(datetime)
       if datetime < created_at
         raise PastMessageDateError, "Message #{type} can't be delayed to a date in the past"
       end

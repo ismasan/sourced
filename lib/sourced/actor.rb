@@ -293,8 +293,8 @@ module Sourced
         events = decide(message)
         Actions::AppendAfter.new(id, events)
       elsif reacts_to?(message)
-        commands = react([message])
-        Actions::AppendNext.new(commands)
+        actions = react([message])
+        actions.size > 1 ? Actions::Multiple.new(actions) : actions.first
       else
         Actions::OK
       end
