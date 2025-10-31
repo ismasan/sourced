@@ -43,7 +43,7 @@ module Sourced
     # @param events [Array<Sourced::Event>]
     # @return [Array<Sourced::Command>]
     def react(events)
-      __handling_reactions(events) do |event|
+      __handling_reactions(Array(events)) do |event|
         method_name = Sourced.message_method_name(React::PREFIX, event.class.to_s)
         send(method_name, state, event) if respond_to?(method_name)
       end
