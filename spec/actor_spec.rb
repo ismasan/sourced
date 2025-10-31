@@ -41,10 +41,12 @@ module TestDomain
     end
 
     reaction ListStarted do |list, event|
+      dispatch(Notify, item_count: list.items.size).to('different-stream')
+      dispatch(Notify, item_count: list.items.size).at(Time.now + 30)
     end
 
     reaction :item_added do |list, event|
-      stream_for(event).command Notify, item_count: list.items.size
+      dispatch(Notify, item_count: list.items.size)
     end
   end
 end
@@ -82,6 +84,58 @@ RSpec.describe Sourced::Actor do
         klass.reaction TestDomain::ListStarted do |_|
         end
       }.to raise_error(Sourced::Actor::DualMessageRegistrationError)
+    end
+  end
+
+  describe '#evolve' do
+    it 'evolves internal state' do
+      actor = TestDomain::TodoListActor.new
+      e1 = TestDomain::ListStarted.parse(stream_id: actor.id, seq: 1)
+      e2 = TestDomain::TodoListActor::ItemAdded.parse(
+        stream_id: actor.id,
+        seq: 2,
+        payload: { name: 'Shoes' }
+      )
+      state = actor.evolve([e1, e2])
+      expect(state).to eq(actor.state)
+      expect(actor.state.status).to eq(:active)
+      expect(actor.seq).to eq(2)
+    end
+  end
+
+  describe '#decide' do
+    it 'returns events with the right sequence, updates state' do
+      actor = TestDomain::TodoListActor.new
+      cmd = TestDomain::AddItem.parse(
+        stream_id: actor.id,
+        payload: { name: 'Shoes' }
+      )
+      events = actor.decide(cmd)
+      expect(events.map(&:class)).to eq([TestDomain::ListStarted, TestDomain::TodoListActor::ItemAdded])
+      expect(events.map(&:seq)).to eq([1, 2])
+      expect(actor.seq).to eq(2)
+      expect(actor.state.items.size).to eq(1)
+      cmd2 = cmd.with(seq: 1)
+      events = actor.decide(cmd2)
+      expect(actor.seq).to eq(3)
+      expect(events.map(&:class)).to eq([TestDomain::TodoListActor::ItemAdded])
+      expect(events.map(&:seq)).to eq([3])
+      expect(actor.state.items.size).to eq(2)
+    end
+  end
+
+  describe '#react' do
+    it 'reacts to events and return commands' do
+      now = Time.now
+      Timecop.freeze(now) do
+        actor = TestDomain::TodoListActor.new
+        event = TestDomain::ListStarted.parse(stream_id: actor.id)
+        commands = actor.react(event)
+        expect(commands.map(&:class)).to eq([TestDomain::Notify, TestDomain::Notify])
+        expect(commands.first.metadata[:producer]).to eq('TestDomain::TodoListActor')
+        expect(commands.map(&:created_at)).to eq([now, now + 30])
+        expect(commands.map(&:stream_id)).to eq(['different-stream', actor.id])
+      end
     end
   end
 
@@ -128,10 +182,33 @@ RSpec.describe Sourced::Actor do
 
       it 'returns new commands to append' do
         result = TestDomain::TodoListActor.handle(history.last, history:)
-        expect(result).to be_a(Sourced::Actions::AppendNext)
-        expect(result.messages.map(&:stream_id)).to eq([stream_id])
-        expect(result.messages.map(&:class)).to eq([TestDomain::Notify])
-        expect(result.messages.first.payload.item_count).to eq(1)
+        expect(result).to be_a(Sourced::Actions::Multiple)
+        expect(result.actions.first).to be_a(Sourced::Actions::AppendNext)
+        expect(result.actions.first.messages.map(&:stream_id)).to eq([stream_id])
+        expect(result.actions.first.messages.map(&:class)).to eq([TestDomain::Notify])
+        expect(result.actions.first.messages.first.payload.item_count).to eq(1)
+      end
+
+      it 'returns multiple commands to append or schedule' do
+        now = Time.now
+        Timecop.freeze(now) do
+          result = TestDomain::TodoListActor.handle(history[1], history:)
+          expect(result).to be_a(Sourced::Actions::Multiple)
+          expect(result.actions.map(&:class)).to eq [Sourced::Actions::AppendNext, Sourced::Actions::Schedule]
+          expect(result.actions[0].messages.size).to eq(1)
+          result.actions[0].messages[0].tap do |msg|
+            expect(msg).to be_a TestDomain::Notify
+            expect(msg.stream_id).to eq('different-stream')
+            expect(msg.payload.item_count).to eq(1)
+          end
+          expect(result.actions[1].messages.size).to eq(1)
+          expect(result.actions[1].at).to eq(now + 30)
+          result.actions[1].messages[0].tap do |msg|
+            expect(msg).to be_a TestDomain::Notify
+            expect(msg.stream_id).to eq(stream_id)
+            expect(msg.payload.item_count).to eq(1)
+          end
+        end
       end
     end
   end

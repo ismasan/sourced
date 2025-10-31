@@ -293,8 +293,7 @@ module Sourced
         events = decide(message)
         Actions::AppendAfter.new(id, events)
       elsif reacts_to?(message)
-        actions = react([message])
-        actions.size > 1 ? Actions::Multiple.new(actions) : actions.first
+        __build_actions_for(react(message))
       else
         Actions::OK
       end
@@ -319,7 +318,7 @@ module Sourced
       command = __set_current_command(command)
       send(Sourced.message_method_name(PREFIX, command.class.name), state, command)
       @__current_command = nil
-      uncommitted_events
+      @uncommitted_events.slice!(0..)
     end
 
     # Apply an event from within a command handler
@@ -350,6 +349,26 @@ module Sourced
 
     attr_reader :__current_command
 
+    # Split a list of messages into 
+    # Actions::AppendNext or 
+    # Actions::Schedule
+    # based on their #created_at
+    def __build_actions_for(messages)
+      return Actions::OK if messages.empty?
+
+      # TODO: I really need a uniform Clock object
+      now = Time.now
+      to_schedule, to_append = messages.partition { |e| e.created_at > now }
+      actions = []
+      actions << Actions::AppendNext.new(to_append) if to_append.any?
+      to_schedule.group_by(&:created_at).each do |at, msgs|
+        actions << Actions::Schedule.new(msgs, at:)
+      end
+
+      Actions::Multiple.new(actions)
+    end
+
+    # Override React#__update_on_evolve
     def __update_on_evolve(event)
       raise DifferentStreamError.new(self, event) if id != event.stream_id
       raise SmallerSequenceError.new(self, event) if seq >= event.seq
