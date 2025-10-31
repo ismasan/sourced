@@ -124,18 +124,34 @@ RSpec.describe Sourced::Message do
     end
   end
 
-  describe '#delay' do
+  describe '#at' do
     it 'creates a message with a created_at date in the future' do
       add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
-      delayed = add.delay(add.created_at + 10)
+      delayed = add.at(add.created_at + 10)
       expect(delayed.created_at).to eq(add.created_at + 10)
     end
 
     it 'does not allow setting a date lower than current' do
       add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
       expect do
-        add.delay(add.created_at - 10)
+        add.at(add.created_at - 10)
       end.to raise_error(Sourced::PastMessageDateError)
+    end
+  end
+
+  describe '#to' do
+    it 'creates a message with a new #stream_id' do
+      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
+      add2 = add.to('222')
+      expect(add.stream_id).to eq('123')
+      expect(add2.stream_id).to eq('222')
+    end
+
+    it 'accepts a #stream_id interface' do
+      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
+      streamable = double('Streamable', stream_id: '222')
+      add2 = add.to(streamable)
+      expect(add2.stream_id).to eq('222')
     end
   end
 end
