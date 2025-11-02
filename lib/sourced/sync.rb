@@ -36,16 +36,22 @@ module Sourced
       base.extend ClassMethods
     end
 
-    def sync_blocks_with(*args)
+    def sync_blocks_with(**args)
       self.class.sync_blocks.map do |callable|
         case callable
         when Proc
-          proc { instance_exec(*args, &callable) }
+          proc { instance_exec(**args, &callable) }
         when CallableInterface
-          proc { callable.call(*args) }
+          proc { callable.call(**args) }
         else
           raise ArgumentError, "Not a valid sync block: #{callable.inspect}"
         end
+      end
+    end
+
+    def sync_actions_with(**args)
+      sync_blocks_with(**args).map do |bl|
+        Actions::Sync.new(bl)
       end
     end
 
