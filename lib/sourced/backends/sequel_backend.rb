@@ -438,6 +438,9 @@ module Sourced
       private def process_actions(group_id, row, actions, event)
         should_ack = false
         actions = [actions] unless actions.is_a?(Array)
+        actions = actions.compact
+        # Empty actions is assumed to be an ACK
+        return ack_event(group_id, row[:stream_id_fk], row[:global_seq]) if actions.empty?
 
         actions.each do |action|
           case action
