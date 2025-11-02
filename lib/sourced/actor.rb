@@ -4,6 +4,7 @@ module Sourced
   class Actor
     include Evolve
     include React
+    include Sync
     extend Consumer
 
     PREFIX = 'decide'
@@ -291,7 +292,8 @@ module Sourced
       evolve(history) 
       if handles_command?(message)
         events = decide(message)
-        Actions::AppendAfter.new(id, events)
+        actions = [Actions::AppendAfter.new(id, events)]
+        actions + sync_actions_with(command: message, events:, state:)
       elsif reacts_to?(message)
         __build_actions_for(react(message))
       else
