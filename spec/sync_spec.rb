@@ -14,11 +14,11 @@ RSpec.describe Sourced::Sync do
         @calls2 = []
       end
 
-      sync do |name, age|
+      sync do |name:, age:|
         @calls1 << [name, age]
       end
 
-      sync do |_name, age|
+      sync do |name:, age:|
         @calls2 << age + 2
       end
     end
@@ -27,7 +27,7 @@ RSpec.describe Sourced::Sync do
   context 'with Procs' do
     it 'returns sync blocks bound to host instance and arguments' do
       object = host.new
-      blocks = object.sync_blocks_with('Joe', 30)
+      blocks = object.sync_blocks_with(name: 'Joe', age: 30)
       blocks.each(&:call)
       expect(object.calls1).to eq([['Joe', 30]])
       expect(object.calls2).to eq([32])
@@ -41,7 +41,7 @@ RSpec.describe Sourced::Sync do
       end
 
       collaborator = Struct.new(:args) do
-        def call(*args)
+        def call(**args)
           self.args = args
         end
       end
@@ -51,9 +51,9 @@ RSpec.describe Sourced::Sync do
       host.sync synccer
 
       object = host.new
-      blocks = object.sync_blocks_with('Joe', 30)
+      blocks = object.sync_blocks_with(name: 'Joe', age: 30)
       blocks.each(&:call)
-      expect(synccer.args).to eq(['Joe', 30])
+      expect(synccer.args).to eq(name: 'Joe', age: 30)
     end
   end
 end
