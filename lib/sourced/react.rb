@@ -132,10 +132,31 @@ module Sourced
       #     end
       #   end
       #
+      # If no event class given, the handler is registered for all events 
+      # set to evolve in .handled_messaged_for_evolve, unless 
+      # specific reactions have already been registered for them
+      # The host class is expected to support .handled_messaged_for_evolve
+      # see Evolve mixin
+      # @example
+      #   reaction do |state, event|
+      #     LOGGER.info state
+      #   end
+      #
       # @param event_class [Class<Sourced::Message>]
       # @yield [Object, Sourced::Event]
       # @return [void]
       def reaction(event_class = nil, &block)
+        if event_class.nil?
+          handled_messages_for_evolve.each do |e|
+            method_name = Sourced.message_method_name(React::PREFIX, e.to_s)
+            if !instance_methods.include?(method_name.to_sym)
+              reaction e, &block
+            end
+          end
+
+          return
+        end
+
         __validate_message_for_reaction!(event_class)
         unless event_class.is_a?(Class) && event_class < Sourced::Message
           raise ArgumentError,
