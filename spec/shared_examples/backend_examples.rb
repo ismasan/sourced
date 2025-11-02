@@ -747,7 +747,6 @@ module BackendExamples
 
       describe 'returning Sourced::Actions::Sync' do
         it 'runs sync work within transaction' do
-          new_message = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
           worked = false
           work = proc do
             worked = true
@@ -761,7 +760,6 @@ module BackendExamples
         end
 
         it 'acks' do
-          new_message = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
           work = proc{}
 
           backend.reserve_next_for_reactor(reactor1) do |_msg|
