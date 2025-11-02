@@ -769,6 +769,24 @@ module BackendExamples
           expect(backend.stats.groups.first[:newest_processed]).to eq(1)
         end
       end
+
+      describe 'returning empty actions' do
+        it 'acks by default' do
+          backend.reserve_next_for_reactor(reactor1) do |_msg|
+            []
+          end
+
+          expect(backend.stats.groups.first[:newest_processed]).to eq(1)
+        end
+
+        it 'acks if nil action' do
+          backend.reserve_next_for_reactor(reactor1) do |_msg|
+            [nil]
+          end
+
+          expect(backend.stats.groups.first[:newest_processed]).to eq(1)
+        end
+      end
     end
 
     describe '#reserve_next_for_reactor with retry_at' do
