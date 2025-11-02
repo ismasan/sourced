@@ -744,6 +744,33 @@ module BackendExamples
           expect(events.map(&:metadata).map { |m| m[:tid] }).to eq(['evt1', 'evt1'])
         end
       end
+
+      describe 'returning Sourced::Actions::Sync' do
+        it 'runs sync work within transaction' do
+          new_message = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+          worked = false
+          work = proc do
+            worked = true
+          end
+
+          backend.reserve_next_for_reactor(reactor1) do |_msg|
+            Sourced::Actions::Sync.new(work)
+          end
+
+          expect(worked).to be(true)
+        end
+
+        it 'acks' do
+          new_message = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+          work = proc{}
+
+          backend.reserve_next_for_reactor(reactor1) do |_msg|
+            Sourced::Actions::Sync.new(work)
+          end
+
+          expect(backend.stats.groups.first[:newest_processed]).to eq(1)
+        end
+      end
     end
 
     describe '#reserve_next_for_reactor with retry_at' do

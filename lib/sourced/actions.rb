@@ -52,5 +52,13 @@ module Sourced
         @messages, @at = messages, at
       end
     end
+
+    class Sync
+      def initialize(work)
+        @work = work
+      end
+
+      def call(...) = @work.call(...)
+    end
   end
 end
