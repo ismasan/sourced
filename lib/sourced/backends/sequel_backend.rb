@@ -467,6 +467,10 @@ module Sourced
             schedule_messages(messages, at: action.at)
             should_ack = true
 
+          when Actions::Sync
+            action.call
+            should_ack = true
+
           when Actions::RETRY
             release_offset(row[:offset_id])
 

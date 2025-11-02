@@ -69,6 +69,10 @@ module Sourced
             schedule_messages correlate(event, action.messages), at: action.at
             should_ack = true
 
+          when Actions::Sync
+            action.call
+            should_ack = true
+
           when Actions::RETRY
             # Don't ack
 
