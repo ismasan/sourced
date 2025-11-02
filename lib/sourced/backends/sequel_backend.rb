@@ -414,13 +414,13 @@ module Sourced
 
         begin
           # Phase 2: Process event outside of transaction
-          action = yield(event, row[:replaying])
+          actions = yield(event, row[:replaying])
 
           # Phase 3: update state depending on result
           # Result handling happens in the same transaction
           # as ACKing the event
           db.transaction do
-            process_action(group_id, row, action, event)
+            process_actions(group_id, row, actions, event)
           end
 
         rescue StandardError
@@ -435,45 +435,47 @@ module Sourced
         db[offsets_table].where(id: offset_id).update(claimed: false, claimed_at: nil, claimed_by: nil)
       end
 
-      private def process_action(group_id, row, action, event)
-        case action
-        in Actions::OK
-          ack_event(group_id, row[:stream_id_fk], row[:global_seq])
+      private def process_actions(group_id, row, actions, event)
+        should_ack = false
+        actions = [actions] unless actions.is_a?(Array)
 
-        in [:multiple, actions]
-          actions.each do |a| 
-            process_action(group_id, row, a, event)
+        actions.each do |action|
+          case action
+          when Actions::OK
+            should_ack = true
+
+          when Actions::AppendNext
+            messages = action.messages.map do |msg|
+              event.correlate(msg)
+            end
+            messages.group_by(&:stream_id).each do |stream_id, stream_messages|
+              append_next_to_stream(stream_id, stream_messages)
+            end
+            should_ack = true
+
+          when Actions::AppendAfter
+            messages = action.messages.map do |msg|
+              event.correlate(msg)
+            end
+            append_to_stream(action.stream_id, messages)
+            should_ack = true
+
+          when Actions::Schedule
+            messages = action.messages.map do |msg|
+              event.correlate(msg)
+            end
+            schedule_messages(messages, at: action.at)
+            should_ack = true
+
+          when Actions::RETRY
+            release_offset(row[:offset_id])
+
+          else
+            raise ArgumentError, "Unexpected Sourced::Actions type, but got: #{action.class}. Group #{group_id}. Message #{event}"
           end
-
-        in [:append_next, Array => messages] #Actions::AppendNext
-          messages = messages.map do |msg|
-            event.correlate(msg)
-          end
-          messages.group_by(&:stream_id).each do |stream_id, stream_messages|
-            append_next_to_stream(stream_id, stream_messages)
-          end
-          ack_event(group_id, row[:stream_id_fk], row[:global_seq])
-
-        in [:append_after, stream_id, Array => messages] # Actions::AppendAfter
-          messages = messages.map do |msg|
-            event.correlate(msg)
-          end
-          append_to_stream(stream_id, messages)
-          ack_event(group_id, row[:stream_id_fk], row[:global_seq])
-
-        in [:schedule, Array => messages, Time => at] # Actions::Schedule
-          messages = messages.map do |msg|
-            event.correlate(msg)
-          end
-          schedule_messages(messages, at: at)
-          ack_event(group_id, row[:stream_id_fk], row[:global_seq])
-
-        in Actions::RETRY
-          release_offset(row[:offset_id])
-
-        else
-          raise ArgumentError, "Unexpected Sourced::Actions type, but got: #{action.class}. Group #{group_id}. Message #{event}"
         end
+
+        ack_event(group_id, row[:stream_id_fk], row[:global_seq]) if should_ack
       end
 
       # Insert missing offsets for a consumer group and all streams.
