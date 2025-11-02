@@ -40,42 +40,44 @@ module Sourced
         transaction do
           group = @state.groups[group_id]
           if group.active? && (group.retry_at.nil? || group.retry_at <= Time.now)
-            group.reserve_next(reactor.handled_messages, start_from, method(:process_action), &)
+            group.reserve_next(reactor.handled_messages, start_from, method(:process_actions), &)
           end
         end
       end
 
-      private def process_action(action, ack, event)
-        case action
-        in Actions::OK
-          ack.()
+      private def process_actions(actions, ack, event)
+        should_ack = false
+        actions = [actions] unless actions.is_a?(Array)
 
-        in [:multiple, actions]
-          actions.each do |a| 
-            process_action(a, ack, event)
+        actions.each do |action|
+          case action
+          when Actions::OK
+            should_ack = true
+
+          when Actions::AppendNext
+            messages = correlate(event, action.messages)
+            messages.group_by(&:stream_id).each do |stream_id, stream_messages|
+              append_next_to_stream(stream_id, stream_messages)
+            end
+            should_ack = true
+
+          when Actions::AppendAfter
+            append_to_stream(action.stream_id, correlate(event, action.messages))
+            should_ack = true
+
+          when Actions::Schedule
+            schedule_messages correlate(event, action.messages), at: action.at
+            should_ack = true
+
+          when Actions::RETRY
+            # Don't ack
+
+          else
+            raise ArgumentError, "Unexpected Sourced::Actions type, but got: #{action.class}"
           end
-
-        in [:append_next, Array => messages] #Actions::AppendNext
-          messages = correlate(event, messages)
-          messages.group_by(&:stream_id).each do |stream_id, stream_messages|
-            append_next_to_stream(stream_id, stream_messages)
-          end
-          ack.()
-
-        in [:append_after, stream_id, Array => messages] # Actions::AppendAfter
-          append_to_stream(stream_id, correlate(event, messages))
-          ack.()
-
-        in [:schedule, Array => messages, Time => at] # Actions::Schedule
-          schedule_messages correlate(event, messages), at: at
-          ack.()
-
-        in Actions::RETRY
-          # Don't ack
-
-        else
-          raise ArgumentError, "Unexpected Sourced::Actions type, but got: #{action.class}"
         end
+
+        ack.() if should_ack
       end
 
       private def correlate(source_message, messages)

@@ -379,7 +379,7 @@ module BackendExamples
         end
       end
 
-      it 'handles an Actions::Multiple' do
+      it 'handles multiple actions' do
         cmd_a = Tests::DoSomething.parse(stream_id: 's1', correlation_id: SecureRandom.uuid, seq: 1, payload: { account_id: 1 })
         evt_b = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 2 })
         evt_c = Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 3 })
@@ -401,7 +401,7 @@ module BackendExamples
         backend.reserve_next_for_reactor(reactor1) do |msg|
           action1 = Sourced::Actions::AppendNext.new([evt_b])
           action2 = Sourced::Actions::Schedule.new([evt_c], at: now + 10)
-          Sourced::Actions::Multiple.new([action1, action2])
+          [action1, action2]
         end
 
         messages = backend.read_event_stream('s1')
@@ -694,16 +694,6 @@ module BackendExamples
           expect(events.map(&:causation_id)).to eq([evt1.id, evt1.id])
           expect(events.map(&:correlation_id)).to eq([correlation_id, correlation_id])
           expect(events.map(&:metadata).map { |m| m[:tid] }).to eq(['evt1', 'evt1'])
-        end
-      end
-
-      describe 'returning destructured actions' do
-        it 'works' do
-          backend.reserve_next_for_reactor(reactor1) do |_msg|
-            [:append_next, [Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 2 })]]
-          end
-
-          expect(backend.stats.groups.first[:newest_processed]).to eq(1)
         end
       end
 

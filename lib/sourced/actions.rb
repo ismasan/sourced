@@ -2,18 +2,8 @@
 
 module Sourced
   module Actions
-    RETRY = [:retry].freeze
-    OK = [:ok].freeze
-
-    class Multiple
-      attr_reader :actions
-
-      def initialize(actions)
-        @actions = actions
-      end
-
-      def deconstruct = [:multiple, @actions]
-    end
+    RETRY = :retry
+    OK = :ok
 
     # Append mesages to event store
     # using Backend#append_next_to_stream
@@ -31,8 +21,6 @@ module Sourced
       def ==(other)
         other.is_a?(self.class) && messages == other.messages
       end
-
-      def deconstruct = [:append_next, messages]
 
       def each(&block)
         return enum_for(:each) unless block_given?
@@ -55,8 +43,6 @@ module Sourced
         @stream_id = stream_id
         @messages = messages
       end
-
-      def deconstruct = [:append_after, stream_id, messages]
     end
 
     class Schedule
@@ -65,8 +51,6 @@ module Sourced
       def initialize(messages, at:)
         @messages, @at = messages, at
       end
-
-      def deconstruct = [:schedule, messages, at]
     end
   end
 end

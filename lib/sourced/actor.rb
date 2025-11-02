@@ -365,7 +365,7 @@ module Sourced
         actions << Actions::Schedule.new(msgs, at:)
       end
 
-      Actions::Multiple.new(actions)
+      actions
     end
 
     # Override React#__update_on_evolve
