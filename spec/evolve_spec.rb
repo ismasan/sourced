@@ -10,7 +10,7 @@ module EvolveTest
     Event2 = Sourced::Message.define('evolvetest.reactor.event2')
     Event3 = Sourced::Message.define('evolvetest.reactor.event3')
 
-    state do
+    state do |_id|
       []
     end
 
@@ -30,7 +30,7 @@ module EvolveTest
   class Noop
     include Sourced::Evolve
 
-    state do
+    state do |_id|
       []
     end
 
@@ -40,7 +40,7 @@ module EvolveTest
   class EvolveAll
     include Sourced::Evolve
 
-    state do
+    state do |_id|
       []
     end
 
