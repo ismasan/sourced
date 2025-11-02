@@ -18,6 +18,16 @@ module TestDomain
   ConfirmArchive = Sourced::Message.define('actor.todos.archive_confirm')
   ArchiveConfirmed = Sourced::Message.define('actor.todos.archive_confirmed')
 
+  class Tracer
+    attr_reader :calls
+
+    def initialize
+      @calls = []
+    end
+  end
+
+  SyncTracer = Tracer.new
+
   class TodoListActor < Sourced::Actor
     state do |id|
       TodoList.new(nil, 0, id, :new, [])
@@ -34,6 +44,13 @@ module TestDomain
 
     event ListStarted do |list, _event|
       list.status = :active
+    end
+
+    # Test that this block is returned after #decide
+    # wrapperd as a Sourced::Actions::Sync
+    # to be run within the same transaction as the append action
+    sync do |command:, events:, state:|
+      SyncTracer.calls << [command, events, state]
     end
 
     event :item_added, name: String do |list, event|
@@ -150,21 +167,42 @@ RSpec.describe Sourced::Actor do
         )
       end
 
-      it 'returns an Sourced::Actions::AppendAfter action with events to append' do
+      it 'returns an array with Sourced::Actions::AppendAfter Sourced::Actions::Sync actions' do
         result = TestDomain::TodoListActor.handle(cmd, history: [cmd])
-        expect(result).to be_a(Sourced::Actions::AppendAfter)
-        expect(result.stream_id).to eq(cmd.stream_id)
+        expect(result.map(&:class)).to eq([Sourced::Actions::AppendAfter, Sourced::Actions::Sync])
+      end
+
+      specify 'the AppendAfter action contains messages to append' do
+        result = TestDomain::TodoListActor.handle(cmd, history: [cmd])
+        append_action = result[0]
+        expect(append_action.stream_id).to eq(cmd.stream_id)
         # two new events, seq 2, and 3
-        expect(result.messages.map(&:seq)).to eq([2, 3])
-        result.messages[0].tap do |msg|
+        expect(append_action.messages.map(&:seq)).to eq([2, 3])
+        append_action.messages[0].tap do |msg|
           expect(msg).to be_a(TestDomain::ListStarted)
           expect(msg.stream_id).to eq(cmd.stream_id)
           expect(msg.metadata[:foo]).to eq('bar')
         end
-        result.messages[1].tap do |msg|
+        append_action.messages[1].tap do |msg|
           expect(msg).to be_a(TestDomain::TodoListActor::ItemAdded)
           expect(msg.stream_id).to eq(cmd.stream_id)
           expect(msg.metadata[:foo]).to eq('bar')
+        end
+      end
+
+      specify 'the Sync action contains a side-effect to run' do
+        result = TestDomain::TodoListActor.handle(cmd, history: [cmd])
+        append_action = result[0]
+        sync_action = result[1]
+
+        expect(TestDomain::SyncTracer.calls).to eq([])
+        sync_action.call
+        expect(TestDomain::SyncTracer.calls.size).to eq(1)
+        TestDomain::SyncTracer.calls.first.tap do |(command, events, state)|
+          expect(command).to eq(cmd)
+          expect(events).to eq(append_action.messages)
+          expect(state).to be_a(TestDomain::TodoList)
+          expect(state.items.size).to eq(1)
         end
       end
     end
