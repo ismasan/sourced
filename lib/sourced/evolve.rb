@@ -43,13 +43,16 @@ module Sourced
     # Initialize in-memory state for this evolver.
     # Override this method to provide a custom initial state.
     # @return [Any] the initial state
-    def init_state
+    def init_state(_id)
       nil
     end
 
     def state
-      @state ||= init_state
+      @state ||= init_state(id)
     end
+
+    # Override this in host class
+    def id = nil
 
     # Apply a list of events to a piece of state
     # by running event handlers registered in this class

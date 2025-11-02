@@ -19,8 +19,8 @@ module TestDomain
   ArchiveConfirmed = Sourced::Message.define('actor.todos.archive_confirmed')
 
   class TodoListActor < Sourced::Actor
-    state do
-      TodoList.new(nil, 0, nil, :new, [])
+    state do |id|
+      TodoList.new(nil, 0, id, :new, [])
     end
 
     command AddItem do |list, cmd|
