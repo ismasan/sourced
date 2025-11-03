@@ -105,6 +105,7 @@ module Sourced
     Router.registered?(reactor)
   end
 
+  # TODO: deprecate these
   # Schedule commands for background processing by registered actors.
   #
   # @param commands [Array<Command>] Array of command instances to schedule
@@ -121,6 +122,34 @@ module Sourced
 
   def self.handle_command(command)
     Router.handle_command(command)
+  end
+
+  class Loader
+    def initialize(backend: Sourced.config.backend)
+      @backend = backend
+    end
+
+    def load(actor, after: nil, upto: nil)
+      after ||= actor.seq
+      events = @backend.read_event_stream(actor.id, after:, upto:)
+      actor.evolve(events)
+      actor
+    end
+  end
+
+  # Load or catch up an Actor from its event history
+  # @example
+  #   actor = MyActor.new(id: '123')
+  #   Sourced.load(actor)
+  #   actor.seq # Integer
+  #
+  # Actor must implement:
+  #   #id() => String
+  #   #seq() => Integer
+  #   #evolve(events)
+  #
+  def self.load(reactor, backend: config.backend, after: nil, upto: nil)
+    Loader.new(backend:).load(reactor, after:, upto:)
   end
 
   # Generate a standardized method name for message handlers.
