@@ -275,10 +275,11 @@ module Sourced
 
     attr_reader :id, :seq, :uncommitted_events
 
-    def initialize(id: Sourced.new_stream_id)
+    def initialize(id: Sourced.new_stream_id, logger: Sourced.config.logger)
       @id = id
       @seq = 0
       @uncommitted_events = []
+      @logger = logger
       @__current_command = Sourced::Command.new(stream_id: id)
     end
 
@@ -344,8 +345,9 @@ module Sourced
 
     private
 
+    attr_reader :__current_command, :logger
 
-    # Override React#__update_on_evolve
+    # Override Evolve#__update_on_evolve
     def __update_on_evolve(event)
       raise DifferentStreamError.new(self, event) if id != event.stream_id
       raise SmallerSequenceError.new(self, event) if seq >= event.seq
