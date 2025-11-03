@@ -2,6 +2,25 @@
 
 module Sourced
   module Actions
+    # Split a list of messages into 
+    # Actions::AppendNext or 
+    # Actions::Schedule
+    # based on their #created_at
+    def self.build_for(messages)
+      actions = []
+      return actions if messages.empty?
+
+      # TODO: I really need a uniform Clock object
+      now = Time.now
+      to_schedule, to_append = messages.partition { |e| e.created_at > now }
+      actions << AppendNext.new(to_append) if to_append.any?
+      to_schedule.group_by(&:created_at).each do |at, msgs|
+        actions << Schedule.new(msgs, at:)
+      end
+
+      actions
+    end
+
     RETRY = :retry
     OK = :ok
 
