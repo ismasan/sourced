@@ -10,6 +10,8 @@ class ReactTestReactor
   Event3 = Sourced::Message.define('reacttest.event3')
   Event4 = Sourced::Message.define('reacttest.event4')
   Event5 = Sourced::Message.define('reacttest.event5')
+  Nope = Sourced::Message.define('reacttest.nope')
+
   Cmd1 = Sourced::Message.define('reacttest.cmd1') do
     attribute :name, String
   end
@@ -56,6 +58,14 @@ RSpec.describe Sourced::React do
       ReactTestReactor::Event4,
       ReactTestReactor::Event5
     ])
+  end
+
+  specify '#reacts_to?(message)' do
+    reactor = ReactTestReactor.new
+    evt1 = ReactTestReactor::Event1.new(stream_id: '1')
+    evt2 = ReactTestReactor::Nope.new(stream_id: '1')
+    expect(reactor.reacts_to?(evt1)).to be(true)
+    expect(reactor.reacts_to?(evt2)).to be(false)
   end
 
   describe '#react' do
