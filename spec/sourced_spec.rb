@@ -34,8 +34,8 @@ RSpec.describe Sourced do
         info.group_id = 'reactor1'
       end
 
-      def self.handled_events = [Sourced::Event]
-      def self.handle_events(*) = []
+      def self.handled_messages = [Sourced::Event]
+      def self.handle(...) = []
     end
 
     reactor2 = Class.new do
@@ -45,8 +45,8 @@ RSpec.describe Sourced do
         info.group_id = 'reactor2'
       end
 
-      def self.handled_events = [Sourced::Event]
-      def self.handle_events(*) = []
+      def self.handled_messages = [Sourced::Event]
+      def self.handle(...) = []
     end
 
     Sourced.register(reactor1)
