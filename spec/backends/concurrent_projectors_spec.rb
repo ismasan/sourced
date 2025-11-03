@@ -31,12 +31,12 @@ module ConcurrencyExamples
 
   STORE = Store.new
 
-  class Projector < Sourced::Projector::EventSourced
+  class Projector < Sourced::Projector::StateStored
     state do |id|
       STORE.get(id) || {id:, seq: 0, seqs: []}
     end
 
-    sync do |state, _command, _events|
+    sync do |state:, events:, replaying:|
       STORE.set(state[:id], state)
     end
 
@@ -58,6 +58,7 @@ RSpec.describe 'Processing events concurrently', type: :backend do
   let(:router) { Sourced::Router.new(backend:) }
 
   before do
+    backend.clear!
     backend.uninstall
     backend.install
 
@@ -80,7 +81,7 @@ RSpec.describe 'Processing events concurrently', type: :backend do
   end
 
   specify 'consumes streams concurrently, maintaining per-stream event ordering, consuming all available events for each stream' do
-    workers = 2.times.map do |i|
+    workers = 3.times.map do |i|
       Sourced::Worker.new(name: "worker-#{i}", router:)
     end
 
