@@ -34,6 +34,7 @@ module Sourced
   #
   module React
     PREFIX = 'reaction'
+    EMPTY_ARRAY = [].freeze
 
     def self.included(base)
       super
@@ -45,7 +46,11 @@ module Sourced
     def react(events)
       __handling_reactions(Array(events)) do |event|
         method_name = Sourced.message_method_name(React::PREFIX, event.class.to_s)
-        send(method_name, state, event) if respond_to?(method_name)
+        if respond_to?(method_name)
+          Array(send(method_name, state, event)).compact
+        else
+          EMPTY_ARRAY
+        end
       end
     end
 
