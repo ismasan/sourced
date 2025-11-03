@@ -13,69 +13,44 @@ module Sourced
 
     class << self
       # The Reactor interface
-      def handled_events = handled_events_for_evolve
+      def handled_messages = handled_messages_for_evolve
 
-      # Define an initial state factory for this decider.
-      # @example
-      #
-      #   state do |id|
-      #     { id: id, status: 'new' }
-      #   end
-      #
-      # TODO: this is duplicated in Decider.
-      def state(&blk)
-        define_method(:init_state) do |id|
-          blk.call(id)
-        end
-      end
-
-      private :reaction
-
-      def reaction_with_state(event_class = nil, &block)
-        if event_class && !handled_events_for_evolve.include?(event_class)
-          raise ArgumentError, '.reaction_with_state only works with event types handled by this class via .event(event_type)' 
+      def reaction(event_class = nil, &block)
+        if event_class && !handled_messages_for_evolve.include?(event_class)
+          raise ArgumentError, '.reaction only works with event types handled by this class via .event(event_type)' 
         end
 
         super
       end
+
+      def handle(message, replaying:, history:)
+        new(id: message.stream_id).handle(message, replaying:, history:)
+      end
     end
 
-    attr_reader :id, :seq, :state
+    attr_reader :id, :seq
 
-    def initialize(id, backend: Sourced.config.backend, logger: Sourced.config.logger)
+    def initialize(id:, logger: Sourced.config.logger)
       @id = id
       @seq = 0
-      @backend = backend
       @logger = logger
-      @state = init_state(id)
     end
 
     def inspect
       %(<#{self.class} id:#{id} seq:#{seq}>)
     end
 
-    def handle_events(events, replaying:)
-      evolve(state, events)
-      save(state, events, replaying)
+    def handle(message, replaying:)
+      raise NotImplementedError, 'implement me in subclasses'
     end
 
     private
 
-    attr_reader :backend, :logger
+    attr_reader :logger
 
-    def init_state(_id)
-      nil
-    end
-
-    def save(state, events, replaying)
-      backend.transaction do
-        run_sync_blocks(state, nil, events)
-        if replaying
-          []
-        else
-          react_with_state(events, state)
-        end
-      end
+    # Override Evolve#__update_on_evolve
+    def __update_on_evolve(event)
+      @seq = event.seq
     end
 
     # A StateStored projector fetches initial state from
@@ -86,7 +61,7 @@ module Sourced
     #
     #  class CartListings < Sourced::Projector::StateStored
     #    # Fetch listing record from DB, or new one.
-    #    def init_state(id)
+    #    state do |id|
     #      CartListing.find_or_initialize(id)
     #    end
     #
@@ -96,16 +71,34 @@ module Sourced
     #    end
     #
     #    # Sync listing record back to DB
-    #    sync do |listing, _, _|
-    #      listing.save!
+    #    sync do |state:, events:, replaying:|
+    #      state.save!
     #    end
     #  end
     class StateStored < self
       class << self
-        def handle_events(events, replaying: false)
-          instance = new(events.first.stream_id)
-          instance.handle_events(events, replaying:)
+        # State-stored version doesn't load :history
+        def handle(message, replaying: false)
+          new(id: message.stream_id).handle(message, replaying:)
         end
+      end
+
+      def handle(message, replaying:)
+        # Load state from storage  
+        state
+        # Evolve new message
+        evolve(message)
+        # Collect sync actions
+        actions = sync_actions_with(state:, events: [message], replaying:)
+        # Replaying? Just return sync action
+        return actions if replaying
+
+        # Not replaying. Also run reactions
+        if reacts_to?(message)
+          actions += Actions.build_for(react(message))
+        end
+
+        actions
       end
     end
 
@@ -117,7 +110,7 @@ module Sourced
     #
     #  class CartListings < Sourced::Projector::EventSourced
     #    # Initial in-memory state
-    #    def init_state(id)
+    #    state do |id|
     #      { id:, total: 0 }
     #    end
     #
@@ -127,36 +120,25 @@ module Sourced
     #    end
     #
     #    # Sync listing record to a file
-    #    sync do |listing, _, _|
-    #      File.write("/listings/#{listing[:id]}.json", JSON.dump(listing)) 
+    #    sync do |state:, events:, replaying:|
+    #      File.write("/listings/#{state[:id]}.json", JSON.dump(state)) 
     #    end
     #  end
     class EventSourced < self
-      class << self
-        def handle_events(events, replaying: false)
-          # The current state already includes
-          # the new events, so we need to load upto events.first.seq
-          instance = load(events.first.stream_id, upto: events.first.seq - 1)
-          instance.handle_events(events, replaying:)
+      def handle(message, replaying:, history:)
+        # Evolve new message from history
+        evolve(history)
+        # Collect sync actions
+        actions = sync_actions_with(state:, events: [message], replaying:)
+        # Replaying? Just return sync action
+        return actions if replaying
+
+        # Not replaying. Also run reactions
+        if reacts_to?(message)
+          actions += Actions.build_for(react(message))
         end
 
-        # Load from event history
-        #
-        # @param stream_id [String] the stream id
-        # @return [Sourced::Projector::EventSourced]
-        def load(stream_id, upto: nil)
-          new(stream_id).load(upto:)
-        end
-      end
-
-      # TODO: this is also in Decider. DRY up?
-      def load(after: nil, upto: nil)
-        events = backend.read_event_stream(id, after:, upto:)
-        if events.any?
-          @seq = events.last.seq 
-          evolve(state, events)
-        end
-        self
+        actions
       end
     end
   end
