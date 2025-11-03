@@ -337,12 +337,7 @@ module Sourced
         kargs = build_reactor_handle_args(reactor, event, replaying)
 
         # Call the reactor's handle method with the event and any requested keyword arguments
-        result = reactor.handle(event, **kargs)
-        # TODO2: reactor.handle
-        # should return an Array of results
-        # including a type to run "sync" operations
-
-        result
+        reactor.handle(event, **kargs)
       rescue StandardError => e
         logger.warn "[#{PID}]: error handling event #{event.class} with reactor #{reactor} #{e}"
         backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
