@@ -30,7 +30,7 @@ module ProjectorTest
       state.total += event.payload.amount
     end
 
-    sync do |state, _, _events|
+    sync do |state:, events:, replaying:|
       STORE[state.id] = state
     end
   end
@@ -44,7 +44,7 @@ module ProjectorTest
       state.total += event.payload.amount
     end
 
-    sync do |state, _, events|
+    sync do |state:, events:, replaying:|
       STORE[state.id] = [state, events.last.type]
     end
   end
@@ -63,18 +63,18 @@ module ProjectorTest
     # React to a specific event
     reaction Added do |state, event|
       if state.total > 20
-        stream_for(event).command NextCommand, amount: state.total
+        dispatch(NextCommand, amount: state.total).to(event)
       end
     end
 
     # React to any event
     reaction do |state, event|
       if state.total > 10
-        stream_for(event).command NextCommand2, amount: state.total
+        dispatch(NextCommand2, amount: state.total)
       end
     end
 
-    sync do |state, _, _events|
+    sync do |state:, events:, replaying:|
       STORE[state.id] = state
     end
   end
@@ -92,22 +92,34 @@ RSpec.describe Sourced::Projector do
 
     specify 'with new state' do
       e1 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 10 })
-      e2 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 5 })
 
-      ProjectorTest::StateStored.handle_events([e1, e2], replaying: false)
+      actions = ProjectorTest::StateStored.handle(e1, replaying: false)
+      expect(actions.map(&:class)).to eq([Sourced::Actions::Sync])
+      # Run actions. Normally the backend runs these
+      run_sync_blocks(actions)
 
-      expect(ProjectorTest::STORE['111'].total).to eq(15)
+      expect(ProjectorTest::STORE['111'].total).to eq(10)
     end
 
     specify 'with existing state' do
       ProjectorTest::STORE['111'] = ProjectorTest::State.new('111', 10)
 
       e1 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 10 })
-      e2 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 5 })
 
-      ProjectorTest::StateStored.handle_events([e1, e2], replaying: false)
+      actions = ProjectorTest::StateStored.handle(e1, replaying: false)
+      expect(actions.map(&:class)).to eq([Sourced::Actions::Sync])
+      # Run actions. Normally the backend runs these
+      run_sync_blocks(actions)
 
-      expect(ProjectorTest::STORE['111'].total).to eq(25)
+      expect(ProjectorTest::STORE['111'].total).to eq(20)
+    end
+
+    it 'increments @seq' do
+      e1 = ProjectorTest::Added.parse(stream_id: '222', seq: 1, payload: { amount: 12 })
+      e2 = ProjectorTest::Probed.parse(stream_id: '222', seq: 2)
+      projector = ProjectorTest::StateStored.new(id: '222')
+      projector.evolve([e1, e2])
+      expect(projector.seq).to eq(2)
     end
   end
 
@@ -117,30 +129,48 @@ RSpec.describe Sourced::Projector do
       e2 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 5 })
       e3 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 6 })
 
-      commands = ProjectorTest::StateStoredWithReactions.handle_events([e1, e2], replaying: false)
-      expect(commands).to eq([])
+      actions = ProjectorTest::StateStoredWithReactions.handle(e1, replaying: false)
+      expect(actions.map(&:class)).to eq([Sourced::Actions::Sync])
+      run_sync_blocks(actions)
 
-      commands = ProjectorTest::StateStoredWithReactions.handle_events([e3], replaying: false)
-      expect(ProjectorTest::STORE['222'].total).to eq(21)
-      expect(commands.map(&:class)).to eq([ProjectorTest::NextCommand])
-      expect(commands.map(&:stream_id)).to eq(['222'])
-      expect(commands.first.payload.amount).to eq(21)
+      actions = ProjectorTest::StateStoredWithReactions.handle(e1, replaying: false)
+      expect(actions.map(&:class)).to eq([Sourced::Actions::Sync])
+      run_sync_blocks(actions)
+
+      actions = ProjectorTest::StateStoredWithReactions.handle(e2, replaying: false)
+      expect(actions.map(&:class)).to eq([Sourced::Actions::Sync, Sourced::Actions::AppendNext])
+      run_sync_blocks(actions)
+
+      actions = ProjectorTest::StateStoredWithReactions.handle(e3, replaying: false)
+      expect(actions.map(&:class)).to eq([Sourced::Actions::Sync, Sourced::Actions::AppendNext])
+      run_sync_blocks(actions)
+      expect(ProjectorTest::STORE['222'].total).to eq(31)
+      expect(actions.last.messages.map(&:class)).to eq([ProjectorTest::NextCommand])
+      expect(actions.last.messages.map(&:stream_id)).to eq(['222'])
+      expect(actions.last.messages.first.payload.amount).to eq(31)
     end
 
     it 'reacts to wildcard events, if it evolves from them' do
       e1 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 12 })
       e2 = ProjectorTest::Probed.parse(stream_id: '222')
 
-      commands = ProjectorTest::StateStoredWithReactions.handle_events([e1, e2], replaying: false)
-      expect(commands.map(&:class)).to eq([ProjectorTest::NextCommand2])
+      actions = ProjectorTest::StateStoredWithReactions.handle(e1, replaying: false)
+      expect(actions.map(&:class)).to eq([Sourced::Actions::Sync])
+      run_sync_blocks(actions)
+      actions = ProjectorTest::StateStoredWithReactions.handle(e2, replaying: false)
+      expect(actions.map(&:class)).to eq([Sourced::Actions::Sync, Sourced::Actions::AppendNext])
+      expect(actions.last.messages.map(&:class)).to eq([ProjectorTest::NextCommand2])
     end
 
     it 'does not react if replaying' do
-      e1 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 22 })
+      e1 = ProjectorTest::Added.parse(stream_id: '222', payload: { amount: 12 })
+      e2 = ProjectorTest::Probed.parse(stream_id: '222')
 
-      commands = ProjectorTest::StateStoredWithReactions.handle_events([e1], replaying: true)
-      expect(commands).to eq([])
-      expect(ProjectorTest::STORE['222'].total).to eq(22)
+      actions = ProjectorTest::StateStoredWithReactions.handle(e1, replaying: false)
+      expect(actions.map(&:class)).to eq([Sourced::Actions::Sync])
+      run_sync_blocks(actions)
+      actions = ProjectorTest::StateStoredWithReactions.handle(e2, replaying: true)
+      expect(actions.map(&:class)).to eq([Sourced::Actions::Sync])
     end
 
     it 'rejects reactions to events not handled by .event handlers' do
@@ -158,31 +188,21 @@ RSpec.describe Sourced::Projector do
       expect(ProjectorTest::EventSourced.consumer_info.group_id).to eq('ProjectorTest::EventSourced')
     end
 
-    specify 'with no previous events' do
+    specify 'it builds state from history, returns sync action to persist it' do
       e1 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 10 })
       e2 = ProjectorTest::Added.parse(stream_id: '111', payload: { amount: 5 })
 
-      result = ProjectorTest::EventSourced.handle_events([e1, e2], replaying: false)
+      # In Sourced's arch, the new message is included in the history
+      actions = ProjectorTest::EventSourced.handle(e2, replaying: false, history: [e1, e2])
+      run_sync_blocks(actions)
 
-      expect(result).to eq([])
       obj, last_event_type = ProjectorTest::STORE['111']
       expect(obj.total).to eq(15)
       expect(last_event_type).to eq('prtest.added')
     end
+  end
 
-    specify 'with previous events' do
-      e1 = ProjectorTest::Added.parse(stream_id: '111', seq: 1, payload: { amount: 10 })
-      e2 = ProjectorTest::Added.parse(stream_id: '111', seq: 2, payload: { amount: 5 })
-      e3 = ProjectorTest::Added.parse(stream_id: '111', seq: 3, payload: { amount: 7 })
-
-      Sourced.config.backend.append_to_stream('111', e1)
-
-      result = ProjectorTest::EventSourced.handle_events([e2, e3], replaying: false)
-
-      expect(result).to eq([])
-      obj, last_event_type = ProjectorTest::STORE['111']
-      expect(obj.total).to eq(22)
-      expect(last_event_type).to eq('prtest.added')
-    end
+  private def run_sync_blocks(actions)
+    actions.filter{ |a| a.is_a?(Sourced::Actions::Sync) }.each(&:call)
   end
 end
