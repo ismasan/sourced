@@ -90,6 +90,18 @@ RSpec.describe Sourced::React do
       end
     end
 
+    it 'accepts single message' do
+      evt1 = ReactTestReactor::Event1.new(stream_id: '1')
+      commands = ReactTestReactor.new.react(evt1)
+      expect(commands.first).to be_a(ReactTestReactor::Cmd1)
+    end
+
+    it 'returns an empty array if the message is not supported' do
+      evt1 = ReactTestReactor::Nope.new(stream_id: '1')
+      commands = ReactTestReactor.new.react(evt1)
+      expect(commands.empty?).to be(true)
+    end
+
     it 'runs wildcard reactions' do
       evt4 = ReactTestReactor::Event4.new(stream_id: '1', seq: 1)
       commands = ReactTestReactor.new.react(evt4)
