@@ -57,11 +57,20 @@ module EvolveTest
 end
 
 RSpec.describe Sourced::Evolve do
-  specify '.evolve' do
-    evt1 = EvolveTest::Reactor::Event1.new(stream_id: '1', seq: 1)
-    evt2 = EvolveTest::Reactor::Event2.new(stream_id: '1', seq: 2)
-    state = EvolveTest::Reactor.new.evolve([evt1, evt2])
-    expect(state).to eq([evt1, evt2])
+  describe '#evolve' do
+    it 'evolves instance' do
+      evt1 = EvolveTest::Reactor::Event1.new(stream_id: '1', seq: 1)
+      evt2 = EvolveTest::Reactor::Event2.new(stream_id: '1', seq: 2)
+      state = EvolveTest::Reactor.new.evolve([evt1, evt2])
+      expect(state).to eq([evt1, evt2])
+    end
+
+    it 'accepts single message' do
+      evt1 = EvolveTest::Reactor::Event1.new(stream_id: '1', seq: 1)
+      instance = EvolveTest::Reactor.new
+      instance.evolve(evt1)
+      expect(instance.state).to eq([evt1])
+    end
   end
 
   specify '.handled_messages_for_evolve' do

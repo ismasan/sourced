@@ -61,7 +61,7 @@ module Sourced
     # @param events [Array<Sourced::Message>]
     # @return [Object]
     def evolve(events)
-      events.each do |event|
+      Array(events).each do |event|
         method_name = Sourced.message_method_name(Evolve::PREFIX, event.class.to_s)
         # We might be evolving old events in history
         # even if we don't have handlers for them anymore
