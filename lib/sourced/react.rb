@@ -49,6 +49,11 @@ module Sourced
       end
     end
 
+    # TODO: O(1) lookup
+    def reacts_to?(message)
+      self.class.handled_messages_for_react.include?(message.class)
+    end
+
     private
 
     def __handling_reactions(events, &)
