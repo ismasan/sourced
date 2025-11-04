@@ -148,8 +148,27 @@ module Sourced
   #   #seq() => Integer
   #   #evolve(events)
   #
-  def self.load(reactor, backend: config.backend, after: nil, upto: nil)
-    Loader.new(backend:).load(reactor, after:, upto:)
+  # It also supports passing a Reactor class (Actor, Evolver)
+  # and a stream_id
+  # @example
+  #   actor = Sourced.load(MyActor, 'order-123')
+  #   actor = Sourced.load(MyActor, 'order-123', after: 20)
+  def self.load(*args)
+    reactor, options = case args
+    in [ReactorInterface => r, String => stream_id, Hash => opts]
+      [r.new(id: stream_id), opts]
+    in [ReactorInterface => r, String => stream_id]
+      [r.new(id: stream_id), {}]
+    in [Evolve => r, Hash => opts]
+      [r, opts]
+    in [Evolve => r]
+      [r, {}]
+    else
+      raise ArgumentError, "expected a Reactor class and stream_id, or a Reactor instance, but got #{args.inspect}"
+    end
+
+    backend = options.delete(:backend) || config.backend
+    Loader.new(backend:).load(reactor, **options)
   end
 
   # Generate a standardized method name for message handlers.
