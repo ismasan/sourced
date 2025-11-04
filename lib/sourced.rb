@@ -171,6 +171,28 @@ module Sourced
     Loader.new(backend:).load(reactor, **options)
   end
 
+  # Load history for a reactor, or a stream id string
+  # @example
+  #   history = Sourced.history_for('order-123')
+  #   history = Sourced.history_for('order-123', upto: 20)
+  #   history = Sourced.history_for(order_actor)
+  #
+  # @param stream_id [String, #id, #stream_id]
+  # @option after [nil, Integer] load messages after this sequence number
+  # @option upto [nil, Integer] load messsages upto this sequence number
+  # @return [Enumerable<Sourced::Message>]
+  def self.history_for(stream_id, after: nil, upto: nil)
+    stream_id = if stream_id.respond_to?(:stream_id)
+      stream_id.stream_id
+    elsif stream_id.respond_to?(:id)
+      stream_id.id
+    else
+      stream_id
+    end
+
+    config.backend.read_event_stream(stream_id, after:, upto:)
+  end
+
   # Generate a standardized method name for message handlers.
   # Used internally to create consistent handler method names.
   #
