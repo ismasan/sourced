@@ -28,21 +28,5 @@ module Sourced
     # @example Use existing UUID
     #   AutoUUID.parse("test-uuid")  # => "test-uuid"
     AutoUUID = UUID::V4.default { SecureRandom.uuid }
-
-    # A type that recursively converts string keys to symbols in nested hashes.
-    # This is commonly used for normalizing payload data in commands and events.
-    #
-    # @example Simple hash symbolization
-    #   SymbolizedHash.parse({ 'name' => 'John' })  # => { name: 'John' }
-    # @example Nested hash symbolization
-    #   SymbolizedHash.parse({ 'user' => { 'name' => 'John' } })  # => { user: { name: 'John' } }
-    # @example Mixed types preserved
-    #   SymbolizedHash.parse({ 'count' => 1, 'active' => true })  # => { count: 1, active: true }
-    SymbolizedHash = Hash[
-      # String keys are converted to symbols, existing symbols are preserved
-      (Symbol | String.transform(::Symbol, &:to_sym)),
-      # Hash values are recursively symbolized, other types pass through unchanged
-      Any.defer { SymbolizedHash } | Any
-    ]
   end
 end
