@@ -37,6 +37,18 @@ RSpec.describe 'Sourced.load' do
     expect(actor.state[:age]).to eq(40)
   end
 
+  it 'load from class and stream_id' do
+    e1 = actor_class[:start].parse(stream_id:, seq: 1, payload: { name: 'Joe' })
+    e2 = actor_class[:update_age].parse(stream_id:, seq: 2, payload: { age: 40 })
+
+    Sourced.config.backend.append_to_stream(stream_id, [e1, e2])
+
+    actor = Sourced.load(actor_class, stream_id)
+    expect(actor).to be_a(actor_class)
+    expect(actor.seq).to eq(2)
+    expect(actor.state[:age]).to eq(40)
+  end
+
   it 'catches up to latest history' do
     actor = actor_class.new(id: stream_id)
 
