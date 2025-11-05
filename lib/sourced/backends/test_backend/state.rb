@@ -19,7 +19,6 @@ module Sourced
           @events = events
           @groups = groups
           @events_by_correlation_id = events_by_correlation_id
-          @command_locks = {}
           @events_by_stream_id = events_by_stream_id
           @stream_id_seq_index = stream_id_seq_index
           @streams = streams
@@ -60,34 +59,6 @@ module Sourced
           next_messages = next_records.map(&:message)
           yield next_messages if next_messages.any?
           next_messages
-        end
-
-        def next_command(&reserve)
-          now = Time.now
-          group = @groups.values.filter(&:active_with_commands?).sort_by(&:oldest_command_date).first
-          return nil unless group
-
-          if block_given?
-            idx = group.commands.index do |c|
-              !@command_locks[c.stream_id] && c.created_at <= now
-            end
-
-            return nil unless idx
-
-            cmd = group.commands[idx]
-            @command_locks[cmd.stream_id] = true
-
-            begin
-              if yield(cmd)
-                group.delete_command(idx)
-              end
-            ensure
-              @command_locks.delete(cmd.stream_id)
-            end
-            cmd
-          else
-            group.commands.first
-          end
         end
 
         def copy

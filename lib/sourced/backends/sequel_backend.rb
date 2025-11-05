@@ -10,14 +10,14 @@ Sequel.extension :pg_json if defined?(PG)
 module Sourced
   module Backends
     # Production backend implementation using Sequel ORM for PostgreSQL and SQLite.
-    # This backend provides persistent storage for events, commands, and consumer state
+    # This backend provides persistent storage for messages, and consumer state
     # with support for concurrency control, pub/sub notifications, and transactional processing.
     #
     # The SequelBackend handles:
     # - Event storage and retrieval with ordering guarantees
-    # - Command scheduling and dispatching
+    # - Message scheduling and dispatching
     # - Consumer group management and offset tracking  
-    # - Concurrency control via database locks
+    # - Concurrency control via database locks and claims
     # - Pub/sub notifications for real-time event processing
     #
     # @example Basic setup with PostgreSQL
@@ -54,7 +54,6 @@ module Sourced
         @pubsub = SequelPubSub.new(db: @db)
         @logger = logger
         @prefix = prefix
-        @commands_table = table_name(:commands)
         @workers_table = table_name(:workers)
         @scheduled_messages_table = table_name(:scheduled_messages)
         @streams_table = table_name(:streams)
@@ -63,71 +62,6 @@ module Sourced
         @events_table = table_name(:events)
         @setup = false
         logger.info("Connected to #{@db}")
-      end
-
-      # Schedule commands for background processing by a specific consumer group.
-      # Commands are serialized and stored in the commands table for later dispatch.
-      #
-      # @param commands [Array<Command>] Commands to schedule for processing
-      # @param group_id [String] Consumer group ID that will process these commands
-      # @return [Boolean] true if commands were scheduled, false if array was empty
-      # @example Schedule commands for processing
-      #   commands = [CreateCart.new(stream_id: 'cart-1', payload: {})]
-      #   backend.schedule_commands(commands, group_id: 'CartActor')
-      def schedule_commands(commands, group_id:)
-        return false if commands.empty?
-
-        rows = commands.map { |c| serialize_command(c, group_id:) }
-
-        db.transaction do
-          # TODO: reactors will be created in advance
-          # Here we can just update it.
-          upsert_consumer_group(group_id)
-          db[commands_table].multi_insert(rows)
-        end
-        true
-      end
-
-      # TODO: if the application raises an exception
-      # the command row is not deleted, so that it can be retried.
-      # However, if a command fails _permanently_ there's no point in keeping it in the queue,
-      # this ties with unresolved error handling in event handling, too.
-      #
-      # @yield [command] Optional block to reserve the command for processing
-      # @yieldparam command [Command] The command to potentially reserve
-      # @yieldreturn [Boolean] true to delete the command (reserve it), false to keep it
-      # @return [Command, nil] The next command or nil if no commands available
-      # @example Get next command without reserving
-      #   command = backend.next_command
-      # @example Reserve command for processing
-      #   backend.next_command do |command|
-      #     # Process command and return true to remove from queue
-      #     process_command(command)
-      #     true
-      #   end
-      # @note Commands that fail processing are kept in the queue for retry
-      def next_command(&reserve)
-        now = Time.now
-
-        if block_given?
-          db.transaction do
-            row = db.fetch(sql_for_next_command, now, now).first
-            return unless row
-
-            cmd = deserialize_event(row)
-            # reserve block can return falsey
-            # to keep the command in the bus. For example when retrying.
-            if yield(cmd)
-              db[commands_table].where(id: cmd.id).delete
-            end
-            cmd
-          end
-        else
-          db.transaction do
-            row = db.fetch(sql_for_next_command, now, now).first
-            row ? deserialize_event(row) : nil
-          end
-        end
       end
 
       # Data structure for backend statistics and monitoring information.
@@ -730,7 +664,6 @@ module Sourced
         # Truncate and restart global_seq increment first
         db[events_table].truncate(cascade: true, only: true, restart: true)
         db[events_table].delete
-        db[commands_table].delete
         db[consumer_groups_table].delete
         db[offsets_table].delete
         db[streams_table].delete
@@ -766,13 +699,12 @@ module Sourced
 
       private
 
-      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :commands_table, :scheduled_messages_table, :workers_table
+      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :scheduled_messages_table, :workers_table
 
       def installer
         @installer ||= Installer.new(
           @db,
           logger:,
-          commands_table:,
           workers_table:,
           scheduled_messages_table:,
           streams_table:,
@@ -780,37 +712,6 @@ module Sourced
           consumer_groups_table:,
           events_table:
         )
-      end
-
-      def sql_for_next_command
-        <<~SQL
-          WITH next_command AS (
-              SELECT 
-              c.id,
-              c.stream_id,
-              c.type,
-              c.causation_id,
-              c.correlation_id,
-              c.metadata,
-              c.payload,
-              c.created_at,
-              pg_try_advisory_xact_lock(
-                  hashtext(c.consumer_group_id::text),
-                  hashtext(c.stream_id::text)
-              ) as lock_obtained
-              FROM #{commands_table} c
-              INNER JOIN #{consumer_groups_table} r ON c.consumer_group_id = r.group_id
-              WHERE 
-                r.status = '#{ACTIVE}'
-                AND (r.retry_at IS NULL OR r.retry_at <= ?)
-              AND c.created_at <= ? 
-              ORDER BY c.created_at ASC
-          )
-          SELECT *
-          FROM next_command
-          WHERE lock_obtained = true
-          LIMIT 1;
-        SQL
       end
 
       def sql_for_reserve_next_with_events(handled_messages, group_id:, now:, start_from: nil)
@@ -889,14 +790,6 @@ module Sourced
         db[consumer_groups_table]
           .insert_conflict(target: :group_id, update: { status:, updated_at: Time.now })
           .insert(group_id:, status:)
-      end
-
-      def serialize_command(cmd, group_id: nil)
-        row = cmd.to_h.except(:seq)
-        row[:consumer_group_id] = group_id if group_id
-        row[:metadata] = JSON.dump(row[:metadata]) if row[:metadata]
-        row[:payload] = JSON.dump(row[:payload]) if row[:payload]
-        row
       end
 
       def serialize_event(event, stream_id)

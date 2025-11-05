@@ -9,7 +9,7 @@ module Sourced
   #  class CartActor < Sourced::Actor
   #    # Run this block within a transaction
   #    # when appending messages to storage
-  #    sync do |state, command, events|
+  #    sync do |state:, command:, events:|
   #      # Do something here, like updating a view, sending an email, etc.
   #    end
   #  end
@@ -73,19 +73,6 @@ module Sourced
         else
           blk.call(state, command, events)
         end
-      end
-    end
-
-    # Wrap a sync reactor and call it's handle_events method
-    # while also ACKing its offsets for the processed events.
-    # TODO: rethink this
-    class SyncReactor < SimpleDelegator
-      def handle_events(events)
-        Router.handle_and_ack_events_for_reactor(__getobj__, events)
-      end
-
-      def call(_state, _command, events)
-        handle_events(events)
       end
     end
 

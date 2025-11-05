@@ -152,19 +152,6 @@ module Sourced
         end
       end
 
-      def schedule_commands(commands, group_id:)
-        transaction do
-          group = @state.groups[group_id]
-          group.schedule_commands(commands)
-        end
-      end
-
-      def next_command(&)
-        transaction do
-          @state.next_command(&)
-        end
-      end
-
       Stats = Data.define(:stream_count, :max_global_seq, :groups)
 
       def stats
