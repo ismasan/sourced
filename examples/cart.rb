@@ -87,7 +87,7 @@ class Cart < Sourced::Actor
   # new events to the store.
   # So if either fails, eveything is rolled back.
   # ergo, strong consistency.
-  sync do |command, events|
+  sync do |command:, events:, state:|
     puts "#{self.class.name} #{events.last.seq} SYNC"
   end
 
@@ -120,21 +120,13 @@ class CartEmailsSaga < Sourced::Actor
   # Listen for Cart::Placed events and
   # send command to Mailer
   reaction Cart::Placed do |event|
-    event.follow_with_stream_id(
-      Mailer::SendEmail,
-      "mailer-#{event.stream_id}",
-      cart_id: event.stream_id
-    )
+    dispatch(Mailer::SendEmail, cart_id: event.stream_id).to("mailer-#{event.stream_id}")
   end
 
   # Listen for Mailer::EmailSent events and
   # send command to Cart
   reaction Mailer::EmailSent do |event|
-    event.follow_with_stream_id(
-      Cart::Notify,
-      event.payload.cart_id,
-      mailer_id: event.stream_id
-    )
+    dispatch(Cart::Notify, mailer_id: event.stream_id).to(event.payload.cart_id)
   end
 end
 
