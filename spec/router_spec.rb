@@ -21,10 +21,6 @@ module RouterTest
   class DeciderReactor
     extend Sourced::Consumer
 
-    consumer do |c|
-      c.async!
-    end
-
     def self.handled_messages
       [ItemAdded, AddItem, NextCommand]
     end
@@ -33,40 +29,6 @@ module RouterTest
       cmd = NextCommand.parse(stream_id: evt.stream_id)
 
       Sourced::Actions::AppendNext.new([cmd])
-    end
-  end
-
-  class SyncReactor1
-    extend Sourced::Consumer
-
-    consumer do |c|
-      c.sync!
-    end
-
-    # The Reactor interface
-    def self.handled_messages
-      [ItemAdded]
-    end
-
-    def self.handle_events(_evts)
-      []
-    end
-  end
-
-  class SyncReactor2
-    extend Sourced::Consumer
-
-    consumer do |c|
-      c.async = false
-    end
-
-    # The Reactor interface
-    def self.handled_messages
-      []
-    end
-
-    def self.handle_events(_evts, replaying:)
-      []
     end
   end
 
@@ -136,44 +98,6 @@ RSpec.describe Sourced::Router do
   subject(:router) { described_class.new(backend:) }
 
   let(:backend) { Sourced::Backends::TestBackend.new }
-
-  describe '#dispatch_next_command', skip: true do
-    let(:cmd) { RouterTest::AddItem.new(stream_id: '123') }
-
-    before do
-      router.register(RouterTest::DeciderReactor)
-    end
-
-    context 'with successful command handling' do
-      it 'deletes command from bus' do
-        router.dispatch_next_command
-        expect(backend.next_command).to be_nil
-      end
-    end
-
-    context 'when reactor raises exception' do
-      before do
-        router.schedule_commands([cmd])
-        allow(RouterTest::DeciderReactor).to receive(:on_exception)
-        expect(RouterTest::DeciderReactor).to receive(:handle_command).and_raise('boom')
-      end
-
-      it 'invokes .on_exception on reactor' do
-        router.dispatch_next_command
-
-        expect(RouterTest::DeciderReactor).to have_received(:on_exception) do |exception, message, group|
-          expect(exception.message).to eq('boom')
-          expect(message).to eq(cmd)
-          expect(group).to respond_to(:stop)
-        end
-      end
-
-      it 'does not delete command from bus, so that it can be retried' do
-        router.dispatch_next_command
-        expect(backend.next_command).to eq(cmd)
-      end
-    end
-  end
 
   describe '#handle_next_event_for_reactor' do
     let(:event) { RouterTest::ItemAdded.new(stream_id: '123') }
@@ -326,6 +250,14 @@ RSpec.describe Sourced::Router do
     end
   end
 
+  specify 'class-level API' do
+    expect(router.async_reactors).to eq(Sourced::Router.async_reactors)
+    expect(Sourced::Router).to respond_to(:register)
+    expect(Sourced::Router).to respond_to(:registered?)
+    expect(Sourced::Router).to respond_to(:handle_next_event_for_reactor)
+    expect(Sourced::Router).to respond_to(:backend)
+  end
+
   describe '#register' do
     before do
       allow(backend).to receive(:register_consumer_group)
@@ -342,33 +274,12 @@ RSpec.describe Sourced::Router do
     end
   end
 
-  describe '#schedule_commands', skip: true do
-    it 'schedules commands for the right target deciders' do
-      router.register(RouterTest::DeciderReactor)
-      cmd = RouterTest::AddItem.new
-      expect(backend).to receive(:schedule_commands).with([cmd], group_id: RouterTest::DeciderReactor.consumer_info.group_id)
-      router.schedule_commands([cmd])
-    end
-  end
-
   describe '#register' do
     it 'registers Reactor interfaces and registers group' do
       expect(backend).to receive(:register_consumer_group).with(RouterTest::DeciderReactor.consumer_info.group_id)
       router.register(RouterTest::DeciderReactor)
       expect(router.async_reactors).to include(RouterTest::DeciderReactor)
       expect(router.registered?(RouterTest::DeciderReactor)).to be true
-    end
-
-    it 'registers async reactors' do
-      pending 'Re-think sync reactors'
-      expect(true).to be false
-      # router.register(RouterTest::SyncReactor1)
-      # router.register(RouterTest::SyncReactor2)
-      #
-      # evt = RouterTest::ItemAdded.new
-      # expect(router).to receive(:handle_and_ack_events_for_reactor).with(RouterTest::SyncReactor1, [evt])
-      # expect(router).not_to receive(:handle_and_ack_events_for_reactor).with(RouterTest::SyncReactor2, [evt])
-      # router.handle_events([evt])
     end
 
     it 'raises if registering a non-compliant interface' do

@@ -4,7 +4,7 @@ module Sourced
   module Backends
     class TestBackend
       class Group
-        attr_reader :group_id, :commands, :oldest_command_date
+        attr_reader :group_id
         attr_accessor :status, :error_context, :retry_at
 
         Offset = Struct.new(:stream_id, :index, :locked)
@@ -12,9 +12,7 @@ module Sourced
         def initialize(group_id, backend)
           @group_id = group_id
           @backend = backend
-          @commands = []
           @status = :active
-          @oldest_command_date = nil
           @error_context = {}
           @retry_at = nil
           @highest_index = -1
@@ -22,7 +20,6 @@ module Sourced
         end
 
         def active? = @status == :active
-        def active_with_commands? = active? && !!@oldest_command_date
 
         def stop(reason = nil)
           @error_context[:reason] = reason if reason
@@ -53,16 +50,6 @@ module Sourced
             stream_count:,
             retry_at:
           }
-        end
-
-        def schedule_commands(commands)
-          @commands = (@commands + commands).sort_by(&:created_at)
-          @oldest_command_date = @commands.first&.created_at
-        end
-
-        def delete_command(idx)
-          @commands.delete_at(idx)
-          @oldest_command_date = @commands.first&.created_at
         end
 
         def reindex
