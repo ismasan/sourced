@@ -80,7 +80,7 @@ module Sourced
             # Don't ack
 
           else
-            raise ArgumentError, "Unexpected Sourced::Actions type, but got: #{action.class}"
+            raise ArgumentError, "Expected Sourced::Actions type, but got: #{action.class}"
           end
         end
 
