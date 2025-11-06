@@ -116,13 +116,6 @@ module Sourced
   #     AddItem.new(stream_id: 'cart-123', payload: { product_id: 'p1' })
   #   ]
   #   Sourced.schedule_commands(commands)
-  def self.schedule_commands(commands)
-    Router.schedule_commands(commands)
-  end
-
-  def self.handle_command(command)
-    Router.handle_command(command)
-  end
 
   class Loader
     def initialize(backend: Sourced.config.backend)
