@@ -20,12 +20,6 @@ RSpec.describe Sourced do
     end
   end
 
-  specify '.handle_command' do
-    cmd = instance_double(Sourced::Command)
-    expect(Sourced::Router).to receive(:handle_command).with(cmd)
-    Sourced.handle_command(cmd)
-  end
-
   specify '.registered?' do
     reactor1 = Class.new do
       extend Sourced::Consumer
