@@ -24,6 +24,9 @@ module Sourced
     RETRY = :retry
     OK = :ok
 
+    # ACK an arbitrary message ID
+    Ack = Data.define(:message_id)
+
     # Append mesages to event store
     # using Backend#append_next_to_stream
     # which auto-increments stream sequence

@@ -45,7 +45,7 @@ module Sourced
         end
       end
 
-      private def process_actions(actions, ack, event)
+      private def process_actions(group_id, actions, ack, event, offset)
         should_ack = false
         actions = [actions] unless actions.is_a?(Array)
         actions = actions.compact
@@ -56,6 +56,10 @@ module Sourced
           case action
           when Actions::OK
             should_ack = true
+
+          when Actions::Ack
+            offset.locked = false
+            ack_on(group_id, action.message_id)
 
           when Actions::AppendNext
             messages = correlate(event, action.messages)

@@ -381,6 +381,9 @@ module Sourced
           when Actions::OK
             should_ack = true
 
+          when Actions::Ack
+            ack_on(group_id, action.message_id)
+
           when Actions::AppendNext
             messages = action.messages.map do |msg|
               event.correlate(msg)

@@ -566,6 +566,27 @@ module BackendExamples
         end
       end
 
+      describe 'returning Sourced::Actions::Ack' do
+        it 'ACKS the specific message ID passed' do
+          evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 3 })
+          backend.append_to_stream(evt2.stream_id, [evt2])
+          # First message yielded will be evt1
+          # but we'll ACK evt2 directly
+          backend.reserve_next_for_reactor(reactor1) do |_msg|
+            Sourced::Actions::Ack.new(evt2.id)
+          end
+
+          new_messages = []
+          # No new messages to fetch now, because we ACKed the last one
+          backend.reserve_next_for_reactor(reactor1) do |msg|
+            new_messages << msg
+          end
+
+          expect(new_messages).to eq([])
+          expect(backend.stats.groups.first[:newest_processed]).to eq(2)
+        end
+      end
+
       describe 'returning Sourced::Actions::AppendAfter' do
         it 'appends messages to stream if sequence do not conflict' do
           new_message = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
