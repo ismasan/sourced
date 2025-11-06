@@ -68,7 +68,7 @@ module Sourced
             raise Sourced::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}"
           else
             offset.locked = true
-            yield
+            yield if block_given?
             offset.index = global_seq
             @highest_index = global_seq if global_seq > @highest_index
             offset.locked = false
@@ -77,7 +77,7 @@ module Sourced
 
         NOOP_FILTER = ->(_) { true } 
 
-        def reserve_next(handled_messages, time_window, process_action, &)
+        def reserve_next(handled_messages, time_window, process_actions, &)
           time_filter = time_window.is_a?(Time) ? ->(e) { e.created_at > time_window } : NOOP_FILTER
           evt = nil
           offset = nil
@@ -99,10 +99,10 @@ module Sourced
           if evt
             replaying = @highest_index >= index
             if block_given?
-              result = yield(evt, replaying)
+              actions = yield(evt, replaying)
 
               acker = -> { ack(offset, index) }
-              process_action.(result, acker, evt)
+              process_actions.(group_id, actions, acker, evt, offset)
             end
 
             offset.locked = false
