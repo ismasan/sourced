@@ -60,6 +60,15 @@ RSpec.describe Sourced::Message do
     expect(msg.correlation_id).to eq(msg.id)
   end
 
+  describe '.build' do
+    it 'builds instance with stream_id and payload' do
+      msg = TestMessages::Add.build('aaa', value: 2)
+      expect(msg).to be_a(TestMessages::Add)
+      expect(msg.stream_id).to eq('aaa')
+      expect(msg.payload.value).to eq(2)
+    end
+  end
+
   describe '.from' do
     it 'creates a message from a hash' do
       msg = Sourced::Message.from(stream_id: '123', type: 'test.add', payload: { value: 1 })
