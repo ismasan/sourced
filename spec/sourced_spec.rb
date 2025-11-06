@@ -20,6 +20,35 @@ RSpec.describe Sourced do
     end
   end
 
+  describe '.dispatch(message)' do
+    before(:all) do
+      @message_class = Sourced::Message.define('dispatch.test') do
+        attribute :name, String
+      end
+    end
+
+    it 'appends message' do
+      msg = @message_class.parse(stream_id: 'aaa', payload: { name: 'Joe' })
+      expect(Sourced.dispatch(msg)).to eq(msg)
+      expect(Sourced.config.backend.read_event_stream('aaa').map(&:id)).to eq([msg.id])
+    end
+
+    it 'raises if message is invalid' do
+      msg = @message_class.new(stream_id: 'aaa', payload: { name: 22 })
+      expect {
+        Sourced.dispatch(msg)
+      }.to raise_error(Sourced::InvalidMessageError)
+    end
+
+    it 'raises if backend fails to append' do
+      msg = @message_class.parse(stream_id: 'aaa', payload: { name: 'Joe' })
+      allow(Sourced.config.backend).to receive(:append_next_to_stream).and_return false
+      expect {
+        Sourced.dispatch(msg)
+      }.to raise_error(Sourced::BackendError)
+    end
+  end
+
   specify '.registered?' do
     reactor1 = Class.new do
       extend Sourced::Consumer
