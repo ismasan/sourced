@@ -35,6 +35,20 @@ module Sourced
   # Raised when an invalid reactor is registered
   InvalidReactorError = Class.new(Error)
   
+  BackendError = Class.new(Error)
+
+  class InvalidMessageError < Error
+    attr_reader :message
+
+    def initialize(message)
+      @message = message
+      super <<~ERR
+      Invalid message #{message.class} ('#{message.type}')
+      Errors: #{message.errors.inspect}
+      ERR
+    end
+  end
+
   # Generate a new unique stream identifier, optionally with a prefix.
   # Stream IDs define concurrency boundaries - events for the same stream ID
   # are processed sequentially, while different stream IDs can be processed concurrently.
@@ -105,17 +119,33 @@ module Sourced
     Router.registered?(reactor)
   end
 
-  # TODO: deprecate these
-  # Schedule commands for background processing by registered actors.
+  # Append messages (probably commands) to a stream
+  # auto-incrementing the sequence number
+  # Raises if the message is invalid
+  # This is meant for an app's front-end to dispatch commands into the system
+  # so it's defensive and raises on error
+  # helpers upstream of this can first validate the message
+  # and surface errors back to the UI
+  # TODO: for now it doesn't allow
+  # schedulling future messages.
+  # TODO2: in future we might want to restrict what messages
+  # can be publicly dispatched. Whether that lives here, or
+  # somewhere else, I'm not sure.
   #
-  # @param commands [Array<Command>] Array of command instances to schedule
-  # @return [void]
-  # @example Schedule multiple commands
-  #   commands = [
-  #     CreateCart.new(stream_id: 'cart-123', payload: {}),
-  #     AddItem.new(stream_id: 'cart-123', payload: { product_id: 'p1' })
-  #   ]
-  #   Sourced.schedule_commands(commands)
+  # @param message [Message] the mesagge to append
+  # @raise [InvalidMessageError] if !message.valid?
+  # @return [Message]
+  # @example
+  #   command = CreateCart.new(stream_id: 'cart-123', payload: {}),
+  #   Sourced.dispatch(command)
+  def self.dispatch(message)
+    raise InvalidMessageError.new(message) unless message.valid?
+
+    appended = config.backend.append_next_to_stream(message.stream_id, [message])
+    raise BackendError, "Backend #{config.backend}#append_next_to_stream failed with message #{message.inspect}" unless appended
+
+    message
+  end
 
   class Loader
     def initialize(backend: Sourced.config.backend)
