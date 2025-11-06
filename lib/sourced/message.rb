@@ -135,6 +135,12 @@ module Sourced
       klass.new(attrs)
     end
 
+    def self.build(stream_id, payload = nil)
+      attrs = {stream_id:}
+      attrs[:payload] = payload if payload
+      parse(attrs)
+    end
+
     def initialize(attrs = {})
       unless attrs[:payload]
         attrs = attrs.merge(payload: {})
