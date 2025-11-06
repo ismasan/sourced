@@ -73,6 +73,9 @@ module Sourced
         @lookup = {}
       end
 
+      def keys = @lookup.keys
+      def subclasses = message_class.subclasses
+
       def []=(key, klass)
         @lookup[key] = klass
       end
@@ -81,7 +84,7 @@ module Sourced
         klass = lookup[key]
         return klass if klass
 
-        message_class.subclasses.each do |c|
+        subclasses.each do |c|
           klass = c.registry[key]
           return klass if klass
         end
@@ -89,7 +92,7 @@ module Sourced
       end
 
       def inspect
-        %(<#{self.class}:#{object_id} #{lookup.size} keys, #{message_class.subclasses.size} child registries>)
+        %(<#{self.class}:#{object_id} #{lookup.size} keys, #{subclasses.size} child registries>)
       end
 
       private
