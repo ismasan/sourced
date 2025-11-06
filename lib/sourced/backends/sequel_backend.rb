@@ -412,7 +412,7 @@ module Sourced
             release_offset(row[:offset_id])
 
           else
-            raise ArgumentError, "Unexpected Sourced::Actions type, but got: #{action.class}. Group #{group_id}. Message #{event}"
+            raise ArgumentError, "Expected Sourced::Actions type, but got: #{action.class}. Group #{group_id}. Message #{event}"
           end
         end
 
