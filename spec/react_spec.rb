@@ -10,6 +10,8 @@ class ReactTestReactor
   Event3 = Sourced::Message.define('reacttest.event3')
   Event4 = Sourced::Message.define('reacttest.event4')
   Event5 = Sourced::Message.define('reacttest.event5')
+  Event6 = Sourced::Message.define('reacttest.event6')
+  Event7 = Sourced::Message.define('reacttest.event7')
   Nope = Sourced::Message.define('reacttest.nope')
 
   Cmd1 = Sourced::Message.define('reacttest.cmd1') do
@@ -19,6 +21,9 @@ class ReactTestReactor
   Cmd3 = Sourced::Message.define('reacttest.cmd3')
   NotifyWildcardReaction = Sourced::Message.define('reacttest.NotifyWildcardReaction') do
     attribute :state
+    attribute :event
+  end
+  NotifyVariableReaction = Sourced::Message.define('reacttest.NotifyVariableReaction') do
     attribute :event
   end
 
@@ -47,6 +52,11 @@ class ReactTestReactor
   reaction do |state, event|
     dispatch NotifyWildcardReaction, state:, event:
   end
+
+  # This one will register handlers for multiple events
+  reaction [Event6, Event7] do |state, event|
+    dispatch NotifyVariableReaction, event:
+  end
 end
 
 RSpec.describe Sourced::React do
@@ -56,7 +66,9 @@ RSpec.describe Sourced::React do
       ReactTestReactor::Event2,
       ReactTestReactor::Event3,
       ReactTestReactor::Event4,
-      ReactTestReactor::Event5
+      ReactTestReactor::Event5,
+      ReactTestReactor::Event6,
+      ReactTestReactor::Event7,
     ])
   end
 
@@ -108,6 +120,18 @@ RSpec.describe Sourced::React do
       expect(commands.map(&:class)).to eq([ReactTestReactor::NotifyWildcardReaction])
       expect(commands.first.payload.state[:name]).to eq('test')
       expect(commands.first.payload.event).to eq(evt4)
+    end
+
+    it 'runs reactions to multiple events' do
+      evt6 = ReactTestReactor::Event6.new(stream_id: '1', seq: 1)
+      commands = ReactTestReactor.new.react(evt6)
+      expect(commands.map(&:class)).to eq([ReactTestReactor::NotifyVariableReaction])
+      expect(commands.first.payload.event).to eq(evt6)
+
+      evt7 = ReactTestReactor::Event7.new(stream_id: '1', seq: 1)
+      commands = ReactTestReactor.new.react(evt7)
+      expect(commands.map(&:class)).to eq([ReactTestReactor::NotifyVariableReaction])
+      expect(commands.first.payload.event).to eq(evt7)
     end
   end
 end
