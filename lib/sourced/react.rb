@@ -167,6 +167,14 @@ module Sourced
           return
         end
 
+        if event_class.is_a?(Array)
+          event_class.each do |k|
+            reaction k, &block
+          end
+
+          return
+        end
+
         __validate_message_for_reaction!(event_class)
         unless event_class.is_a?(Class) && event_class < Sourced::Message
           raise ArgumentError,
