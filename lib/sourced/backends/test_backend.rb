@@ -146,13 +146,15 @@ module Sourced
       end
 
       def update_schedule!
+        count = 0
         transaction do
           @state.next_scheduled_messages do |scheduled_messages|
             scheduled_messages.group_by(&:stream_id).each do |stream_id, stream_messages|
               append_next_to_stream(stream_id, stream_messages)
             end
-            scheduled_messages.size
+            count = scheduled_messages.size
           end
+          count
         end
       end
 
