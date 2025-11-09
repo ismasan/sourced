@@ -77,7 +77,7 @@ module Sourced
       end
 
       def wait
-        while instance.status != :complete || instance.status != :failed
+        while instance.status != :complete && instance.status != :failed
           sleep 0.1
           load
         end
