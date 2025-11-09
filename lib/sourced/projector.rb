@@ -10,6 +10,7 @@ module Sourced
     extend Consumer
 
     REACTION_WITH_STATE_PREFIX = 'reaction_with_state'
+    BLANK_ARRAY = [].freeze
 
     class << self
       # The Reactor interface
@@ -23,7 +24,7 @@ module Sourced
         super
       end
 
-      def handle(message, replaying:, history:)
+      def handle(message, replaying:, history: BLANK_ARRAY)
         new(id: message.stream_id).handle(message, replaying:, history:)
       end
     end
