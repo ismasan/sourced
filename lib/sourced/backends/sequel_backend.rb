@@ -527,6 +527,7 @@ module Sourced
       #
       # @param group_id [String]
       def start_consumer_group(group_id)
+        group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         dataset = db[consumer_groups_table].where(group_id: group_id)
         dataset.update(status: ACTIVE, retry_at: nil, error_context: nil)
       end
@@ -534,6 +535,7 @@ module Sourced
       # @param group_id [String]
       # @param reason [#inspect, NilClass]
       def stop_consumer_group(group_id, reason = nil)
+        group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         updating_consumer_group(group_id) do |group|
           group.stop(reason)
         end
@@ -545,6 +547,7 @@ module Sourced
       # @param group_id [String]
       # @return [Boolean]
       def reset_consumer_group(group_id)
+        group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         db.transaction do
           row = db[consumer_groups_table].where(group_id:).select(:id).first
           return unless row

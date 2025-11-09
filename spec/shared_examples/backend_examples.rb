@@ -477,7 +477,8 @@ module BackendExamples
 
         expect(messages).to eq([evt_a1])
 
-        expect(backend.reset_consumer_group('group1')).to be(true)
+        # Anything that responds to #consumer_info.group_id
+        expect(backend.reset_consumer_group(reactor1)).to be(true)
 
         backend.reserve_next_for_reactor(reactor1) do |msg, is_replaying|
           messages << msg

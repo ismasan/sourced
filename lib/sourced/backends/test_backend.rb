@@ -117,6 +117,7 @@ module Sourced
 
       # @param group_id [String]
       def start_consumer_group(group_id)
+        group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         transaction do
           group = @state.groups[group_id]
           group.error_context = {}
@@ -126,6 +127,7 @@ module Sourced
       end
 
       def stop_consumer_group(group_id, error = nil)
+        group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         transaction do
           group = @state.groups[group_id]
           group.stop(error)
@@ -133,6 +135,7 @@ module Sourced
       end
 
       def reset_consumer_group(group_id)
+        group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         transaction do
           group = @state.groups[group_id]
           group.reset!
