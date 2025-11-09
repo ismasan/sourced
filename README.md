@@ -2,6 +2,8 @@
 
 **WORK IN PROGRESS**
 
+NOTE: This library is being reworked [in this branch](https://github.com/ismasan/sourced/pull/31)
+
 Event Sourcing / CQRS library for Ruby.
 There's many ES gems available already. The objectives here are:
 * Cohesive and toy-like DX.
