@@ -11,12 +11,12 @@ There's many ES gems available already. The objectives here are:
 * Simple to operate: it should be as simple to run as most Ruby queuing systems.
 * Explore ES as a programming model for Ruby apps.
 
-A small demo app [here](https://github.com/ismasan/sourced_todo)
+A small demo app [here](https://github.com/ismasan/sourced_todo).
 
 ### The programming model
 
 If you're unfamiliar with Event Sourcing, you can read this first: [Event Sourcing from the ground up, with Ruby examples](https://ismaelcelis.com/posts/event-sourcing-ruby-examples)
-For a high-level overview of the mental model, [read this](https://ismaelcelis.com/posts/2025-04-give-it-time/)
+For a high-level overview of the mental model, [read this](https://ismaelcelis.com/posts/2025-04-give-it-time/). Or the video version, [here](https://www.youtube.com/watch?v=EgUwnzUJHMA).
 
 The entire behaviour of an event-sourced app is described via **commands**, **events** and **reactions**.
 
@@ -97,14 +97,16 @@ cart.state.total # 2000
 cart.items.items.size # 1
 # Inspect that events were stored
 cart.seq # 2 the sequence number or "version" in storage. Ie. how many commands / events exist for this cart
-cart.events # an array with instances of [Cart::AddItem, Cart::ItemAdded]
-cart.events.map(&:type) # ['cart.add_item', 'cart.item_added']
+# Load events for cart
+events = Sourced.history_for(cart)
+# => an array with instances of [Cart::AddItem, Cart::ItemAdded]
+events.map(&:type) # ['cart.add_item', 'cart.item_added']
 ```
 
 Try loading a new cart instance from recorded events
 
 ```ruby
-cart2 = Cart.load('test-cart')
+cart2 = Sourced.load(Cart, 'test-cart')
 cart2.seq # 2
 cart2.state.total # 2000
 cart2.state.items.size # 1
@@ -120,8 +122,8 @@ Sourced.register(Cart)
 
 This achieves two things:
 
-1. Commands can be routed to this actor by background processes, using its `.handle_command(command)` interface
-2. The actor can _react_ to other events in the system (more on event choreography later), via its `.handle_events(events)` interface.
+1. Messages can be routed to this actor by background processes, using its `Sourced.dispatch(message)`.
+2. The actor can _react_ to other events in the system (more on event choreography later), via its low-level `.handle(event)` interface.
 
 These two properties are what enables asynchronous, eventually-consistent systems in Sourced.
 
@@ -208,9 +210,9 @@ The class-level `.reaction` block registers an event handler that _reacts_ to ev
 ![react](docs/images/sourced-react-handler.png)
 
 ```ruby
-reaction ItemAdded do |event|
+reaction ItemAdded do |cart, event|
   # dispatch the next command to the event's stream_id
-  stream_for(event).command(
+  dispatch(
     CheckInventory, 
     product_id: event.payload.product_id,
     quantity: event.payload.quantity
@@ -218,29 +220,22 @@ reaction ItemAdded do |event|
 end
 ```
 
-The `stream_for` helper lets you choose what stream to dispatch the command to. Stream IDs are just strings, and define concurrency / consistency "tracks" for your events.
-
-The `stream_for` helper also makes sure to copy over causation and correlation IDs from the source event to the new commands.
+You can also dispatch commanda to _other_ streams. For example for starting concurrent workflows.
 
 ```ruby
 # dispatch a command to a new custom-made stream_id
-stream = stream_for("cart-#{Time.now.to_i}")
-stream.command CheckInventory, event.payload
+dispatch(CheckInventory, event.payload).to("cart-#{Time.now.to_i}")
 
 # Or use Sourced.new_stream_id
-stream_for(Sourced.new_stream_id).command CheckInventory, event.payload
+dispatch(CheckInventory, event.payload).to(Sourced.new_stream_id)
 
 # Or start a new stream and dispatch commands to another actor
-stream_for(NotifierActor).command :notify, message: 'hello!'
+dispatch(:notify, message: 'hello!').to(NotifierActor)
 ```
 
 ##### `.reaction` block with actor state
 
-If the block to `.reaction`  defines two arguments, this will cause Sourced to load up and yield the Actor's current state by loading and applying past events to it (same as when handling commands).
-
-For this reason,  in this mode `.reaction` can only be used with events that are also registered to _evolve_ the same Actor.
-
-![react](docs/images/sourced-react-with-state-handler.png)
+ `.reaction`  blocks receive the actor state, which is derived by applying past events to it (same as when handling commands).
 
 ```ruby
 # Define an event handler to evolve state
@@ -251,7 +246,7 @@ end
 # Now react to it and check state
 reaction ItemAdded do |state, event|
   if state[:item_count] > 30
-    stream_for(event).command NotifyBigCart
+    dispatch NotifyBigCart
   end
 end
 ```
@@ -264,7 +259,7 @@ If the event name or class is omitted, the `.reaction` macro registers reaction 
 # wildcard reaction for all evolved events
 reaction do |state, event|
   if state[:item_count] > 30
-    stream_for(event).command NotifyBigCart
+    dispatch NotifyBigCart
   end
 end
 ```
@@ -310,8 +305,8 @@ class CartListings < Sourced::Projector::StateStored
   end
 
   # Sync listing record back to DB
-  sync do |listing, _, _|
-    listing.save!
+  sync do |state:, events:, replaying:|
+    state.save!
   end
 end
 ```
@@ -333,8 +328,8 @@ class CartListings < Sourced::Projector::EventSourced
   end
 
   # Sync listing record to a file
-  sync do |listing, _, _|
-    File.write("/listings/#{listing[:id]}.json", JSON.dump(listing)) 
+  sync do |state:, events:, replaying:|
+    File.write("/listings/#{state[:id]}.json", JSON.dump(state)) 
   end
 end
 ```
@@ -378,15 +373,15 @@ class ReadyOrders < Sourced::Projector::StateStored
   end
   
   # Sync listing record back to DB
-  sync do |listing, _, _|
-    listing.save!
+  sync do |state:, events:, replaying:|
+    state.save!
   end
   
   # If a listing has both the build and payment confirmed,
   # automate dispatching the next command in the workflow
   reaction do |listing, event|
     if listing.payment_confirmed? && listing.build_confirmed?
-      stream_for(event).command Orders::Release, **listing.attributes
+      dispatch Orders::Release, **listing.attributes
     end
   end
 end
@@ -396,7 +391,7 @@ Projectors can also define `.reaction event_class do |state, event|` to react to
 
 ##### Skipping projector reactions when replaying events
 
-When a projector's offsets are reset (so that it starts re-processing events and re- building projections), Sourced skips invoking a projector's `.reaction` handlers. This is because building projections should be deterministic, and rebuilding them should not trigger side-effects such as automation (we don't want to call 3rd party APIs, send emails, or just dispatch the same commands over and over when rebuilding projections).
+When a projector's offsets are reset (so that it starts re-processing events and re- building projections), Sourced skips invoking a projector's `.reaction` handlers. This is because building projections should be deterministic, and rebuilding them should not trigger side-effects such as automations (we don't want to call 3rd party APIs, send emails, or just dispatch the same commands over and over when rebuilding projections).
 
 To do this, Sourced keeps track of each consumer groups' highest acknowledged event sequence. When a consumer group is reset and starts re-processing past events, this sequence number is compared with each event's sequence, which tells us whether the event has been processed before.
 
@@ -404,7 +399,7 @@ To do this, Sourced keeps track of each consumer groups' highest acknowledged ev
 
 Concurrency in Sourced is achieved by explicitely _modeling it in_.
 
-Sourced workers process events and commands by acquiring locks on `[reactor group ID][stream ID]`. For example `"CartActor:cart-123"`
+Sourced workers process messages by acquiring locks on `[reactor group ID][stream ID]`. For example `"CartActor:cart-123"`
 
 This means that all events for a given reactor/stream are processed in order, but events for different streams can be processed concurrently. You can define workflows where some work is done concurrently by modeling them as a collaboration of streams.
 
@@ -464,20 +459,50 @@ TODO
 
 ### Transactional boundaries
 
-![transactional boundaries](docs/images/sourced-transactional-boundaries.png)
+TODO: diagram
 
 The diagram shows the units of work in an example Sourced workflow. The operations within each of the red boxes either succeeds or rolls back the transaction, and it can then be retried or compensated. They are **strongly consistent**. 
 The data-flow _between_ these boxes is propagated asynchronously by Sourced's infrastructure so, relative to each other, the entire system is **eventually consistent**.
 
-These transactional boundaries are also guarded by the same locks that enforce the [concurrency model](#concurrency-model), so that for example the same event or command can't be processed twice by the same Actor or Reactor (workflow, projector, etc). 
+These transactional boundaries are also guarded by the same locks that enforce the [concurrency model](#concurrency-model), so that for example the same event or command can't be processed twice by the same Reactor (workflow, projector, etc). 
 
-### Scheduled commands
+### Appending messages
 
-TODO
+```ruby
+message = ProductAdded.build('order-123', product_id: 123, price: 100)
+Sourced.config.backend.append_next_to_stream('order-123', [message])
+
+# Shortcut:
+Sourced.dispatch(message)
+```
+
+### Scheduling messages in the future
+
+You can append messages to a separate log, with a schedule time. Sourced workers will periodically poll this log and move these messages into the main log at the right time.
+
+```ruby
+message = ProductAdded.build('order-123', product_id: 123, price: 100)
+Sourced.config.backend.schedule_messages([message], at: Time.now + 20)
+```
+
+Actor reactions can use the `#dispatch` and `#at` helpers to schedule commands to run at a future time.
+
+```ruby
+reaction ProductAdded do |order, event|
+  dispatch(NotifyNewProduct).at(Time.now + 20)
+end
+```
+
+
 
 ### Replaying events
 
-TODO
+You can use the backend API to reset offsets for a specific consumer group, which will cause workers to start replaying messages for that group.
+
+```ruby
+```
+
+
 
 ## Interfaces
 
