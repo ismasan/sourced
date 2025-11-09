@@ -453,6 +453,49 @@ TODO: code example.
 
 TODO
 
+### Handler DSL
+
+The `Sourced::Handler` mixin provides a lighter-weight DSL for simple reactors.
+
+```ruby
+class OrderTelemetry
+  include Sourced::Handler
+  
+  # Handle these Order events
+  # and log them
+  on Order::Started do |event|
+    Logger.info ['order started', event.stream_id]
+    []
+  end
+  
+  on Order::Placed do |event|
+    Logger.info ['order placed', event.stream_id]
+    []
+  end
+end
+
+# Register it
+Sourced.register OrderTelemetry
+```
+
+Handlers can optionally define the `:history` argument. The runtime will provide the full message history for the stream ID being handled.
+
+```ruby
+on Order::Placed do |event, history:|
+  total = history
+    .filter { |e| Order::ProductAdded === e }
+    .reduce(0) { |n, e| n + e.payload.price }
+  
+  if total > 10000
+    return [Order::AddDiscount.build(event.stream_id, amount: 100)]
+  end
+  
+  []
+end
+```
+
+
+
 ### Orchestration and choreography
 
 TODO
@@ -493,24 +536,129 @@ reaction ProductAdded do |order, event|
 end
 ```
 
-
-
 ### Replaying events
 
 You can use the backend API to reset offsets for a specific consumer group, which will cause workers to start replaying messages for that group.
 
 ```ruby
+Sourced.config.backend.reset_consumer_group(ReadyOrder)
+```
+
+See below for other consumer lifecycle methods.
+
+
+
+## The Reactor Interface
+
+All built-in Reactors (Actors, Projections) build on the low-level Reactor Interface
+
+```ruby
+class MyReactor
+  extend Sourced::Consumer
+  
+  # The runtime will poll and hand over messages of this type
+  # to this class' .handle() method
+  def self.handled_messages = [Order::Started, Order::Placed]
+  
+  # The runtime invokes this method when it finds a new message
+  # of type present in the list above
+  def self.handle(new_message)
+    # Process message here.
+    # This method can return an Array or one or more of the following
+    actions = []
+    
+    # Just aknowledge new_message
+    actions << Sourced::Actions::OK
+    
+    # Append these new messages to the event store
+    # Sourced will automatically increment the stream's sequence number
+    # (ie. no optimistic locking)
+    started = Order::Started.build(new_message.stream_id)
+    actions << Sourced::Actions::AppendNext.new([started])
+    
+    # Append these new messages to the event store.
+    # The messages are expected to have a :seq incremented after new_message.seq
+    # Messages will fail to append if other messages have been appended
+    # with overlapping sequence numbers (optimistic locking)
+    started = Order::Started.new(stream_id: new_message.stream_id, seq: new_message.seq + 1)
+    actions << Sourced::Actions::AppendAfter.new(new_message.stream_id, [started])
+    
+    # Tell the runtime to retry this message
+    # This is a low-level action and Sourced already uses it when handling exceptions
+    # and retries
+    actions << Sourded::Actions::RETRY
+    
+    actions
+  end
+end
+```
+
+You can implement your own low-level reactors following the interface above. Then register them as normal.
+
+```ruby
+Sourced.register MyReactor
+```
+
+#### Reactors that require message history
+
+Reactors that declare the `:history` argument will also be provided the full message history for the stream being handled.
+
+This is how event-sourced Actors are implemented.
+
+```ruby
+def self.handle(new_message, history:)
+  # evolve state from history,
+  # handle command, return new events, etc
+  []
+end
+```
+
+#### `:replaying` flag.
+
+Your `.handle` method can also declare a `:replaying` boolean, which tells the reactor whether the stream is replaying events, or handling new messages. Reactors use this to run or omit side-effects (for example, replaying Projectors don't run `reaction` blocks).
+
+```ruby
+def self.handle(new_message, history:, replaying:)
+  if replaying
+    # Omit side-effects
+  else
+    # Trigger side-effects
+  end
+end
 ```
 
 
 
-## Interfaces
-
-TODO
-
 ### Testing
 
-TODO
+There's an experimental RSpec helper that allows testing Sourced Actors in GIVEN, WHEN, THEN style.
+
+*GIVEN* existing events A, B, C
+WHEN new command D is sent
+THEN I expect new events E and F
+
+```ruby
+require 'sourced/testing/rspec'
+
+RSpec.describe Order do
+  include Sourced::Testing::RSpec
+
+  it 'adds product to order' do
+    with_reactor(Order, 'order-123')
+      .when(Order::AddProduct, product_id: 1, price: 100)
+      .then(Order::ProductAdded.build('order-123', product_id: 1, price: 100))
+  end
+
+  it 'is a noop if product already in order' do
+    with_reactor(Order, 'order-123')
+      .given(Order::ProductAdded, product_id: 1, price: 100)
+      .when(Order::AddProduct, product_id: 1, price: 100)
+      .then([])
+  end
+end
+```
+
+
 
 ## Setup
 
