@@ -146,7 +146,46 @@ module Sourced
         end
       end
 
-      def with_actor(actor)
+      # Make a base Reactor .handle() interface support #evolve, #decide
+      class ReactorAdapter
+        attr_reader :id
+
+        def initialize(reactor, id)
+          @reactor = reactor
+          @id = id
+          @history = []
+        end
+
+        def evolve(events)
+          @history += Array(events)
+        end
+
+        def decide(command)
+          actions = @reactor.handle(command, history: [*@history, command])
+          messages_from_actions(actions)
+        end
+
+        private
+
+        def messages_from_actions(actions)
+          actions.each.with_object([]) do |action, list|
+            list.concat(action.messages) if action.respond_to?(:messages)
+          end
+        end
+      end
+
+      ActorInterface = Sourced::Types::Interface[:decide, :evolve]
+
+      def with_reactor(*args)
+        actor = case args
+        in [ActorInterface => a]
+          a
+        in [Sourced::ReactorInterface => reactor, String => id]
+          ReactorAdapter.new(reactor, id)
+        in [Sourced::ReactorInterface => reactor]
+          ReactorAdapter.new(reactor, Sourced.new_stream_id)
+        end
+
         GWT.new(actor)
       end
     end

@@ -12,6 +12,20 @@ module Testing
     attribute :name, String
   end
 
+  class Reactor
+    extend Sourced::Consumer
+
+    def self.handled_messages = [Start]
+
+    def self.handle(message, history: [])
+      actions = []
+      if Start === message && history.none? { |m| Started === m }
+        actions << Sourced::Actions::AppendNext.new([message.follow(Started, name: message.payload.name)])
+      end
+      actions
+    end
+  end
+
   class Actor < Sourced::Actor
     state do |id|
       { id:, name: nil}
@@ -32,21 +46,39 @@ end
 RSpec.describe Sourced::Testing::RSpec do
   include described_class
 
-  context 'with Actor instance' do
+  context 'with Reactor interface' do
     it 'works' do
-      with_actor(Testing::Actor.new(id: 'a'))
+      with_reactor(Testing::Reactor, 'a')
         .when(Testing::Start, name: 'Joe')
         .then(Testing::Started.build('a', name: 'Joe'))
 
-      with_actor(Testing::Actor.new(id: 'a'))
+      with_reactor(Testing::Reactor, 'a')
+        .given(Testing::Started, name: 'Joe')
+        .when(Testing::Start, name: 'Joe')
+        .then([])
+
+      # If supports any .handle() interface, including Actor classes
+      with_reactor(Testing::Actor, 'a')
+        .when(Testing::Start, name: 'Joe')
+        .then(Testing::Started.build('a', name: 'Joe'))
+    end
+  end
+
+  context 'with Actor instance' do
+    it 'works' do
+      with_reactor(Testing::Actor.new(id: 'a'))
+        .when(Testing::Start, name: 'Joe')
+        .then(Testing::Started.build('a', name: 'Joe'))
+
+      with_reactor(Testing::Actor.new(id: 'a'))
         .when(Testing::Start, name: 'Joe')
         .then(Testing::Started, name: 'Joe')
 
-      with_actor(Testing::Actor.new(id: 'a'))
+      with_reactor(Testing::Actor.new(id: 'a'))
         .when(Testing::Start, name: 'Joe')
         .then([Testing::Started.build('a', name: 'Joe')])
 
-      with_actor(Testing::Actor.new(id: 'a'))
+      with_reactor(Testing::Actor.new(id: 'a'))
         .given(Testing::Started, name: 'Joe')
         .when(Testing::Start, name: 'Joe')
         .then([])
