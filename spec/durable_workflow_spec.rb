@@ -140,7 +140,7 @@ RSpec.describe Sourced::DurableWorkflow do
       assert_messages(history, [
         [DurableTests::Task::WorkflowStarted, stream_id, args: [name]],
         [DurableTests::Task::StepStarted, stream_id, step_name: :get_ip, args: []],
-        [DurableTests::Task::StepFailed, stream_id, step_name: :get_ip, error_class: 'RuntimeError', backtrace: DurableTests::FilledStringArray],
+        [DurableTests::Task::StepFailed, stream_id, step_name: :get_ip, error_class: 'RuntimeError', error_message: '#<RuntimeError: Network Error!>', backtrace: DurableTests::FilledStringArray],
       ])
     end
   end
@@ -178,7 +178,7 @@ RSpec.describe Sourced::DurableWorkflow do
       history = build_history([
         [DurableTests::Task::WorkflowStarted, stream_id, args: [name]],
         [DurableTests::Task::StepStarted, stream_id, key: Sourced::DurableWorkflow.step_key(:get_ip, []), step_name: :get_ip, args: []],
-        [DurableTests::Task::StepFailed, stream_id, key: Sourced::DurableWorkflow.step_key(:get_ip, []), step_name: :get_ip, error_class: 'NewtworkError', backtrace: []],
+        [DurableTests::Task::StepFailed, stream_id, key: Sourced::DurableWorkflow.step_key(:get_ip, []), step_name: :get_ip, error_class: 'NewtworkError', error_message: 'foo', backtrace: []],
         [DurableTests::Task::WorkflowFailed, stream_id, nil],
       ])
 
@@ -260,7 +260,7 @@ RSpec.describe Sourced::DurableWorkflow do
       assert_messages(history, [
         [DurableTests::WithContext::WorkflowStarted, stream_id, args: []],
         [DurableTests::WithContext::StepStarted, stream_id, step_name: :iterate, args: []],
-        [DurableTests::WithContext::StepFailed, stream_id, step_name: :iterate, error_class: 'RuntimeError', backtrace: DurableTests::FilledStringArray],
+        [DurableTests::WithContext::StepFailed, stream_id, step_name: :iterate, error_class: 'RuntimeError', error_message: '#<RuntimeError: oopsie!>', backtrace: DurableTests::FilledStringArray],
         [DurableTests::WithContext::ContextUpdated, stream_id, context: { index: 2, results: [2, 4] }],
         [DurableTests::WithContext::StepStarted, stream_id, step_name: :iterate, args: []],
         [DurableTests::WithContext::StepComplete, stream_id, step_name: :iterate, output: [3, 4, 5]],

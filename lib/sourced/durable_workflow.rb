@@ -35,6 +35,7 @@ module Sourced
       child.const_set(:StepFailed, Sourced::Event.define("#{cname}.step.failed") do
         attribute :key, String
         attribute :step_name, Sourced::Types::Lax::Symbol
+        attribute :error_message, String
         attribute :error_class, String
         attribute :backtrace, Sourced::Types::Array[String]
       end)
@@ -123,9 +124,11 @@ module Sourced
             )
             throw :halt
           rescue StandardError => e
+            # TODO: this catches NameError?
+            # Syntax errors should immediatly stop the workflow, not retry
             @new_events << self.class::StepFailed.parse(
               stream_id: id, 
-              payload: { key:, step_name: method_name, error_class: e.class.to_s, backtrace: e.backtrace }
+              payload: { key:, step_name: method_name, error_message: e.inspect, error_class: e.class.to_s, backtrace: e.backtrace }
             )
             if retries && cached.attempts == retries
               @new_events << self.class::WorkflowFailed.parse(stream_id: id)
