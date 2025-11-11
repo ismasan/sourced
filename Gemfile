@@ -14,7 +14,6 @@ group :development do
 end
 
 group :test do
-  gem 'activerecord', require: false
   gem 'dotenv'
   gem 'pg'
   gem 'rspec', '~> 3.0'
