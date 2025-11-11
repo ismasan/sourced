@@ -20,4 +20,5 @@ group :test do
   gem 'sequel'
   gem 'sqlite3'
   gem 'timecop'
+  gem 'logger'
 end
