@@ -9,6 +9,7 @@ Gem::Specification.new do |spec|
   spec.email = ['ismaelct@gmail.com']
 
   spec.homepage = 'https://github.com/ismaelcelis/sourced'
+  spec.description = 'Event Sourcing and CQRS for Ruby'
   spec.summary = 'Event Sourcing for Ruby built on Decide, Evolve, React'
   spec.required_ruby_version = '>= 3.0.0'
 
