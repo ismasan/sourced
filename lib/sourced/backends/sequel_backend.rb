@@ -59,7 +59,7 @@ module Sourced
         @streams_table = table_name(:streams)
         @offsets_table = table_name(:offsets)
         @consumer_groups_table = table_name(:consumer_groups)
-        @events_table = table_name(:events)
+        @messages_table = table_name(:messages)
         @setup = false
         logger.info("Connected to #{@db}")
       end
@@ -84,7 +84,7 @@ module Sourced
       #   stats.groups.each { |g| puts "Group #{g[:id]}: #{g[:status]}" }
       def stats
         stream_count = db[streams_table].count
-        max_global_seq = db[events_table].max(:global_seq)
+        max_global_seq = db[messages_table].max(:global_seq)
         groups = db.fetch(sql_for_consumer_stats).all
         Stats.new(stream_count, max_global_seq, groups)
       end
@@ -266,7 +266,7 @@ module Sourced
             end
 
             # Bulk insert all events
-            db[events_table].multi_insert(rows)
+            db[messages_table].multi_insert(rows)
           end
 
           true
@@ -294,7 +294,7 @@ module Sourced
           seq = events_array.last.seq
           id = db[streams_table].insert_conflict(target: :stream_id, update: { seq:, updated_at: Time.now }).insert(stream_id:, seq:)
           rows = events_array.map { |e| serialize_event(e, id) }
-          db[events_table].multi_insert(rows)
+          db[messages_table].multi_insert(rows)
         end
 
         true
@@ -622,30 +622,30 @@ module Sourced
       end
 
       private def base_events_query
-        db[events_table]
+        db[messages_table]
           .select(
-            Sequel[events_table][:id],
+            Sequel[messages_table][:id],
             Sequel[streams_table][:stream_id],
-            Sequel[events_table][:seq],
-            Sequel[events_table][:global_seq],
-            Sequel[events_table][:type],
-            Sequel[events_table][:created_at],
-            Sequel[events_table][:causation_id],
-            Sequel[events_table][:correlation_id],
-            Sequel[events_table][:metadata],
-            Sequel[events_table][:payload],
+            Sequel[messages_table][:seq],
+            Sequel[messages_table][:global_seq],
+            Sequel[messages_table][:type],
+            Sequel[messages_table][:created_at],
+            Sequel[messages_table][:causation_id],
+            Sequel[messages_table][:correlation_id],
+            Sequel[messages_table][:metadata],
+            Sequel[messages_table][:payload],
           )
           .join(streams_table, id: :stream_id)
       end
 
       def read_correlation_batch(event_id)
-        correlation_subquery = db[events_table]
+        correlation_subquery = db[messages_table]
           .select(:correlation_id)
           .where(id: event_id)
 
         query = base_events_query
-          .where(Sequel[events_table][:correlation_id] => correlation_subquery)
-          .order(Sequel[events_table][:global_seq])
+          .where(Sequel[messages_table][:correlation_id] => correlation_subquery)
+          .order(Sequel[messages_table][:global_seq])
 
         query.map do |row|
           deserialize_event(row)
@@ -653,7 +653,7 @@ module Sourced
       end
 
       def read_event_stream(stream_id, after: nil, upto: nil)
-        _events_table = events_table # need local variable for Sequel block
+        _events_table = messages_table # need local variable for Sequel block
 
         query = base_events_query.where(Sequel[streams_table][:stream_id] => stream_id)
 
@@ -668,8 +668,8 @@ module Sourced
       def clear!
         raise 'Not in test environment' unless ENV['ENVIRONMENT'] == 'test'
         # Truncate and restart global_seq increment first
-        db[events_table].truncate(cascade: true, only: true, restart: true)
-        db[events_table].delete
+        db[messages_table].truncate(cascade: true, only: true, restart: true)
+        db[messages_table].delete
         db[consumer_groups_table].delete
         db[offsets_table].delete
         db[streams_table].delete
@@ -705,7 +705,7 @@ module Sourced
 
       private
 
-      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :scheduled_messages_table, :workers_table
+      attr_reader :db, :logger, :prefix, :messages_table, :streams_table, :offsets_table, :consumer_groups_table, :scheduled_messages_table, :workers_table
 
       def installer
         @installer ||= Installer.new(
@@ -716,7 +716,7 @@ module Sourced
           streams_table:,
           offsets_table:,
           consumer_groups_table:,
-          events_table:
+          messages_table:
         )
       end
 
@@ -733,10 +733,10 @@ module Sourced
               e.seq, e.type, e.created_at, e.causation_id, e.correlation_id,
               e.metadata, e.payload, so.id as offset_id, cg.id as group_id_fk,
               (e.global_seq <= cg.highest_global_seq) AS replaying
-          FROM sourced_events e
-          JOIN sourced_streams ss ON e.stream_id = ss.id
-          JOIN sourced_consumer_groups cg ON cg.group_id = #{group_id}
-          JOIN sourced_offsets so ON cg.id = so.group_id AND ss.id = so.stream_id
+          FROM #{messages_table} e
+          JOIN #{streams_table} ss ON e.stream_id = ss.id
+          JOIN #{consumer_groups_table} cg ON cg.group_id = #{group_id}
+          JOIN #{offsets_table} so ON cg.id = so.group_id AND ss.id = so.stream_id
           WHERE e.global_seq > so.global_seq
             AND so.claimed = FALSE
             AND cg.status = 'active'
@@ -755,7 +755,7 @@ module Sourced
                 e.global_seq,
                 e.stream_id AS stream_id_fk, 
                 pg_try_advisory_xact_lock(hashtext(?::text), hashtext(s.id::text)) as lock_obtained
-            FROM #{events_table} e
+            FROM #{messages_table} e
             JOIN #{streams_table} s ON e.stream_id = s.id
             WHERE e.id = ?
           )

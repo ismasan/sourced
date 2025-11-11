@@ -13,7 +13,7 @@ module Sourced
           streams_table:,
           offsets_table:,
           consumer_groups_table:,
-          events_table:
+          messages_table:
         )
           @db = db
           @logger = logger
@@ -22,11 +22,11 @@ module Sourced
           @streams_table = streams_table
           @offsets_table = offsets_table
           @consumer_groups_table = consumer_groups_table
-          @events_table = events_table
+          @messages_table = messages_table
         end
 
         def installed?
-          db.table_exists?(events_table) \
+          db.table_exists?(messages_table) \
             && db.table_exists?(streams_table) \
             && db.table_exists?(consumer_groups_table) \
             && db.table_exists?(offsets_table) \
@@ -39,7 +39,7 @@ module Sourced
 
           raise 'Not in test environment' unless ENV['ENVIRONMENT'] == 'test'
 
-          [offsets_table, scheduled_messages_table, events_table, consumer_groups_table, streams_table, workers_table].each do |table|
+          [offsets_table, scheduled_messages_table, messages_table, consumer_groups_table, streams_table, workers_table].each do |table|
             db.drop_table?(table)
           end
         end
@@ -99,7 +99,7 @@ module Sourced
 
           logger.info("Created table #{offsets_table}")
 
-          db.create_table?(events_table) do
+          db.create_table?(messages_table) do
             primary_key :global_seq, type: :Bignum
             column :id, :uuid, unique: true
             foreign_key :stream_id, _streams_table
@@ -121,7 +121,7 @@ module Sourced
             index %i[stream_id global_seq]        # For stream + sequence queries
           end
 
-          logger.info("Created table #{events_table}")
+          logger.info("Created table #{messages_table}")
 
           _scheduled_messages_table = scheduled_messages_table
 
@@ -157,7 +157,7 @@ module Sourced
           :streams_table,
           :offsets_table,
           :consumer_groups_table,
-          :events_table
+          :messages_table
         )
       end
     end
