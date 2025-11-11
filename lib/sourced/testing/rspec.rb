@@ -31,6 +31,15 @@ require 'sourced/message'
 #       .when(Payment::Confirm)
 #       .then([])
 #   end
+#
+#   # Evaluating block with .then
+#   it 'calls API' do
+#     with_actor(payment)
+#       .when(Payment::Confirm)
+#       .then do |actions|
+#         expect(api_request).to have_been_requested
+#       end
+#   end
 # end
 module Sourced
   module Testing
@@ -39,7 +48,7 @@ module Sourced
         MessageArray = Sourced::Types::Array[Sourced::Message]
 
         def initialize(expected_messages)
-          @expected_messages = expected_messages
+          @expected_messages = Array(expected_messages)
           @errors = []
           @mismatching = Hash.new { |h, k| h[k] = [] }
         end
@@ -104,7 +113,12 @@ module Sourced
 
         def and(...) = given(...)
 
-        def then(*expected)
+        def then(*expected, &block)
+          if block_given?
+            then_with_block(block)
+            return self
+          end
+
           expected = build_messages(*expected)
           actual = @actor.decide(@when)
           matcher = MessageMatcher.new(expected)
@@ -120,6 +134,11 @@ module Sourced
         end
 
         NONE = [].freeze
+
+        def then_with_block(callable)
+          actual = @actor.decide(@when)
+          callable.call(actual)
+        end
 
         def build_messages(*messages)
           messages = build_message(*messages) do |arr|
