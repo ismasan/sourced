@@ -1,3 +1,11 @@
+GIT
+  remote: https://github.com/ismasan/docco.git
+  revision: 31f49d6301e2fbca05c0b128fdc245364729cfee
+  specs:
+    docco (0.1.0)
+      kramdown
+      kramdown-parser-gfm
+
 PATH
   remote: .
   specs:
@@ -56,6 +64,10 @@ GEM
       rdoc (>= 4.0.0)
       reline (>= 0.4.2)
     json (2.7.2)
+    kramdown (2.5.1)
+      rexml (>= 3.3.9)
+    kramdown-parser-gfm (1.1.0)
+      kramdown (~> 2.0)
     language_server-protocol (3.17.0.4)
     lint_roller (1.1.0)
     logger (1.6.1)
@@ -79,6 +91,7 @@ GEM
     regexp_parser (2.10.0)
     reline (0.5.10)
       io-console (~> 0.5)
+    rexml (3.4.4)
     rspec (3.13.0)
       rspec-core (~> 3.13.0)
       rspec-expectations (~> 3.13.0)
@@ -128,6 +141,7 @@ PLATFORMS
 DEPENDENCIES
   activerecord
   debug
+  docco!
   dotenv
   pg
   rake (~> 13.0)
