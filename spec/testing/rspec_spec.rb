@@ -85,6 +85,16 @@ RSpec.describe Sourced::Testing::RSpec do
     end
   end
 
+  specify 'it raises when adding events after assertion' do
+    expect {
+      with_reactor(Testing::Reactor, 'a')
+        .given(Testing::Started, name: 'Joe')
+        .when(Testing::Start, name: 'Joe')
+        .then([])
+        .given(Testing::Started, name: 'Joe') # <= can't add more state after .then() assertion
+    }.to raise_error(Sourced::Testing::RSpec::FinishedTestCase)
+  end
+
   context 'with block given to #then' do
     it 'evaluates block' do
       received = []
@@ -119,7 +129,11 @@ RSpec.describe Sourced::Testing::RSpec do
         sync = proc do
           received << 10
         end
-        [Sourced::Actions::Sync.new(sync)]
+        started = message.follow(Testing::Started, message.payload)
+        [
+          Sourced::Actions::Sync.new(sync), 
+          Sourced::Actions::AppendNext.new([started])
+        ]
       end
 
       with_reactor(klass, 'abc')
@@ -128,6 +142,7 @@ RSpec.describe Sourced::Testing::RSpec do
           expect(actions.first).to be_a(Sourced::Actions::Sync)
           expect(received).to eq([10])
         end
+        .then(Testing::Started.build('abc', name: 'Joe'))
     end
   end
 end
