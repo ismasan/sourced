@@ -106,4 +106,28 @@ RSpec.describe Sourced::Testing::RSpec do
         end
     end
   end
+
+  describe '.then!' do
+    it 'evaluates sync blocks' do
+      received = []
+
+      klass = Class.new do
+        extend Sourced::Consumer
+        def self.handled_messages = [Testing::Start]
+      end
+      klass.define_singleton_method(:handle) do |message, history:|
+        sync = proc do
+          received << 10
+        end
+        [Sourced::Actions::Sync.new(sync)]
+      end
+
+      with_reactor(klass, 'abc')
+        .when(Testing::Start, name: 'Joe')
+        .then! do |actions|
+          expect(actions.first).to be_a(Sourced::Actions::Sync)
+          expect(received).to eq([10])
+        end
+    end
+  end
 end

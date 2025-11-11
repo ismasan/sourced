@@ -113,18 +113,13 @@ module Sourced
 
         def and(...) = given(...)
 
-        def then(*expected, &block)
-          if block_given?
-            then_with_block(block)
-            return self
-          end
+        # Like #then, but run any sync actions
+        def then!(*expected, &block)
+          run_then(true, *expected, &block)
+        end
 
-          expected = build_messages(*expected)
-          actual = @actor.decide(@when)
-          matcher = MessageMatcher.new(expected)
-          if !matcher.matches?(actual)
-            ::RSpec::Expectations.fail_with(matcher.failure_message)
-          end
+        def then(*expected, &block)
+          run_then(false, *expected, &block)
         end
 
         private
@@ -135,9 +130,35 @@ module Sourced
 
         NONE = [].freeze
 
-        def then_with_block(callable)
-          actual = @actor.decide(@when)
-          callable.call(actual)
+        def run_then(sync, *expected, &block)
+          # Actor instances maintain their own state (#given above calls #evolve on them)
+          # ReactorAdapter also keeps its own history via #evolve
+          # So here we satisfy the expected :history arg, but don't provide historical messages
+          actual = @actor.handle(@when, history: [])
+          actions_with_messages, actions_without_messages = partition_actions(actual)
+          run_sync_actions(actions_without_messages) if sync
+
+          if block_given?
+            block.call(actual)
+            return self
+          end
+
+          expected = build_messages(*expected)
+          matcher = MessageMatcher.new(expected)
+          actual_messages = actions_with_messages.flat_map(&:messages)
+          if !matcher.matches?(actual_messages)
+            ::RSpec::Expectations.fail_with(matcher.failure_message)
+          end
+        end
+
+        def run_sync_actions(actions)
+          actions.filter { |a| Sourced::Actions::Sync === a }.each(&:call)
+        end
+
+        def partition_actions(actions)
+          actions.partition do |a|
+            a.respond_to?(:messages)
+          end
         end
 
         def build_messages(*messages)
@@ -179,21 +200,14 @@ module Sourced
           @history += Array(events)
         end
 
-        def decide(command)
-          actions = @reactor.handle(command, history: [*@history, command])
-          messages_from_actions(actions)
-        end
-
-        private
-
-        def messages_from_actions(actions)
-          actions.each.with_object([]) do |action, list|
-            list.concat(action.messages) if action.respond_to?(:messages)
-          end
+        # Include :history for compatibility
+        # but we keep out own history
+        def handle(command, history: [])
+          @reactor.handle(command, history: [*@history, command])
         end
       end
 
-      ActorInterface = Sourced::Types::Interface[:decide, :evolve]
+      ActorInterface = Sourced::Types::Interface[:decide, :evolve, :handle]
 
       def with_reactor(*args)
         actor = case args
