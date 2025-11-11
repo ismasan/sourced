@@ -113,7 +113,8 @@ RSpec.describe Sourced::Router do
       it 'appends messages' do
         allow(backend).to receive(:append_next_to_stream)
 
-        router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
+        bool = router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
+        expect(bool).to be(true)
         expect(RouterTest::DeciderReactor).not_to have_received(:on_exception)
         expect(backend).to have_received(:append_next_to_stream) do |stream_id, events|
           expect(stream_id).to eq('123')
@@ -122,6 +123,14 @@ RSpec.describe Sourced::Router do
           expect(event.stream_id).to eq('123')
           expect(event).to be_a(RouterTest::NextCommand)
         end
+      end
+    end
+
+    context 'when there are no new messages for reactor' do
+      it 'return false' do
+        backend.ack_on(RouterTest::DeciderReactor.consumer_info.group_id, event.id)
+        bool = router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
+        expect(bool).to be(false)
       end
     end
 

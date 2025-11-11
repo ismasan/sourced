@@ -166,7 +166,9 @@ module Sourced
     # - :replaying - Boolean indicating if this is a replay operation
     # - :history - Array of all events in the stream up to this point
     def handle_next_event_for_reactor(reactor, worker_id = nil)
+      found = false
       backend.reserve_next_for_reactor(reactor, worker_id:) do |event, replaying|
+        found = true
         log_event('handling event', reactor, event, worker_id)
         
         # Build keyword arguments hash based on what the reactor's #handle method expects
@@ -182,6 +184,7 @@ module Sourced
         # Do not ACK event for reactor
         Actions::RETRY
       end
+      found
     end
 
     private
