@@ -4,22 +4,22 @@ module Sourced
   module Backends
     class TestBackend
       class State
-        attr_reader :events, :groups, :events_by_correlation_id, :events_by_stream_id, :stream_id_seq_index, :streams, :scheduled_messages
+        attr_reader :messages, :groups, :messages_by_correlation_id, :messages_by_stream_id, :stream_id_seq_index, :streams, :scheduled_messages
 
         def initialize(
-          events: [], 
+          messages: [], 
           groups: Hash.new { |h, k| h[k] = Group.new(k, self) }, 
-          events_by_correlation_id: Hash.new { |h, k| h[k] = [] }, 
-          events_by_stream_id: Hash.new { |h, k| h[k] = [] },
+          messages_by_correlation_id: Hash.new { |h, k| h[k] = [] }, 
+          messages_by_stream_id: Hash.new { |h, k| h[k] = [] },
           stream_id_seq_index: {},
           streams: {},
           scheduled_messages: []
         )
 
-          @events = events
+          @messages = messages
           @groups = groups
-          @events_by_correlation_id = events_by_correlation_id
-          @events_by_stream_id = events_by_stream_id
+          @messages_by_correlation_id = messages_by_correlation_id
+          @messages_by_stream_id = messages_by_stream_id
           @stream_id_seq_index = stream_id_seq_index
           @streams = streams
           @scheduled_messages = scheduled_messages
@@ -63,10 +63,10 @@ module Sourced
 
         def copy
           self.class.new(
-            events: events.dup,
+            messages: messages.dup,
             groups: deep_dup(groups),
-            events_by_correlation_id: deep_dup(events_by_correlation_id),
-            events_by_stream_id: deep_dup(events_by_stream_id),
+            messages_by_correlation_id: deep_dup(messages_by_correlation_id),
+            messages_by_stream_id: deep_dup(messages_by_stream_id),
             stream_id_seq_index: deep_dup(stream_id_seq_index),
             streams: streams.dup,
             scheduled_messages: scheduled_messages.dup
@@ -81,7 +81,6 @@ module Sourced
           end
         end
       end
-
     end
   end
 end

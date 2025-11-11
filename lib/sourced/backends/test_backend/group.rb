@@ -53,19 +53,19 @@ module Sourced
         end
 
         def reindex
-          backend.events.each do |e|
+          backend.messages.each do |e|
             @offsets[e.stream_id] ||= Offset.new(e.stream_id, -1, false)
           end
         end
 
-        def ack_on(event_id, &)
-          global_seq = backend.events.find_index { |e| e.id == event_id }
+        def ack_on(message_id, &)
+          global_seq = backend.messages.find_index { |e| e.id == message_id }
           return unless global_seq
 
-          evt = backend.events[global_seq]
+          evt = backend.messages[global_seq]
           offset = @offsets[evt.stream_id]
           if offset.locked
-            raise Sourced::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}"
+            raise Sourced::ConcurrentAckError, "Stream for message #{message_id} is being concurrently processed by #{group_id}"
           else
             offset.locked = true
             yield if block_given?
@@ -83,16 +83,16 @@ module Sourced
           offset = nil
           index = -1
 
-          backend.events.each.with_index do |e, idx|
+          backend.messages.each.with_index do |e, idx|
             offset = @offsets[e.stream_id]
             if offset.locked # stream locked by another consumer in the group
               next
-            elsif idx > offset.index && handled_messages.include?(e.class) && time_filter.call(e) # new event for the stream
+            elsif idx > offset.index && handled_messages.include?(e.class) && time_filter.call(e) # new message for the stream
               evt = e
               offset.locked = true
               index = idx
               break
-            else # event already consumed
+            else # messages already consumed
             end
           end
 
@@ -114,7 +114,7 @@ module Sourced
         private
 
         def ack(offset, index)
-          # ACK reactor/event
+          # ACK reactor/message
           offset.index = index
           @highest_index = index if index > @highest_index
         end
