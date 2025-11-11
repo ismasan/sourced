@@ -94,19 +94,27 @@ module Sourced
         MessageMatcher.new(expected_messages)
       end
 
+      FinishedTestCase = Class.new(StandardError)
+
       class GWT
         def initialize(actor)
           @actor = actor
           @when = nil
+          @actual = nil
+          @sync_run = false
         end
 
         def given(*args)
+          raise FinishedTestCase, 'test case already asserted, cannot add more events to it' if @actual
+
           message = build_message(*args)
           @actor.evolve(message)
           self
         end
 
         def when(*args)
+          raise FinishedTestCase, 'test case already asserted, cannot add more events to it' if @actual
+
           @when = build_message(*args)
           self
         end
@@ -134,12 +142,12 @@ module Sourced
           # Actor instances maintain their own state (#given above calls #evolve on them)
           # ReactorAdapter also keeps its own history via #evolve
           # So here we satisfy the expected :history arg, but don't provide historical messages
-          actual = @actor.handle(@when, history: [])
-          actions_with_messages, actions_without_messages = partition_actions(actual)
+          @actual ||= @actor.handle(@when, history: [])
+          actions_with_messages, actions_without_messages = partition_actions(@actual)
           run_sync_actions(actions_without_messages) if sync
 
           if block_given?
-            block.call(actual)
+            block.call(@actual)
             return self
           end
 
@@ -149,10 +157,15 @@ module Sourced
           if !matcher.matches?(actual_messages)
             ::RSpec::Expectations.fail_with(matcher.failure_message)
           end
+
+          self
         end
 
         def run_sync_actions(actions)
+          return if @sync_run
+
           actions.filter { |a| Sourced::Actions::Sync === a }.each(&:call)
+          @sync_run = true
         end
 
         def partition_actions(actions)
