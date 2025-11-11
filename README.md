@@ -14,7 +14,7 @@ There's many ES gems available already. The objectives here are:
 
 A small demo app [here](https://github.com/ismasan/sourced_todo).
 
-### The programming model
+## The programming model
 
 If you're unfamiliar with Event Sourcing, you can read this first: [Event Sourcing from the ground up, with Ruby examples](https://ismaelcelis.com/posts/event-sourcing-ruby-examples)
 For a high-level overview of the mental model, [read this](https://ismaelcelis.com/posts/2025-04-give-it-time/). Or the video version, [here](https://www.youtube.com/watch?v=EgUwnzUJHMA).
@@ -27,7 +27,7 @@ The entire behaviour of an event-sourced app is described via **commands**, **ev
 * **Events** are produced after handling a command and they describe _facts_ or state changes in the system. Ex. `Item added to cart`, `order placed`, `email updated`. Events are stored and you can use them to build views ("projections"), caches and reports to support UIs, or other artifacts.
 * **State** is whatever object you need to hold the current state of a part of the system. It's usually derived from past events, and it's just enough to interrogate the state of the system and make the next decision.
 
-### Actors
+## Actors
 
 Actors are classes that encapsulate loading state from past events and handling commands for a part of your system. They can also define reactions to their own events, or events emitted by other actors. This is a simple shopping cart actor.
 
@@ -113,7 +113,7 @@ cart2.state.total # 2000
 cart2.state.items.size # 1
 ```
 
-#### Registering actors
+### Registering actors
 
 Invoking commands directly on an actor instance works in an IRB console or a synchronous-only web handler, but for actors to be available to background workers, and to react to other actor's events, you need to register them.
 
@@ -128,7 +128,7 @@ This achieves two things:
 
 These two properties are what enables asynchronous, eventually-consistent systems in Sourced.
 
-#### Expanded message syntax
+### Expanded message syntax
 
 Commands and event structs can also be defined separately as `Sourced::Command` and `Sourced::Event` sub-classes.
 
@@ -169,7 +169,7 @@ module Carts
 end
 ```
 
-#### `.command` block
+### `.command` block
 
 The class-level `.command` block defines a _command handler_. Its job is to take a command (from a user, an automation, etc), validate it, and apply state changes by publishing new events.
 
@@ -186,7 +186,7 @@ end
 
 
 
-#### `.event` block
+### `.event` block
 
 The class-level `.event` block registers an _event handler_ used to _evolve_ the actor's internal state.
 
@@ -202,7 +202,7 @@ end
 
 These handlers are pure: given the same state and event, they should always update the state in the same exact way. They should never reach out to the outside (API calls, current time, etc), and they should never run validations. They work on events already committed to history, which by definition are assumed to be valid.
 
-#### `.reaction` block
+### `.reaction` block
 
 The class-level `.reaction` block registers an event handler that _reacts_ to events already published by this or other Actors.
 
@@ -234,7 +234,7 @@ dispatch(CheckInventory, event.payload).to(Sourced.new_stream_id)
 dispatch(:notify, message: 'hello!').to(NotifierActor)
 ```
 
-##### `.reaction` block with actor state
+#### `.reaction` block with actor state
 
  `.reaction`  blocks receive the actor state, which is derived by applying past events to it (same as when handling commands).
 
@@ -252,7 +252,7 @@ reaction ItemAdded do |state, event|
 end
 ```
 
-##### `.reaction` with state for all events
+#### `.reaction` with state for all events
 
 If the event name or class is omitted, the `.reaction` macro registers reaction handlers for all events already registered for the actor with the `.event` macro, minus events that have specific reaction handlers defined.
 
@@ -267,7 +267,7 @@ end
 
 
 
-### Causation and correlation
+## Causation and correlation
 
 When a command produces events, or when an event makes a reactor dispatch a new command, the cause-and-effect relationship between these messages is tracked by Sourced in the form of `correlation_id` and `causation_id` properties in each message's metadata.
 
@@ -277,11 +277,11 @@ This helps the system keep a full audit trail of the cause-and-effect behaviour 
 
 ![command and event causation view](docs/images/sourced-causation-view.png)
 
-### Background vs. foreground execution
+## Background vs. foreground execution
 
 TODO
 
-### Projectors
+## Projectors
 
 Projectors react to events published by actors and update views, search indices, caches, or other representations of current state useful to the app. They can both react to events as they happen in the system, and also "catch up" to past events. Sourced keeps track of where in the global event stream each projector is.
 
@@ -289,7 +289,7 @@ From the outside-in, projectors are classes that implement the _Reactor interfac
 
 Sourced ships with two ready-to-use projectors, but you can also build your own.
 
-#### State-stored projector
+### State-stored projector
 
 A state-stored projector fetches initial state from storage somewhere (DB, files, API), and then after reacting to events and updating state, it can save it back to the same or different storage.
 
@@ -312,7 +312,7 @@ class CartListings < Sourced::Projector::StateStored
 end
 ```
 
-#### Event-sourced projector
+### Event-sourced projector
 
 An event-sourced projector fetches initial state from past events in the event store, and then after reacting to events and updating state, it can save it to a DB table, a file, etc.
 
@@ -335,7 +335,7 @@ class CartListings < Sourced::Projector::EventSourced
 end
 ```
 
-#### Registering projectors
+### Registering projectors
 
 Like any other _reactor_, projectors need to be registered for background workers to route events to them.
 
@@ -344,7 +344,7 @@ Like any other _reactor_, projectors need to be registered for background worker
 Sourced.register(CartListings)
 ```
 
-#### Reacting to events and scheduling the next command from projectors
+### Reacting to events and scheduling the next command from projectors
 
 Sourced projectors can define `.reaction` handlers that will be called after evolving state via their `.event` handlers, in the same transaction.
 
@@ -390,7 +390,7 @@ end
 
 Projectors can also define `.reaction event_class do |state, event|` to react to specific events.
 
-##### Skipping projector reactions when replaying events
+### Skipping projector reactions when replaying events
 
 When a projector's offsets are reset (so that it starts re-processing events and re- building projections), Sourced skips invoking a projector's `.reaction` handlers. This is because building projections should be deterministic, and rebuilding them should not trigger side-effects such as automations (we don't want to call 3rd party APIs, send emails, or just dispatch the same commands over and over when rebuilding projections).
 
@@ -404,7 +404,7 @@ Sourced workers process messages by acquiring locks on `[reactor group ID][strea
 
 This means that all events for a given reactor/stream are processed in order, but events for different streams can be processed concurrently. You can define workflows where some work is done concurrently by modeling them as a collaboration of streams.
 
-#### Single-stream sequential execution
+### Single-stream sequential execution
 
 In the following (simplified!) example, a Holiday Booking workflow is modelled as a single stream ("Actor"). The infrastructure makes sure these steps are run sequentially.
 
@@ -442,7 +442,7 @@ class HolidayBooking < Sourced::Actor
 end
 ```
 
-#### Multi-stream concurrent execution
+### Multi-stream concurrent execution
 
 In this other example, the same workflow is split into separate streams/actors, so that Flight and Hotel bookings can run concurrently from each other. When completed, they each notify the parent Holiday actor, so the whole process coalesces into a sequential operation again.
 
@@ -450,11 +450,11 @@ In this other example, the same workflow is split into separate streams/actors, 
 
 TODO: code example.
 
-### Durable workflows
+## Durable workflows
 
 TODO
 
-### Handler DSL
+## Handler DSL
 
 The `Sourced::Handler` mixin provides a lighter-weight DSL for simple reactors.
 
@@ -497,11 +497,11 @@ end
 
 
 
-### Orchestration and choreography
+## Orchestration and choreography
 
 TODO
 
-### Transactional boundaries
+## Transactional boundaries
 
 TODO: diagram
 
@@ -509,6 +509,8 @@ The diagram shows the units of work in an example Sourced workflow. The operatio
 The data-flow _between_ these boxes is propagated asynchronously by Sourced's infrastructure so, relative to each other, the entire system is **eventually consistent**.
 
 These transactional boundaries are also guarded by the same locks that enforce the [concurrency model](#concurrency-model), so that for example the same event or command can't be processed twice by the same Reactor (workflow, projector, etc). 
+
+## Appending and reading messages
 
 ### Appending messages
 
@@ -537,7 +539,7 @@ reaction ProductAdded do |order, event|
 end
 ```
 
-### Replaying events
+## Replaying messages
 
 You can use the backend API to reset offsets for a specific consumer group, which will cause workers to start replaying messages for that group.
 
@@ -600,7 +602,7 @@ You can implement your own low-level reactors following the interface above. The
 Sourced.register MyReactor
 ```
 
-#### Reactors that require message history
+### Reactors that require message history
 
 Reactors that declare the `:history` argument will also be provided the full message history for the stream being handled.
 
@@ -614,7 +616,7 @@ def self.handle(new_message, history:)
 end
 ```
 
-#### `:replaying` flag.
+### `:replaying` flag.
 
 Your `.handle` method can also declare a `:replaying` boolean, which tells the reactor whether the stream is replaying events, or handling new messages. Reactors use this to run or omit side-effects (for example, replaying Projectors don't run `reaction` blocks).
 
@@ -630,7 +632,7 @@ end
 
 
 
-### Testing
+## Testing
 
 There's an experimental RSpec helper that allows testing Sourced Actors in GIVEN, WHEN, THEN style.
 
@@ -734,7 +736,7 @@ Start background workers.
 Sourced::Supervisor.start(count: 10) # 10 worker fibers
 ```
 
-### Custom attribute types and coercions.
+## Custom attribute types and coercions.
 
 Define a module to hold your attribute types using [Plumb](https://github.com/ismasan/plumb)
 
@@ -755,7 +757,7 @@ UpdateEmail = Sourced::Command.define('accounts.update_email') do
 end
 ```
 
-### Error handling
+## Error handling
 
 Sourced workflows are eventually-consistent by default. This means that commands and events are handled in background processes, and any exceptions raised can't be immediatly surfaced back to the user (and, there might not be a user anyway!).
 
@@ -792,7 +794,7 @@ Sourced.configure do |config|
 end
 ```
 
-#### Custom error strategy
+### Custom error strategy
 
 You can also configure your own error strategy. It must respond to `#call(exception, message, group)`
 
@@ -812,7 +814,7 @@ Sourced.configure do |config|
 end
 ```
 
-### Stopping and starting consumer groups programmatically.
+## Stopping and starting consumer groups programmatically.
 
 `Sourced.config.backend` provides an API for stopping and starting consumer groups. For example to resume groups that were stopped by raised exceptions, after the error has been corrected.
 
