@@ -66,7 +66,7 @@ module BackendExamples
             raise 'boom'
           end
         end.to raise_error('boom')
-        expect(backend.read_event_stream('s1').any?).to be(false)
+        expect(backend.read_stream('s1').any?).to be(false)
       end
     end
 
@@ -84,16 +84,16 @@ module BackendExamples
         backend.schedule_messages([msg3], at: now + 10)
 
         backend.update_schedule!
-        expect(backend.read_event_stream('s1')).to eq([msg0])
+        expect(backend.read_stream('s1')).to eq([msg0])
 
         Timecop.freeze(now + 3) do
           backend.update_schedule!
-          expect(backend.read_event_stream('s1').map(&:id)).to eq([msg0, msg1, msg2].map(&:id))
+          expect(backend.read_stream('s1').map(&:id)).to eq([msg0, msg1, msg2].map(&:id))
         end
 
         Timecop.freeze(now + 11) do
           backend.update_schedule!
-          messages = backend.read_event_stream('s1')
+          messages = backend.read_stream('s1')
           expect(messages.map(&:id)).to eq([msg0, msg1, msg2, msg3].map(&:id))
           expect(messages.map(&:seq)).to eq([1, 2, 3, 4])
         end
@@ -112,7 +112,7 @@ module BackendExamples
           end
         end
 
-        expect(backend.read_event_stream('as1').map(&:id)).to eq([cmd1, cmd2].map(&:id))
+        expect(backend.read_stream('as1').map(&:id)).to eq([cmd1, cmd2].map(&:id))
       end
     end
 
@@ -122,7 +122,7 @@ module BackendExamples
         backend.append_to_stream('s1', evt1)
         evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 2 })
         expect(backend.append_next_to_stream('s1', evt2)).to be(true)
-        events = backend.read_event_stream('s1')
+        events = backend.read_stream('s1')
         expect(events.map(&:stream_id)).to eq(['s1', 's1'])
         expect(events.map(&:seq)).to eq([1, 2])
       end
@@ -136,14 +136,14 @@ module BackendExamples
         evt4 = Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 4 })
         
         expect(backend.append_next_to_stream('s1', [evt2, evt3, evt4])).to be(true)
-        events = backend.read_event_stream('s1')
+        events = backend.read_stream('s1')
         expect(events.map(&:stream_id)).to eq(['s1', 's1', 's1', 's1'])
         expect(events.map(&:seq)).to eq([1, 2, 3, 4])
       end
 
       it 'handles empty array' do
         expect(backend.append_next_to_stream('s1', [])).to be(true)
-        events = backend.read_event_stream('s1')
+        events = backend.read_stream('s1')
         expect(events).to eq([])
       end
 
@@ -152,7 +152,7 @@ module BackendExamples
         evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 2 })
         
         expect(backend.append_next_to_stream('s1', [evt1, evt2])).to be(true)
-        events = backend.read_event_stream('s1')
+        events = backend.read_stream('s1')
         expect(events.map(&:stream_id)).to eq(['s1', 's1'])
         expect(events.map(&:seq)).to eq([1, 2])
       end
@@ -226,11 +226,11 @@ module BackendExamples
           Sourced::Actions::Schedule.new([evt_b], at: now + 10)
         end
 
-        expect(backend.read_event_stream('s1')).to eq([cmd_a])
+        expect(backend.read_stream('s1')).to eq([cmd_a])
 
         Timecop.freeze(now + 11) do
           backend.update_schedule!
-          messages = backend.read_event_stream('s1')
+          messages = backend.read_stream('s1')
           expect(messages.map(&:id)).to eq([cmd_a, evt_b].map(&:id))
           expect(messages[1]).to be_a(Tests::SomethingHappened1)
           expect(messages[1].causation_id).to eq(messages[0].id)
@@ -273,12 +273,12 @@ module BackendExamples
           [action1, action2]
         end
 
-        messages = backend.read_event_stream('s1')
+        messages = backend.read_stream('s1')
         expect(messages.map(&:id)).to eq([cmd_a, evt_b].map(&:id))
 
         Timecop.freeze(now + 11) do
           backend.update_schedule!
-          messages = backend.read_event_stream('s1')
+          messages = backend.read_stream('s1')
           expect(messages.map(&:id)).to eq([cmd_a, evt_b, evt_c].map(&:id))
         end
       end
@@ -550,7 +550,7 @@ module BackendExamples
         end
 
         it 'appends messages to stream and auto-increments seq' do
-          events = backend.read_event_stream('s1')
+          events = backend.read_stream('s1')
           expect(events.map(&:seq)).to eq([1, 2])
           expect(events.map(&:payload).map(&:account_id)).to eq([1, 2])
         end
@@ -560,7 +560,7 @@ module BackendExamples
         end
 
         it 'correlates messages and copies metadata' do
-          events = backend.read_event_stream('s1')
+          events = backend.read_stream('s1')
           expect(events.map(&:causation_id)).to eq([evt1.id, evt1.id])
           expect(events.map(&:correlation_id)).to eq([correlation_id, correlation_id])
           expect(events.map(&:metadata).map { |m| m[:tid] }).to eq(['evt1', 'evt1'])
@@ -595,7 +595,7 @@ module BackendExamples
             Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message])
           end
 
-          events = backend.read_event_stream('s1')
+          events = backend.read_stream('s1')
           expect(events.map(&:seq)).to eq([1, 2])
           expect(events.map(&:payload).map(&:account_id)).to eq([1, 2])
         end
@@ -620,7 +620,7 @@ module BackendExamples
             end
           end.to raise_error(StandardError)
 
-          expect(backend.read_event_stream('s1').map(&:seq)).to eq([1])
+          expect(backend.read_stream('s1').map(&:seq)).to eq([1])
         end
 
         it 'correlates messages and copies metadata' do
@@ -629,7 +629,7 @@ module BackendExamples
             Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message])
           end
 
-          events = backend.read_event_stream('s1')
+          events = backend.read_stream('s1')
           expect(events.map(&:causation_id)).to eq([evt1.id, evt1.id])
           expect(events.map(&:correlation_id)).to eq([correlation_id, correlation_id])
           expect(events.map(&:metadata).map { |m| m[:tid] }).to eq(['evt1', 'evt1'])
@@ -802,7 +802,7 @@ module BackendExamples
         evt = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         expect(backend.append_to_stream('s1', evt)).to be(true)
         
-        events = backend.read_event_stream('s1')
+        events = backend.read_stream('s1')
         expect(events.size).to eq(1)
         expect(events.first).to eq(evt)
       end
@@ -812,14 +812,14 @@ module BackendExamples
         evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
         expect(backend.append_to_stream('s1', [evt1, evt2])).to be(true)
         
-        events = backend.read_event_stream('s1')
+        events = backend.read_stream('s1')
         expect(events.size).to eq(2)
         expect(events).to eq([evt1, evt2])
       end
 
       it 'handles empty array' do
         expect(backend.append_to_stream('s1', [])).to be(false)
-        events = backend.read_event_stream('s1')
+        events = backend.read_stream('s1')
         expect(events).to eq([])
       end
 
@@ -922,7 +922,7 @@ module BackendExamples
       end
     end
 
-    describe '#read_event_stream' do
+    describe '#read_stream' do
       it 'reads full event stream in order' do
         cmd1 = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         evt1 = cmd1.follow_with_seq(Tests::SomethingHappened1, 2, account_id: cmd1.payload.account_id)
@@ -930,7 +930,7 @@ module BackendExamples
         evt3 = Tests::SomethingHappened1.parse(stream_id: 's2', seq: 4, payload: { account_id: 1 })
         expect(backend.append_to_stream('s1', [evt1, evt2])).to be(true)
         expect(backend.append_to_stream('s2', [evt3])).to be(true)
-        events = backend.read_event_stream('s1')
+        events = backend.read_stream('s1')
         expect(events).to eq([evt1, evt2])
       end
 
@@ -939,10 +939,10 @@ module BackendExamples
         e2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
         e3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 2 })
         expect(backend.append_to_stream('s1', [e1, e2, e3])).to be(true)
-        events = backend.read_event_stream('s1', upto: 2)
+        events = backend.read_stream('s1', upto: 2)
         expect(events).to eq([e1, e2])
 
-        events = backend.read_event_stream('s1', after: 1)
+        events = backend.read_stream('s1', after: 1)
         expect(events).to eq([e2, e3])
       end
     end

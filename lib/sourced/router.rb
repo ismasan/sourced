@@ -199,7 +199,7 @@ module Sourced
         when :replaying
           hash[name] = replaying
         when :history
-          hash[name] = backend.read_event_stream(event.stream_id)
+          hash[name] = backend.read_stream(event.stream_id)
         when :logger
           hash[name] = logger
         end

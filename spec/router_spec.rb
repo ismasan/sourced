@@ -181,7 +181,7 @@ RSpec.describe Sourced::Router do
 
         it 'calls handle with event and history' do
           expected_history = [event, event2]
-          allow(backend).to receive(:read_event_stream).with('123').and_return(expected_history)
+          allow(backend).to receive(:read_stream).with('123').and_return(expected_history)
           
           allow(RouterTest::ReactorWithHistoryOnly).to receive(:handle).and_call_original
           router.handle_next_event_for_reactor(RouterTest::ReactorWithHistoryOnly)
@@ -194,7 +194,7 @@ RSpec.describe Sourced::Router do
 
         it 'calls handle with event, replaying status, and history' do
           expected_history = [event, event2]
-          allow(backend).to receive(:read_event_stream).with('123').and_return(expected_history)
+          allow(backend).to receive(:read_stream).with('123').and_return(expected_history)
           allow(RouterTest::ReactorWithBothArgs).to receive(:handle).and_call_original
 
           router.handle_next_event_for_reactor(RouterTest::ReactorWithBothArgs)
@@ -228,7 +228,7 @@ RSpec.describe Sourced::Router do
 
         it 'fetches history for the correct stream' do
           other_history = [other_event]
-          allow(backend).to receive(:read_event_stream).with('other-stream').and_return(other_history)
+          allow(backend).to receive(:read_stream).with('other-stream').and_return(other_history)
           
           # Set up the backend to return the other event
           allow(backend).to receive(:reserve_next_for_reactor).and_yield(other_event, false)
