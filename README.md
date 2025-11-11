@@ -670,7 +670,18 @@ with_reactor(Webhooks, 'webhook-1')
   end
 ```
 
-For reactors that have `sync` blocks for side-effects (ex. Projectors), use `#then!` to trigger those blocks.
+You can mix argument and block assertions with `.then()`
+
+```ruby
+with_reactor(Webhooks, 'webhook-1')
+  .when(Webooks::Dispatch, name: 'Joe')
+  .then do |_|
+    expect(api_request).to have_been_requested
+  end
+  .then(Webhooks::Dispatched, reference: 'webhook-abc')
+```
+
+For reactors that have `sync` blocks for side-effects (ex. Projectors), use `#then!` to trigger those side-effects and assert their results.
 
 ```ruby
 with_reactor(PlacedOrders, 'order-123')
