@@ -84,4 +84,26 @@ RSpec.describe Sourced::Testing::RSpec do
         .then([])
     end
   end
+
+  context 'with block given to #then' do
+    it 'evaluates block' do
+      received = []
+
+      klass = Class.new do
+        extend Sourced::Consumer
+        def self.handled_messages = [Testing::Start]
+      end
+      klass.define_singleton_method(:handle) do |message, history:|
+        received << message
+        []
+      end
+
+      with_reactor(klass, 'abc')
+        .when(Testing::Start, name: 'Joe')
+        .then do |actions|
+          expect(actions).to eq([])
+          expect(received).to match_sourced_messages(Testing::Start.build('abc', name: 'Joe'))
+        end
+    end
+  end
 end
