@@ -85,7 +85,7 @@ module Sourced
       end
 
       def load
-        history = @backend.read_event_stream(@stream_id)
+        history = @backend.read_stream(@stream_id)
         instance.__from(history)
       end
     end

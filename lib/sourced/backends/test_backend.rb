@@ -249,7 +249,7 @@ module Sourced
         @state.events_by_correlation_id[event.correlation_id]
       end
 
-      def read_event_stream(stream_id, after: nil, upto: nil)
+      def read_stream(stream_id, after: nil, upto: nil)
         events = @state.events_by_stream_id[stream_id]
         events = events.select { |e| e.seq > after } if after
         events = events.select { |e| e.seq <= upto } if upto

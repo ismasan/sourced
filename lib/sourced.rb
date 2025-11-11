@@ -154,7 +154,7 @@ module Sourced
 
     def load(actor, after: nil, upto: nil)
       after ||= actor.seq
-      events = @backend.read_event_stream(actor.id, after:, upto:)
+      events = @backend.read_stream(actor.id, after:, upto:)
       actor.evolve(events)
       actor
     end
@@ -213,7 +213,7 @@ module Sourced
       stream_id
     end
 
-    config.backend.read_event_stream(stream_id, after:, upto:)
+    config.backend.read_stream(stream_id, after:, upto:)
   end
 
   # Generate a standardized method name for message handlers.

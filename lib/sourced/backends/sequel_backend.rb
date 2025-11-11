@@ -14,11 +14,11 @@ module Sourced
     # with support for concurrency control, pub/sub notifications, and transactional processing.
     #
     # The SequelBackend handles:
-    # - Event storage and retrieval with ordering guarantees
+    # - Message storage and retrieval with ordering guarantees
     # - Message scheduling and dispatching
     # - Consumer group management and offset tracking  
     # - Concurrency control via database locks and claims
-    # - Pub/sub notifications for real-time event processing
+    # - Pub/sub notifications for real-time message processing
     #
     # @example Basic setup with PostgreSQL
     #   db = Sequel.connect('postgres://localhost/myapp')
@@ -66,9 +66,9 @@ module Sourced
 
       # Data structure for backend statistics and monitoring information.
       # @!attribute [r] stream_count
-      #   @return [Integer] Total number of event streams
+      #   @return [Integer] Total number of message streams
       # @!attribute [r] max_global_seq
-      #   @return [Integer] Highest global sequence number (latest event)
+      #   @return [Integer] Highest global sequence number (latest message)
       # @!attribute [r] groups
       #   @return [Array<Hash>] Consumer group information with processing stats
       Stats = Data.define(:stream_count, :max_global_seq, :groups)
@@ -80,7 +80,7 @@ module Sourced
       # @example Get backend statistics
       #   stats = backend.stats
       #   puts "Total streams: #{stats.stream_count}"
-      #   puts "Latest event: #{stats.max_global_seq}"
+      #   puts "Latest message: #{stats.max_global_seq}"
       #   stats.groups.each { |g| puts "Group #{g[:id]}: #{g[:status]}" }
       def stats
         stream_count = db[streams_table].count
@@ -95,7 +95,7 @@ module Sourced
       # @!attribute [r] seq
       #   @return [Integer] Latest sequence number in the stream
       # @!attribute [r] updated_at
-      #   @return [Time] Timestamp of the most recent event in the stream
+      #   @return [Time] Timestamp of the most recent message in the stream
       Stream = Data.define(:stream_id, :seq, :updated_at)
 
       # Retrieve a list of recently active streams, ordered by most recent activity.
@@ -175,7 +175,7 @@ module Sourced
             Message.from(data)
           end
 
-          # Append events to each stream
+          # Append messages to each stream
           messages.group_by(&:stream_id).each do |stream_id, stream_messages|
             append_next_to_stream(stream_id, stream_messages)
           end
@@ -222,50 +222,50 @@ module Sourced
         end
       end
 
-      # Append one or more events to a stream, creating the stream if it doesn't exist.
-      # Also automatically increments the sequence number for the stream and events,
+      # Append one or more messages to a stream, creating the stream if it doesn't exist.
+      # Also automatically increments the sequence number for the stream and messages,
       # without relying on the client passing the right sequence numbers.
-      # This is used for appending events in order without client-side optimistic concurrency control.
+      # This is used for appending messages in order without client-side optimistic concurrency control.
       # For example commands that will be picked up and handled by a reactor, later.
-      # @param stream_id [String] Unique identifier for the event stream
-      # @param events [Sourced::Message, Array<Sourced::Message>] Event(s) to append to the stream
+      # @param stream_id [String] Unique identifier for the message stream
+      # @param messages [Sourced::Message, Array<Sourced::Message>] Message(s) to append to the stream
       # @option max_retries [Integer] Maximum number of retries on unique constraint violation (default: 3)
-      def append_next_to_stream(stream_id, events, max_retries: 3)
-        # Handle both single event and array of events
-        events_array = Array(events)
-        return true if events_array.empty?
+      def append_next_to_stream(stream_id, messages, max_retries: 3)
+        # Handle both single message and array of messages
+        messages_array = Array(messages)
+        return true if messages_array.empty?
 
         retries = 0
         begin
           db.transaction do
             # Update or create a stream.
-            # If updating, increment seq by the number of events being added.
-            events_count = events_array.size
+            # If updating, increment seq by the number of messages being added.
+            messages_count = messages_array.size
             stream_record = db[streams_table]
               .insert_conflict(
                 target: :stream_id, 
                 update: { 
-                  seq: Sequel.qualify(streams_table, :seq) + events_count,
+                  seq: Sequel.qualify(streams_table, :seq) + messages_count,
                   updated_at: Time.now 
                 }
               )
               .returning(:id, :seq)
-              .insert(stream_id:, seq: events_count)
+              .insert(stream_id:, seq: messages_count)
               .first
 
             # Calculate the starting sequence number for this batch
             # If stream existed, seq will be the new max seq after increment
-            # If stream was created, seq will be events_count
-            starting_seq = stream_record[:seq] - events_count + 1
+            # If stream was created, seq will be messages_count
+            starting_seq = stream_record[:seq] - messages_count + 1
 
             # Prepare rows for bulk insert with incrementing sequence numbers
-            rows = events_array.map.with_index do |event, index|
-              row = serialize_event(event, stream_record[:id])
+            rows = messages_array.map.with_index do |msg, index|
+              row = serialize_message(msg, stream_record[:id])
               row[:seq] = starting_seq + index
               row
             end
 
-            # Bulk insert all events
+            # Bulk insert all messages
             db[messages_table].multi_insert(rows)
           end
 
@@ -281,19 +281,19 @@ module Sourced
         end
       end
 
-      def append_to_stream(stream_id, events)
-        # Handle both single event and array of events
-        events_array = Array(events)
-        return false if events_array.empty?
+      def append_to_stream(stream_id, messages)
+        # Handle both single message and array of messages
+        messages_array = Array(messages)
+        return false if messages_array.empty?
 
-        if events_array.map(&:stream_id).uniq.size > 1
-          raise ArgumentError, 'Events must all belong to the same stream'
+        if messages_array.map(&:stream_id).uniq.size > 1
+          raise ArgumentError, 'Messages must all belong to the same stream'
         end
 
         db.transaction do
-          seq = events_array.last.seq
+          seq = messages_array.last.seq
           id = db[streams_table].insert_conflict(target: :stream_id, update: { seq:, updated_at: Time.now }).insert(stream_id:, seq:)
-          rows = events_array.map { |e| serialize_event(e, id) }
+          rows = messages_array.map { |e| serialize_message(e, id) }
           db[messages_table].multi_insert(rows)
         end
 
@@ -302,33 +302,33 @@ module Sourced
         raise Sourced::ConcurrentAppendError, e.message
       end
 
-      # Reserve next event for a reactor, based on the reactor's #handled_messages list
-      # This fetches the next un-acknowledged event for the reactor, and processes it in a transaction
-      # which aquires a lock on the event's stream_id and the reactor's group_id
+      # Reserve next message for a reactor, based on the reactor's #handled_messages list
+      # This fetches the next un-acknowledged message for the reactor, and processes it in a transaction
+      # which aquires a lock on the message's stream_id and the reactor's group_id
       # So that no other reactor instance in the same group can process the same stream concurrently.
-      # This way, events for the same stream are guaranteed to be processed sequentially for each reactor group.
-      # If the given block returns truthy, the event is marked as acknowledged for this reactor group
+      # This way, messages for the same stream are guaranteed to be processed sequentially for each reactor group.
+      # If the given block returns truthy, the message is marked as acknowledged for this reactor group
       # (ie. it won't be processed again by the same group).
-      # If the block returns falsey, the event is NOT acknowledged and will be retried,
+      # If the block returns falsey, the message is NOT acknowledged and will be retried,
       # unless the block also stops the reactor, which is the default behaviour when an exception is raised.
-      # See Router#handle_next_event_for_reactor,
-      # A boolean is passed to the block to indicate whether the event is being replayed 
+      # See Router#handle_next_message_for_reactor,
+      # A boolean is passed to the block to indicate whether the message is being replayed 
       # (ie the reactor group has previously processed it).
-      # This is done by incrementing the group's highest_global_seq with every event acknowledged.
-      # When the group's offsets are reset (in order to re-process all events), this value is preserved
-      # so that each event's global_seq can be compared against it to determine if the event is being replayed.
+      # This is done by incrementing the group's highest_global_seq with every message acknowledged.
+      # When the group's offsets are reset (in order to re-process all messages), this value is preserved
+      # so that each message's global_seq can be compared against it to determine if the message is being replayed.
       #
       # @example
-      #   backend.reserve_next_for_reactor(reactor) do |event, replaying|
-      #     # process event here
-      #     true # ACK event
+      #   backend.reserve_next_for_reactor(reactor) do |message, replaying|
+      #     # process message here
+      #     true # ACK message
       #   end
       #
       # @param reactor [Sourced::ReactorInterface]
       # @option worker_id [String]
       # @yieldparam [Sourced::Message]
-      # @yieldparam [Boolean] whether the event is being replayed (ie. it has been processed before)
-      # @yieldreturn [Boolean] whether to ACK the event for this reactor group and stream ID.
+      # @yieldparam [Boolean] whether the message is being replayed (ie. it has been processed before)
+      # @yieldreturn [Boolean] whether to ACK the message for this reactor group and stream ID.
       def reserve_next_for_reactor(reactor, worker_id: nil, &)
         worker_id ||= [Process.pid, Thread.current.object_id, Fiber.current.object_id].join('-')
         group_id = reactor.consumer_info.group_id
@@ -338,23 +338,23 @@ module Sourced
         bootstrap_offsets_for(group_id)
 
         # Phase 1: Claim stream_id/group_id in short transaction
-        # This claim includes :event, :claim_id and :replaying
-        row = claim_next_event(group_id, handled_messages, now, reactor.consumer_info.start_from.call, worker_id)
+        # This claim includes :message, :claim_id and :replaying
+        row = claim_next_message(group_id, handled_messages, now, reactor.consumer_info.start_from.call, worker_id)
 
         # return reserve_next_for_reactor(reactor, &) if row == :retry
         return unless row
 
-        event = deserialize_event(row)
+        message = deserialize_message(row)
 
         begin
-          # Phase 2: Process event outside of transaction
-          actions = yield(event, row[:replaying])
+          # Phase 2: Process message outside of transaction
+          actions = yield(message, row[:replaying])
 
           # Phase 3: update state depending on result
           # Result handling happens in the same transaction
-          # as ACKing the event
+          # as ACKing the message
           db.transaction do
-            process_actions(group_id, row, actions, event)
+            process_actions(group_id, row, actions, message)
           end
 
         rescue StandardError
@@ -362,19 +362,19 @@ module Sourced
           raise
         end
 
-        event
+        message
       end
 
       private def release_offset(offset_id)
         db[offsets_table].where(id: offset_id).update(claimed: false, claimed_at: nil, claimed_by: nil)
       end
 
-      private def process_actions(group_id, row, actions, event)
+      private def process_actions(group_id, row, actions, message)
         should_ack = false
         actions = [actions] unless actions.is_a?(Array)
         actions = actions.compact
         # Empty actions is assumed to be an ACK
-        return ack_event(group_id, row[:stream_id_fk], row[:global_seq]) if actions.empty?
+        return ack_message(group_id, row[:stream_id_fk], row[:global_seq]) if actions.empty?
 
         actions.each do |action|
           case action
@@ -386,7 +386,7 @@ module Sourced
 
           when Actions::AppendNext
             messages = action.messages.map do |msg|
-              event.correlate(msg)
+              message.correlate(msg)
             end
             messages.group_by(&:stream_id).each do |stream_id, stream_messages|
               append_next_to_stream(stream_id, stream_messages)
@@ -395,14 +395,14 @@ module Sourced
 
           when Actions::AppendAfter
             messages = action.messages.map do |msg|
-              event.correlate(msg)
+              message.correlate(msg)
             end
             append_to_stream(action.stream_id, messages)
             should_ack = true
 
           when Actions::Schedule
             messages = action.messages.map do |msg|
-              event.correlate(msg)
+              message.correlate(msg)
             end
             schedule_messages(messages, at: action.at)
             should_ack = true
@@ -415,15 +415,15 @@ module Sourced
             release_offset(row[:offset_id])
 
           else
-            raise ArgumentError, "Expected Sourced::Actions type, but got: #{action.class}. Group #{group_id}. Message #{event}"
+            raise ArgumentError, "Expected Sourced::Actions type, but got: #{action.class}. Group #{group_id}. Message #{message}"
           end
         end
 
-        ack_event(group_id, row[:stream_id_fk], row[:global_seq]) if should_ack
+        ack_message(group_id, row[:stream_id_fk], row[:global_seq]) if should_ack
       end
 
       # Insert missing offsets for a consumer group and all streams.
-      # This runs in advance of claiming events for processing
+      # This runs in advance of claiming messages for processing
       # so that the claim query relies on existing offsets and FOR UPDATE SKIP LOCKED
       # to prevent concurrent claims on the same stream by different workers.
       private def bootstrap_offsets_for(group_id)
@@ -460,19 +460,19 @@ module Sourced
         end
       end
 
-      # @param group_id [String] Consumer group ID to claim the next event for
+      # @param group_id [String] Consumer group ID to claim the next message for
       # @param handle_messages [Array<String>] List of message types to handle
       # @param now [Time] Current time
-      # @param start_from [Time] Optional starting point for event processing
-      # @param worker_id [String] Unique identifier for the worker claiming the event
-      private def claim_next_event(group_id, handled_messages, now, start_from, worker_id)
+      # @param start_from [Time] Optional starting point for message processing
+      # @param worker_id [String] Unique identifier for the worker claiming the message
+      private def claim_next_message(group_id, handled_messages, now, start_from, worker_id)
         db.transaction do
-          # 1. get next event for this group_id and handled_messages
+          # 1. get next message for this group_id and handled_messages
           # Use FOR UPDATE SKIP LOCKED if supported
           row = if start_from.is_a?(Time)
-            db.fetch(sql_for_reserve_next_with_events(handled_messages, group_id:, now:, start_from:)).first
+            db.fetch(sql_for_reserve_next_with_messages(handled_messages, group_id:, now:, start_from:)).first
           else
-            db.fetch(sql_for_reserve_next_with_events(handled_messages, group_id:, now:)).first
+            db.fetch(sql_for_reserve_next_with_messages(handled_messages, group_id:, now:)).first
           end
           return unless row
 
@@ -487,7 +487,7 @@ module Sourced
         end
 
       rescue Sequel::UniqueConstraintViolation
-        # Another worker has already claimed this event
+        # Another worker has already claimed this message
         logger.debug "AAA Claim for group #{group_id} already exists, skipping"
         nil
       end
@@ -542,7 +542,7 @@ module Sourced
       end
 
       # Reset offsets for all streams tracked by a consumer group.
-      # If the consumer group is active, this will make it re-process all events
+      # If the consumer group is active, this will make it re-process all messages
       #
       # @param group_id [String]
       # @return [Boolean]
@@ -559,18 +559,18 @@ module Sourced
         true
       end
 
-      def ack_on(group_id, event_id, &)
+      def ack_on(group_id, message_id, &)
         db.transaction do
-          row = db.fetch(sql_for_ack_on, group_id, event_id).first
-          raise Sourced::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}" unless row
+          row = db.fetch(sql_for_ack_on, group_id, message_id).first
+          raise Sourced::ConcurrentAckError, "Stream for message #{message_id} is being concurrently processed by #{group_id}" unless row
 
           yield if block_given?
 
-          ack_event(group_id, row[:stream_id_fk], row[:global_seq])
+          ack_message(group_id, row[:stream_id_fk], row[:global_seq])
         end
       end
 
-      private def ack_event(group_id, stream_id, global_seq)
+      private def ack_message(group_id, stream_id, global_seq)
         db.transaction do
           # We could use an upsert here, but
           # we create consumer groups on registration, or
@@ -605,8 +605,8 @@ module Sourced
 
           # Upsert offset
           # NOTE: when using #reserve_next_for_reactor,
-          # an offset will always exist for an event
-          # but the synchronous ack_on method can be used with an event
+          # an offset will always exist for an message
+          # but the synchronous ack_on method can be used with an message
           # for whose group and stream no offset exists yet.
           db[offsets_table]
             .insert_conflict(
@@ -621,7 +621,7 @@ module Sourced
         end
       end
 
-      private def base_events_query
+      private def base_messages_query
         db[messages_table]
           .select(
             Sequel[messages_table][:id],
@@ -638,29 +638,29 @@ module Sourced
           .join(streams_table, id: :stream_id)
       end
 
-      def read_correlation_batch(event_id)
+      def read_correlation_batch(message_id)
         correlation_subquery = db[messages_table]
           .select(:correlation_id)
-          .where(id: event_id)
+          .where(id: message_id)
 
-        query = base_events_query
+        query = base_messages_query
           .where(Sequel[messages_table][:correlation_id] => correlation_subquery)
           .order(Sequel[messages_table][:global_seq])
 
         query.map do |row|
-          deserialize_event(row)
+          deserialize_message(row)
         end
       end
 
-      def read_event_stream(stream_id, after: nil, upto: nil)
-        _events_table = messages_table # need local variable for Sequel block
+      def read_stream(stream_id, after: nil, upto: nil)
+        _messages_table = messages_table # need local variable for Sequel block
 
-        query = base_events_query.where(Sequel[streams_table][:stream_id] => stream_id)
+        query = base_messages_query.where(Sequel[streams_table][:stream_id] => stream_id)
 
-        query = query.where { Sequel[_events_table][:seq] > after } if after
-        query = query.where { Sequel[_events_table][:seq] <= upto } if upto
-        query.order(Sequel[_events_table][:global_seq]).map do |row|
-          deserialize_event(row)
+        query = query.where { Sequel[_messages_table][:seq] > after } if after
+        query = query.where { Sequel[_messages_table][:seq] <= upto } if upto
+        query.order(Sequel[_messages_table][:global_seq]).map do |row|
+          deserialize_message(row)
         end
       end
 
@@ -720,11 +720,11 @@ module Sourced
         )
       end
 
-      def sql_for_reserve_next_with_events(handled_messages, group_id:, now:, start_from: nil)
-        event_types = handled_messages.map { |e| "'#{e}'" }
+      def sql_for_reserve_next_with_messages(handled_messages, group_id:, now:, start_from: nil)
+        message_types = handled_messages.map { |e| "'#{e}'" }
         now = db.literal(now)
         group_id = db.literal(group_id)
-        event_types_sql = event_types.any? ? " AND e.type IN(#{event_types.join(',')})" : ''
+        message_types_sql = message_types.any? ? " AND e.type IN(#{message_types.join(',')})" : ''
         time_window_sql = start_from ? " AND e.created_at > #{db.literal(start_from)}" : ''
 
         <<~SQL
@@ -741,7 +741,7 @@ module Sourced
             AND so.claimed = FALSE
             AND cg.status = 'active'
             AND (cg.retry_at IS NULL OR cg.retry_at <= #{now})
-            #{event_types_sql}#{time_window_sql}
+            #{message_types_sql}#{time_window_sql}
           ORDER BY e.global_seq ASC
           FOR UPDATE OF so SKIP LOCKED
           LIMIT 1;
@@ -798,15 +798,15 @@ module Sourced
           .insert(group_id:, status:)
       end
 
-      def serialize_event(event, stream_id)
-        row = event.to_h
+      def serialize_message(message, stream_id)
+        row = message.to_h
         row[:stream_id] = stream_id
         row[:metadata] = JSON.dump(row[:metadata]) if row[:metadata]
         row[:payload] = JSON.dump(row[:payload]) if row[:payload]
         row
       end
 
-      def deserialize_event(row)
+      def deserialize_message(row)
         row[:payload] = parse_json(row[:payload]) if row[:payload]
         row[:metadata] = parse_json(row[:metadata]) if row[:metadata]
         Message.from(row)

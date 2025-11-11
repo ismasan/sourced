@@ -30,7 +30,7 @@ RSpec.describe Sourced do
     it 'appends message' do
       msg = @message_class.parse(stream_id: 'aaa', payload: { name: 'Joe' })
       expect(Sourced.dispatch(msg)).to eq(msg)
-      expect(Sourced.config.backend.read_event_stream('aaa').map(&:id)).to eq([msg.id])
+      expect(Sourced.config.backend.read_stream('aaa').map(&:id)).to eq([msg.id])
     end
 
     it 'raises if message is invalid' do

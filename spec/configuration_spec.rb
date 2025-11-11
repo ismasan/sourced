@@ -43,7 +43,7 @@ RSpec.describe Sourced::Configuration do
         :reserve_next_for_reactor,
         :append_to_stream,
         :read_correlation_batch,
-        :read_event_stream,
+        :read_stream,
         :updating_consumer_group,
         :register_consumer_group,
         :start_consumer_group,

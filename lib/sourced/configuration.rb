@@ -22,7 +22,7 @@ module Sourced
       :reserve_next_for_reactor,
       :append_to_stream,
       :read_correlation_batch,
-      :read_event_stream,
+      :read_stream,
       :transaction,
       :stats,
       :updating_consumer_group,
