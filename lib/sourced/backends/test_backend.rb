@@ -8,129 +8,6 @@ module Sourced
       ACTIVE = 'active'
       STOPPED = 'stopped'
 
-      class Group
-        attr_reader :group_id, :commands, :oldest_command_date
-        attr_accessor :status, :error_context, :retry_at
-
-        Offset = Struct.new(:stream_id, :index, :locked)
-
-        def initialize(group_id, backend)
-          @group_id = group_id
-          @backend = backend
-          @commands = []
-          @status = :active
-          @oldest_command_date = nil
-          @error_context = {}
-          @retry_at = nil
-          @highest_index = -1
-          reset!
-        end
-
-        def active? = @status == :active
-        def active_with_commands? = active? && !!@oldest_command_date
-
-        def stop(reason = nil)
-          @error_context[:reason] = reason if reason
-          @status = :stopped
-        end
-
-        def reset!
-          @offsets = {}
-          reindex
-        end
-
-        def retry(time, ctx = {})
-          @error_context.merge!(ctx)
-          @retry_at = time
-        end
-
-        def to_h
-          active_offsets = @offsets.values.select { |o| o.index >= 0 }
-          oldest_processed = (active_offsets.min_by(&:index)&.index || -1) + 1
-          newest_processed = (active_offsets.max_by(&:index)&.index || -1) + 1
-          stream_count = active_offsets.size
-
-          { 
-            group_id:, 
-            status: @status.to_s, 
-            oldest_processed:, 
-            newest_processed:, 
-            stream_count:,
-            retry_at:
-          }
-        end
-
-        def schedule_commands(commands)
-          @commands = (@commands + commands).sort_by(&:created_at)
-          @oldest_command_date = @commands.first&.created_at
-        end
-
-        def delete_command(idx)
-          @commands.delete_at(idx)
-          @oldest_command_date = @commands.first&.created_at
-        end
-
-        def reindex
-          backend.events.each do |e|
-            @offsets[e.stream_id] ||= Offset.new(e.stream_id, -1, false)
-          end
-        end
-
-        def ack_on(event_id, &)
-          global_seq = backend.events.find_index { |e| e.id == event_id }
-          return unless global_seq
-
-          evt = backend.events[global_seq]
-          offset = @offsets[evt.stream_id]
-          if offset.locked
-            raise Sourced::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}"
-          else
-            offset.locked = true
-            yield
-            offset.index = global_seq
-            @highest_index = global_seq if global_seq > @highest_index
-            offset.locked = false
-          end
-        end
-
-        NOOP_FILTER = ->(_) { true } 
-
-        def reserve_next(handled_events, time_window, &)
-          time_filter = time_window.is_a?(Time) ? ->(e) { e.created_at > time_window } : NOOP_FILTER
-          evt = nil
-          offset = nil
-          index = -1
-
-          backend.events.each.with_index do |e, idx|
-            offset = @offsets[e.stream_id]
-            if offset.locked # stream locked by another consumer in the group
-              next
-            elsif idx > offset.index && handled_events.include?(e.class) && time_filter.call(e) # new event for the stream
-              evt = e
-              offset.locked = true
-              index = idx
-              break
-            else # event already consumed
-            end
-          end
-
-          if evt
-            replaying = @highest_index >= index
-            if block_given? && yield(evt, replaying)
-              # ACK reactor/event if block returns truthy
-              offset.index = index
-              @highest_index = index if index > @highest_index
-            end
-            offset.locked = false
-          end
-          evt
-        end
-
-        private
-
-        attr_reader :backend
-      end
-
       attr_reader :pubsub
 
       def initialize
@@ -140,135 +17,10 @@ module Sourced
         @tx_id = nil
       end
 
-      def events = @state.events
+      def messages = @state.messages
 
       def inspect
-        %(<#{self.class} events:#{events.size} streams:#{@state.events_by_stream_id.size}>)
-      end
-
-      class State
-        attr_reader :events, :groups, :events_by_correlation_id, :events_by_stream_id, :stream_id_seq_index, :streams
-
-        def initialize(
-          events: [], 
-          groups: Hash.new { |h, k| h[k] = Group.new(k, self) }, 
-          events_by_correlation_id: Hash.new { |h, k| h[k] = [] }, 
-          events_by_stream_id: Hash.new { |h, k| h[k] = [] },
-          stream_id_seq_index: {},
-          streams: {}
-        )
-
-          @events = events
-          @groups = groups
-          @events_by_correlation_id = events_by_correlation_id
-          @command_locks = {}
-          @events_by_stream_id = events_by_stream_id
-          @stream_id_seq_index = stream_id_seq_index
-          @streams = streams
-        end
-
-        Stream = Data.define(:stream_id, :seq, :updated_at) do
-          def hash = stream_id
-          def eql?(other) = other.is_a?(Stream) && stream_id == other.stream_id
-        end
-
-        def upsert_stream(stream_id, seq)
-          str = Stream.new(stream_id, seq, Time.now)
-          @streams[stream_id] = str
-        end
-
-        def next_command(&reserve)
-          now = Time.now
-          group = @groups.values.filter(&:active_with_commands?).sort_by(&:oldest_command_date).first
-          return nil unless group
-
-          if block_given?
-            idx = group.commands.index do |c|
-              !@command_locks[c.stream_id] && c.created_at <= now
-            end
-
-            return nil unless idx
-
-            cmd = group.commands[idx]
-            @command_locks[cmd.stream_id] = true
-
-            begin
-              if yield(cmd)
-                group.delete_command(idx)
-              end
-            ensure
-              @command_locks.delete(cmd.stream_id)
-            end
-            cmd
-          else
-            group.commands.first
-          end
-        end
-
-        def copy
-          self.class.new(
-            events: events.dup,
-            groups: deep_dup(groups),
-            events_by_correlation_id: deep_dup(events_by_correlation_id),
-            events_by_stream_id: deep_dup(events_by_stream_id),
-            stream_id_seq_index: deep_dup(stream_id_seq_index),
-            streams: streams.dup
-          )
-        end
-
-        private
-
-        def deep_dup(hash)
-          hash.each.with_object(hash.dup.clear) do |(k, v), new_hash|
-            new_hash[k] = v.dup
-          end
-        end
-      end
-
-      # An in-meory pubsub implementation for testing
-      class TestPubSub
-        def initialize
-          @channels = {}
-        end
-
-        # @param channel_name [String]
-        # @return [Channel]
-        def subscribe(channel_name)
-          @channels[channel_name] ||= Channel.new(channel_name)
-        end
-
-        # @param channel_name [String]
-        # @param event [Sourced::Message]
-        # @return [self]
-        def publish(channel_name, event)
-          channel = @channels[channel_name]
-          channel&.publish(event)
-          self
-        end
-
-        class Channel
-          attr_reader :name
-
-          def initialize(name)
-            @name = name
-            @handlers = []
-          end
-
-          def start(handler: nil, &block)
-            handler ||= block
-            @handlers << handler
-          end
-
-          def publish(event)
-            @handlers.each do |handler|
-              catch(:stop) do
-                handler.call(event, self)
-              end
-            end
-          end
-
-          def stop = nil
-        end
+        %(<#{self.class} messages:#{messages.size} streams:#{@state.messages_by_stream_id.size}>)
       end
 
       def clear!
@@ -282,15 +34,65 @@ module Sourced
         yield
       end
 
-      def reserve_next_for_reactor(reactor, &)
+      def reserve_next_for_reactor(reactor, worker_id: Process.pid.to_s, &)
         group_id = reactor.consumer_info.group_id
         start_from = reactor.consumer_info.start_from.call
         transaction do
           group = @state.groups[group_id]
           if group.active? && (group.retry_at.nil? || group.retry_at <= Time.now)
-            group.reserve_next(reactor.handled_events, start_from, &)
+            group.reserve_next(reactor.handled_messages, start_from, method(:process_actions), &)
           end
         end
+      end
+
+      private def process_actions(group_id, actions, ack, event, offset)
+        should_ack = false
+        actions = [actions] unless actions.is_a?(Array)
+        actions = actions.compact
+        # Empty actions is assumed to be an ACK
+        return ack.() if actions.empty?
+
+        actions.each do |action|
+          case action
+          when Actions::OK
+            should_ack = true
+
+          when Actions::Ack
+            offset.locked = false
+            ack_on(group_id, action.message_id)
+
+          when Actions::AppendNext
+            messages = correlate(event, action.messages)
+            messages.group_by(&:stream_id).each do |stream_id, stream_messages|
+              append_next_to_stream(stream_id, stream_messages)
+            end
+            should_ack = true
+
+          when Actions::AppendAfter
+            append_to_stream(action.stream_id, correlate(event, action.messages))
+            should_ack = true
+
+          when Actions::Schedule
+            schedule_messages correlate(event, action.messages), at: action.at
+            should_ack = true
+
+          when Actions::Sync
+            action.call
+            should_ack = true
+
+          when Actions::RETRY
+            # Don't ack
+
+          else
+            raise ArgumentError, "Expected Sourced::Actions type, but got: #{action.class}"
+          end
+        end
+
+        ack.() if should_ack
+      end
+
+      private def correlate(source_message, messages)
+        messages.map { |e| source_message.correlate(e) }
       end
 
       def ack_on(group_id, event_id, &)
@@ -315,6 +117,7 @@ module Sourced
 
       # @param group_id [String]
       def start_consumer_group(group_id)
+        group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         transaction do
           group = @state.groups[group_id]
           group.error_context = {}
@@ -324,6 +127,7 @@ module Sourced
       end
 
       def stop_consumer_group(group_id, error = nil)
+        group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         transaction do
           group = @state.groups[group_id]
           group.stop(error)
@@ -331,6 +135,7 @@ module Sourced
       end
 
       def reset_consumer_group(group_id)
+        group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         transaction do
           group = @state.groups[group_id]
           group.reset!
@@ -338,25 +143,30 @@ module Sourced
         true
       end
 
-      def schedule_commands(commands, group_id:)
-        transaction do
-          group = @state.groups[group_id]
-          group.schedule_commands(commands)
-        end
+      def schedule_messages(messages, at: Time.now)
+        @state.schedule_messages(messages, at:)
+        true
       end
 
-      def next_command(&)
+      def update_schedule!
+        count = 0
         transaction do
-          @state.next_command(&)
+          @state.next_scheduled_messages do |scheduled_messages|
+            scheduled_messages.group_by(&:stream_id).each do |stream_id, stream_messages|
+              append_next_to_stream(stream_id, stream_messages)
+            end
+            count = scheduled_messages.size
+          end
+          count
         end
       end
 
       Stats = Data.define(:stream_count, :max_global_seq, :groups)
 
       def stats
-        stream_count = @state.events_by_stream_id.size
-        max_global_seq = events.size
-        groups = @state.groups.values.map(&:to_h)#.filter { |g| g[:stream_count] > 0 }
+        stream_count = @state.messages_by_stream_id.size
+        max_global_seq = messages.size
+        groups = @state.groups.values.map(&:to_h)
         Stats.new(stream_count, max_global_seq, groups)
       end
 
@@ -393,49 +203,87 @@ module Sourced
         raise
       end
 
-      def append_to_stream(stream_id, events)
-        transaction do
-          check_unique_seq!(events)
+      # @param stream_id [String] Unique identifier for the event stream
+      # @param messages [Sourced::Message, Array<Sourced::Message>] Event(s) to append to the stream
+      # @option max_retries [Integer] Not used in this backend, but kept for interface compatibility
+      def append_next_to_stream(stream_id, messages, max_retries: 3)
+        # Handle both single event and array of messages
+        messages_array = Array(messages)
+        return true if messages_array.empty?
 
-          events.each do |event|
-            @state.events_by_correlation_id[event.correlation_id] << event
-            @state.events_by_stream_id[stream_id] << event
-            @state.events << event
-            @state.stream_id_seq_index[seq_key(stream_id, event)] = true
-            @state.upsert_stream(stream_id, event.seq)
+        transaction do
+          last_message = @state.messages_by_stream_id[stream_id].last
+          last_seq = last_message ? last_message.seq : 0
+          
+          messages_with_seq = messages_array.map.with_index do |message, index|
+            message.with(seq: last_seq + index + 1)
+          end
+          
+          append_to_stream(stream_id, messages_with_seq)
+        end
+      end
+
+      def append_to_stream(stream_id, messages)
+        # Handle both single event and array of events
+        messages_array = Array(messages)
+        return false if messages_array.empty?
+
+        transaction do
+          check_unique_seq!(messages_array)
+
+          messages_array.each do |message|
+            @state.messages_by_correlation_id[message.correlation_id] << message
+            @state.messages_by_stream_id[stream_id] << message
+            @state.messages << message
+            @state.stream_id_seq_index[seq_key(stream_id, message)] = true
+            @state.upsert_stream(stream_id, message.seq)
           end
         end
         @state.groups.each_value(&:reindex)
         true
       end
 
-      def read_correlation_batch(event_id)
-        event = @state.events.find { |e| e.id == event_id }
-        return [] unless event
-        @state.events_by_correlation_id[event.correlation_id]
+      def read_correlation_batch(message_id)
+        message = @state.messages.find { |e| e.id == message_id }
+        return [] unless message
+        @state.messages_by_correlation_id[message.correlation_id]
       end
 
-      def read_event_stream(stream_id, after: nil, upto: nil)
-        events = @state.events_by_stream_id[stream_id]
-        events = events.select { |e| e.seq > after } if after
-        events = events.select { |e| e.seq <= upto } if upto
-        events
+      def read_stream(stream_id, after: nil, upto: nil)
+        messages = @state.messages_by_stream_id[stream_id]
+        messages = messages.select { |e| e.seq > after } if after
+        messages = messages.select { |e| e.seq <= upto } if upto
+        messages
+      end
+
+      # No-op heartbeats for test backend
+      def worker_heartbeat(worker_ids, at: Time.now)
+        Array(worker_ids).size
+      end
+
+      # No-op stale claim release for test backend
+      def release_stale_claims(ttl_seconds: 120)
+        0
       end
 
       private
 
-      def check_unique_seq!(events)
-        duplicate = events.find do |event|
-          @state.stream_id_seq_index[seq_key(event.stream_id, event)]
+      def check_unique_seq!(messages)
+        duplicate = messages.find do |message|
+          @state.stream_id_seq_index[seq_key(message.stream_id, message)]
         end
         if duplicate
           raise Sourced::ConcurrentAppendError, "Duplicate stream_id/seq: #{duplicate.stream_id}/#{duplicate.seq}"
         end
       end
 
-      def seq_key(stream_id, event)
-        [stream_id, event.seq]
+      def seq_key(stream_id, message)
+        [stream_id, message.seq]
       end
     end
   end
 end
+
+require 'sourced/backends/test_backend/group'
+require 'sourced/backends/test_backend/state'
+require 'sourced/backends/test_backend/test_pub_sub'

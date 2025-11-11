@@ -9,7 +9,7 @@ module Sourced
   #  class CartActor < Sourced::Actor
   #    # Run this block within a transaction
   #    # when appending messages to storage
-  #    sync do |state, command, events|
+  #    sync do |state:, command:, events:|
   #      # Do something here, like updating a view, sending an email, etc.
   #    end
   #  end
@@ -29,11 +29,33 @@ module Sourced
   #    sync CartListings
   #  end
   module Sync
+    CallableInterface = Sourced::Types::Interface[:call]
+
     def self.included(base)
       super
       base.extend ClassMethods
     end
 
+    def sync_blocks_with(**args)
+      self.class.sync_blocks.map do |callable|
+        case callable
+        when Proc
+          proc { instance_exec(**args, &callable) }
+        when CallableInterface
+          proc { callable.call(**args) }
+        else
+          raise ArgumentError, "Not a valid sync block: #{callable.inspect}"
+        end
+      end
+    end
+
+    def sync_actions_with(**args)
+      sync_blocks_with(**args).map do |bl|
+        Actions::Sync.new(bl)
+      end
+    end
+
+    # TODO: deprecate this
     # Host classes will call this method to run any registered .sync blocks
     # within their transactional boundaries.
     # @param state [Object] the current state of the host class
@@ -51,20 +73,6 @@ module Sourced
         else
           blk.call(state, command, events)
         end
-      end
-    end
-
-    CallableInterface = Sourced::Types::Interface[:call]
-
-    # Wrap a sync reactor and call it's handle_events method
-    # while also ACKing its offsets for the processed events.
-    class SyncReactor < SimpleDelegator
-      def handle_events(events)
-        Router.handle_and_ack_events_for_reactor(__getobj__, events)
-      end
-
-      def call(_state, _command, events)
-        handle_events(events)
       end
     end
 
@@ -94,24 +102,7 @@ module Sourced
       # @yieldparam command [Object, Nil] the command being processed
       # @yieldparam events [Array<Sourced::Event>] the events being appended
       def sync(callable = nil, &block)
-        callable ||= block
-        callable = case callable
-                   when Proc
-                     unless (2..3).include?(callable.arity)
-                       raise ArgumentError,
-                             'sync block must accept 2 or 3 arguments'
-                     end
-
-                     callable
-                   when ReactorInterface
-                     SyncReactor.new(callable)
-                   when CallableInterface
-                     callable
-                   else
-                     raise ArgumentError, 'sync block must be a Proc, Sourced::ReactorInterface or #call interface'
-                   end
-
-        sync_blocks << callable
+        sync_blocks << (block || callable)
       end
     end
   end

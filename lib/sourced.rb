@@ -35,6 +35,20 @@ module Sourced
   # Raised when an invalid reactor is registered
   InvalidReactorError = Class.new(Error)
   
+  BackendError = Class.new(Error)
+
+  class InvalidMessageError < Error
+    attr_reader :message
+
+    def initialize(message)
+      @message = message
+      super <<~ERR
+      Invalid message #{message.class} ('#{message.type}')
+      Errors: #{message.errors.inspect}
+      ERR
+    end
+  end
+
   # Generate a new unique stream identifier, optionally with a prefix.
   # Stream IDs define concurrency boundaries - events for the same stream ID
   # are processed sequentially, while different stream IDs can be processed concurrently.
@@ -105,22 +119,101 @@ module Sourced
     Router.registered?(reactor)
   end
 
-  # Schedule commands for background processing by registered actors.
+  # Append messages (probably commands) to a stream
+  # auto-incrementing the sequence number
+  # Raises if the message is invalid
+  # This is meant for an app's front-end to dispatch commands into the system
+  # so it's defensive and raises on error
+  # helpers upstream of this can first validate the message
+  # and surface errors back to the UI
+  # TODO: for now it doesn't allow
+  # schedulling future messages.
+  # TODO2: in future we might want to restrict what messages
+  # can be publicly dispatched. Whether that lives here, or
+  # somewhere else, I'm not sure.
   #
-  # @param commands [Array<Command>] Array of command instances to schedule
-  # @return [void]
-  # @example Schedule multiple commands
-  #   commands = [
-  #     CreateCart.new(stream_id: 'cart-123', payload: {}),
-  #     AddItem.new(stream_id: 'cart-123', payload: { product_id: 'p1' })
-  #   ]
-  #   Sourced.schedule_commands(commands)
-  def self.schedule_commands(commands)
-    Router.schedule_commands(commands)
+  # @param message [Message] the mesagge to append
+  # @raise [InvalidMessageError] if !message.valid?
+  # @return [Message]
+  # @example
+  #   command = CreateCart.new(stream_id: 'cart-123', payload: {}),
+  #   Sourced.dispatch(command)
+  def self.dispatch(message)
+    raise InvalidMessageError.new(message) unless message.valid?
+
+    appended = config.backend.append_next_to_stream(message.stream_id, [message])
+    raise BackendError, "Backend #{config.backend}#append_next_to_stream failed with message #{message.inspect}" unless appended
+
+    message
   end
 
-  def self.handle_command(command)
-    Router.handle_command(command)
+  class Loader
+    def initialize(backend: Sourced.config.backend)
+      @backend = backend
+    end
+
+    def load(actor, after: nil, upto: nil)
+      after ||= actor.seq
+      events = @backend.read_stream(actor.id, after:, upto:)
+      actor.evolve(events)
+      actor
+    end
+  end
+
+  # Load or catch up an Actor from its event history
+  # @example
+  #   actor = MyActor.new(id: '123')
+  #   Sourced.load(actor)
+  #   actor.seq # Integer
+  #
+  # Actor must implement:
+  #   #id() => String
+  #   #seq() => Integer
+  #   #evolve(events)
+  #
+  # It also supports passing a Reactor class (Actor, Evolver)
+  # and a stream_id
+  # @example
+  #   actor = Sourced.load(MyActor, 'order-123')
+  #   actor = Sourced.load(MyActor, 'order-123', after: 20)
+  def self.load(*args)
+    reactor, options = case args
+    in [ReactorInterface => r, String => stream_id, Hash => opts]
+      [r.new(id: stream_id), opts]
+    in [ReactorInterface => r, String => stream_id]
+      [r.new(id: stream_id), {}]
+    in [Evolve => r, Hash => opts]
+      [r, opts]
+    in [Evolve => r]
+      [r, {}]
+    else
+      raise ArgumentError, "expected a Reactor class and stream_id, or a Reactor instance, but got #{args.inspect}"
+    end
+
+    backend = options.delete(:backend) || config.backend
+    Loader.new(backend:).load(reactor, **options)
+  end
+
+  # Load history for a reactor, or a stream id string
+  # @example
+  #   history = Sourced.history_for('order-123')
+  #   history = Sourced.history_for('order-123', upto: 20)
+  #   history = Sourced.history_for(order_actor)
+  #
+  # @param stream_id [String, #id, #stream_id]
+  # @option after [nil, Integer] load messages after this sequence number
+  # @option upto [nil, Integer] load messsages upto this sequence number
+  # @return [Enumerable<Sourced::Message>]
+  def self.history_for(stream_id, after: nil, upto: nil)
+    stream_id = if stream_id.respond_to?(:stream_id)
+      stream_id.stream_id
+    elsif stream_id.respond_to?(:id)
+      stream_id.id
+    else
+      stream_id
+    end
+
+    config.backend.read_stream(stream_id, after:, upto:)
   end
 
   # Generate a standardized method name for message handlers.
@@ -147,17 +240,18 @@ module Sourced
   
   # Interface that event handlers (Reactors) must implement.
   # @!attribute [r] consumer_info
-  #   @return [Hash] Consumer group information for this reactor
-  # @!attribute [r] handled_events
-  #   @return [Array<Class>] Event classes this reactor handles
-  # @!attribute [r] handle_events
+  #   @return [Sourced::Consumer::ConsumerInfo] Consumer group information for this reactor
+  # @!attribute [r] handled_messages
+  #   @return [Array<Class>] Message classes this reactor handles
+  # @!attribute [r] handle
   #   @return [Method] Method to handle incoming events
   # @!attribute [r] on_exception
   #   @return [Method] Method to handle exceptions during event processing
-  ReactorInterface = Types::Interface[:consumer_info, :handled_events, :handle_events, :on_exception]
+  ReactorInterface = Types::Interface[:handle, :consumer_info, :handled_messages, :on_exception]
 end
 
 require 'sourced/consumer'
+require 'sourced/actions'
 require 'sourced/evolve'
 require 'sourced/react'
 require 'sourced/sync'

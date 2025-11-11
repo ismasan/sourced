@@ -3,6 +3,7 @@
 require 'async'
 require 'console'
 require 'sourced/worker'
+require 'sourced/house_keeper'
 
 module Sourced
   # The Supervisor manages a pool of background workers that process events and commands.
@@ -38,11 +39,21 @@ module Sourced
     def initialize(
       logger: Sourced.config.logger, 
       count: 2,
-      executor: Sourced.config.executor
+      housekeeping_count: 1,
+      housekeeping_interval: Sourced.config.housekeeping_interval,
+      housekeeping_heartbeat_interval: Sourced.config.housekeeping_heartbeat_interval,
+      housekeeping_claim_ttl_seconds: Sourced.config.housekeeping_claim_ttl_seconds,
+      executor: Sourced.config.executor,
+      router: Sourced::Router
     )
       @logger = logger
       @count = count
+      @housekeeping_count = housekeeping_count
+      @housekeeping_interval = housekeeping_interval
+      @housekeeping_heartbeat_interval = housekeeping_heartbeat_interval
+      @housekeeping_claim_ttl_seconds = housekeeping_claim_ttl_seconds
       @executor = executor
+      @router = router
       @workers = []
     end
 
@@ -50,15 +61,38 @@ module Sourced
     # This method blocks until the supervisor receives a shutdown signal.
     # Workers are spawned as concurrent tasks using the configured executor 
     # and will begin polling for events and commands immediately.
+    # TODO: consistently inject config, defaulting to Sourced.config values
     #
     # @return [void] Blocks until interrupted by signal
     def start
       logger.info("Starting sync supervisor with #{@count} workers and #{@executor} executor")
       set_signal_handlers
-      @workers = @count.times.map do |i|
-        Worker.new(logger:, name: "worker-#{i}")
+
+      @housekeepers = @housekeeping_count.times.map do |i|
+        HouseKeeper.new(
+          logger:,
+          backend: router.backend,
+          name: "HouseKeeper-#{i}",
+          interval: @housekeeping_interval,
+          heartbeat_interval: @housekeeping_heartbeat_interval,
+          claim_ttl_seconds: @housekeeping_claim_ttl_seconds,
+          # Provide live worker IDs for heartbeats
+          worker_ids_provider: -> { @workers.map(&:name) }
+        )
       end
+
+      @workers = @count.times.map do |i|
+        # TODO: worker names using Process.pid, current thread and fiber id
+        Worker.new(logger:, router:, name: "worker-#{i}")
+      end
+
       @executor.start do |task|
+        @housekeepers.each do |hk|
+          task.spawn do
+            hk.work
+          end
+        end
+
         @workers.each do |wrk|
           task.spawn do
             wrk.poll
@@ -73,8 +107,9 @@ module Sourced
     #
     # @return [void]
     def stop
-      logger.info("Stopping #{@workers.size} workers")
+      logger.info("Stopping #{@workers.size} workers and #{@housekeepers.size} house-keepers")
       @workers.each(&:stop)
+      @housekeepers.each(&:stop)
       logger.info('All workers stopped')
     end
 
@@ -90,6 +125,6 @@ module Sourced
 
     private
 
-    attr_reader :logger
+    attr_reader :logger, :router
   end
 end

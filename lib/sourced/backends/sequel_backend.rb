@@ -10,15 +10,15 @@ Sequel.extension :pg_json if defined?(PG)
 module Sourced
   module Backends
     # Production backend implementation using Sequel ORM for PostgreSQL and SQLite.
-    # This backend provides persistent storage for events, commands, and consumer state
+    # This backend provides persistent storage for messages, and consumer state
     # with support for concurrency control, pub/sub notifications, and transactional processing.
     #
     # The SequelBackend handles:
-    # - Event storage and retrieval with ordering guarantees
-    # - Command scheduling and dispatching
+    # - Message storage and retrieval with ordering guarantees
+    # - Message scheduling and dispatching
     # - Consumer group management and offset tracking  
-    # - Concurrency control via database locks
-    # - Pub/sub notifications for real-time event processing
+    # - Concurrency control via database locks and claims
+    # - Pub/sub notifications for real-time message processing
     #
     # @example Basic setup with PostgreSQL
     #   db = Sequel.connect('postgres://localhost/myapp')
@@ -54,85 +54,21 @@ module Sourced
         @pubsub = SequelPubSub.new(db: @db)
         @logger = logger
         @prefix = prefix
-        @commands_table = table_name(:commands)
+        @workers_table = table_name(:workers)
+        @scheduled_messages_table = table_name(:scheduled_messages)
         @streams_table = table_name(:streams)
         @offsets_table = table_name(:offsets)
         @consumer_groups_table = table_name(:consumer_groups)
-        @events_table = table_name(:events)
+        @messages_table = table_name(:messages)
         @setup = false
         logger.info("Connected to #{@db}")
       end
 
-      # Schedule commands for background processing by a specific consumer group.
-      # Commands are serialized and stored in the commands table for later dispatch.
-      #
-      # @param commands [Array<Command>] Commands to schedule for processing
-      # @param group_id [String] Consumer group ID that will process these commands
-      # @return [Boolean] true if commands were scheduled, false if array was empty
-      # @example Schedule commands for processing
-      #   commands = [CreateCart.new(stream_id: 'cart-1', payload: {})]
-      #   backend.schedule_commands(commands, group_id: 'CartActor')
-      def schedule_commands(commands, group_id:)
-        return false if commands.empty?
-
-        rows = commands.map { |c| serialize_command(c, group_id:) }
-
-        db.transaction do
-          # TODO: reactors will be created in advance
-          # Here we can just update it.
-          upsert_consumer_group(group_id)
-          db[commands_table].multi_insert(rows)
-        end
-        true
-      end
-
-      # TODO: if the application raises an exception
-      # the command row is not deleted, so that it can be retried.
-      # However, if a command fails _permanently_ there's no point in keeping it in the queue,
-      # this ties with unresolved error handling in event handling, too.
-      #
-      # @yield [command] Optional block to reserve the command for processing
-      # @yieldparam command [Command] The command to potentially reserve
-      # @yieldreturn [Boolean] true to delete the command (reserve it), false to keep it
-      # @return [Command, nil] The next command or nil if no commands available
-      # @example Get next command without reserving
-      #   command = backend.next_command
-      # @example Reserve command for processing
-      #   backend.next_command do |command|
-      #     # Process command and return true to remove from queue
-      #     process_command(command)
-      #     true
-      #   end
-      # @note Commands that fail processing are kept in the queue for retry
-      def next_command(&reserve)
-        now = Time.now
-
-        if block_given?
-          db.transaction do
-            row = db.fetch(sql_for_next_command, now, now).first
-            return unless row
-
-            cmd = deserialize_event(row)
-            # reserve block can return falsey
-            # to keep the command in the bus. For example when retrying.
-            if yield(cmd)
-              db[commands_table].where(id: cmd.id).delete
-            end
-            cmd
-          end
-        else
-          db.transaction do
-            row = db.fetch(sql_for_next_command, now, now).first
-            row ? deserialize_event(row) : nil
-          end
-        end
-      end
-
       # Data structure for backend statistics and monitoring information.
       # @!attribute [r] stream_count
-      #   @return [Integer] Total number of event streams
+      #   @return [Integer] Total number of message streams
       # @!attribute [r] max_global_seq
-      #   @return [Integer] Highest global sequence number (latest event)
+      #   @return [Integer] Highest global sequence number (latest message)
       # @!attribute [r] groups
       #   @return [Array<Hash>] Consumer group information with processing stats
       Stats = Data.define(:stream_count, :max_global_seq, :groups)
@@ -144,11 +80,11 @@ module Sourced
       # @example Get backend statistics
       #   stats = backend.stats
       #   puts "Total streams: #{stats.stream_count}"
-      #   puts "Latest event: #{stats.max_global_seq}"
+      #   puts "Latest message: #{stats.max_global_seq}"
       #   stats.groups.each { |g| puts "Group #{g[:id]}: #{g[:status]}" }
       def stats
         stream_count = db[streams_table].count
-        max_global_seq = db[events_table].max(:global_seq)
+        max_global_seq = db[messages_table].max(:global_seq)
         groups = db.fetch(sql_for_consumer_stats).all
         Stats.new(stream_count, max_global_seq, groups)
       end
@@ -159,7 +95,7 @@ module Sourced
       # @!attribute [r] seq
       #   @return [Integer] Latest sequence number in the stream
       # @!attribute [r] updated_at
-      #   @return [Time] Timestamp of the most recent event in the stream
+      #   @return [Time] Timestamp of the most recent message in the stream
       Stream = Data.define(:stream_id, :seq, :updated_at)
 
       # Retrieve a list of recently active streams, ordered by most recent activity.
@@ -201,18 +137,164 @@ module Sourced
         db.transaction(&)
       end
 
-      def append_to_stream(stream_id, events)
-        return if events.empty?
+      def schedule_messages(messages, at:)
+        return false if messages.empty?
 
-        if events.map(&:stream_id).uniq.size > 1
-          raise ArgumentError, 'Events must all belong to the same stream'
+        now = Time.now
+        rows = messages.map do |m|
+          message_data = m.to_h
+          message_data[:metadata] = message_data[:metadata].merge(scheduled_at: now)
+          { created_at: now, available_at: at, message: JSON.dump(message_data) }
+        end
+
+        transaction do
+          db[scheduled_messages_table].multi_insert(rows)
+        end
+
+        true
+      end
+
+      def update_schedule!
+        now = Time.now
+
+        transaction do
+          rows = db[scheduled_messages_table]
+            .where { available_at <= now }
+            .order(:id)
+            .limit(100)
+            .for_update
+            .skip_locked
+            .all
+
+          return 0 if rows.empty?
+
+          # Process all messages
+          messages = rows.map do |r|
+            data = JSON.parse(r[:message], symbolize_names: true)
+            data[:created_at] = now
+            Message.from(data)
+          end
+
+          # Append messages to each stream
+          messages.group_by(&:stream_id).each do |stream_id, stream_messages|
+            append_next_to_stream(stream_id, stream_messages)
+          end
+
+          # Batch delete all processed messages
+          row_ids = rows.map { |m| m[:id] }
+          db[scheduled_messages_table].where(id: row_ids).delete
+
+          rows.size
+        end
+      end
+
+      # Record heartbeats for a set of worker IDs.
+      # Accepts a String or an Array<String>. Returns number of rows touched.
+      def worker_heartbeat(worker_ids, at: Time.now)
+        ids = Array(worker_ids).uniq
+        return 0 if ids.empty?
+
+        rows = ids.map { |id| { id:, last_seen: at } }
+        db.transaction do
+          db[workers_table]
+            .insert_conflict(target: :id, update: { last_seen: at })
+            .multi_insert(rows)
+        end
+        ids.size
+      end
+
+      # Release stale claims for workers that have not heartbeated within ttl_seconds.
+      # Returns the number of offsets rows updated.
+      def release_stale_claims(ttl_seconds: 120)
+        cutoff = Time.now - ttl_seconds
+
+        db.transaction do
+          stale_workers = db[workers_table]
+            .where { last_seen <= cutoff }
+            .select(:id)
+
+          ds = db[offsets_table]
+            .where(claimed: true)
+            .where { claimed_at <= cutoff }
+            .where(claimed_by: stale_workers)
+
+          ds.update(claimed: false, claimed_at: nil, claimed_by: nil)
+        end
+      end
+
+      # Append one or more messages to a stream, creating the stream if it doesn't exist.
+      # Also automatically increments the sequence number for the stream and messages,
+      # without relying on the client passing the right sequence numbers.
+      # This is used for appending messages in order without client-side optimistic concurrency control.
+      # For example commands that will be picked up and handled by a reactor, later.
+      # @param stream_id [String] Unique identifier for the message stream
+      # @param messages [Sourced::Message, Array<Sourced::Message>] Message(s) to append to the stream
+      # @option max_retries [Integer] Maximum number of retries on unique constraint violation (default: 3)
+      def append_next_to_stream(stream_id, messages, max_retries: 3)
+        # Handle both single message and array of messages
+        messages_array = Array(messages)
+        return true if messages_array.empty?
+
+        retries = 0
+        begin
+          db.transaction do
+            # Update or create a stream.
+            # If updating, increment seq by the number of messages being added.
+            messages_count = messages_array.size
+            stream_record = db[streams_table]
+              .insert_conflict(
+                target: :stream_id, 
+                update: { 
+                  seq: Sequel.qualify(streams_table, :seq) + messages_count,
+                  updated_at: Time.now 
+                }
+              )
+              .returning(:id, :seq)
+              .insert(stream_id:, seq: messages_count)
+              .first
+
+            # Calculate the starting sequence number for this batch
+            # If stream existed, seq will be the new max seq after increment
+            # If stream was created, seq will be messages_count
+            starting_seq = stream_record[:seq] - messages_count + 1
+
+            # Prepare rows for bulk insert with incrementing sequence numbers
+            rows = messages_array.map.with_index do |msg, index|
+              row = serialize_message(msg, stream_record[:id])
+              row[:seq] = starting_seq + index
+              row
+            end
+
+            # Bulk insert all messages
+            db[messages_table].multi_insert(rows)
+          end
+
+          true
+        rescue Sequel::UniqueConstraintViolation => e
+          retries += 1
+          if retries <= max_retries
+            sleep(0.001 * retries) # Brief backoff
+            retry
+          else
+            raise Sourced::ConcurrentAppendError, e.message
+          end
+        end
+      end
+
+      def append_to_stream(stream_id, messages)
+        # Handle both single message and array of messages
+        messages_array = Array(messages)
+        return false if messages_array.empty?
+
+        if messages_array.map(&:stream_id).uniq.size > 1
+          raise ArgumentError, 'Messages must all belong to the same stream'
         end
 
         db.transaction do
-          seq = events.last.seq
+          seq = messages_array.last.seq
           id = db[streams_table].insert_conflict(target: :stream_id, update: { seq:, updated_at: Time.now }).insert(stream_id:, seq:)
-          rows = events.map { |e| serialize_event(e, id) }
-          db[events_table].multi_insert(rows)
+          rows = messages_array.map { |e| serialize_message(e, id) }
+          db[messages_table].multi_insert(rows)
         end
 
         true
@@ -220,88 +302,200 @@ module Sourced
         raise Sourced::ConcurrentAppendError, e.message
       end
 
-      # Reserve next event for a reactor, based on the reactor's #handled_events list
-      # This fetches the next un-acknowledged event for the reactor, and processes it in a transaction
-      # which aquires a lock on the event's stream_id and the reactor's group_id
+      # Reserve next message for a reactor, based on the reactor's #handled_messages list
+      # This fetches the next un-acknowledged message for the reactor, and processes it in a transaction
+      # which aquires a lock on the message's stream_id and the reactor's group_id
       # So that no other reactor instance in the same group can process the same stream concurrently.
-      # This way, events for the same stream are guaranteed to be processed sequentially for each reactor group.
-      # If the given block returns truthy, the event is marked as acknowledged for this reactor group
+      # This way, messages for the same stream are guaranteed to be processed sequentially for each reactor group.
+      # If the given block returns truthy, the message is marked as acknowledged for this reactor group
       # (ie. it won't be processed again by the same group).
-      # If the block returns falsey, the event is NOT acknowledged and will be retried,
+      # If the block returns falsey, the message is NOT acknowledged and will be retried,
       # unless the block also stops the reactor, which is the default behaviour when an exception is raised.
-      # See Router#handle_next_event_for_reactor,
-      # A boolean is passed to the block to indicate whether the event is being replayed 
+      # See Router#handle_next_message_for_reactor,
+      # A boolean is passed to the block to indicate whether the message is being replayed 
       # (ie the reactor group has previously processed it).
-      # This is done by incrementing the group's highest_global_seq with every event acknowledged.
-      # When the group's offsets are reset (in order to re-process all events), this value is preserved
-      # so that each event's global_seq can be compared against it to determine if the event is being replayed.
+      # This is done by incrementing the group's highest_global_seq with every message acknowledged.
+      # When the group's offsets are reset (in order to re-process all messages), this value is preserved
+      # so that each message's global_seq can be compared against it to determine if the message is being replayed.
       #
       # @example
-      #   backend.reserve_next_for_reactor(reactor) do |event, replaying|
-      #     # process event here
-      #     true # ACK event
+      #   backend.reserve_next_for_reactor(reactor) do |message, replaying|
+      #     # process message here
+      #     true # ACK message
       #   end
       #
       # @param reactor [Sourced::ReactorInterface]
+      # @option worker_id [String]
       # @yieldparam [Sourced::Message]
-      # @yieldparam [Boolean] whether the event is being replayed (ie. it has been processed before)
-      # @yieldreturn [Boolean] whether to ACK the event for this reactor group and stream ID.
-      def reserve_next_for_reactor(reactor, &)
+      # @yieldparam [Boolean] whether the message is being replayed (ie. it has been processed before)
+      # @yieldreturn [Boolean] whether to ACK the message for this reactor group and stream ID.
+      def reserve_next_for_reactor(reactor, worker_id: nil, &)
+        worker_id ||= [Process.pid, Thread.current.object_id, Fiber.current.object_id].join('-')
         group_id = reactor.consumer_info.group_id
-        handled_events = reactor.handled_events.map(&:type)
+        handled_messages = reactor.handled_messages.map(&:type).uniq
         now = Time.now
 
-        db.transaction do
-          start_from = reactor.consumer_info.start_from.call
-          row = if start_from.is_a?(Time)
-            db.fetch(sql_for_reserve_next_with_events(handled_events, true), group_id, now, start_from).first
+        bootstrap_offsets_for(group_id)
+
+        # Phase 1: Claim stream_id/group_id in short transaction
+        # This claim includes :message, :claim_id and :replaying
+        row = claim_next_message(group_id, handled_messages, now, reactor.consumer_info.start_from.call, worker_id)
+
+        # return reserve_next_for_reactor(reactor, &) if row == :retry
+        return unless row
+
+        message = deserialize_message(row)
+
+        begin
+          # Phase 2: Process message outside of transaction
+          actions = yield(message, row[:replaying])
+
+          # Phase 3: update state depending on result
+          # Result handling happens in the same transaction
+          # as ACKing the message
+          db.transaction do
+            process_actions(group_id, row, actions, message)
+          end
+
+        rescue StandardError
+          release_offset(row[:offset_id])
+          raise
+        end
+
+        message
+      end
+
+      private def release_offset(offset_id)
+        db[offsets_table].where(id: offset_id).update(claimed: false, claimed_at: nil, claimed_by: nil)
+      end
+
+      private def process_actions(group_id, row, actions, message)
+        should_ack = false
+        actions = [actions] unless actions.is_a?(Array)
+        actions = actions.compact
+        # Empty actions is assumed to be an ACK
+        return ack_message(group_id, row[:stream_id_fk], row[:global_seq]) if actions.empty?
+
+        actions.each do |action|
+          case action
+          when Actions::OK
+            should_ack = true
+
+          when Actions::Ack
+            ack_on(group_id, action.message_id)
+
+          when Actions::AppendNext
+            messages = action.messages.map do |msg|
+              message.correlate(msg)
+            end
+            messages.group_by(&:stream_id).each do |stream_id, stream_messages|
+              append_next_to_stream(stream_id, stream_messages)
+            end
+            should_ack = true
+
+          when Actions::AppendAfter
+            messages = action.messages.map do |msg|
+              message.correlate(msg)
+            end
+            append_to_stream(action.stream_id, messages)
+            should_ack = true
+
+          when Actions::Schedule
+            messages = action.messages.map do |msg|
+              message.correlate(msg)
+            end
+            schedule_messages(messages, at: action.at)
+            should_ack = true
+
+          when Actions::Sync
+            action.call
+            should_ack = true
+
+          when Actions::RETRY
+            release_offset(row[:offset_id])
+
           else
-            db.fetch(sql_for_reserve_next_with_events(handled_events), group_id, now).first
+            raise ArgumentError, "Expected Sourced::Actions type, but got: #{action.class}. Group #{group_id}. Message #{message}"
+          end
+        end
+
+        ack_message(group_id, row[:stream_id_fk], row[:global_seq]) if should_ack
+      end
+
+      # Insert missing offsets for a consumer group and all streams.
+      # This runs in advance of claiming messages for processing
+      # so that the claim query relies on existing offsets and FOR UPDATE SKIP LOCKED
+      # to prevent concurrent claims on the same stream by different workers.
+      private def bootstrap_offsets_for(group_id)
+        now = Time.now
+        db.transaction do
+          group = db[consumer_groups_table].where(group_id:, status: ACTIVE).first
+          return if group.nil?
+
+          # Find streams that don't have offsets for this group
+          missing_streams = db[streams_table]
+            .left_join(offsets_table,
+              stream_id: :id, 
+              group_id: group[:id])
+            .where(Sequel[offsets_table][:id] => nil)
+            .select(Sequel[streams_table][:id], Sequel[streams_table][:stream_id])
+            .limit(100)
+
+          # Prepare offset records for bulk insert
+          offset_records = missing_streams.map do |stream|
+            {
+              group_id: group[:id],
+              stream_id: stream[:id],
+              global_seq: 0,
+              claimed: false,
+              created_at: now
+            }
+          end
+
+          if offset_records.any?
+            db[offsets_table].insert_conflict.multi_insert(offset_records)
+          end
+          
+          offset_records.size
+        end
+      end
+
+      # @param group_id [String] Consumer group ID to claim the next message for
+      # @param handle_messages [Array<String>] List of message types to handle
+      # @param now [Time] Current time
+      # @param start_from [Time] Optional starting point for message processing
+      # @param worker_id [String] Unique identifier for the worker claiming the message
+      private def claim_next_message(group_id, handled_messages, now, start_from, worker_id)
+        db.transaction do
+          # 1. get next message for this group_id and handled_messages
+          # Use FOR UPDATE SKIP LOCKED if supported
+          row = if start_from.is_a?(Time)
+            db.fetch(sql_for_reserve_next_with_messages(handled_messages, group_id:, now:, start_from:)).first
+          else
+            db.fetch(sql_for_reserve_next_with_messages(handled_messages, group_id:, now:)).first
           end
           return unless row
 
-          event = deserialize_event(row)
+          # An offset exists, and has been locked with FOR UPDATE SKIP LOCKED
+          # while in the same transaction, we claim it
+          updated = db[offsets_table]
+            .where(id: row[:offset_id])
+            .update(claimed: true, claimed_at: now, claimed_by: worker_id)
 
-          if block_given? && yield(event, row[:replaying])
-            # ACK if block returns truthy
-            ack_event(group_id, row[:stream_id_fk], row[:global_seq])
-          end
-
-          event
+          return nil if updated == 0 # already claimed by another worker
+          row
         end
+
+      rescue Sequel::UniqueConstraintViolation
+        # Another worker has already claimed this message
+        logger.debug "AAA Claim for group #{group_id} already exists, skipping"
+        nil
       end
 
       def register_consumer_group(group_id)
         db[consumer_groups_table]
           .insert_conflict(target: :group_id, update: nil)
           .insert(group_id:, status: ACTIVE)
-      end
-
-      class GroupUpdater
-        attr_reader :group_id, :updates, :error_context
-
-        def initialize(group_id, row, logger)
-          @group_id = group_id
-          @row = row
-          @logger = logger
-          @error_context = row[:error_context]
-          @updates = { error_context: @error_context.dup }
-        end
-
-        def stop(reason = nil)
-          @logger.error "stopping consumer group #{group_id}"
-          @updates[:status] = STOPPED
-          @updates[:retry_at] = nil
-          @updates[:updated_at] = Time.now
-          @updates[:error_context][:reason] = reason if reason
-        end
-
-        def retry(time, ctx = {})
-          @logger.warn "retrying consumer group #{group_id} at #{time}"
-          @updates[:updated_at] = Time.now
-          @updates[:retry_at] = time
-          @updates[:error_context].merge!(ctx)
-        end
       end
 
       # Fetch and update a consumer group in a transaction
@@ -333,6 +527,7 @@ module Sourced
       #
       # @param group_id [String]
       def start_consumer_group(group_id)
+        group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         dataset = db[consumer_groups_table].where(group_id: group_id)
         dataset.update(status: ACTIVE, retry_at: nil, error_context: nil)
       end
@@ -340,17 +535,19 @@ module Sourced
       # @param group_id [String]
       # @param reason [#inspect, NilClass]
       def stop_consumer_group(group_id, reason = nil)
+        group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         updating_consumer_group(group_id) do |group|
           group.stop(reason)
         end
       end
 
       # Reset offsets for all streams tracked by a consumer group.
-      # If the consumer group is active, this will make it re-process all events
+      # If the consumer group is active, this will make it re-process all messages
       #
       # @param group_id [String]
       # @return [Boolean]
       def reset_consumer_group(group_id)
+        group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         db.transaction do
           row = db[consumer_groups_table].where(group_id:).select(:id).first
           return unless row
@@ -362,18 +559,18 @@ module Sourced
         true
       end
 
-      def ack_on(group_id, event_id, &)
+      def ack_on(group_id, message_id, &)
         db.transaction do
-          row = db.fetch(sql_for_ack_on, group_id, event_id).first
-          raise Sourced::ConcurrentAckError, "Stream for event #{event_id} is being concurrently processed by #{group_id}" unless row
+          row = db.fetch(sql_for_ack_on, group_id, message_id).first
+          raise Sourced::ConcurrentAckError, "Stream for message #{message_id} is being concurrently processed by #{group_id}" unless row
 
           yield if block_given?
 
-          ack_event(group_id, row[:stream_id_fk], row[:global_seq])
+          ack_message(group_id, row[:stream_id_fk], row[:global_seq])
         end
       end
 
-      private def ack_event(group_id, stream_id, global_seq)
+      private def ack_message(group_id, stream_id, global_seq)
         db.transaction do
           # We could use an upsert here, but
           # we create consumer groups on registration, or
@@ -407,10 +604,14 @@ module Sourced
           group_id = update_result[0][:id]
 
           # Upsert offset
+          # NOTE: when using #reserve_next_for_reactor,
+          # an offset will always exist for an message
+          # but the synchronous ack_on method can be used with an message
+          # for whose group and stream no offset exists yet.
           db[offsets_table]
             .insert_conflict(
               target: [:group_id, :stream_id],
-              update: { global_seq: Sequel[:excluded][:global_seq] }
+              update: { claimed: false, claimed_at: nil, claimed_by: nil, global_seq: }
             )
             .insert(
               group_id:,
@@ -420,46 +621,46 @@ module Sourced
         end
       end
 
-      private def base_events_query
-        db[events_table]
+      private def base_messages_query
+        db[messages_table]
           .select(
-            Sequel[events_table][:id],
+            Sequel[messages_table][:id],
             Sequel[streams_table][:stream_id],
-            Sequel[events_table][:seq],
-            Sequel[events_table][:global_seq],
-            Sequel[events_table][:type],
-            Sequel[events_table][:created_at],
-            Sequel[events_table][:causation_id],
-            Sequel[events_table][:correlation_id],
-            Sequel[events_table][:metadata],
-            Sequel[events_table][:payload],
+            Sequel[messages_table][:seq],
+            Sequel[messages_table][:global_seq],
+            Sequel[messages_table][:type],
+            Sequel[messages_table][:created_at],
+            Sequel[messages_table][:causation_id],
+            Sequel[messages_table][:correlation_id],
+            Sequel[messages_table][:metadata],
+            Sequel[messages_table][:payload],
           )
           .join(streams_table, id: :stream_id)
       end
 
-      def read_correlation_batch(event_id)
-        correlation_subquery = db[events_table]
+      def read_correlation_batch(message_id)
+        correlation_subquery = db[messages_table]
           .select(:correlation_id)
-          .where(id: event_id)
+          .where(id: message_id)
 
-        query = base_events_query
-          .where(Sequel[events_table][:correlation_id] => correlation_subquery)
-          .order(Sequel[events_table][:global_seq])
+        query = base_messages_query
+          .where(Sequel[messages_table][:correlation_id] => correlation_subquery)
+          .order(Sequel[messages_table][:global_seq])
 
         query.map do |row|
-          deserialize_event(row)
+          deserialize_message(row)
         end
       end
 
-      def read_event_stream(stream_id, after: nil, upto: nil)
-        _events_table = events_table # need local variable for Sequel block
+      def read_stream(stream_id, after: nil, upto: nil)
+        _messages_table = messages_table # need local variable for Sequel block
 
-        query = base_events_query.where(Sequel[streams_table][:stream_id] => stream_id)
+        query = base_messages_query.where(Sequel[streams_table][:stream_id] => stream_id)
 
-        query = query.where { Sequel[_events_table][:seq] > after } if after
-        query = query.where { Sequel[_events_table][:seq] <= upto } if upto
-        query.order(Sequel[_events_table][:global_seq]).map do |row|
-          deserialize_event(row)
+        query = query.where { Sequel[_messages_table][:seq] > after } if after
+        query = query.where { Sequel[_messages_table][:seq] <= upto } if upto
+        query.order(Sequel[_messages_table][:global_seq]).map do |row|
+          deserialize_message(row)
         end
       end
 
@@ -467,9 +668,8 @@ module Sourced
       def clear!
         raise 'Not in test environment' unless ENV['ENVIRONMENT'] == 'test'
         # Truncate and restart global_seq increment first
-        db[events_table].truncate(cascade: true, only: true, restart: true)
-        db[events_table].delete
-        db[commands_table].delete
+        db[messages_table].truncate(cascade: true, only: true, restart: true)
+        db[messages_table].delete
         db[consumer_groups_table].delete
         db[offsets_table].delete
         db[streams_table].delete
@@ -505,100 +705,45 @@ module Sourced
 
       private
 
-      attr_reader :db, :logger, :prefix, :events_table, :streams_table, :offsets_table, :consumer_groups_table, :commands_table
+      attr_reader :db, :logger, :prefix, :messages_table, :streams_table, :offsets_table, :consumer_groups_table, :scheduled_messages_table, :workers_table
 
       def installer
         @installer ||= Installer.new(
           @db,
           logger:,
-          commands_table:,
+          workers_table:,
+          scheduled_messages_table:,
           streams_table:,
           offsets_table:,
           consumer_groups_table:,
-          events_table:
+          messages_table:
         )
       end
 
-      def sql_for_next_command
-        <<~SQL
-          WITH next_command AS (
-              SELECT 
-              c.id,
-              c.stream_id,
-              c.type,
-              c.causation_id,
-              c.correlation_id,
-              c.metadata,
-              c.payload,
-              c.created_at,
-              pg_try_advisory_xact_lock(
-                  hashtext(c.consumer_group_id::text),
-                  hashtext(c.stream_id::text)
-              ) as lock_obtained
-              FROM #{commands_table} c
-              INNER JOIN #{consumer_groups_table} r ON c.consumer_group_id = r.group_id
-              WHERE 
-                r.status = '#{ACTIVE}'
-                AND (r.retry_at IS NULL OR r.retry_at <= ?)
-              AND c.created_at <= ? 
-              ORDER BY c.created_at ASC
-          )
-          SELECT *
-          FROM next_command
-          WHERE lock_obtained = true
-          LIMIT 1;
-        SQL
-      end
-
-      def sql_for_reserve_next_with_events(handled_events, with_time_window = false)
-        event_types = handled_events.map { |e| "'#{e}'" }
-        event_types_sql = event_types.any? ? " AND e.type IN(#{event_types.join(',')})" : ''
-        time_window_sql = with_time_window ? ' AND e.created_at > ?' : ''
+      def sql_for_reserve_next_with_messages(handled_messages, group_id:, now:, start_from: nil)
+        message_types = handled_messages.map { |e| "'#{e}'" }
+        now = db.literal(now)
+        group_id = db.literal(group_id)
+        message_types_sql = message_types.any? ? " AND e.type IN(#{message_types.join(',')})" : ''
+        time_window_sql = start_from ? " AND e.created_at > #{db.literal(start_from)}" : ''
 
         <<~SQL
-          WITH target_group AS (
-              SELECT id, group_id, retry_at, highest_global_seq
-              FROM #{consumer_groups_table}
-              WHERE group_id = ?
-              AND status = '#{ACTIVE}'  -- Only active consumer groups
-              AND (retry_at IS NULL OR retry_at <= ?)
-          ),
-          latest_offset AS (
-              SELECT o.global_seq
-              FROM target_group tr
-              LEFT JOIN #{offsets_table} o ON o.group_id = tr.id  -- LEFT JOIN to allow missing offsets
-              ORDER BY o.global_seq DESC
-              LIMIT 1
-          ),
-          candidate_events AS (
-              SELECT
-                  e.global_seq,
-                  e.id,
-                  s.stream_id,
-                  e.stream_id AS stream_id_fk,
-                  e.seq,
-                  e.type,
-                  e.causation_id,
-                  e.correlation_id,
-                  e.metadata,
-                  e.payload,
-                  e.created_at,
-                  (e.global_seq <= tr.highest_global_seq) AS replaying,
-                  pg_try_advisory_xact_lock(
-                      hashtext(tr.group_id::text),
-                      hashtext(s.id::text)
-                  ) as lock_obtained
-              FROM target_group tr
-              LEFT JOIN latest_offset lo ON true
-              JOIN #{events_table} e ON e.global_seq > COALESCE(lo.global_seq, 0)
-              JOIN #{streams_table} s ON e.stream_id = s.id
-              WHERE 1=1
-              #{event_types_sql}#{time_window_sql}
-              ORDER BY e.global_seq
-          )
-          SELECT *
-          FROM candidate_events
-          WHERE lock_obtained = true
+          SELECT
+              e.global_seq, e.id, ss.stream_id, e.stream_id as stream_id_fk,
+              e.seq, e.type, e.created_at, e.causation_id, e.correlation_id,
+              e.metadata, e.payload, so.id as offset_id, cg.id as group_id_fk,
+              (e.global_seq <= cg.highest_global_seq) AS replaying
+          FROM #{messages_table} e
+          JOIN #{streams_table} ss ON e.stream_id = ss.id
+          JOIN #{consumer_groups_table} cg ON cg.group_id = #{group_id}
+          JOIN #{offsets_table} so ON cg.id = so.group_id AND ss.id = so.stream_id
+          WHERE e.global_seq > so.global_seq
+            AND so.claimed = FALSE
+            AND cg.status = 'active'
+            AND (cg.retry_at IS NULL OR cg.retry_at <= #{now})
+            #{message_types_sql}#{time_window_sql}
+          ORDER BY e.global_seq ASC
+          FOR UPDATE OF so SKIP LOCKED
           LIMIT 1;
         SQL
       end
@@ -610,7 +755,7 @@ module Sourced
                 e.global_seq,
                 e.stream_id AS stream_id_fk, 
                 pg_try_advisory_xact_lock(hashtext(?::text), hashtext(s.id::text)) as lock_obtained
-            FROM #{events_table} e
+            FROM #{messages_table} e
             JOIN #{streams_table} s ON e.stream_id = s.id
             WHERE e.id = ?
           )
@@ -631,8 +776,8 @@ module Sourced
               COALESCE(MAX(o.global_seq), 0) AS newest_processed,
               COUNT(o.id) AS stream_count
           FROM #{consumer_groups_table} r
-          LEFT JOIN #{offsets_table} o ON o.group_id = r.id
-          GROUP BY r.id, r.group_id, r.status
+          LEFT JOIN #{offsets_table} o ON o.group_id = r.id AND o.global_seq > 0
+          GROUP BY r.id, r.group_id, r.status, r.retry_at
           ORDER BY r.group_id;
         SQL
       end
@@ -653,23 +798,15 @@ module Sourced
           .insert(group_id:, status:)
       end
 
-      def serialize_command(cmd, group_id: nil)
-        row = cmd.to_h.except(:seq)
-        row[:consumer_group_id] = group_id if group_id
-        row[:metadata] = JSON.dump(row[:metadata]) if row[:metadata]
-        row[:payload] = JSON.dump(row[:payload]) if row[:payload]
-        row
-      end
-
-      def serialize_event(event, stream_id)
-        row = event.to_h
+      def serialize_message(message, stream_id)
+        row = message.to_h
         row[:stream_id] = stream_id
         row[:metadata] = JSON.dump(row[:metadata]) if row[:metadata]
         row[:payload] = JSON.dump(row[:payload]) if row[:payload]
         row
       end
 
-      def deserialize_event(row)
+      def deserialize_message(row)
         row[:payload] = parse_json(row[:payload]) if row[:payload]
         row[:metadata] = parse_json(row[:metadata]) if row[:metadata]
         Message.from(row)
@@ -690,3 +827,4 @@ module Sourced
 end
 
 require 'sourced/backends/sequel_backend/installer'
+require 'sourced/backends/sequel_backend/group_updater'

@@ -4,9 +4,9 @@ require 'console' #  comes with Async
 require 'sourced/router' #  comes with Async
 
 module Sourced
-  # A Worker is responsible for processing events and commands in the background.
-  # Workers poll registered async reactors for available events and dispatch
-  # scheduled commands in a round-robin fashion.
+  # A Worker is responsible for processing messages in the background.
+  # Workers poll registered async reactors for available messages and dispatch
+  # them to reactors in a round-robin fashion.
   #
   # Workers use a polling model with configurable intervals and can be run
   # in multiple processes for horizontal scaling. Each worker maintains its
@@ -19,8 +19,10 @@ module Sourced
   # @example Drain all pending work
   #   Sourced::Worker.drain
   class Worker
+    DEFAULT_SHUFFLER = ->(array) { array.shuffle }
+
     # Drain all pending work using a new worker instance.
-    # This processes all available events and commands until queues are empty.
+    # This processes all available messages until queues are empty.
     #
     # @return [void]
     def self.drain
@@ -48,7 +50,8 @@ module Sourced
       logger: Sourced.config.logger,
       name: SecureRandom.hex(4),
       poll_interval: 0.01,
-      router: Sourced::Router
+      router: Sourced::Router,
+      shuffler: DEFAULT_SHUFFLER
     )
       @logger = logger
       @running = false
@@ -58,9 +61,7 @@ module Sourced
       # TODO: If reactors have a :weight, we can use that
       # to populate this array according to the weight
       # so that some reactors are picked more often than others
-      @reactors = @router.async_reactors.filter do |r|
-        r.handled_events.any? || r.handled_commands.any?
-      end.to_a.shuffle
+      @reactors = shuffler.call(@router.async_reactors.filter { |r| r.handled_messages.any? }.to_a)
       @reactor_index = 0
     end
 
@@ -73,7 +74,7 @@ module Sourced
     end
 
     # Start polling for work continuously until stopped.
-    # This method will block and process events and commands in a loop
+    # This method will block and process messages in a loop
     # until {#stop} is called.
     #
     # @return [void]
@@ -88,16 +89,13 @@ module Sourced
         tick
         # This sleep seems to be necessary or workers in differet processes will not be able to get the lock
         sleep @poll_interval
-        dispatch_next_command.tap do |c|
-          sleep @poll_interval if c
-        end
       end
       logger.info "Worker #{name}: Polling stopped"
     end
 
-    # Drain all pending work from reactors and command queues.
-    # This processes all available events for each reactor and then
-    # handles all scheduled commands until the queues are empty.
+    # Drain all pending work for reactors
+    # This processes all available events for each reactor
+    # until their queues are empty.
     #
     # @return [void]
     def drain
@@ -106,11 +104,6 @@ module Sourced
           event = tick(reactor)
           break unless event
         end
-      end
-
-      loop do
-        cmd = dispatch_next_command
-        break unless cmd
       end
     end
 
@@ -121,13 +114,6 @@ module Sourced
     # @return [Boolean] true if an event was processed, false otherwise
     def tick(reactor = next_reactor)
       @router.handle_next_event_for_reactor(reactor, name)
-    end
-
-    # Dispatch the next scheduled command from the backend queue.
-    #
-    # @return [Boolean] true if a command was dispatched, false if queue is empty
-    def dispatch_next_command
-      @router.dispatch_next_command
     end
 
     # Get the next reactor in round-robin order.

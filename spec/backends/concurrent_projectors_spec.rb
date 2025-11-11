@@ -9,7 +9,7 @@ module ConcurrencyExamples
   end
 
   class Store
-    attr_reader :data, :queue
+    attr_reader :data, :queue, :trace
 
     def initialize
       @mutex = Mutex.new
@@ -31,12 +31,12 @@ module ConcurrencyExamples
 
   STORE = Store.new
 
-  class Projector < Sourced::Projector::EventSourced
+  class Projector < Sourced::Projector::StateStored
     state do |id|
       STORE.get(id) || {id:, seq: 0, seqs: []}
     end
 
-    sync do |state, _command, _events|
+    sync do |state:, events:, replaying:|
       STORE.set(state[:id], state)
     end
 
@@ -47,7 +47,7 @@ module ConcurrencyExamples
   end
 end
 
-RSpec.describe 'Processing events concurrently', type: :backend, skip: true do
+RSpec.describe 'Processing events concurrently', type: :backend do
   subject(:backend) { Sourced::Backends::SequelBackend.new(db) }
 
   let(:db) do
@@ -58,6 +58,7 @@ RSpec.describe 'Processing events concurrently', type: :backend, skip: true do
   let(:router) { Sourced::Router.new(backend:) }
 
   before do
+    backend.clear!
     backend.uninstall
     backend.install
 
@@ -73,14 +74,14 @@ RSpec.describe 'Processing events concurrently', type: :backend, skip: true do
       ConcurrencyExamples::SomethingHappened.parse(stream_id: 'stream2', seq:, payload: { number: seq })
     end
 
-    all_events = stream1_events + stream2_events
+    all_events = (stream2_events + stream1_events).flatten.compact
     all_events.each do |event|
       backend.append_to_stream(event.stream_id, [event])
     end
   end
 
   specify 'consumes streams concurrently, maintaining per-stream event ordering, consuming all available events for each stream' do
-    workers = 2.times.map do |i|
+    workers = 3.times.map do |i|
       Sourced::Worker.new(name: "worker-#{i}", router:)
     end
 
@@ -90,26 +91,19 @@ RSpec.describe 'Processing events concurrently', type: :backend, skip: true do
       end
     end
 
-    limit = Thread.new do
-      sleep 4
-      ConcurrencyExamples::STORE.queue << nil # Signal to stop
-    end
-
     count = 0
-    while ConcurrencyExamples::STORE.queue.pop
+    while count < 220
+      ConcurrencyExamples::STORE.queue.pop
       count += 1
-      if count == 220
-        break
-      end
     end
 
     workers.each(&:stop)
     threads.each(&:join)
-    limit.join
 
+    duplicates = ConcurrencyExamples::STORE.data['stream1'][:seqs].group_by(&:itself).select {|k,v| v.size > 1 }
     expect(ConcurrencyExamples::STORE.data['stream1'][:seq]).to eq(100)
+    expect(duplicates).to be_empty
     expect(ConcurrencyExamples::STORE.data['stream1'][:seqs]).to eq((1..100).to_a)
-
     expect(ConcurrencyExamples::STORE.data['stream2'][:seq]).to eq(120)
     expect(ConcurrencyExamples::STORE.data['stream2'][:seqs]).to eq((1..120).to_a)
   end

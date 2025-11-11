@@ -22,9 +22,7 @@ module Sourced
       :reserve_next_for_reactor,
       :append_to_stream,
       :read_correlation_batch,
-      :read_event_stream,
-      :schedule_commands,
-      :next_command,
+      :read_stream,
       :transaction,
       :stats,
       :updating_consumer_group,
@@ -42,6 +40,16 @@ module Sourced
     ]
 
     attr_accessor :logger
+    # House-keeping configuration
+    # interval: main loop tick for housekeeping (seconds)
+    # heartbeat interval: how often to record heartbeats (seconds)
+    # claim_ttl_seconds: how long before a worker is considered dead for claim release
+    attr_accessor(
+      :housekeeping_interval, 
+      :housekeeping_heartbeat_interval, 
+      :housekeeping_claim_ttl_seconds
+    )
+
     attr_reader :backend, :executor
 
     def initialize
@@ -50,6 +58,10 @@ module Sourced
       @error_strategy = ErrorStrategy.new
       @executor = AsyncExecutor.new
       @setup = false
+      # Defaults for house-keeping
+      @housekeeping_interval = 3
+      @housekeeping_heartbeat_interval = 5
+      @housekeeping_claim_ttl_seconds = 120
     end
 
     def setup!

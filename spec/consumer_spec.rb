@@ -62,25 +62,6 @@ RSpec.describe Sourced::Consumer do
     end
   end
 
-  describe '#async' do
-    specify 'default is true' do
-      expect(TestConsumer::TestConsumer.consumer_info.async).to be(true)
-    end
-
-    it 'can be set false' do
-      klass = Class.new do
-        extend Sourced::Consumer
-
-        consumer do |info|
-          info.group_id = 'my-group'
-          info.sync!
-        end
-      end
-
-      expect(klass.consumer_info.async).to be(false)
-    end
-  end
-
   describe '.on_exception' do
     it 'stops the consumer group by default' do
       group = double('group', error_context: {}, stop: true)

@@ -73,6 +73,9 @@ module Sourced
         @lookup = {}
       end
 
+      def keys = @lookup.keys
+      def subclasses = message_class.subclasses
+
       def []=(key, klass)
         @lookup[key] = klass
       end
@@ -81,7 +84,7 @@ module Sourced
         klass = lookup[key]
         return klass if klass
 
-        message_class.subclasses.each do |c|
+        subclasses.each do |c|
           klass = c.registry[key]
           return klass if klass
         end
@@ -89,7 +92,7 @@ module Sourced
       end
 
       def inspect
-        %(<#{self.class}:#{object_id} #{lookup.size} keys, #{message_class.subclasses.size} child registries>)
+        %(<#{self.class}:#{object_id} #{lookup.size} keys, #{subclasses.size} child registries>)
       end
 
       private
@@ -130,6 +133,12 @@ module Sourced
       raise UnknownMessageError, "Unknown event type: #{attrs[:type]}" unless klass
 
       klass.new(attrs)
+    end
+
+    def self.build(stream_id, payload = nil)
+      attrs = {stream_id:}
+      attrs[:payload] = payload if payload
+      parse(attrs)
     end
 
     def initialize(attrs = {})
@@ -177,7 +186,24 @@ module Sourced
       event_class.parse(attrs)
     end
 
-    def delay(datetime)
+    def correlate(message)
+      attrs = {
+        causation_id: id,
+        correlation_id:,
+        metadata: metadata.merge(message.metadata || Plumb::BLANK_HASH)
+      }
+      message.with(attrs)
+    end
+
+    # A copy of a message with a new stream_id
+    # @param stream_id [String, #stream_id]
+    # @return [Message]
+    def to(stream_id)
+      stream_id = stream_id.stream_id if stream_id.respond_to?(:stream_id)
+      with(stream_id:)
+    end
+
+    def at(datetime)
       if datetime < created_at
         raise PastMessageDateError, "Message #{type} can't be delayed to a date in the past"
       end
