@@ -658,6 +658,30 @@ RSpec.describe Order do
 end
 ```
 
+`#then` can also take a block, which will be given the low level `Sourced::Actions` objects returned by your `.handle()` interface.
+
+You can use this block to test reactors that trigger side effects.
+
+```ruby
+with_reactor(Webhooks, 'webhook-1')
+  .when(Webooks::Dispatch, name: 'Joe')
+  .then do |actions|
+    expect(api_request).to have_been_requested
+  end
+```
+
+For reactors that have `sync` blocks for side-effects (ex. Projectors), use `#then!` to trigger those blocks.
+
+```ruby
+with_reactor(PlacedOrders, 'order-123')
+  .given(Order::Started)
+  .given(Order::ProductAdded, product_id: 1, price: 100, units: 2)
+  .given(Order::Placed)
+  .then! do |_|
+    expect(OrderRecord.find('order-123').total).to eq(200)
+  end
+```
+
 
 
 ## Setup
