@@ -21,7 +21,8 @@ For a high-level overview of the mental model, [read this](https://ismaelcelis.c
 
 The entire behaviour of an event-sourced app is described via **commands**, **events** and **reactions**.
 
-![command, events, reactions](docs/images/sourced-arch-diagram.png)
+<img width="1024" height="469" alt="sourced-arch-diagram" src="https://github.com/user-attachments/assets/ed916471-525f-4743-bc9a-10a2b6d9f8e9" />
+
 
 * **Commands** are _intents_ to effect some change in the state of the system. Ex. `Add cart item`, `Place order`, `Update email`, etc.
 * **Events** are produced after handling a command and they describe _facts_ or state changes in the system. Ex. `Item added to cart`, `order placed`, `email updated`. Events are stored and you can use them to build views ("projections"), caches and reports to support UIs, or other artifacts.
