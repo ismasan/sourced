@@ -17,10 +17,10 @@ module Sourced
         @tx_id = nil
       end
 
-      def events = @state.events
+      def messages = @state.messages
 
       def inspect
-        %(<#{self.class} events:#{events.size} streams:#{@state.events_by_stream_id.size}>)
+        %(<#{self.class} messages:#{messages.size} streams:#{@state.messages_by_stream_id.size}>)
       end
 
       def clear!
@@ -164,9 +164,9 @@ module Sourced
       Stats = Data.define(:stream_count, :max_global_seq, :groups)
 
       def stats
-        stream_count = @state.events_by_stream_id.size
-        max_global_seq = events.size
-        groups = @state.groups.values.map(&:to_h)#.filter { |g| g[:stream_count] > 0 }
+        stream_count = @state.messages_by_stream_id.size
+        max_global_seq = messages.size
+        groups = @state.groups.values.map(&:to_h)
         Stats.new(stream_count, max_global_seq, groups)
       end
 
@@ -204,56 +204,56 @@ module Sourced
       end
 
       # @param stream_id [String] Unique identifier for the event stream
-      # @param events [Sourced::Message, Array<Sourced::Message>] Event(s) to append to the stream
+      # @param messages [Sourced::Message, Array<Sourced::Message>] Event(s) to append to the stream
       # @option max_retries [Integer] Not used in this backend, but kept for interface compatibility
-      def append_next_to_stream(stream_id, events, max_retries: 3)
-        # Handle both single event and array of events
-        events_array = Array(events)
-        return true if events_array.empty?
+      def append_next_to_stream(stream_id, messages, max_retries: 3)
+        # Handle both single event and array of messages
+        messages_array = Array(messages)
+        return true if messages_array.empty?
 
         transaction do
-          last_event = @state.events_by_stream_id[stream_id].last
-          last_seq = last_event ? last_event.seq : 0
+          last_message = @state.messages_by_stream_id[stream_id].last
+          last_seq = last_message ? last_message.seq : 0
           
-          events_with_seq = events_array.map.with_index do |event, index|
-            event.with(seq: last_seq + index + 1)
+          messages_with_seq = messages_array.map.with_index do |message, index|
+            message.with(seq: last_seq + index + 1)
           end
           
-          append_to_stream(stream_id, events_with_seq)
+          append_to_stream(stream_id, messages_with_seq)
         end
       end
 
-      def append_to_stream(stream_id, events)
+      def append_to_stream(stream_id, messages)
         # Handle both single event and array of events
-        events_array = Array(events)
-        return false if events_array.empty?
+        messages_array = Array(messages)
+        return false if messages_array.empty?
 
         transaction do
-          check_unique_seq!(events_array)
+          check_unique_seq!(messages_array)
 
-          events_array.each do |event|
-            @state.events_by_correlation_id[event.correlation_id] << event
-            @state.events_by_stream_id[stream_id] << event
-            @state.events << event
-            @state.stream_id_seq_index[seq_key(stream_id, event)] = true
-            @state.upsert_stream(stream_id, event.seq)
+          messages_array.each do |message|
+            @state.messages_by_correlation_id[message.correlation_id] << message
+            @state.messages_by_stream_id[stream_id] << message
+            @state.messages << message
+            @state.stream_id_seq_index[seq_key(stream_id, message)] = true
+            @state.upsert_stream(stream_id, message.seq)
           end
         end
         @state.groups.each_value(&:reindex)
         true
       end
 
-      def read_correlation_batch(event_id)
-        event = @state.events.find { |e| e.id == event_id }
-        return [] unless event
-        @state.events_by_correlation_id[event.correlation_id]
+      def read_correlation_batch(message_id)
+        message = @state.messages.find { |e| e.id == message_id }
+        return [] unless message
+        @state.messages_by_correlation_id[message.correlation_id]
       end
 
       def read_stream(stream_id, after: nil, upto: nil)
-        events = @state.events_by_stream_id[stream_id]
-        events = events.select { |e| e.seq > after } if after
-        events = events.select { |e| e.seq <= upto } if upto
-        events
+        messages = @state.messages_by_stream_id[stream_id]
+        messages = messages.select { |e| e.seq > after } if after
+        messages = messages.select { |e| e.seq <= upto } if upto
+        messages
       end
 
       # No-op heartbeats for test backend
@@ -268,17 +268,17 @@ module Sourced
 
       private
 
-      def check_unique_seq!(events)
-        duplicate = events.find do |event|
-          @state.stream_id_seq_index[seq_key(event.stream_id, event)]
+      def check_unique_seq!(messages)
+        duplicate = messages.find do |message|
+          @state.stream_id_seq_index[seq_key(message.stream_id, message)]
         end
         if duplicate
           raise Sourced::ConcurrentAppendError, "Duplicate stream_id/seq: #{duplicate.stream_id}/#{duplicate.seq}"
         end
       end
 
-      def seq_key(stream_id, event)
-        [stream_id, event.seq]
+      def seq_key(stream_id, message)
+        [stream_id, message.seq]
       end
     end
   end
