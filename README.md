@@ -174,7 +174,8 @@ end
 
 The class-level `.command` block defines a _command handler_. Its job is to take a command (from a user, an automation, etc), validate it, and apply state changes by publishing new events.
 
-![command handler](docs/images/sourced-command-handler.png)
+<img width="615" height="168" alt="sourced-command-handler" src="https://github.com/user-attachments/assets/4db26fa1-6671-4611-b994-b3e864cd88b4" />
+
 
 ```ruby
 command AddItem do |cart, cmd|
@@ -193,7 +194,8 @@ The class-level `.event` block registers an _event handler_ used to _evolve_ the
 
 These blocks are used both to load the initial state when handling a command, and to apply new events to the state in command handlers.
 
-![evolve handler](docs/images/sourced-evolve-handler.png)
+<img width="573" height="146" alt="sourced-evolve-handler" src="https://github.com/user-attachments/assets/174fb8d0-e2ef-41f3-8f43-c94b766529ec" />
+
 
 ```ruby
 event ItemAdded do |cart, event|
@@ -209,7 +211,8 @@ The class-level `.reaction` block registers an event handler that _reacts_ to ev
 
 `.reaction` blocks can dispatch the next command in a workflow with the instance-level `#stream_for` helper.
 
-![react](docs/images/sourced-react-handler.png)
+<img width="504" height="109" alt="sourced-react-handler" src="https://github.com/user-attachments/assets/b181ebdd-4bc7-4692-a2ab-910c1a829ec4" />
+
 
 ```ruby
 reaction ItemAdded do |cart, event|
@@ -272,7 +275,8 @@ end
 
 When a command produces events, or when an event makes a reactor dispatch a new command, the cause-and-effect relationship between these messages is tracked by Sourced in the form of `correlation_id` and `causation_id` properties in each message's metadata.
 
-![causation and correlation](docs/images/sourced-causation-correlation.png)
+<img width="878" height="326" alt="sourced-causation-correlation" src="https://github.com/user-attachments/assets/88d86b65-50ff-4222-8941-406826fab243" />
+
 
 This helps the system keep a full audit trail of the cause-and-effect behaviour of the entire system.
 
@@ -409,7 +413,7 @@ This means that all events for a given reactor/stream are processed in order, bu
 
 In the following (simplified!) example, a Holiday Booking workflow is modelled as a single stream ("Actor"). The infrastructure makes sure these steps are run sequentially.
 
-![Concurrency single stream](docs/images/sourced-concurrency-single-lane.png)
+<img width="1583" height="292" alt="sourced-concurrency-single-lane" src="https://github.com/user-attachments/assets/025529de-906c-41b4-8f21-0b7759b6e394" />
 
 The Actor glues its steps together by reacting to events emitted by the previous step, and dispatching the next command.
 
@@ -447,7 +451,7 @@ end
 
 In this other example, the same workflow is split into separate streams/actors, so that Flight and Hotel bookings can run concurrently from each other. When completed, they each notify the parent Holiday actor, so the whole process coalesces into a sequential operation again.
 
-![multi stream](docs/images/sourced-concurrency-multi-lane.png)
+<img width="1787" height="798" alt="sourced-concurrency-multi-lane" src="https://github.com/user-attachments/assets/444445ff-b837-4c19-8c28-1b47eada7a41" />
 
 TODO: code example.
 
@@ -495,8 +499,6 @@ on Order::Placed do |event, history:|
   []
 end
 ```
-
-
 
 ## Orchestration and choreography
 
@@ -631,8 +633,6 @@ def self.handle(new_message, history:, replaying:)
 end
 ```
 
-
-
 ## Testing
 
 There's an experimental RSpec helper that allows testing Sourced Actors in GIVEN, WHEN, THEN style.
@@ -696,7 +696,6 @@ with_reactor(PlacedOrders, 'order-123')
     expect(OrderRecord.find('order-123').total).to eq(200)
   end
 ```
-
 
 
 ## Setup
@@ -833,11 +832,11 @@ Soon.
 ActiveJob is a great way to handle background jobs in Rails. It's simple and easy to use. However, it's not designed for event sourcing.
 ActiveJob backends (and other job queues) are optimised for parallel processing of jobs, this means that multiple jobs for the same business entity may be processed in parallel without any ordering guarantees.
 
-![job queue concurrency](docs/images/sourced-job-queue-diagram.png)
+<img width="832" height="493" alt="sourced-job-queue-diagram" src="https://github.com/user-attachments/assets/c51b03be-8794-4954-968a-87ecdd97d2f7" />
 
 Sourced's concurrency model is designed to process events for the same entity in order, while allowing for parallel processing of events for different entities.
 
-![job queue concurrency](docs/images/sourced-ordered-streams-diagram.png)
+<img width="802" height="552" alt="sourced-ordered-streams-diagram" src="https://github.com/user-attachments/assets/ddfbff4b-11bb-4e0c-93e9-e0851c4721d9" />
 
 ## Installation
 
