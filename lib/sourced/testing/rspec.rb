@@ -44,6 +44,55 @@ require 'sourced/message'
 module Sourced
   module Testing
     module RSpec
+      ERROR = proc do |args|
+        raise ArgumentError, "no support for #{args.inspect}"
+      end
+
+      NONE = [].freeze
+
+      module MessageBuilder
+        private
+
+        def stream_id = nil
+
+        def build_messages(*messages)
+          messages = build_message(*messages) do |arr|
+            Array(arr).map { |e| build_message(*e) }
+          end
+          Array(messages)
+        end
+
+        def build_message(*args, &fallback)
+          fallback ||= ERROR
+
+          case args
+          in [Class => klass, Hash => payload]
+            klass.build(stream_id, payload)
+          in [Class => klass]
+            klass.build(stream_id)
+          in [Sourced::Message => mm]
+            mm
+          in [NONE]
+            NONE
+          else
+            fallback.(args)
+          end
+        end
+
+        def run_sync_actions(actions)
+          return if @sync_run
+
+          actions.filter { |a| Sourced::Actions::Sync === a }.each(&:call)
+          @sync_run = true
+        end
+
+        def partition_actions(actions)
+          actions.partition do |a|
+            a.respond_to?(:messages)
+          end
+        end
+      end
+
       class MessageMatcher
         MessageArray = Sourced::Types::Array[Sourced::Message]
 
@@ -97,6 +146,8 @@ module Sourced
       FinishedTestCase = Class.new(StandardError)
 
       class GWT
+        include MessageBuilder
+
         def initialize(actor)
           @actor = actor
           @when = nil
@@ -132,11 +183,7 @@ module Sourced
 
         private
 
-        ERROR = proc do |args|
-          raise ArgumentError, "no support for #{args.inspect}"
-        end
-
-        NONE = [].freeze
+        def stream_id = @actor.id
 
         def run_then(sync, *expected, &block)
           # Actor instances maintain their own state (#given above calls #evolve on them)
@@ -159,43 +206,6 @@ module Sourced
           end
 
           self
-        end
-
-        def run_sync_actions(actions)
-          return if @sync_run
-
-          actions.filter { |a| Sourced::Actions::Sync === a }.each(&:call)
-          @sync_run = true
-        end
-
-        def partition_actions(actions)
-          actions.partition do |a|
-            a.respond_to?(:messages)
-          end
-        end
-
-        def build_messages(*messages)
-          messages = build_message(*messages) do |arr|
-            Array(arr).map { |e| build_message(*e) }
-          end
-          Array(messages)
-        end
-
-        def build_message(*args, &fallback)
-          fallback ||= ERROR
-
-          case args
-          in [Class => klass, Hash => payload]
-            klass.build(@actor.id, payload)
-          in [Class => klass]
-            klass.build(@actor.id)
-          in [Sourced::Message => mm]
-            mm
-          in [NONE]
-            NONE
-          else
-            fallback.(args)
-          end
         end
       end
 
@@ -233,6 +243,94 @@ module Sourced
         end
 
         GWT.new(actor)
+      end
+
+      ReactorsArray = Sourced::Types::Array[Sourced::ReactorInterface]
+
+      class Stage
+        include MessageBuilder
+
+        attr_reader :router
+
+        def initialize(reactors, router: nil, logger: Logger.new(nil))
+          @reactors = ReactorsArray.parse(reactors)
+          @router ||= Sourced::Router.new(
+            backend: Sourced::Backends::TestBackend.new, 
+            logger:
+          )
+          @reactors.each do |r|
+            @router.register(r)
+          end
+          @stream_id = nil
+          @called = false
+          @when = nil
+          @sync_run = false
+        end
+
+        def with_stream(stream_id)
+          @stream_id = stream_id
+          self
+        end
+
+        def given(*args)
+          raise FinishedTestCase, 'test case already asserted, cannot add more events to it' if @called
+
+          message = build_message(*args)
+          @router.backend.append_next_to_stream(message.stream_id, [message])
+          self
+        end
+
+        def when(*args)
+          raise FinishedTestCase, 'test case already asserted, cannot add more events to it' if @called
+
+          @when = build_message(*args)
+          @router.backend.append_next_to_stream(@when.stream_id, [@when])
+          self
+        end
+
+        def and(...) = given(...)
+
+        def run
+          @called = true
+          pid = Process.pid
+          have_messages = @reactors.each.with_index.with_object({}) { |(_, i), m| m[i] = true }
+
+          loop do
+            @reactors.each.with_index do |r, idx|
+              found = @router.handle_next_event_for_reactor(r, worker_id: pid)
+              have_messages[idx] = found
+            end
+            break if have_messages.values.none?
+          end
+
+          self
+        end
+
+        # Like #then, but run any sync actions
+        def then!(&block)
+          self.then(&block)
+        end
+
+        def then(&block)
+          run
+
+          if block_given?
+            block.call(self)
+            return self
+          end
+
+          self
+        end
+
+        def backend = router.backend
+
+        private
+
+        attr_reader :stream_id
+      end
+
+      def with_reactors(*reactors)
+        Stage.new(reactors)
       end
     end
   end
