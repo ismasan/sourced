@@ -505,6 +505,17 @@ on Order::Placed do |event, history:|
 end
 ```
 
+It also supports multiple event types, for generic handling.
+
+```ruby
+on Order::Placed, Order::Complete do |event|
+  Logger.info "received event #{event.inspect}"
+  []
+end
+```
+
+
+
 ## Orchestration and choreography
 
 TODO
