@@ -450,9 +450,15 @@ end
 
 In this other example, the same workflow is split into separate streams/actors, so that Flight and Hotel bookings can run concurrently from each other. When completed, they each notify the parent Holiday actor, so the whole process coalesces into a sequential operation again.
 
-<img width="1787" height="798" alt="sourced-concurrency-multi-lane" src="https://github.com/user-attachments/assets/444445ff-b837-4c19-8c28-1b47eada7a41" />
+<img width="1787" alt="sourced-concurrency-multi-lane" src="https://github.com/user-attachments/assets/444445ff-b837-4c19-8c28-1b47eada7a41" />
 
-TODO: code example.
+```ruby
+# An actor dispatches a message to different stream
+# messages for different streams are processed concurrently
+reaction BookingStarted do |state, event|
+  dispatch(BookHotel).to("#{event.stream_id}-hotel")
+end
+```
 
 ## Durable workflows
 
