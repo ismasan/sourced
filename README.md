@@ -657,7 +657,9 @@ There's a couple of experimental RSpec helpers that allow testing Sourced reacto
 WHEN new command D is sent
 THEN I expect new events E and F
 
-### `with_reactor`
+### Single reactor
+
+Use `with_reactor` to unit-test the life-cycle of a single reactor.
 
 ```ruby
 require 'sourced/testing/rspec'
@@ -715,7 +717,7 @@ with_reactor(PlacedOrders, 'order-123')
   end
 ```
 
-### `with_reactors`
+### Multiple reactors (A.K.A "Sagas")
 
 Use `with_reactors` to test the collaboration of multiple reactors sending and picking up eachother's messages.
 
