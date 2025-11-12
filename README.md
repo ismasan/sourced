@@ -76,8 +76,7 @@ class Cart < Sourced::Actor
     # Here we could fetch some external data or query that might be needed
     # to populate the new commands.
     # Here we dispatch a command to the same stream_id present in the event
-    stream = stream_for(event)
-    stream.command :send_admin_email, product_id: event.payload.product_id
+    dispatch(:send_admin_email, product_id: event.payload.product_id)
   end
   
   # Handle the :send_admin_email dispatched by the reaction above
@@ -209,7 +208,7 @@ These handlers are pure: given the same state and event, they should always upda
 
 The class-level `.reaction` block registers an event handler that _reacts_ to events already published by this or other Actors.
 
-`.reaction` blocks can dispatch the next command in a workflow with the instance-level `#stream_for` helper.
+`.reaction` blocks can dispatch the next command in a workflow with the instance-level `#dispatch` helper.
 
 <img width="504" height="109" alt="sourced-react-handler" src="https://github.com/user-attachments/assets/b181ebdd-4bc7-4692-a2ab-910c1a829ec4" />
 
@@ -426,7 +425,7 @@ class HolidayBooking < Sourced::Actor
   end
   
   reaction :booking_started do |event|
-    stream_for(event).command :book_flight
+    dispatch :book_flight
   end
   
   command :book_flight do |state, cmd|
@@ -434,7 +433,7 @@ class HolidayBooking < Sourced::Actor
   end
   
   reaction :flight_booked do |event|
-    stream_for(event).command :book_hotel
+    dispatch :book_hotel
   end
   
   command :book_hotel do |state, cmd|
