@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'sourced/handler'
 
 module HandlerTests
   class MyHandler
@@ -17,6 +16,10 @@ module HandlerTests
 
     on :stop do |event, history:|
       [event.follow(Event, value: history.size)]
+    end
+
+    on :foo, :bar do |event, history:|
+      [event.follow(Event, value: event.class.name)]
     end
   end
 end
@@ -36,5 +39,17 @@ RSpec.describe Sourced::Handler do
     result = HandlerTests::MyHandler.handle(msg2, history: [msg2])
     expect(result.first).to be_a(Sourced::Actions::AppendNext)
     expect(result.first.messages.first.payload.value).to eq(1)
+  end
+
+  specify '.on with multiple messages' do
+    msg = HandlerTests::MyHandler::Foo.build('aa')
+    result = HandlerTests::MyHandler.handle(msg)
+    expect(result.first).to be_a(Sourced::Actions::AppendNext)
+    expect(result.first.messages.first.payload.value).to eq('HandlerTests::MyHandler::Foo')
+
+    msg = HandlerTests::MyHandler::Bar.build('aa')
+    result = HandlerTests::MyHandler.handle(msg)
+    expect(result.first).to be_a(Sourced::Actions::AppendNext)
+    expect(result.first.messages.first.payload.value).to eq('HandlerTests::MyHandler::Bar')
   end
 end

@@ -99,6 +99,29 @@ RSpec.describe Sourced::Router do
 
   let(:backend) { Sourced::Backends::TestBackend.new }
 
+  describe '#drain' do
+    it 'handles and acknoledges messages for reactors, until there is none left' do
+      logs = []
+      reactor = Class.new do
+        extend Sourced::Consumer
+        def self.handled_messages = [RouterTest::ItemAdded]
+      end
+      reactor.define_singleton_method(:handle) do |message|
+        logs << message.type
+        []
+      end
+
+      e1 = RouterTest::ItemAdded.build('123')
+      e2 = RouterTest::ItemAdded.build('123')
+      e3 = RouterTest::ItemAdded.build('123')
+      backend.append_next_to_stream('123', [e1, e2, e3])
+      router.register(reactor)
+      router.drain
+      expect(logs.size).to eq(3)
+      expect(logs.uniq).to eq(%w[routertest.todos.added])
+    end
+  end
+
   describe '#handle_next_event_for_reactor' do
     let(:event) { RouterTest::ItemAdded.new(stream_id: '123') }
 
@@ -113,7 +136,8 @@ RSpec.describe Sourced::Router do
       it 'appends messages' do
         allow(backend).to receive(:append_next_to_stream)
 
-        router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
+        bool = router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
+        expect(bool).to be(true)
         expect(RouterTest::DeciderReactor).not_to have_received(:on_exception)
         expect(backend).to have_received(:append_next_to_stream) do |stream_id, events|
           expect(stream_id).to eq('123')
@@ -122,6 +146,14 @@ RSpec.describe Sourced::Router do
           expect(event.stream_id).to eq('123')
           expect(event).to be_a(RouterTest::NextCommand)
         end
+      end
+    end
+
+    context 'when there are no new messages for reactor' do
+      it 'return false' do
+        backend.ack_on(RouterTest::DeciderReactor.consumer_info.group_id, event.id)
+        bool = router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
+        expect(bool).to be(false)
       end
     end
 
@@ -144,6 +176,12 @@ RSpec.describe Sourced::Router do
         router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
         groups = backend.stats.groups
         expect(groups.first[:stream_count]).to eq(0)
+      end
+
+      it 'raises immediatly is passed raise_on_error = true' do
+        expect {
+          router.handle_next_event_for_reactor(RouterTest::DeciderReactor, nil, true)
+        }.to raise_error(RuntimeError, 'boom')
       end
     end
 

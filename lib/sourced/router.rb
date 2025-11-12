@@ -147,6 +147,7 @@ module Sourced
     #
     # @param reactor [Class] The reactor class to get events for
     # @param worker_id [String, nil] Optional process identifier for logging
+    # @param raise_on_error [Boolean] Raise error immediatly instead of notifying Reactor#on_exception
     # @return [Boolean] true if an event was handled, false if no events available
     #
     # @example Argument injection behavior
@@ -165,8 +166,10 @@ module Sourced
     # Available injectable arguments:
     # - :replaying - Boolean indicating if this is a replay operation
     # - :history - Array of all events in the stream up to this point
-    def handle_next_event_for_reactor(reactor, worker_id = nil)
+    def handle_next_event_for_reactor(reactor, worker_id = nil, raise_on_error = false)
+      found = false
       backend.reserve_next_for_reactor(reactor, worker_id:) do |event, replaying|
+        found = true
         log_event('handling event', reactor, event, worker_id)
         
         # Build keyword arguments hash based on what the reactor's #handle method expects
@@ -175,12 +178,34 @@ module Sourced
         # Call the reactor's handle method with the event and any requested keyword arguments
         reactor.handle(event, **kargs)
       rescue StandardError => e
+        raise e if raise_on_error
+
         logger.warn "[#{PID}]: error handling event #{event.class} with reactor #{reactor} #{e}"
         backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
           reactor.on_exception(e, event, group)
         end
         # Do not ACK event for reactor
         Actions::RETRY
+      end
+      found
+    end
+
+    # Handle messages for reactors in this router
+    # until there's none left in the backend
+    # Useful for testing workflows
+    # @param limit [Numeric] How many times to loop fetching new messages
+    def drain(limit = Float::INFINITY)
+      pid = Process.pid
+      have_messages = @async_reactors.each.with_index.with_object({}) { |(_, i), m| m[i] = true }
+
+      count = 0
+      loop do
+        count += 1
+        @async_reactors.each.with_index do |r, idx|
+          found = handle_next_event_for_reactor(r, pid, true)
+          have_messages[idx] = found
+        end
+        break if have_messages.values.none? || count >= limit
       end
     end
 
