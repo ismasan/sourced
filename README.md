@@ -280,7 +280,7 @@ When a command produces events, or when an event makes a reactor dispatch a new 
 
 This helps the system keep a full audit trail of the cause-and-effect behaviour of the entire system.
 
-![command and event causation view](docs/images/sourced-causation-view.png)
+<img width="877" height="629" alt="CleanShot 2025-11-11 at 23 59 40" src="https://github.com/user-attachments/assets/38765370-2e80-46d8-bf30-1651208d5cf9" />
 
 ## Background vs. foreground execution
 
