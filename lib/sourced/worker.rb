@@ -16,18 +16,8 @@ module Sourced
   #   worker = Sourced::Worker.new(name: 'worker-1')
   #   worker.poll  # Start polling for work
   #
-  # @example Drain all pending work
-  #   Sourced::Worker.drain
   class Worker
     DEFAULT_SHUFFLER = ->(array) { array.shuffle }
-
-    # Drain all pending work using a new worker instance.
-    # This processes all available messages until queues are empty.
-    #
-    # @return [void]
-    def self.drain
-      new.drain
-    end
 
     # Process one tick of work using a new worker instance.
     # @return [Boolean] true if work was processed, false otherwise
@@ -91,20 +81,6 @@ module Sourced
         sleep @poll_interval
       end
       logger.info "Worker #{name}: Polling stopped"
-    end
-
-    # Drain all pending work for reactors
-    # This processes all available events for each reactor
-    # until their queues are empty.
-    #
-    # @return [void]
-    def drain
-      @reactors.each do |reactor|
-        loop do
-          event = tick(reactor)
-          break unless event
-        end
-      end
     end
 
     # Process one tick of work for a specific reactor.
