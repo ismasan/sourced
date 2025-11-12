@@ -61,6 +61,27 @@ module Testing
 
     event :processed
   end
+
+  class Telemetry
+    STREAM_ID = 'telemetry-stream'
+    include Sourced::Handler
+
+    Logged = Sourced::Message.define('test-telemetry.logged') do
+      attribute :source_stream, String
+      attribute :message_type, String
+    end
+
+    consumer do |c|
+      c.group_id = 'test-telemetry'
+    end
+
+    on Order::PaymentStarted, Payment::Processed do |event|
+      # TODO: an exception here was silent?
+      logged = Logged.build(STREAM_ID, source_stream: event.stream_id, message_type: event.type)
+      [logged]
+      # [Sourced::Actions::AppendNext.new(logged.stream_id, [logged])]
+    end
+  end
 end
 
 RSpec.describe Sourced::Testing::RSpec do
@@ -170,38 +191,29 @@ RSpec.describe Sourced::Testing::RSpec do
 
   describe 'with_reactors' do
     it 'tests collaboration of reactors' do
-      telemetry_logs = []
-      telemetry = Class.new do
-        include Sourced::Handler
-        consumer do |c|
-          c.group_id = 'test-telemetry'
-        end
-      end
-      telemetry.on(Testing::Payment::Processed) do |event|
-        telemetry_logs << event.class 
-        []
-      end
-
-      stream1 = 'actor-1'
-      stream2 = 'actor-1-payment'
+      order_stream = 'actor-1'
+      payment_stream = 'actor-1-payment'
+      telemetry_stream = Testing::Telemetry::STREAM_ID
 
       # With these reactors
-      with_reactors(Testing::Order, Testing::Payment, telemetry)
+      with_reactors(Testing::Order, Testing::Payment, Testing::Telemetry)
         # GIVEN that these events exist in history
-        .given(Testing::Started.build(stream1, name: 'foo'))
+        .given(Testing::Started.build(order_stream, name: 'foo'))
         # WHEN I dispatch this new command
-        .when(Testing::Order::StartPayment.build(stream1))
+        .when(Testing::Order::StartPayment.build(order_stream))
         # Then I expect
         .then do |stage|
           # The different reactors collaborated and
           # left this message trail behind
           # Backend#messages is only available in the TestBackend
           expect(stage.backend.messages).to match_sourced_messages([
-            Testing::Started.build(stream1, name: 'foo'), 
-            Testing::Order::StartPayment.build(stream1), 
-            Testing::Order::PaymentStarted.build(stream1), 
-            Testing::Payment::Process.build(stream2), 
-            Testing::Payment::Processed.build(stream2)
+            Testing::Started.build(order_stream, name: 'foo'), 
+            Testing::Order::StartPayment.build(order_stream), 
+            Testing::Order::PaymentStarted.build(order_stream), 
+            Testing::Telemetry::Logged.build(telemetry_stream, source_stream: order_stream, message_type: 'testing.order.payment_started'),
+            Testing::Payment::Process.build(payment_stream), 
+            Testing::Payment::Processed.build(payment_stream),
+            Testing::Telemetry::Logged.build(telemetry_stream, source_stream: payment_stream, message_type: 'testing.payment.processed'),
           ])
         end
     end
