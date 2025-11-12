@@ -50,7 +50,7 @@ module Testing
     event :payment_started
 
     reaction :payment_started do |_, evt|
-      dispatch(Payment::Process)
+      dispatch(Payment::Process).to("#{evt.stream_id}-payment")
     end
   end
 
@@ -183,6 +183,7 @@ RSpec.describe Sourced::Testing::RSpec do
       end
 
       stream1 = 'actor-1'
+      stream2 = 'actor-1-payment'
 
       # With these reactors
       with_reactors(Testing::Order, Testing::Payment, telemetry)
@@ -194,12 +195,13 @@ RSpec.describe Sourced::Testing::RSpec do
         .then do |stage|
           # The different reactors collaborated and
           # left this message trail behind
-          expect(stage.backend.read_stream(stream1)).to match_sourced_messages([
+          # Backend#messages is only available in the TestBackend
+          expect(stage.backend.messages).to match_sourced_messages([
             Testing::Started.build(stream1, name: 'foo'), 
             Testing::Order::StartPayment.build(stream1), 
             Testing::Order::PaymentStarted.build(stream1), 
-            Testing::Payment::Process.build(stream1), 
-            Testing::Payment::Processed.build(stream1)
+            Testing::Payment::Process.build(stream2), 
+            Testing::Payment::Processed.build(stream2)
           ])
         end
     end
