@@ -99,6 +99,29 @@ RSpec.describe Sourced::Router do
 
   let(:backend) { Sourced::Backends::TestBackend.new }
 
+  describe '#drain' do
+    it 'handles and acknoledges messages for reactors, until there is none left' do
+      logs = []
+      reactor = Class.new do
+        extend Sourced::Consumer
+        def self.handled_messages = [RouterTest::ItemAdded]
+      end
+      reactor.define_singleton_method(:handle) do |message|
+        logs << message.type
+        []
+      end
+
+      e1 = RouterTest::ItemAdded.build('123')
+      e2 = RouterTest::ItemAdded.build('123')
+      e3 = RouterTest::ItemAdded.build('123')
+      backend.append_next_to_stream('123', [e1, e2, e3])
+      router.register(reactor)
+      router.drain
+      expect(logs.size).to eq(3)
+      expect(logs.uniq).to eq(%w[routertest.todos.added])
+    end
+  end
+
   describe '#handle_next_event_for_reactor' do
     let(:event) { RouterTest::ItemAdded.new(stream_id: '123') }
 

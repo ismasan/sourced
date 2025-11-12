@@ -190,6 +190,25 @@ module Sourced
       found
     end
 
+    # Handle messages for reactors in this router
+    # until there's none left in the backend
+    # Useful for testing workflows
+    # @param limit [Numeric] How many times to loop fetching new messages
+    def drain(limit = Float::INFINITY)
+      pid = Process.pid
+      have_messages = @async_reactors.each.with_index.with_object({}) { |(_, i), m| m[i] = true }
+
+      count = 0
+      loop do
+        count += 1
+        @async_reactors.each.with_index do |r, idx|
+          found = handle_next_event_for_reactor(r, pid, true)
+          have_messages[idx] = found
+        end
+        break if have_messages.values.none? || count >= limit
+      end
+    end
+
     private
 
     # Build keyword arguments hash for calling a reactor's #handle method.
