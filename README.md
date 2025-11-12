@@ -651,11 +651,13 @@ end
 
 ## Testing
 
-There's an experimental RSpec helper that allows testing Sourced Actors in GIVEN, WHEN, THEN style.
+There's a couple of experimental RSpec helpers that allow testing Sourced reactors in GIVEN, WHEN, THEN style.
 
 *GIVEN* existing events A, B, C
 WHEN new command D is sent
 THEN I expect new events E and F
+
+### `with_reactor`
 
 ```ruby
 require 'sourced/testing/rspec'
@@ -713,6 +715,41 @@ with_reactor(PlacedOrders, 'order-123')
   end
 ```
 
+### `with_reactors`
+
+Use `with_reactors` to test the collaboration of multiple reactors sending and picking up eachother's messages.
+
+```ruby
+it 'tests collaboration of reactors' do
+  order_stream = 'actor-1'
+  payment_stream = 'actor-1-payment'
+  telemetry_stream = Testing::Telemetry::STREAM_ID
+
+  # With these reactors
+  with_reactors(Order, Payment, Telemetry)
+    # GIVEN that these events exist in history
+    .given(Order::Started.build(order_stream, name: 'foo'))
+    # WHEN I dispatch this new command
+    .when(Order::StartPayment.build(order_stream))
+    # Then I expect
+    .then do |stage|
+      # The different reactors collaborated and
+      # left this message trail behind
+      # Backend#messages is only available in the TestBackend
+      expect(stage.backend.messages).to match_sourced_messages([
+        Order::Started.build(order_stream, name: 'foo'), 
+        Order::StartPayment.build(order_stream), 
+        Order::PaymentStarted.build(order_stream), 
+        Telemetry::Logged.build(telemetry_stream, source_stream: order_stream),
+        Payment::Process.build(payment_stream), 
+        Payment::Processed.build(payment_stream),
+        Telemetry::Logged.build(telemetry_stream, source_stream: payment_stream),
+      ])
+    end
+end
+```
+
+`with_reactors` sets up its own in-memory backend, so you can test multi-reactor workflows in terms of what messages they produce without database or network requests, and there's no need for database setup or tear-down. Just test the behaviour!
 
 ## Setup
 
