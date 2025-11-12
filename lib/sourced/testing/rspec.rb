@@ -297,7 +297,7 @@ module Sourced
 
           loop do
             @reactors.each.with_index do |r, idx|
-              found = @router.handle_next_event_for_reactor(r, worker_id: pid)
+              found = @router.handle_next_event_for_reactor(r, pid, true)
               have_messages[idx] = found
             end
             break if have_messages.values.none?

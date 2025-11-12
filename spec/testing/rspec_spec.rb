@@ -76,10 +76,8 @@ module Testing
     end
 
     on Order::PaymentStarted, Payment::Processed do |event|
-      # TODO: an exception here was silent?
       logged = Logged.build(STREAM_ID, source_stream: event.stream_id, message_type: event.type)
       [logged]
-      # [Sourced::Actions::AppendNext.new(logged.stream_id, [logged])]
     end
   end
 end
