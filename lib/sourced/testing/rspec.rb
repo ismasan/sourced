@@ -263,6 +263,7 @@ module Sourced
           @called = false
           @when = nil
           @sync_run = false
+          @given_count = 0
         end
 
         def with_stream(stream_id)
@@ -275,6 +276,7 @@ module Sourced
 
           message = build_message(*args)
           @router.backend.append_next_to_stream(message.stream_id, [message])
+          @given_count += 1
           self
         end
 
@@ -304,7 +306,12 @@ module Sourced
           run
 
           if block_given?
-            block.call(self)
+            if block.arity == 2
+              new_messages = backend.messages[(@given_count - 1)..]
+              block.call(self, new_messages)
+            else
+              block.call(self)
+            end
             return self
           end
 

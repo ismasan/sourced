@@ -753,6 +753,16 @@ end
 
 `with_reactors` sets up its own in-memory backend, so you can test multi-reactor workflows in terms of what messages they produce without database or network requests, and there's no need for database setup or tear-down. Just test the behaviour!
 
+The `.then` block can take an optional second argument, which will be passed as only the _new_ messages produced by the reactors, appended after any messages setup with `given`.
+
+```ruby
+.then do |stage, new_messages|
+  expect(new_messages).to match_sourced_messages([...])
+end
+```
+
+
+
 ## Setup
 
 You'll need the `pg` and `sequel` gems.

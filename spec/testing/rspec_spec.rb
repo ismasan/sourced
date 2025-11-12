@@ -200,11 +200,11 @@ RSpec.describe Sourced::Testing::RSpec do
         # WHEN I dispatch this new command
         .when(Testing::Order::StartPayment.build(order_stream))
         # Then I expect
-        .then do |stage|
+        .then do |_, new_messages|
           # The different reactors collaborated and
           # left this message trail behind
           # Backend#messages is only available in the TestBackend
-          expect(stage.backend.messages).to match_sourced_messages([
+          expect(new_messages).to match_sourced_messages([
             Testing::Started.build(order_stream, name: 'foo'), 
             Testing::Order::StartPayment.build(order_stream), 
             Testing::Order::PaymentStarted.build(order_stream), 
