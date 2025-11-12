@@ -36,7 +36,9 @@ module Sourced
           in [Class => msg_type] if msg_type < Sourced::Message
             __register_class_message_handler(msg_type, &block)
         else
-          raise ArgumentError, "Invalid arguments for #{self}.on"
+          args.each do |arg|
+            on(*arg, &block)
+          end
         end
       end
 
