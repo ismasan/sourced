@@ -154,6 +154,12 @@ RSpec.describe Sourced::Router do
         groups = backend.stats.groups
         expect(groups.first[:stream_count]).to eq(0)
       end
+
+      it 'raises immediatly is passed raise_on_error = true' do
+        expect {
+          router.handle_next_event_for_reactor(RouterTest::DeciderReactor, nil, true)
+        }.to raise_error(RuntimeError, 'boom')
+      end
     end
 
     context 'argument injection' do
