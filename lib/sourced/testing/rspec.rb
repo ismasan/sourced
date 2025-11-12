@@ -245,15 +245,13 @@ module Sourced
         GWT.new(actor)
       end
 
-      ReactorsArray = Sourced::Types::Array[Sourced::ReactorInterface]
-
       class Stage
         include MessageBuilder
 
         attr_reader :router
 
         def initialize(reactors, router: nil, logger: Logger.new(nil))
-          @reactors = ReactorsArray.parse(reactors)
+          @reactors = reactors
           @router ||= Sourced::Router.new(
             backend: Sourced::Backends::TestBackend.new, 
             logger:
@@ -292,16 +290,7 @@ module Sourced
 
         def run
           @called = true
-          pid = Process.pid
-          have_messages = @reactors.each.with_index.with_object({}) { |(_, i), m| m[i] = true }
-
-          loop do
-            @reactors.each.with_index do |r, idx|
-              found = @router.handle_next_event_for_reactor(r, pid, true)
-              have_messages[idx] = found
-            end
-            break if have_messages.values.none?
-          end
+          router.drain
 
           self
         end
