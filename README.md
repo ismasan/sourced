@@ -640,9 +640,7 @@ You can use the backend API to reset offsets for a specific consumer group, whic
 Sourced.config.backend.reset_consumer_group(ReadyOrder)
 ```
 
-See below for other consumer lifecycle methods.
-
-
+See [below](#stopping-and-starting-consumer-groups) for other consumer lifecycle methods.
 
 ## The Reactor Interface
 
@@ -953,7 +951,7 @@ Sourced.configure do |config|
 end
 ```
 
-## Stopping and starting consumer groups programmatically.
+## Stopping and starting consumer groups.
 
 `Sourced.config.backend` provides an API for stopping and starting consumer groups. For example to resume groups that were stopped by raised exceptions, after the error has been corrected.
 
