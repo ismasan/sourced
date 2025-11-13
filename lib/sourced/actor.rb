@@ -208,13 +208,26 @@ module Sourced
       # @option history [Enumerable<Sourced::Message>] past messages in the stream
       # @return [Sourced::Actions]
       def handle(message, history: [], replaying: false)
-        instance = new(id: message.stream_id)
+        instance = new(id: identity_from(message))
         instance.handle(message, history:, replaying:)
       end
 
       def __message_type(msg_name)
         [__message_type_prefix, msg_name].join('.').downcase
       end
+
+      # Override this in subclasses 
+      # to make an actor take it's @id from an arbitrary 
+      # field in the message
+      # TODO: the danger here is that not all messages might 
+      # support this arbitrary field.
+      # it would be nice if we could statically
+      # analyse messages handled by the Actor, and raise an error
+      # if not all of them support the specified field
+      #
+      # @param message [Sourced::Message]
+      # @return [Object]
+      def identity_from(message) = message.stream_id
 
       private
 
