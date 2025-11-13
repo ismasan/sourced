@@ -24,9 +24,22 @@ module Sourced
         super
       end
 
+      # The Ractor Interface
+      # @param message [Sourced::Message]
+      # @option replaying [Boolean]
+      # @option history [Enumerable<Sourced::Message>]
+      # @return [Array<Sourced::Actions::*>]
       def handle(message, replaying:, history: BLANK_ARRAY)
-        new(id: message.stream_id).handle(message, replaying:, history:)
+        new(id: identity_from(message)).handle(message, replaying:, history:)
       end
+
+      # Override this in subclasses 
+      # to make an actor take it's @id from an arbitrary 
+      # field in the message
+      #
+      # @param message [Sourced::Message]
+      # @return [Object]
+      def identity_from(message) = message.stream_id
     end
 
     attr_reader :id, :seq
@@ -80,7 +93,7 @@ module Sourced
       class << self
         # State-stored version doesn't load :history
         def handle(message, replaying: false)
-          new(id: message.stream_id).handle(message, replaying:)
+          new(id: identity_from(message)).handle(message, replaying:)
         end
       end
 
