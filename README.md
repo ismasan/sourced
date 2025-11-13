@@ -467,7 +467,47 @@ end
 
 ## Durable workflows
 
-TODO
+There's a `Sourced::DurableWorkflow` class that can be subclassed to define Reactors with a synchronous-looking API. This is *work in progress*.
+
+```ruby
+class BookHoliday < Sourced::DurableWorkflow
+  # This method can be called like a regular method
+  # The methods inside also have blocking semantics
+  # but they're in fact event-sourced, and will be
+  # retried on failure until the booking completes.
+  # Methods that were succesful will be idempotent on retry
+  def execute(flight_info, hotel_info)
+    flight = book_flight(flight_info)
+    hotel = book_hotel(hotel_info)
+    confirm_booking(flight, hotel)
+  end
+  
+  # The .durable macro turns a regular method
+  # into an event-sourced workflow
+  durable def book_flight(info)
+    FlightsAPI.book(info)
+  end
+  
+  durable def book_hotel(info)
+    HotelsAPI.book(info)
+  end
+  
+  durable def confirm_booking(flight, hotel)
+    # etc,
+  end
+end
+```
+
+These executions will be handed off to the runtime to be run by one or more workers, while preserving ordering. You can optionally wait for a result.
+
+```ruby
+result = BookHoliday.execute(flight_info, hotel_info).wait.output
+# Confirmed booking, or whatever error result your code returns
+```
+
+Events for the full execution are recorded to the backend.
+
+TODO: image here.
 
 ## Handler DSL
 
