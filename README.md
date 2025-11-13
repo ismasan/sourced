@@ -568,7 +568,77 @@ end
 
 ## Orchestration and choreography
 
-TODO
+### Orchestration
+
+Orchestration is when the flow control of a multi-collaborator workflow is centralised into a single entity. This can be achieved by having one Actor coordinate the communication by reacting to events and sending commands to other actors.
+
+```ruby
+class HolidayBooking < Sourced::Actor
+  state do |id|
+    BookingState.new(id)
+  end
+  
+  command StartBooking do |booking, cmd|
+    # validations, etc
+    event BookingStarted, cmd.payload
+  end
+  
+  event BookingStarted
+  
+  # React to BookingStarted and start sub-workflows
+  reaction BookingStarted do |booking, event|
+    dispatch(HotelBooking::Start)
+  end
+  
+  # React to events emitted by sub-workflows
+  reaction HotelBooking::Started do |booking, event|
+    dispatch(ConfirmHotelBooking, event.payload)
+  end
+  
+  command ConfirmHotelBooking do |booking, cmd|
+    unless booking.hotel.booked?
+      event HotelBookingConfirmed, cmd.payload
+    end
+  end
+  
+  event HotelBookingConfirmed do |booking, event|
+    # update booking state
+    booking.confirm_hotel(event.payload)
+  end
+end
+```
+
+This is a verbose step-by-step choreography, but it can be made more succint by ommiting the mirroring of commands/events, if needed (or by using the [Reactor Interface](#the-reactor-interface) directly).
+
+*TODO*: a way for Actors to initialise their internal state with event attributes other than the `stream_id`. For example, events may carry a `booking_id` for the overall workflow.
+
+### Choreography
+
+Choreography is when each component reacts to other components' events without centralised control. The overall workflow "emerges" from this collaboration.
+
+```ruby
+class HotelBooking < Sourced::Actor
+  # The HotelBooking defines its own
+  # reactions to booking events
+  reaction HolidayBooking::StartBooking do |state, event|
+    # dispatch a command to itself to start its own life-cycle
+    dispatch Start, event.payload
+  end
+  
+  command Start do |state, cmd|
+    # validations, etc
+    # other Actors in the choreography
+    # can choose to react to events emitted here
+    event Started, cmd.payload
+  end
+  
+  event Started do |state, event|
+    # update state, etc
+  end
+end
+```
+
+
 
 ## Transactional boundaries
 
@@ -640,7 +710,7 @@ You can use the backend API to reset offsets for a specific consumer group, whic
 Sourced.config.backend.reset_consumer_group(ReadyOrder)
 ```
 
-See [below](#stopping-and-starting-consumer-groups) for other consumer lifecycle methods.
+See [below](#stopping-and-starting-consumer-groups) for other consumer lifecycle methods.	
 
 ## The Reactor Interface
 
