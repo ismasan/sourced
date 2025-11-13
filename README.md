@@ -581,7 +581,9 @@ These transactional boundaries are also guarded by the same locks that enforce t
 
 ## Appending and reading messages
 
-### Appending messages
+### Appending messages without optimistic locking
+
+Use `Backend#append_next_to_stream` to append messages to a stream, with no questions asked.
 
 ```ruby
 message = ProductAdded.build('order-123', product_id: 123, price: 100)
@@ -590,6 +592,28 @@ Sourced.config.backend.append_next_to_stream('order-123', [message])
 # Shortcut:
 Sourced.dispatch(message)
 ```
+
+### Appending messages with optimistic locking
+
+Using `Backend#append_to_stream`, the backend expects the new messages `seq` property (sequence number) to be greater than the last message in storage for the same stream. This is to catch concurrent writes where a different client or thread may append to the stream while your code was preparing for it.
+
+```ruby
+# Your code must make sure to increment sequence numbers
+past_events = Sourced.config.backend.read_stream('order-123')
+last_known_seq = past_events.last&.seq # ex. 10
+# Instantiate new messages and make sure to increment their sequences
+message = ProductAdded.new(
+  stream_id: 'order-123', 
+  seq: last_known_seq + 1, # <== incremented sequence
+  payload: { product_id: 123, price: 100 }
+)
+
+# This will raise an exception if there's already a message
+# for this stream with this sequence number in storage.
+Sourced.backend.append_to_stream('order-123', [message])
+```
+
+`Sourced::Actor` classes do this incrementing automatically when they produce new messages.
 
 ### Scheduling messages in the future
 
