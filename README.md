@@ -506,8 +506,7 @@ result = BookHoliday.execute(flight_info, hotel_info).wait.output
 ```
 
 Events for the full execution are recorded to the backend.
-
-TODO: image here.
+<img width="1016" height="1298" alt="CleanShot 2025-11-13 at 13 48 27@2x" src="https://github.com/user-attachments/assets/a591a1a4-88e6-435e-bb27-cb4990aaf91f" />
 
 ## Handler DSL
 
