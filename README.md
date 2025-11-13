@@ -89,15 +89,20 @@ end
 Using the `Cart` actor in an IRB console. This will use Sourced's in-memory backend by default.
 
 ```ruby
-cart = Cart.new('test-cart')
+cart = Cart.new(id: 'test-cart')
 cart.state.total # => 0
-cmd = cart.add_item(product_id: 'p123', price: 1000, quantity: 2)
+# Instantiate a command and handle it
+cmd = Cart::AddItem.build('test-cart', product_id: 'p123', price: 1000, quantity: 2)
+events = cart.decide(cmd)
+# => [Cart::ItemAdded.new(...)]
 cmd.valid? # true
 # Inspect state
 cart.state.total # 2000
 cart.items.items.size # 1
 # Inspect that events were stored
 cart.seq # 2 the sequence number or "version" in storage. Ie. how many commands / events exist for this cart
+# Append new messages to the backend
+Sourced.config.backend.append_to_stream('test-cart', events)
 # Load events for cart
 events = Sourced.history_for(cart)
 # => an array with instances of [Cart::AddItem, Cart::ItemAdded]
@@ -123,8 +128,8 @@ Sourced.register(Cart)
 
 This achieves two things:
 
-1. Messages can be routed to this actor by background processes, using its `Sourced.dispatch(message)`.
-2. The actor can _react_ to other events in the system (more on event choreography later), via its low-level `.handle(event)` interface.
+1. Messages can be routed to this actor by background processes, using `Sourced.dispatch(message)`.
+2. The actor can _react_ to other events in the system (more on event choreography later), via its low-level `.handle(event)` [Reactor Interface](#the-reactor-interface).
 
 These two properties are what enables asynchronous, eventually-consistent systems in Sourced.
 
