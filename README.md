@@ -273,7 +273,21 @@ reaction do |state, event|
 end
 ```
 
+#### `.reaction` for multiple events
 
+```ruby
+reaction ItemAdded, InventoryChecked do |state, event|
+  # etc
+end
+```
+
+It also works with symbols, for messages that have been defined as symbols (ex `event :item_added`)
+
+```ruby
+reaction :item_added, InventoryChecked do |state, event|
+  # etc
+end
+```
 
 ## Causation and correlation
 
@@ -397,7 +411,7 @@ class ReadyOrders < Sourced::Projector::StateStored
 end
 ```
 
-Projectors can also define `.reaction event_class do |state, event|` to react to specific events.
+Projectors can also define `.reaction event_class do |state, event|` to react to specific events, or `reaction event1, event2` to react to more than one event with the same block.
 
 ### Skipping projector reactions when replaying events
 
