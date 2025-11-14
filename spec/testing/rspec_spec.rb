@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'sourced/testing/rspec'
 
 module Testing
   Start = Sourced::Message.define('sourced.testing.start') do
@@ -83,8 +82,6 @@ module Testing
 end
 
 RSpec.describe Sourced::Testing::RSpec do
-  include described_class
-
   describe 'with_reactor' do
     context 'with Reactor interface' do
       it 'works' do

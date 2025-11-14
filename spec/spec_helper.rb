@@ -5,6 +5,7 @@ require 'sourced'
 require 'debug'
 require 'logger'
 require 'timecop'
+require 'sourced/testing/rspec'
 require_relative './shared_examples/backend_examples'
 require_relative './shared_examples/executor_examples'
 
@@ -32,4 +33,5 @@ RSpec.configure do |config|
 
   config.include BackendExamples, type: :backend
   config.include ExecutorExamples, type: :executor
+  config.include Sourced::Testing::RSpec
 end
