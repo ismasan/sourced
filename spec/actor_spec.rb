@@ -102,6 +102,20 @@ RSpec.describe Sourced::Actor do
         end
       }.to raise_error(Sourced::Actor::DualMessageRegistrationError)
     end
+
+    it 'supports multiple events as symbols' do
+      klass = Class.new(described_class) do
+        event(:e1)
+        event(:e2)
+        reaction :e1, :e2 do |_, _|
+        end
+      end
+      
+      expect(klass.handled_messages).to match_array([
+        klass::E1,
+        klass::E2,
+      ])
+    end
   end
 
   describe '#evolve' do

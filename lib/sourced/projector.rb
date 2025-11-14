@@ -16,12 +16,11 @@ module Sourced
       # The Reactor interface
       def handled_messages = handled_messages_for_evolve
 
-      def reaction(event_class = nil, &block)
+      # Override this check defined in React mixin
+      private def __validate_message_for_reaction!(event_class)
         if event_class && !handled_messages_for_evolve.include?(event_class)
           raise ArgumentError, '.reaction only works with event types handled by this class via .event(event_type)' 
         end
-
-        super
       end
 
       # The Ractor Interface

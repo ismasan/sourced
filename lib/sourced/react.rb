@@ -152,11 +152,12 @@ module Sourced
       #     LOGGER.info state
       #   end
       #
-      # @param event_class [Class<Sourced::Message>]
+      # @param *args [Class<Sourced::Message>]
       # @yield [Object, Sourced::Event]
       # @return [void]
-      def reaction(event_class = nil, &block)
-        if event_class.nil?
+      def reaction(*args, &block)
+        case args
+        in []
           handled_messages_for_evolve.each do |e|
             method_name = Sourced.message_method_name(React::PREFIX, e.to_s)
             if !instance_methods.include?(method_name.to_sym)
@@ -164,25 +165,25 @@ module Sourced
             end
           end
 
-          return
-        end
+        in [Symbol => message_symbol]
+          message_class = __resolve_message_class(message_symbol)
+          reaction(message_class, &block)
 
-        if event_class.is_a?(Array)
-          event_class.each do |k|
-            reaction k, &block
+        in [Class => message_class] if message_class < Sourced::Message
+          __validate_message_for_reaction!(message_class)
+          unless message_class.is_a?(Class) && message_class < Sourced::Message
+            raise ArgumentError,
+                  "Invalid argument #{message_class.inspect} for #{self}.reaction"
           end
 
-          return
-        end
+          self.handled_messages_for_react << message_class
+          define_method(Sourced.message_method_name(React::PREFIX, message_class.to_s), &block) if block_given?
 
-        __validate_message_for_reaction!(event_class)
-        unless event_class.is_a?(Class) && event_class < Sourced::Message
-          raise ArgumentError,
-                "Invalid argument #{event_class.inspect} for #{self}.reaction"
+        else
+          args.each do |k|
+            reaction k, &block
+          end
         end
-
-        handled_messages_for_react << event_class
-        define_method(Sourced.message_method_name(React::PREFIX, event_class.to_s), &block) if block_given?
       end
 
       # Run this hook before registering a reaction
@@ -190,6 +191,12 @@ module Sourced
       # also handled as a command
       def __validate_message_for_reaction!(event_class)
         # no-op.
+      end
+
+      private
+
+      def __resolve_message_class(message_symbol)
+        raise ArgumentError, "#{self} doesn't support resolving #{message_symbol.inspect} into a message class"
       end
     end
   end

@@ -54,7 +54,7 @@ class ReactTestReactor
   end
 
   # This one will register handlers for multiple events
-  reaction [Event6, Event7] do |state, event|
+  reaction Event6, Event7 do |state, event|
     dispatch NotifyVariableReaction, event:
   end
 end
