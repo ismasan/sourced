@@ -176,30 +176,6 @@ module Sourced
         end
       end
 
-      # Support defining event reactions with a symbol
-      # pointing to an event class defined locally with .event
-      # See Sourced::React#reaction
-      # TODO: should this be defined in Evolve?
-      # @example
-      #   reaction :item_added do |state, event|
-      #     stream = stream_for(event)
-      #     stream.command :do_something
-      #   end
-      #
-      #   reaction ItemAdded do |state, event|
-      #     stream = stream_for(event)
-      #     stream.command DoSomething
-      #   end
-      #
-      # @param event_name [nil, Symbol, Class]
-      # @yield [Object, Sourced::Event]
-      # @return [void]
-      def reaction(event_name = nil, &block)
-        event_name = self::Event.registry[__message_type(event_name)] if event_name.is_a?(Symbol)
-
-        super(event_name, &block)
-      end
-
       # The Reactor interface
       # Message can be:
       # - A command, present in .handled_commands
@@ -249,6 +225,12 @@ module Sourced
         klass_name = event_name.to_s.split('_').map(&:capitalize).join
         event_class = self::Event.define(__message_type(event_name), payload_schema:)
         const_set(klass_name, event_class)
+      end
+
+      # Override this method defined in React mixin.
+      # Given a symbol for a message type, resolve the message class
+      def __resolve_message_class(message_symbol)
+        self::Event.registry[__message_type(message_symbol)]
       end
 
       # Override the default namespace for commands and events
