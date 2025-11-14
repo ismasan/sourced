@@ -152,8 +152,13 @@ module Sourced
       #     LOGGER.info state
       #   end
       #
-      # @param *args [Class<Sourced::Message>]
-      # @yield [Object, Sourced::Event]
+      # @overload reaction do |state, event|
+      # @overload reaction(event_symbol) do |state, event|
+      #   @param event_symbol [Symbol] Symbolised message name
+      # @overload reaction(event_class) do |state, event|
+      #   @param event_class [Class] Must be subclass of Sourced::Message
+      # @overload reaction(*events) do |state, event|
+      #   @param *events [Array<Object>] List of event classes or symbols
       # @return [void]
       def reaction(*args, &block)
         case args
