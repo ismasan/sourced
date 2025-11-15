@@ -110,27 +110,9 @@ module Sourced
       # # The exmaple above will define a command class `AddItem` in the current namespace:
       # AddItem = Message.define('namespace.add_item', payload_schema: { name: String })
       #
-      # # And an :add_item method to send the command:
-      # def add_item(name:)
-      #   issue_command AddItem, name:
-      # end
-      #
-      # This method can be used on Actor instances:
-      #   aggregate.add_item(name: 'Buy milk')
-      #
       # Payload schema is a Plumb Hash schema.
       # See: https://github.com/ismasan/plumb#typeshash
       #
-      # The helper method will instantiate an instance of the command class
-      # and validate its attributes with #valid?
-      # Only valid commands will be issued to the handler.
-      # The method returns the command instance. If #valid? is false, then the command was not issued.
-      # Example:
-      #   cmd = aggregate.add_item(name: 10)
-      #   cmd.valid? # => false
-      #   cmd.errors # => { name: 'must be a String' }
-      #
-      # @return [Message] the command instance, which can be #valid? or not
       def command(*args, &block)
         raise ArgumentError, 'command block expects signature (state, command)' unless block.arity == 2
 
