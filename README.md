@@ -578,6 +578,37 @@ on Order::Placed, Order::Complete do |event|
 end
 ```
 
+## Command methods for Actors
+
+The optional `Sourced::CommandMethods` mixin allows invoking an Actor's commands as regular methods.
+
+`CommandMethods` automatically generates instance methods from command definitions,
+allowing you to invoke commands in two ways:
+
+1. **In-memory version** (e.g., `actor.start(name: 'Joe')`)
+   - Validates the command and executes the decision handler
+   - Returns a tuple of [cmd, new_events]
+   - Does NOT persist events to backend
+2. **Durable version** (e.g., `actor.start!(name: 'Joe')`)
+   - Same as in-memory, but also appends events to backend
+   - Raises `FailedToAppendMessagesError` if backend fails
+
+Include the module in an Actor and define commands normally:
+
+```ruby
+class MyActor < Sourced::Actor
+  include Sourced::CommandMethods
+
+  command :create_item, name: String do |state, cmd|
+    event :item_created, cmd.payload
+  end
+end
+
+actor = MyActor.new(id: 'actor-123')
+cmd, events = actor.create_item(name: 'Widget')  # In-memory
+cmd, events = actor.create_item!(name: 'Widget') # Persists to backend
+```
+
 
 
 ## Orchestration and choreography
