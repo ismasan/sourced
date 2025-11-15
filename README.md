@@ -686,16 +686,14 @@ class HotelBooking < Sourced::Actor
 end
 ```
 
+<img width="1249" height="652" alt="CleanShot 2025-11-15 at 14 38 05" src="https://github.com/user-attachments/assets/a3631dd5-08b9-4381-8082-ce5cdc8958ed" />
 
+## Units of work
 
-## Transactional boundaries
-
-TODO: diagram
-
-The diagram shows the units of work in an example Sourced workflow. The operations within each of the red boxes either succeeds or rolls back the transaction, and it can then be retried or compensated. They are **strongly consistent**. 
+The diagram shows the units of work in an example Sourced workflow. The operations within each of the red boxes are protected by a combination of transactions and locking strategies on the consumer group + stream ID, so they are isolated from other concurrent processing. They can be said to be **immediately consistent**. 
 The data-flow _between_ these boxes is propagated asynchronously by Sourced's infrastructure so, relative to each other, the entire system is **eventually consistent**.
 
-These transactional boundaries are also guarded by the same locks that enforce the [concurrency model](#concurrency-model), so that for example the same event or command can't be processed twice by the same Reactor (workflow, projector, etc). 
+These transactional boundaries are guarded by the same locks that enforce the [concurrency model](#concurrency-model), so that for example the same message can't be processed twice by the same Reactor (workflow, projector, etc). 
 
 ## Appending and reading messages
 
