@@ -33,7 +33,7 @@ The entire behaviour of an event-sourced app is described via **commands**, **ev
 
 ### Overview
 
-Actors are classes that encapsulate loading state from past events and handling commands for a part of your system. They can also define reactions to their own events, or events emitted by other actors. This is a simple shopping cart actor.
+Actors are classes that encapsulate the full life-cycle of a concept in your domain, backed by an event stream. This includes loading state from past events and handling commands for a part of your system. They can also define reactions to their own events, or events emitted by other actors. This is a simple shopping cart actor.
 
 ```ruby
 class Cart < Sourced::Actor
