@@ -31,6 +31,7 @@ module Sourced
 
     # Turn "Foo::Bar::FooBar" into "foo_bar"
     TrailingModuleName = String.transform(::String) { |v| v.split('::').last }
+    ModulesToDots = String.transform(::String) { |v| v.gsub('::', '.') }
     Underscore = String.build(::String) { |v|
       v
         .gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')  # Handle sequences like "HTTPResponse" -> "HTTP_Response"
@@ -39,5 +40,6 @@ module Sourced
         .downcase                                # Convert to lowercase
     }
     ModuleToMethodName = TrailingModuleName >> Underscore
+    ModuleToMessageType = ModulesToDots >> Underscore
   end
 end

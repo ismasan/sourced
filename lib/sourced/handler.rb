@@ -73,19 +73,11 @@ module Sourced
       end
 
       def message_namespace
-        __string_to_message_type(name)
+        Types::ModuleToMessageType.parse(name.to_s)
       end
 
       def __message_type_prefix
         @__message_type_prefix ||= message_namespace
-      end
-
-      def __string_to_message_type(str)
-        str.to_s.gsub(/::/, '.')
-          .gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
-          .gsub(/([a-z\d])([A-Z])/, '\1_\2')
-          .tr("-", "_")
-          .downcase
       end
     end
   end
