@@ -1,6 +1,6 @@
 GIT
   remote: https://github.com/ismasan/docco.git
-  revision: d17f82f6c0174031c089f52e8265449d2ab75884
+  revision: 032150bac85215da8470ca302003a63cc39632b2
   specs:
     docco (0.1.0)
       kramdown
