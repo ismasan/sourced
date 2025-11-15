@@ -21,7 +21,7 @@ module Sourced
     #     end
     #   end
     #
-    class SequelPubSub
+    class PGPubSub
       # @option db [Sequel::Database]
       def initialize(db:)
         @db = db

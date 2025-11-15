@@ -3,7 +3,7 @@
 require 'sequel'
 require 'json'
 require 'sourced/message'
-require 'sourced/backends/sequel_pub_sub'
+require 'sourced/backends/pg_pub_sub'
 
 Sequel.extension :pg_json if defined?(PG)
 
@@ -36,7 +36,7 @@ module Sourced
       STOPPED = 'stopped'
 
       # @!attribute [r] pubsub
-      #   @return [SequelPubSub] Pub/sub implementation for real-time notifications
+      #   @return [PubSub] Pub/sub implementation for real-time notifications
       attr_reader :pubsub
 
       # Initialize a new Sequel backend instance.
@@ -51,7 +51,7 @@ module Sourced
       #   backend = SequelBackend.new(db, prefix: 'my_app')
       def initialize(db, logger: Sourced.config.logger, prefix: 'sourced')
         @db = connect(db)
-        @pubsub = SequelPubSub.new(db: @db)
+        @pubsub = PGPubSub.new(db: @db)
         @logger = logger
         @prefix = prefix
         @workers_table = table_name(:workers)
