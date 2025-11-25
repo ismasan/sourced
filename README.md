@@ -974,7 +974,7 @@ end
 Sourced.config.backend.install unless Sourced.config.backend.installed?
 ```
 
-Register your Actor's and Reactors.
+Register your Actors and Reactors.
 
 ```ruby
 Sourced.register(Leads::Actor)
