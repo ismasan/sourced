@@ -62,12 +62,20 @@ module Sourced
       @housekeeping_interval = 3
       @housekeeping_heartbeat_interval = 5
       @housekeeping_claim_ttl_seconds = 120
+      @subscribers = []
+    end
+
+    def subscribe(callable = nil, &block)
+      callable ||= block
+      @subscribers << callable
+      self
     end
 
     def setup!
       return if @setup
 
       @backend.setup!(self) if @backend.respond_to?(:setup!)
+      @subscribers.each { |s| s.call(self) }
       @setup = true
     end
 

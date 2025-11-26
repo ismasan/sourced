@@ -67,6 +67,18 @@ RSpec.describe Sourced::Configuration do
     expect(config.executor).to be_a(Sourced::AsyncExecutor)
   end
 
+  describe 'subscribers' do
+    it 'triggers subscribers on #setup!' do
+      executor_class = nil
+      config.subscribe do |c|
+        executor_class = c.executor.class
+      end
+      config.executor = :thread
+      config.setup!
+      expect(executor_class).to eq(Sourced::ThreadExecutor)
+    end
+  end
+
   describe '#executor=()' do
     specify ':async' do
       config.executor = :async
