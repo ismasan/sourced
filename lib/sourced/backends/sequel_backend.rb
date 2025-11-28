@@ -51,7 +51,7 @@ module Sourced
       #   backend = SequelBackend.new(db, prefix: 'my_app')
       def initialize(db, logger: Sourced.config.logger, prefix: 'sourced')
         @db = connect(db)
-        @pubsub = PGPubSub.new(db: @db)
+        @pubsub = PGPubSub.new(db: @db, logger:)
         @logger = logger
         @prefix = prefix
         @workers_table = table_name(:workers)
