@@ -58,10 +58,11 @@ module Sourced
                   @logger.info "#{@info} stopping"
                   @channels.values.each(&:stop)
                 in [:unsubscribe, channel]
-                  @logger.info "#{@info} unsubscribe channel #{channel.object_id}"
-                  @channels.delete(channel.object_id)
-                  if @channels.empty?
-                    @logger.info "#{@info} all channels unsubscribed."
+                  if @channels.delete(channel.object_id)
+                    @logger.info "#{@info} unsubscribe channel #{channel.object_id}"
+                    if @channels.empty?
+                      @logger.info "#{@info} all channels unsubscribed."
+                    end
                   end
                 in [:subscribe, channel]
                   @logger.info "#{@info} subscribe channel #{channel.object_id}"
