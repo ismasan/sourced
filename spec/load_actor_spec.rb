@@ -33,9 +33,10 @@ RSpec.describe 'Sourced.load' do
       e2 = actor_class[:update_age].parse(stream_id:, seq: 2, payload: { age: 40 })
 
       Sourced.config.backend.append_to_stream(stream_id, [e1, e2])
-      actor = Sourced.load(actor)
+      actor, events = Sourced.load(actor)
       expect(actor.seq).to eq(2)
       expect(actor.state[:age]).to eq(40)
+      expect(events.map(&:id)).to eq([e1.id, e2.id])
     end
 
     it 'load from class and stream_id' do
@@ -44,10 +45,11 @@ RSpec.describe 'Sourced.load' do
 
       Sourced.config.backend.append_to_stream(stream_id, [e1, e2])
 
-      actor = Sourced.load(actor_class, stream_id)
+      actor, events = Sourced.load(actor_class, stream_id)
       expect(actor).to be_a(actor_class)
       expect(actor.seq).to eq(2)
       expect(actor.state[:age]).to eq(40)
+      expect(events.map(&:id)).to eq([e1.id, e2.id])
     end
 
     it 'catches up to latest history' do
@@ -57,12 +59,14 @@ RSpec.describe 'Sourced.load' do
       e2 = actor_class[:update_age].parse(stream_id:, seq: 2, payload: { age: 40 })
 
       Sourced.config.backend.append_to_stream(stream_id, [e1])
-      actor = Sourced.load(actor)
+      actor, events = Sourced.load(actor)
       expect(actor.seq).to eq(1)
+      expect(events.map(&:id)).to eq([e1.id])
 
       Sourced.config.backend.append_to_stream(stream_id, [e2])
-      actor = Sourced.load(actor)
+      actor, events = Sourced.load(actor)
       expect(actor.seq).to eq(2)
+      expect(events.map(&:id)).to eq([e2.id])
     end
 
     it 'loads events up to a given sequence' do
@@ -73,8 +77,9 @@ RSpec.describe 'Sourced.load' do
 
       Sourced.config.backend.append_to_stream(stream_id, [e1, e2])
 
-      actor = Sourced.load(actor, upto: 1)
+      actor, events = Sourced.load(actor, upto: 1)
       expect(actor.seq).to eq(1)
+      expect(events.map(&:id)).to eq([e1.id])
     end
   end
 
