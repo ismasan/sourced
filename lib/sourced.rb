@@ -156,7 +156,7 @@ module Sourced
       after ||= actor.seq
       events = @backend.read_stream(actor.id, after:, upto:)
       actor.evolve(events)
-      actor
+      [actor, events]
     end
   end
 
@@ -174,8 +174,8 @@ module Sourced
   # It also supports passing a Reactor class (Actor, Evolver)
   # and a stream_id
   # @example
-  #   actor = Sourced.load(MyActor, 'order-123')
-  #   actor = Sourced.load(MyActor, 'order-123', after: 20)
+  #   actor, events = Sourced.load(MyActor, 'order-123')
+  #   actor, events = Sourced.load(MyActor, 'order-123', after: 20)
   def self.load(*args)
     reactor, options = case args
     in [ReactorInterface => r, String => stream_id, Hash => opts]
