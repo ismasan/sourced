@@ -115,7 +115,7 @@ events.map(&:type) # ['cart.add_item', 'cart.item_added']
 Try loading a new cart instance from recorded events
 
 ```ruby
-cart2 = Sourced.load(Cart, 'test-cart')
+cart2, events = Sourced.load(Cart, 'test-cart')
 cart2.seq # 2
 cart2.state.total # 2000
 cart2.state.items.size # 1
