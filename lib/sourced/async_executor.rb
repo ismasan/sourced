@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require 'async'
+require 'async/queue'
+require 'async/barrier'
 
 module Sourced
   # An executor that runs blocks of code concurrently using fibers
@@ -21,10 +23,12 @@ module Sourced
       # Initialize a new task wrapper
       #
       # @param task [Async::Task] The underlying async task
-      def initialize(task)
-        @task = task
-        @tasks = []
-        freeze
+      # @option wait [Boolean] Whether to wait for tasks
+      def initialize(wait: true)
+        @wait = wait
+        @blocks = []
+        @barrier = nil
+        # freeze
       end
 
       # Spawn a new concurrent fiber within this task's context
@@ -32,12 +36,24 @@ module Sourced
       # @yieldparam block [Proc] The block to execute concurrently
       # @return [Async::Task] The spawned async task
       def spawn(&block)
-        @task.async(&block).tap do |t|
-          @tasks << t
+        @blocks << block
+        self
+      end
+
+      def start
+        @barrier = Async::Barrier.new
+        Async(transient: !@wait) do |t|
+          @blocks.each do |bl|
+            @barrier.async(&bl)
+          end
         end
       end
 
-      def wait = @tasks.each(&:wait)
+      def wait = @barrier&.wait
+    end
+
+    def self.start(&)
+      new.start(&)
     end
 
     # Return a string representation of this executor
@@ -47,16 +63,20 @@ module Sourced
       self.class.name
     end
 
+    def new_queue
+      Async::Queue.new
+    end
+
     # Start the executor and yield a task interface for spawning concurrent work
     #
     # @yieldparam task [Task] Interface for spawning concurrent tasks
     # @return [void] Blocks until all spawned tasks complete
-    def start(&)
-      Sync do |task|
-        Task.new(task).tap do |t|
-          yield t
-        end
-      end.wait
+    def start(wait: true, &)
+      task = Task.new(wait:)
+      yield task if block_given?
+      task.start
+      task.wait if wait
+      task
     end
   end
 end

@@ -13,6 +13,10 @@ module Sourced
   #   end
   #
   class ThreadExecutor
+    def self.start(&)
+      new.start(&)
+    end
+
     # Initialize a new thread executor
     # Sets up internal state for tracking spawned threads.
     def initialize
@@ -26,13 +30,22 @@ module Sourced
       self.class.name
     end
 
+    def new_queue
+      Queue.new
+    end
+
     # Start the executor and yield itself for spawning concurrent work
     # This method will block until all spawned threads have completed.
     #
     # @yieldparam self [ThreadExecutor] The executor instance for spawning threads
     # @return [void] Blocks until all spawned threads complete
-    def start(&)
+    def start(wait: true, &)
       yield self
+      self.wait if wait
+      self
+    end
+
+    def wait
       @threads.map(&:join)
     end
 
@@ -42,6 +55,7 @@ module Sourced
     # @return [Thread] The spawned thread
     def spawn(&work)
       @threads << Thread.new(&work)
+      self
     end
   end
 end

@@ -949,17 +949,30 @@ module BackendExamples
 
     describe '#pubsub' do
       it 'publishes and subscribes to events' do
-        channel1 = backend.pubsub.subscribe('test_channel')
         received = []
 
         Sourced.config.executor.start do |t|
           t.spawn do
-            channel1.start do |event, _channel|
+            # subscribe starts an IO fiber
+            # which makes the fiber scheduler switch to the next fiber below
+            channel1 = backend.pubsub.subscribe('test_channel')
+            # Channel#start blocks the current fiber
+            channel1.start do |event, channel|
               received << event
-              throw :stop if received.size == 2
+              channel.stop if received.size == 2
             end
           end
+
           t.spawn do
+            # spawn() fibers run concurrently
+            # so there's no guarantee that this fiber will publish events AFTER
+            # the channel above has started listening
+            # If this fiber publishes events BEFORE the channel starts,
+            # the channel will miss the events and block forever waiting for events
+            # Also, the call to backend.pubsub.subscribe above does IO
+            # which switches to this Fiber, which publishes messages
+            # then switches back to starting the channel
+            sleep 0.0001
             e1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
             e2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
             backend.pubsub.publish('test_channel', e1)
