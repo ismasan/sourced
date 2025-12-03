@@ -126,9 +126,7 @@ module Sourced
   # so it's defensive and raises on error
   # helpers upstream of this can first validate the message
   # and surface errors back to the UI
-  # TODO: for now it doesn't allow
-  # schedulling future messages.
-  # TODO2: in future we might want to restrict what messages
+  # TODO: in future we might want to restrict what messages
   # can be publicly dispatched. Whether that lives here, or
   # somewhere else, I'm not sure.
   #

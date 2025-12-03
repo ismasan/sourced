@@ -55,27 +55,6 @@ module Sourced
       end
     end
 
-    # TODO: deprecate this
-    # Host classes will call this method to run any registered .sync blocks
-    # within their transactional boundaries.
-    # @param state [Object] the current state of the host class
-    # @param command [Object, Nil] the command being processed
-    # @param events [Array<Sourced::Event>] the events being appended
-    def run_sync_blocks(state, command, events)
-      self.class.sync_blocks.each do |blk|
-        case blk
-        when Proc
-          if blk.arity == 2 # (command, events)
-            instance_exec(command, events, &blk)
-          else # (state, command, events)
-            instance_exec(state, command, events, &blk)
-          end
-        else
-          blk.call(state, command, events)
-        end
-      end
-    end
-
     module ClassMethods
       def inherited(subclass)
         super
