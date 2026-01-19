@@ -172,13 +172,11 @@ module Sourced
 
         in [Symbol => message_symbol]
           message_class = __resolve_message_class(message_symbol).tap do |klass|
-            next unless klass.nil?
-
             raise(
               ArgumentError,
               "Cannot resolve message symbol #{message_symbol.inspect} " \
               "for #{self}.reaction"
-            )
+            ) unless klass
           end
 
           reaction(message_class, &block)
