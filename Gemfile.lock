@@ -101,7 +101,7 @@ GEM
     sqlite3 (2.8.0)
       mini_portile2 (~> 2.8.0)
     sqlite3 (2.8.0-arm64-darwin)
-    stringio (3.1.1)
+    stringio (3.2.0)
     timecop (0.9.10)
     unicode-display_width (3.1.4)
       unicode-emoji (~> 4.0, >= 4.0.4)
@@ -110,6 +110,7 @@ GEM
 PLATFORMS
   arm64-darwin-23
   arm64-darwin-24
+  x86_64-linux
 
 DEPENDENCIES
   debug

@@ -171,23 +171,35 @@ module Sourced
           end
 
         in [Symbol => message_symbol]
-          message_class = __resolve_message_class(message_symbol)
-          reaction(message_class, &block)
+          message_class = __resolve_message_class(message_symbol).tap do |klass|
+            raise(
+              ArgumentError,
+              "Cannot resolve message symbol #{message_symbol.inspect} " \
+              "for #{self}.reaction"
+            ) unless klass
+          end
 
+          reaction(message_class, &block)
         in [Class => message_class] if message_class < Sourced::Message
           __validate_message_for_reaction!(message_class)
           unless message_class.is_a?(Class) && message_class < Sourced::Message
-            raise ArgumentError,
-                  "Invalid argument #{message_class.inspect} for #{self}.reaction"
+            raise(
+              ArgumentError,
+              "Invalid argument #{message_class.inspect} for #{self}.reaction"
+            )
           end
 
           self.handled_messages_for_react << message_class
           define_method(Sourced.message_method_name(React::PREFIX, message_class.to_s), &block) if block_given?
-
-        else
+        in Array => args if args.none?(&:nil?)
           args.each do |k|
             reaction k, &block
           end
+        else
+          raise(
+            ArgumentError,
+            "Invalid arguments #{args.inspect} for #{self}.reaction"
+          )
         end
       end
 
