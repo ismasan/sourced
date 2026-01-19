@@ -172,6 +172,13 @@ module Sourced
 
         in [Symbol => message_symbol]
           message_class = __resolve_message_class(message_symbol)
+
+          if message_class.nil?
+            raise ArgumentError,
+                  "Cannot resolve message symbol #{message_symbol.inspect} " \
+                  "for #{self}.reaction"
+          end
+
           reaction(message_class, &block)
 
         in [Class => message_class] if message_class < Sourced::Message

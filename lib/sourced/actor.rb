@@ -211,6 +211,7 @@ module Sourced
 
       # Override this method defined in React mixin.
       # Given a symbol for a message type, resolve the message class
+      # @return [Class<Sourced::Message>, nil]
       def __resolve_message_class(message_symbol)
         self::Event.registry[__message_type(message_symbol)]
       end
