@@ -15,6 +15,10 @@ RSpec.describe Sourced::React do
     expect { TestActor.reaction(nil) }.to raise_error(ArgumentError, /Invalid arguments/)
   end
 
+  it 'handles no arguments (wildcard reaction)' do
+    expect { TestActor.reaction {} }.not_to raise_error
+  end
+
   it 'handles a single event class' do
     expect { TestActor.reaction(TestEvent) }
       .not_to raise_error
