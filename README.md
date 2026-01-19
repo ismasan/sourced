@@ -44,14 +44,14 @@ class Cart < Sourced::Actor
   CartState = Struct.new(:id, :status, :items) do
     def total = items.sum { |it| it.price * it.quantity }
   end
-    
+
   CartItem = Struct.new(:product_id, :price, :quantity)
-    
+
   # This factory is called to initialise a blank cart.
   state do |id|
     CartState.new(id:, status: 'open', items: [])
   end
-  
+
   # Define a command and its handling logic.
   # The command handler will be passed the current state of the cart,
   # and the command instance itself.
@@ -63,14 +63,14 @@ class Cart < Sourced::Actor
     # Produce a new event with the same attributes as the command
     event :item_added, cmd.payload
   end
-  
+
   # Define an event handler that will "evolve" the state of the cart by adding an item to it.
   # These handlers are also used to "hydrate" the initial state from Sourced's storage backend
   # when first handling a command
   event :item_added, product_id: String, price: Integer, quantity: Integer do |cart, event|
     cart.items << CartItem.new(**event.payload.to_h)
   end
-  
+
   # Optionally, define how this actor reacts to the event above.
   # .reaction blocks can dispatch new commands that will be routed to their handlers.
   # This allows you to build workflows.
@@ -81,7 +81,7 @@ class Cart < Sourced::Actor
     # Here we dispatch a command to the same stream_id present in the event
     dispatch(:send_admin_email, product_id: event.payload.product_id)
   end
-  
+
   # Handle the :send_admin_email dispatched by the reaction above
   command :send_admin_email, product_id: String do |cart, cmd|
     # maybe produce new events
@@ -151,25 +151,25 @@ module Carts
     attribute :quantity, Types::Lax::Integer.default(1)
     attribute :price, Types::Lax::Integer.default(0)
   end
-  
+
   # An event to track items added to the cart
-  # Events are only produced by valid commands, so we don't 
+  # Events are only produced by valid commands, so we don't
   # need validations or coercions
   ItemAdded = Sourced::Event.define('carts.item_added') do
     attribute :product_id, Integer
     attribute :quantity, Integer
     attribute :price, Integer
   end
-  
+
   ## Now define command and event handlers in a Actor
   class Cart < Sourced::Actor
     # Initial state, etc...
-    
+
     command AddItem do |cart, cmd|
       # logic here
       event ItemAdded, cmd.payload
     end
-    
+
     event ItemAdded do |cart, event|
       cart.items << CartItem.new(**event.payload.to_h)
     end
@@ -225,7 +225,7 @@ The class-level `.reaction` block registers an event handler that _reacts_ to ev
 reaction ItemAdded do |cart, event|
   # dispatch the next command to the event's stream_id
   dispatch(
-    CheckInventory, 
+    CheckInventory,
     product_id: event.payload.product_id,
     quantity: event.payload.quantity
   )
@@ -356,7 +356,7 @@ class CartListings < Sourced::Projector::EventSourced
 
   # Sync listing record to a file
   sync do |state:, events:, replaying:|
-    File.write("/listings/#{state[:id]}.json", JSON.dump(state)) 
+    File.write("/listings/#{state[:id]}.json", JSON.dump(state))
   end
 end
 ```
@@ -389,7 +389,7 @@ class ReadyOrders < Sourced::Projector::StateStored
   event Orders::ItemAdded do |listing, event|
     listing.line_items << event.payload
   end
-  
+
   # Evolve listing record from events
   event Orders::PaymentConfirmed do |listing, event|
     listing.payment_confirmed = true
@@ -398,12 +398,12 @@ class ReadyOrders < Sourced::Projector::StateStored
   event Orders::BuildConfirmed do |listing, event|
     listing.build_confirmed = true
   end
-  
+
   # Sync listing record back to DB
   sync do |state:, events:, replaying:|
     state.save!
   end
-  
+
   # If a listing has both the build and payment confirmed,
   # automate dispatching the next command in the workflow
   reaction do |listing, event|
@@ -441,27 +441,27 @@ The Actor glues its steps together by reacting to events emitted by the previous
 ```ruby
 class HolidayBooking < Sourced::Actor
   # State and details omitted...
-  
+
   command :start_booking do |state, cmd|
     event :booking_started
   end
-  
+
   reaction :booking_started do |event|
     dispatch :book_flight
   end
-  
+
   command :book_flight do |state, cmd|
     event :flght_booked
   end
-  
+
   reaction :flight_booked do |event|
     dispatch :book_hotel
   end
-  
+
   command :book_hotel do |state, cmd|
     event :hotel_booked
   end
-  
+
   # Define event handlers if you haven't...
   event :booking_started, # ..etc
   event :flight_booked, # ..etc
@@ -486,10 +486,10 @@ end
 
 <img width="1249" height="652" alt="CleanShot 2025-11-15 at 14 38 05" src="https://github.com/user-attachments/assets/a3631dd5-08b9-4381-8082-ce5cdc8958ed" />
 
-The diagram shows the units of work in an example Sourced workflow. The operations within each of the red boxes are protected by a combination of transactions and locking strategies on the consumer group + stream ID, so they are isolated from other concurrent processing. They can be said to be **immediately consistent**. 
+The diagram shows the units of work in an example Sourced workflow. The operations within each of the red boxes are protected by a combination of transactions and locking strategies on the consumer group + stream ID, so they are isolated from other concurrent processing. They can be said to be **immediately consistent**.
 The data-flow _between_ these boxes is propagated asynchronously by Sourced's infrastructure so, relative to each other, the entire system is **eventually consistent**.
 
-These transactional boundaries are guarded by the same locks that enforce the concurrency model, so that for example the same message can't be processed twice by the same Reactor (workflow, projector, etc). 
+These transactional boundaries are guarded by the same locks that enforce the concurrency model, so that for example the same message can't be processed twice by the same Reactor (workflow, projector, etc).
 
 ## Durable workflows
 
@@ -507,17 +507,17 @@ class BookHoliday < Sourced::DurableWorkflow
     hotel = book_hotel(hotel_info)
     confirm_booking(flight, hotel)
   end
-  
+
   # The .durable macro turns a regular method
   # into an event-sourced workflow
   durable def book_flight(info)
     FlightsAPI.book(info)
   end
-  
+
   durable def book_hotel(info)
     HotelsAPI.book(info)
   end
-  
+
   durable def confirm_booking(flight, hotel)
     # etc,
   end
@@ -547,14 +547,14 @@ The `Sourced::Handler` mixin provides a lighter-weight DSL for simple reactors.
 ```ruby
 class OrderTelemetry
   include Sourced::Handler
-  
+
   # Handle these Order events
   # and log them
   on Order::Started do |event|
     Logger.info ['order started', event.stream_id]
     []
   end
-  
+
   on Order::Placed do |event|
     Logger.info ['order placed', event.stream_id]
     []
@@ -572,11 +572,11 @@ on Order::Placed do |event, history:|
   total = history
     .filter { |e| Order::ProductAdded === e }
     .reduce(0) { |n, e| n + e.payload.price }
-  
+
   if total > 10000
     return [Order::AddDiscount.build(event.stream_id, amount: 100)]
   end
-  
+
   []
 end
 ```
@@ -634,30 +634,30 @@ class HolidayBooking < Sourced::Actor
   state do |id|
     BookingState.new(id)
   end
-  
+
   command StartBooking do |booking, cmd|
     # validations, etc
     event BookingStarted, cmd.payload
   end
-  
+
   event BookingStarted
-  
+
   # React to BookingStarted and start sub-workflows
   reaction BookingStarted do |booking, event|
     dispatch(HotelBooking::Start)
   end
-  
+
   # React to events emitted by sub-workflows
   reaction HotelBooking::Started do |booking, event|
     dispatch(ConfirmHotelBooking, event.payload)
   end
-  
+
   command ConfirmHotelBooking do |booking, cmd|
     unless booking.hotel.booked?
       event HotelBookingConfirmed, cmd.payload
     end
   end
-  
+
   event HotelBookingConfirmed do |booking, event|
     # update booking state
     booking.confirm_hotel(event.payload)
@@ -681,14 +681,14 @@ class HotelBooking < Sourced::Actor
     # dispatch a command to itself to start its own life-cycle
     dispatch Start, event.payload
   end
-  
+
   command Start do |state, cmd|
     # validations, etc
     # other Actors in the choreography
     # can choose to react to events emitted here
     event Started, cmd.payload
   end
-  
+
   event Started do |state, event|
     # update state, etc
   end
@@ -719,7 +719,7 @@ past_events = Sourced.config.backend.read_stream('order-123')
 last_known_seq = past_events.last&.seq # ex. 10
 # Instantiate new messages and make sure to increment their sequences
 message = ProductAdded.new(
-  stream_id: 'order-123', 
+  stream_id: 'order-123',
   seq: last_known_seq + 1, # <== incremented sequence
   payload: { product_id: 123, price: 100 }
 )
@@ -756,7 +756,7 @@ You can use the backend API to reset offsets for a specific consumer group, whic
 Sourced.config.backend.reset_consumer_group(ReadyOrder)
 ```
 
-See [below](#stopping-and-starting-consumer-groups) for other consumer lifecycle methods.	
+See [below](#stopping-and-starting-consumer-groups) for other consumer lifecycle methods.
 
 ## The Reactor Interface
 
@@ -765,39 +765,39 @@ All built-in Reactors (Actors, Projections) build on the low-level Reactor Inter
 ```ruby
 class MyReactor
   extend Sourced::Consumer
-  
+
   # The runtime will poll and hand over messages of this type
   # to this class' .handle() method
   def self.handled_messages = [Order::Started, Order::Placed]
-  
+
   # The runtime invokes this method when it finds a new message
   # of type present in the list above
   def self.handle(new_message)
     # Process message here.
     # This method can return an Array or one or more of the following
     actions = []
-    
+
     # Just aknowledge new_message
     actions << Sourced::Actions::OK
-    
+
     # Append these new messages to the event store
     # Sourced will automatically increment the stream's sequence number
     # (ie. no optimistic locking)
     started = Order::Started.build(new_message.stream_id)
     actions << Sourced::Actions::AppendNext.new([started])
-    
+
     # Append these new messages to the event store.
     # The messages are expected to have a :seq incremented after new_message.seq
     # Messages will fail to append if other messages have been appended
     # with overlapping sequence numbers (optimistic locking)
     started = Order::Started.new(stream_id: new_message.stream_id, seq: new_message.seq + 1)
     actions << Sourced::Actions::AppendAfter.new(new_message.stream_id, [started])
-    
+
     # Tell the runtime to retry this message
     # This is a low-level action and Sourced already uses it when handling exceptions
     # and retries
     actions << Sourded::Actions::RETRY
-    
+
     actions
   end
 end
@@ -927,11 +927,11 @@ it 'tests collaboration of reactors' do
       # left this message trail behind
       # Backend#messages is only available in the TestBackend
       expect(stage.backend.messages).to match_sourced_messages([
-        Order::Started.build(order_stream, name: 'foo'), 
-        Order::StartPayment.build(order_stream), 
-        Order::PaymentStarted.build(order_stream), 
+        Order::Started.build(order_stream, name: 'foo'),
+        Order::StartPayment.build(order_stream),
+        Order::PaymentStarted.build(order_stream),
         Telemetry::Logged.build(telemetry_stream, source_stream: order_stream),
-        Payment::Process.build(payment_stream), 
+        Payment::Process.build(payment_stream),
         Payment::Processed.build(payment_stream),
         Telemetry::Logged.build(telemetry_stream, source_stream: payment_stream),
       ])
@@ -996,7 +996,7 @@ Define a module to hold your attribute types using [Plumb](https://github.com/is
 ```ruby
 module Types
   include Plumb::Types
-  
+
   # Your own types here.
   CorporateEmail = Email[/@apple\.com^/]
 end
@@ -1028,11 +1028,11 @@ Sourced.configure do |config|
       # Retry up to 3 times
       times: 3,
       # Wait 5 seconds before retrying
-      after: 5, 
+      after: 5,
       # Custom backoff: given after=5, retries in 5, 10 and 15 seconds before stopping
       backoff: ->(retry_after, retry_count) { retry_after * retry_count }
     )
-    
+
     # Trigger this callback on each retry
     s.on_retry do |n, exception, message, later|
       LOGGER.info("Retrying #{n} times")
@@ -1091,6 +1091,63 @@ Sourced's concurrency model is designed to process events for the same entity in
 
 <img width="802" height="552" alt="sourced-ordered-streams-diagram" src="https://github.com/user-attachments/assets/ddfbff4b-11bb-4e0c-93e9-e0851c4721d9" />
 
+## Gotchas
+
+Currently `sourced` is focused on eventual consistency and background processing
+of commands and events through background workers. Eventually a synchronous mode
+will be added for simpler use-cases.
+
+This can be confusing if you expect your reactions to run automatically and
+synchronously when you issue commands.
+
+This can be a gotcha if you're using the `Sourced::CommandMethods` mixin which
+persists events but does not call your reactor right away. If you need to you
+should explicitly call `#react` after issuing commands.
+
+```ruby
+chat = Sourced.load(Chat, 'chat-123')
+# Would persist but not call reactions
+_cmd, events = chat.send_message!(content: query)
+# Have to react manually
+commands = chat.react(events)
+```
+
+One option is to extend your own actors with synchronous handling of your own
+reactions. For example:
+
+```ruby
+# Dispatch command to an actor and run any reactions
+# synchronously
+# Example
+#   chat.dispatch!(:send_chat_message, content: query)
+class Chat
+  def dispatch!(*args)
+    cmd = case args
+      # actor.dispatch!(:do_something, foo: 1)
+      in [Symbol => cmd_name, Hash => payload]
+        self.class[cmd_name].new(stream_id: id, payload:)
+      # actor.dispatch(do_something_cmd)
+      in [Sourced::Message => c]
+        c
+    end
+
+    Sourced.config.backend.transaction do
+      # Invoke commands and get new events
+      _cmd, events = __issue_command(cmd)
+      # Append new events to store, if any
+      # optionally append _cmd too, if you want to record the commands
+      Sourced.config.backend.append_to_stream(id, events)
+      # Make sure to correlate new events to the command that caused them
+      events = events.map {|e| cmd.correlate(e) }
+      # Now react to the events just produced, which may return new commands
+      new_commands = react(events)
+      # Recurse with new commands? This could get into a loop
+      new_commands.each {|cmd| dispatch!(cmd)}
+    end
+  end
+end
+```
+
 ## Installation
 
 Install the gem and add to the application's Gemfile by executing:
@@ -1110,4 +1167,4 @@ To install this gem onto your local machine, run `bundle exec rake install`. To 
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/ismasan/sourced.	
+Bug reports and pull requests are welcome on GitHub at https://github.com/ismasan/sourced.
