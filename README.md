@@ -1091,6 +1091,31 @@ Sourced's concurrency model is designed to process events for the same entity in
 
 <img width="802" height="552" alt="sourced-ordered-streams-diagram" src="https://github.com/user-attachments/assets/ddfbff4b-11bb-4e0c-93e9-e0851c4721d9" />
 
+## Gotchas
+
+Currently `Sourced` is focused on eventual consistency and background processing
+of commands and events through background workers. Eventually a synchronous mode
+will be added for simpler use-cases.
+
+This can be confusing if you expect your reactions to run automatically and
+synchronously when you issue commands.
+
+This can be a gotcha if you're using the `Sourced::CommandMethods` mixin which
+persists events but does not call your reactor right away. If you need to you
+should explicitly call `#react` after issuing commands.
+
+```ruby
+```
+```ruby
+chat = Sourced.load(Chat, 'chat-123')
+# Would persist but not call reactions
+_cmd, events = chat.send_message!(content: query)
+# Have to react manually
+commands = chat.react(events)
+# now dispatch these commands again?
+```
+
+
 ## Installation
 
 Install the gem and add to the application's Gemfile by executing:
