@@ -1,0 +1,27 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Sourced::React do
+  before do
+    stub_const('TestActor', Class.new(Sourced::Actor) do
+      include Sourced::React
+    end)
+
+    stub_const('TestEvent', Sourced::Message.define('test.event'))
+  end
+
+  it 'raises error when resolving message symbol is not implemented' do
+    expect { TestActor.reaction(nil) }.to raise_error(ArgumentError)
+  end
+
+  it 'handles a single event class' do
+    expect { TestActor.reaction(TestEvent) }
+      .not_to raise_error
+  end
+
+  it 'handles an array of events' do
+    expect { TestActor.reaction(TestEvent, TestEvent) }
+      .not_to raise_error
+  end
+end

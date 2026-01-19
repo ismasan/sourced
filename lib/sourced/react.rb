@@ -183,11 +183,13 @@ module Sourced
 
           self.handled_messages_for_react << message_class
           define_method(Sourced.message_method_name(React::PREFIX, message_class.to_s), &block) if block_given?
-
-        else
+        in Array => args if args.none?(&:nil?)
           args.each do |k|
             reaction k, &block
           end
+        else
+          raise ArgumentError,
+                "Invalid arguments #{args.inspect} for #{self}.reaction"
         end
       end
 
