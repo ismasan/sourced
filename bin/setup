@@ -5,4 +5,9 @@ set -vx
 
 bundle install
 
-# Do any other automated setup that you need to do here
+# Check if the database already exists
+if psql -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='sourced_test'" | grep -q 1; then
+  echo "Database 'sourced_test' already exists, skipping creation."
+else
+  psql -U postgres -c "CREATE DATABASE sourced_test"
+fi
