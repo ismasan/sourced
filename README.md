@@ -974,6 +974,36 @@ end
 Sourced.config.backend.install unless Sourced.config.backend.installed?
 ```
 
+### Generating Sequel migrations
+
+If your app already uses Sequel's migrator, you can copy Sourced's migration into your migrations directory instead of using `backend.install`.
+
+```ruby
+backend = Sourced.config.backend
+backend.copy_migration_to("db/migrations")
+# => writes db/migrations/001_create_sourced_tables.rb
+```
+
+Or use a block to control the file name (e.g. timestamped migrations):
+
+```ruby
+backend.copy_migration_to do
+  "db/migrations/#{Time.now.strftime('%Y%m%d%H%M%S')}_create_sourced_tables.rb"
+end
+```
+
+The generated file is a standard `Sequel.migration { change { ... } }` that works with `Sequel::Migrator`. It respects the `prefix` and `schema` options passed when configuring the backend:
+
+```ruby
+Sourced.configure do |config|
+  db = Sequel.connect(ENV.fetch('DATABASE_URL'))
+  config.backend = Sourced::Backends::SequelBackend.new(db, prefix: 'myapp', schema: 'events')
+end
+
+# Migration will create tables like events.myapp_messages, events.myapp_streams, etc.
+Sourced.config.backend.copy_migration_to("db/migrations")
+```
+
 Register your Actors and Reactors.
 
 ```ruby

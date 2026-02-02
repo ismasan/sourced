@@ -720,6 +720,10 @@ module Sourced
         self
       end
 
+      def copy_migration_to(dir = nil, &block)
+        installer.copy_migration_to(dir, &block)
+      end
+
       private
 
       attr_reader :db, :logger, :prefix, :schema, :messages_table, :streams_table, :offsets_table, :consumer_groups_table, :scheduled_messages_table, :workers_table
@@ -729,12 +733,7 @@ module Sourced
           @db,
           logger:,
           schema:,
-          workers_table:,
-          scheduled_messages_table:,
-          streams_table:,
-          offsets_table:,
-          consumer_groups_table:,
-          messages_table:
+          prefix:
         )
       end
 

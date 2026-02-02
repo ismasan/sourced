@@ -1,0 +1,83 @@
+# frozen_string_literal: true
+
+Sequel.migration do
+  change do
+<% if schema %>
+    run 'CREATE SCHEMA IF NOT EXISTS "<%= schema %>"'
+<% end %>
+
+    create_table(<%= table_name(:streams) %>) do
+      primary_key :id
+      String :stream_id, null: false, unique: true
+      Time :updated_at, null: false, default: Sequel.function(:now)
+      Bignum :seq, null: false
+
+      index :updated_at, name: 'idx_<%= prefix %>_streams_updated_at'
+    end
+
+    create_table(<%= table_name(:consumer_groups) %>) do
+      primary_key :id
+      String :group_id, null: false, unique: true
+      Bignum :highest_global_seq, null: false, default: 0
+      String :status, null: false, default: 'active', index: true
+      column :error_context, :jsonb
+      Time :retry_at, null: true, index: true
+      Time :created_at, null: false, default: Sequel.function(:now)
+      Time :updated_at, null: false, default: Sequel.function(:now)
+
+      index :group_id, unique: true
+    end
+
+    create_table(<%= table_name(:offsets) %>) do
+      primary_key :id
+      foreign_key :group_id, <%= table_name(:consumer_groups) %>, on_delete: :cascade
+      foreign_key :stream_id, <%= table_name(:streams) %>, on_delete: :cascade
+      Bignum :global_seq, null: false
+      Time :created_at, null: false, default: Sequel.function(:now)
+      TrueClass :claimed, null: false, default: false
+      Time :claimed_at, null: true
+      String :claimed_by, null: true
+
+      index %i[group_id stream_id], unique: true
+      index :claimed, where: { claimed: false }, name: 'idx_<%= prefix %>_offsets_unclaimed'
+      index [:claimed, :claimed_by, :claimed_at], where: { claimed: true }, name: 'idx_<%= prefix %>_offsets_claimed_claimer'
+      index %i[group_id global_seq], name: 'idx_<%= prefix %>_offsets_group_seq_covering'
+    end
+
+    create_table(<%= table_name(:messages) %>) do
+      primary_key :global_seq, type: :Bignum
+      column :id, :uuid, unique: true
+      foreign_key :stream_id, <%= table_name(:streams) %>
+      Bignum :seq, null: false
+      String :type, null: false
+      Time :created_at, null: false
+      column :causation_id, :uuid, index: true
+      column :correlation_id, :uuid, index: true
+      column :metadata, :jsonb
+      column :payload, :jsonb
+
+      index %i[stream_id seq], unique: true
+      index :type
+      index :created_at
+      index %i[type global_seq]
+      index %i[stream_id global_seq]
+    end
+
+    create_table(<%= table_name(:scheduled_messages) %>) do
+      primary_key :id
+      Time :created_at, null: false
+      Time :available_at, null: false
+      column :message, :jsonb
+
+      index :available_at
+    end
+
+    create_table(<%= table_name(:workers) %>) do
+      String :id, primary_key: true, null: false
+      Time :last_seen, null: false, index: true
+      String :pid, null: true
+      String :host, null: true
+      column :info, :jsonb
+    end
+  end
+end
