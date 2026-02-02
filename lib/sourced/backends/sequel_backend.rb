@@ -45,21 +45,38 @@ module Sourced
       # @param db [Sequel::Database, String] Database connection or connection string
       # @param logger [Object] Logger instance for backend operations (defaults to configured logger)
       # @param prefix [String] Table name prefix for Sourced tables (defaults to 'sourced')
+      # @param schema [String, nil] Optional PostgreSQL schema name. When set, all tables are
+      #   created and queried within this schema (e.g. "my_app".sourced_messages).
+      #   The schema is created automatically on #install if it doesn't exist.
+      #   Defaults to nil (uses the database's default search_path, typically "public").
       # @example Initialize with existing connection
       #   backend = SequelBackend.new(Sequel.connect('postgres://localhost/mydb'))
       # @example Initialize with custom prefix
       #   backend = SequelBackend.new(db, prefix: 'my_app')
-      def initialize(db, logger: Sourced.config.logger, prefix: 'sourced')
+      # @example Initialize with a PostgreSQL schema
+      #   backend = SequelBackend.new(db, schema: 'my_app')
+      # @example Combine schema and prefix
+      #   backend = SequelBackend.new(db, schema: 'my_app', prefix: 'evt')
+      #   # => tables: my_app.evt_messages, my_app.evt_streams, etc.
+      def initialize(db, logger: Sourced.config.logger, prefix: 'sourced', schema: nil)
         @db = connect(db)
         @pubsub = PGPubSub.new(db: @db, logger:)
         @logger = logger
         @prefix = prefix
+        @schema = schema
         @workers_table = table_name(:workers)
         @scheduled_messages_table = table_name(:scheduled_messages)
         @streams_table = table_name(:streams)
         @offsets_table = table_name(:offsets)
         @consumer_groups_table = table_name(:consumer_groups)
         @messages_table = table_name(:messages)
+        # Literal SQL strings for use in raw SQL interpolation.
+        # Sequel qualified identifiers don't produce valid SQL via #to_s,
+        # so we pre-compute literal versions for the 3 raw SQL methods.
+        @messages_table_literal = @db.literal(@messages_table)
+        @streams_table_literal = @db.literal(@streams_table)
+        @offsets_table_literal = @db.literal(@offsets_table)
+        @consumer_groups_table_literal = @db.literal(@consumer_groups_table)
         @setup = false
         logger.info("Connected to #{@db}")
       end
@@ -705,12 +722,13 @@ module Sourced
 
       private
 
-      attr_reader :db, :logger, :prefix, :messages_table, :streams_table, :offsets_table, :consumer_groups_table, :scheduled_messages_table, :workers_table
+      attr_reader :db, :logger, :prefix, :schema, :messages_table, :streams_table, :offsets_table, :consumer_groups_table, :scheduled_messages_table, :workers_table
 
       def installer
         @installer ||= Installer.new(
           @db,
           logger:,
+          schema:,
           workers_table:,
           scheduled_messages_table:,
           streams_table:,
@@ -733,10 +751,10 @@ module Sourced
               e.seq, e.type, e.created_at, e.causation_id, e.correlation_id,
               e.metadata, e.payload, so.id as offset_id, cg.id as group_id_fk,
               (e.global_seq <= cg.highest_global_seq) AS replaying
-          FROM #{messages_table} e
-          JOIN #{streams_table} ss ON e.stream_id = ss.id
-          JOIN #{consumer_groups_table} cg ON cg.group_id = #{group_id}
-          JOIN #{offsets_table} so ON cg.id = so.group_id AND ss.id = so.stream_id
+          FROM #{@messages_table_literal} e
+          JOIN #{@streams_table_literal} ss ON e.stream_id = ss.id
+          JOIN #{@consumer_groups_table_literal} cg ON cg.group_id = #{group_id}
+          JOIN #{@offsets_table_literal} so ON cg.id = so.group_id AND ss.id = so.stream_id
           WHERE e.global_seq > so.global_seq
             AND so.claimed = FALSE
             AND cg.status = 'active'
@@ -751,12 +769,12 @@ module Sourced
       def sql_for_ack_on
         <<~SQL
           WITH candidate_rows AS (
-            SELECT 
+            SELECT
                 e.global_seq,
-                e.stream_id AS stream_id_fk, 
+                e.stream_id AS stream_id_fk,
                 pg_try_advisory_xact_lock(hashtext(?::text), hashtext(s.id::text)) as lock_obtained
-            FROM #{messages_table} e
-            JOIN #{streams_table} s ON e.stream_id = s.id
+            FROM #{@messages_table_literal} e
+            JOIN #{@streams_table_literal} s ON e.stream_id = s.id
             WHERE e.id = ?
           )
           SELECT *
@@ -768,22 +786,23 @@ module Sourced
 
       def sql_for_consumer_stats
         @sql_for_consumer_stats ||= <<~SQL
-          SELECT 
+          SELECT
               r.group_id,
               r.status,
               r.retry_at,
               COALESCE(MIN(o.global_seq), 0) AS oldest_processed,
               COALESCE(MAX(o.global_seq), 0) AS newest_processed,
               COUNT(o.id) AS stream_count
-          FROM #{consumer_groups_table} r
-          LEFT JOIN #{offsets_table} o ON o.group_id = r.id AND o.global_seq > 0
+          FROM #{@consumer_groups_table_literal} r
+          LEFT JOIN #{@offsets_table_literal} o ON o.group_id = r.id AND o.global_seq > 0
           GROUP BY r.id, r.group_id, r.status, r.retry_at
           ORDER BY r.group_id;
         SQL
       end
 
       def table_name(name)
-        [prefix, name].join('_').to_sym
+        t = [prefix, name].join('_').to_sym
+        schema ? Sequel[schema.to_sym][t] : t
       end
 
       def parse_json(json)

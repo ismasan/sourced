@@ -8,6 +8,7 @@ module Sourced
         def initialize(
           db,
           logger:,
+          schema: nil,
           workers_table:,
           scheduled_messages_table:,
           streams_table:,
@@ -17,6 +18,7 @@ module Sourced
         )
           @db = db
           @logger = logger
+          @schema = schema
           @scheduled_messages_table = scheduled_messages_table
           @workers_table = workers_table
           @streams_table = streams_table
@@ -42,9 +44,19 @@ module Sourced
           [offsets_table, scheduled_messages_table, messages_table, consumer_groups_table, streams_table, workers_table].each do |table|
             db.drop_table?(table)
           end
+
+          if schema
+            db.run("DROP SCHEMA IF EXISTS #{db.literal(schema.to_sym)}")
+            logger.info("Dropped schema #{schema}")
+          end
         end
 
         def install
+          if schema
+            db.run("CREATE SCHEMA IF NOT EXISTS #{db.literal(schema.to_sym)}")
+            logger.info("Ensured schema #{schema} exists")
+          end
+
           _streams_table = streams_table
           _consumer_groups_table = consumer_groups_table
 
@@ -150,8 +162,9 @@ module Sourced
         private
 
         attr_reader(
-          :db, 
-          :logger, 
+          :db,
+          :logger,
+          :schema,
           :scheduled_messages_table,
           :workers_table,
           :streams_table,
