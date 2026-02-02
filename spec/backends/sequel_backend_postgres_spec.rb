@@ -12,7 +12,7 @@ RSpec.describe 'Sourced::Backends::SequelBackend with Postgres', type: :backend 
 
   before do
     backend.setup!(Sourced.config)
-    backend.uninstall
+    backend.uninstall if backend.installed?
     backend.install
   end
 
