@@ -15,6 +15,12 @@ module TestMessages
 end
 
 RSpec.describe Sourced::Message do
+  it 'has Payload as standalone schemas' do
+    payload = TestMessages::Add::Payload.new(value: 'aaa')
+    expect(payload.valid?).to be false
+    expect(payload.errors[:value]).not_to be(nil)
+  end
+
   it 'requires a stream_id' do
     msg = TestMessages::Add.new(payload: { value: 1 })
     expect(msg.valid?).to be false

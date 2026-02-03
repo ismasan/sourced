@@ -121,9 +121,11 @@ module Sourced
 
         attribute :type, Types::Static[type_str]
         if payload_schema
-          attribute :payload, Payload[payload_schema]
+          const_set(:Payload, Payload[payload_schema])
+          attribute :payload, self::Payload
         elsif block_given?
-          attribute :payload, Payload, &payload_block if block_given?
+          const_set(:Payload, Class.new(Payload, &payload_block))
+          attribute :payload, self::Payload
         end
       end
     end
