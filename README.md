@@ -212,6 +212,34 @@ end
 
 These handlers are pure: given the same state and event, they should always update the state in the same exact way. They should never reach out to the outside (API calls, current time, etc), and they should never run validations. They work on events already committed to history, which by definition are assumed to be valid.
 
+### `.before_evolve` block
+
+The class-level `.before_evolve` block registers a callback that runs **before** each registered event handler during state evolution. This is useful for common logic that should run before all event handlers, such as updating timestamps or recording metadata.
+
+```ruby
+class CartListings < Sourced::Projector::StateStored
+  state do |id|
+    { id:, items: [], updated_at: nil, seq: 0 }
+  end
+
+  # This block runs before any .event handler
+  before_evolve do |state, event|
+    state[:updated_at] = event.created_at
+    state[:seq] = event.seq
+  end
+
+  event Cart::ItemAdded do |state, event|
+    state[:items] << event.payload.to_h
+  end
+
+  event Cart::Placed do |state, event|
+    state[:status] = :placed
+  end
+end
+```
+
+The `before_evolve` callback only runs for events that have a registered handler via the `.event` macro. If an event is not handled by this class, the callback is skipped for that event.
+
 ### `.reaction` block
 
 The class-level `.reaction` block registers an event handler that _reacts_ to events already published by this or other Actors.
