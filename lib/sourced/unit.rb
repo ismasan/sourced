@@ -130,7 +130,8 @@ module Sourced
 
       new_messages, produced_events = process_actions(message, actions)
 
-      results.record(reactor_class, instance, produced_events, message)
+      persisted = should_persist?(message)
+      results.record(reactor_class, instance, produced_events, message, persisted:)
 
       new_messages
     end
@@ -270,18 +271,20 @@ module Sourced
       end
 
       # Record a reactor invocation and the events it produced.
+      # Only records an ACK when the handled message was persisted to the store.
       #
       # @param reactor_class [Class]
       # @param instance [Object] the reactor instance
       # @param produced_events [Array<Sourced::Message>]
       # @param handled_message [Sourced::Message] the message that was handled (for ACK tracking)
-      def record(reactor_class, instance, produced_events, handled_message)
+      # @param persisted [Boolean] whether handled_message was written to the store
+      def record(reactor_class, instance, produced_events, handled_message, persisted: true)
         key = [reactor_class, instance.id]
         entry = (@data[key] ||= { instance: nil, events: [] })
         entry[:instance] = instance
         entry[:events].concat(produced_events)
 
-        @acks << [reactor_class.consumer_info.group_id, handled_message.id]
+        @acks << [reactor_class.consumer_info.group_id, handled_message.id] if persisted
       end
 
       # Get a hash of reactor instances and their produced events.
