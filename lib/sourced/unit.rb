@@ -47,6 +47,8 @@ module Sourced
       @persist_commands = persist_commands
       @routing_table = build_routing_table
       @kargs_for_handle = resolve_kargs
+      ensure_consumer_groups!
+      freeze
     end
 
     # Run the full message chain for +initial_message+ inside a single transaction.
@@ -56,22 +58,26 @@ module Sourced
     # no more messages are enqueued. Finally, ACKs all handled messages so
     # background workers won't re-process them.
     #
+    # This method does not mutate instance state, so a single Unit can be
+    # reused across many calls (e.g. one Unit per route, built at boot time).
+    #
     # @param initial_message [Sourced::Message] the command or event that kicks off the chain
     # @return [Results] per-reactor instances and produced events
     # @raise [InfiniteLoopError] if BFS iterations exceed +max_iterations+
     #
-    # @example
-    #   unit = Sourced::Unit.new(MyActor, backend: backend)
-    #   results = unit.handle(MyCommand.new(stream_id: 'abc', payload: { name: 'test' }))
-    #   results.events_for(MyActor) # => [MyEvent, ...]
+    # @example Prepare once, call per request
+    #   UsersUnit = Sourced::Unit.new(UsersActor, UsersProjection, backend: backend)
+    #
+    #   post '/users' do
+    #     results = UsersUnit.handle(CreateUser.new(stream_id: id, payload: params))
+    #     results.events_for(UsersActor)
+    #   end
     def handle(initial_message)
       results = Results.new
       queue = [initial_message]
       iteration = 0
 
       @backend.transaction do
-        ensure_consumer_groups!
-
         if should_persist?(initial_message)
           @backend.append_next_to_stream(initial_message.stream_id, [initial_message])
         end
@@ -213,7 +219,7 @@ module Sourced
     end
 
     # Register consumer groups for all reactors in this unit.
-    # Must run inside the transaction before processing begins.
+    # Called once during initialization so that {#handle} has no setup overhead.
     def ensure_consumer_groups!
       @reactors.each do |reactor|
         @backend.register_consumer_group(reactor.consumer_info.group_id)
