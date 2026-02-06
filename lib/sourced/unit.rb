@@ -91,13 +91,12 @@ module Sourced
       actions.each do |action|
         case action
         when Actions::AppendAfter
-          messages = correlate(source_message, action.messages)
-          @backend.append_to_stream(action.stream_id, messages)
+          messages = action.execute(@backend, source_message)
           produced_events.concat(messages)
           new_messages.concat(messages.select { |m| handled_by_unit?(m) })
 
         when Actions::AppendNext
-          messages = correlate(source_message, action.messages)
+          messages = action.messages.map { |m| source_message.correlate(m) }
           messages.group_by(&:stream_id).each do |stream_id, stream_messages|
             if should_persist?(stream_messages.first)
               @backend.append_next_to_stream(stream_id, stream_messages)
@@ -105,12 +104,8 @@ module Sourced
           end
           new_messages.concat(messages.select { |m| handled_by_unit?(m) })
 
-        when Actions::Schedule
-          messages = correlate(source_message, action.messages)
-          @backend.schedule_messages(messages, at: action.at)
-
-        when Actions::Sync
-          action.call
+        when Actions::Schedule, Actions::Sync
+          action.execute(@backend, source_message)
 
         when Actions::OK, :ok
           # no-op
@@ -118,10 +113,6 @@ module Sourced
       end
 
       [new_messages, produced_events]
-    end
-
-    def correlate(source_message, messages)
-      messages.map { |m| source_message.correlate(m) }
     end
 
     def handled_by_unit?(message)

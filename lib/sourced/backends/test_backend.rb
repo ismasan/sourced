@@ -61,38 +61,16 @@ module Sourced
             offset.locked = false
             ack_on(group_id, action.message_id)
 
-          when Actions::AppendNext
-            messages = correlate(event, action.messages)
-            messages.group_by(&:stream_id).each do |stream_id, stream_messages|
-              append_next_to_stream(stream_id, stream_messages)
-            end
-            should_ack = true
-
-          when Actions::AppendAfter
-            append_to_stream(action.stream_id, correlate(event, action.messages))
-            should_ack = true
-
-          when Actions::Schedule
-            schedule_messages correlate(event, action.messages), at: action.at
-            should_ack = true
-
-          when Actions::Sync
-            action.call
-            should_ack = true
-
           when Actions::RETRY
             # Don't ack
 
           else
-            raise ArgumentError, "Expected Sourced::Actions type, but got: #{action.class}"
+            action.execute(self, event)
+            should_ack = true
           end
         end
 
         ack.() if should_ack
-      end
-
-      private def correlate(source_message, messages)
-        messages.map { |e| source_message.correlate(e) }
       end
 
       def ack_on(group_id, event_id, &)

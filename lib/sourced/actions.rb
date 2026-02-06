@@ -51,6 +51,14 @@ module Sourced
           block.call(message.stream_id, message)
         end
       end
+
+      def execute(backend, source_message)
+        correlated = messages.map { |m| source_message.correlate(m) }
+        correlated.group_by(&:stream_id).each do |stream_id, stream_messages|
+          backend.append_next_to_stream(stream_id, stream_messages)
+        end
+        correlated
+      end
     end
 
     # Append messages to a stream in event store
@@ -65,6 +73,12 @@ module Sourced
         @stream_id = stream_id
         @messages = messages
       end
+
+      def execute(backend, source_message)
+        correlated = messages.map { |m| source_message.correlate(m) }
+        backend.append_to_stream(stream_id, correlated)
+        correlated
+      end
     end
 
     class Schedule
@@ -72,6 +86,12 @@ module Sourced
 
       def initialize(messages, at:)
         @messages, @at = messages, at
+      end
+
+      def execute(backend, source_message)
+        correlated = messages.map { |m| source_message.correlate(m) }
+        backend.schedule_messages(correlated, at: at)
+        correlated
       end
     end
 
@@ -81,6 +101,11 @@ module Sourced
       end
 
       def call(...) = @work.call(...)
+
+      def execute(_backend, _source_message)
+        call
+        nil
+      end
     end
   end
 end
