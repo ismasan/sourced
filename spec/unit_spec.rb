@@ -249,6 +249,28 @@ RSpec.describe Sourced::Unit do
       correlation_ids = stream_messages.map(&:correlation_id).uniq
       expect(correlation_ids.size).to eq(1)
     end
+
+    it 'propagates metadata from the initial command through the chain' do
+      unit = described_class.new(
+        UnitTest::ThingActor,
+        UnitTest::NotifierActor,
+        backend: backend
+      )
+
+      cmd = UnitTest::CreateThing.new(
+        stream_id: stream_id,
+        payload: { name: 'Widget' },
+        metadata: { request_id: 'req-abc', user_id: 'u-1' }
+      )
+      unit.handle(cmd)
+
+      stream_messages = backend.read_stream(stream_id)
+      # Every message after the initial command should carry the original metadata
+      stream_messages.each do |msg|
+        expect(msg.metadata[:request_id]).to eq('req-abc'), "#{msg.class} missing request_id"
+        expect(msg.metadata[:user_id]).to eq('u-1'), "#{msg.class} missing user_id"
+      end
+    end
   end
 
   describe 'infinite loop prevention' do
