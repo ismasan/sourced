@@ -96,15 +96,16 @@ module Sourced
     private
 
     # Whether +message+ should be written to the event store.
-    # Events are always persisted; commands are only persisted
-    # when +@persist_commands+ is true.
+    # Commands (and subclasses) are only persisted when
+    # +@persist_commands+ is true. All other messages
+    # (events, raw messages) are always persisted.
     #
     # @param message [Sourced::Message]
     # @return [Boolean]
     def should_persist?(message)
       return true if @persist_commands
 
-      message.is_a?(Sourced::Event)
+      !message.is_a?(Sourced::Command)
     end
 
     # Instantiate a reactor, replay its history, handle the message,
@@ -117,9 +118,8 @@ module Sourced
     # @return [Array<Sourced::Message>] new messages to enqueue for BFS
     def handle_for_reactor(reactor_class, message, results)
       instance = reactor_class.new(id: reactor_class.identity_from(message))
-      history = @backend.read_stream(message.stream_id)
 
-      kargs = build_handle_args(reactor_class, history)
+      kargs = build_handle_args(reactor_class, message.stream_id)
       actions = instance.handle(message, **kargs)
 
       new_messages, produced_events = process_actions(message, actions)
@@ -131,17 +131,18 @@ module Sourced
 
     # Build keyword arguments for the reactor's #handle method
     # based on which parameters it declares (replaying, history, logger).
+    # History is only loaded from the backend when the reactor declares it.
     #
     # @param reactor_class [Class]
-    # @param history [Array<Sourced::Message>]
+    # @param stream_id [String] stream to load history from, if needed
     # @return [Hash]
-    def build_handle_args(reactor_class, history)
+    def build_handle_args(reactor_class, stream_id)
       @kargs_for_handle[reactor_class].each_with_object({}) do |name, hash|
         case name
         when :replaying
           hash[name] = false
         when :history
-          hash[name] = history
+          hash[name] = @backend.read_stream(stream_id)
         when :logger
           hash[name] = @logger
         end
