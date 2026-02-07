@@ -1049,12 +1049,17 @@ Sourced.register(Leads::Listings)
 Sourced.register(Webooks::Dispatcher)
 ```
 
-Start background workers.
+### Running workers as a separate process
+
+When using a web server that doesn't share Sourced's Async event loop (e.g. Puma), or in non-web applications, run workers as a standalone process using `Sourced::Supervisor`:
 
 ```ruby
-# require your code here
-Sourced::Supervisor.start # uses Sourced.config.worker_count and housekeeping_count
+# worker.rb
+require_relative 'config/environment'
+Sourced::Supervisor.start
 ```
+
+This requires managing two processes in deployment: one for your web server, one for workers.
 
 ### Running workers with Falcon
 
