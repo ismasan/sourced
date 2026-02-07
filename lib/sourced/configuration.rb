@@ -45,8 +45,10 @@ module Sourced
     # heartbeat interval: how often to record heartbeats (seconds)
     # claim_ttl_seconds: how long before a worker is considered dead for claim release
     attr_accessor(
-      :housekeeping_interval, 
-      :housekeeping_heartbeat_interval, 
+      :worker_count,
+      :housekeeping_count,
+      :housekeeping_interval,
+      :housekeeping_heartbeat_interval,
       :housekeeping_claim_ttl_seconds
     )
 
@@ -58,7 +60,9 @@ module Sourced
       @error_strategy = ErrorStrategy.new
       @executor = AsyncExecutor.new
       @setup = false
-      # Defaults for house-keeping
+      # Worker and house-keeping defaults
+      @worker_count = 2
+      @housekeeping_count = 1
       @housekeeping_interval = 3
       @housekeeping_heartbeat_interval = 5
       @housekeeping_claim_ttl_seconds = 120

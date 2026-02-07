@@ -997,10 +997,19 @@ Configure and migrate the database.
 ```ruby
 Sourced.configure do |config|
   config.backend = Sequel.connect(ENV.fetch('DATABASE_URL'))
+
+  # Worker and housekeeping options (shown with defaults)
+  config.worker_count = 2                       # Number of worker fibers
+  config.housekeeping_count = 1                 # Number of housekeeper fibers
+  config.housekeeping_interval = 3              # Seconds between scheduling cycles
+  config.housekeeping_heartbeat_interval = 5    # Seconds between worker heartbeats
+  config.housekeeping_claim_ttl_seconds = 120   # Seconds before stale claims are reaped
 end
 
 Sourced.config.backend.install unless Sourced.config.backend.installed?
 ```
+
+These options are used by both `Sourced::Supervisor` and the Falcon integration. When running workers alongside a web server (Falcon, or any other Async-compatible server), these control how many worker and housekeeper fibers are spawned per OS process.
 
 ### Generating Sequel migrations
 
@@ -1044,8 +1053,52 @@ Start background workers.
 
 ```ruby
 # require your code here
-Sourced::Supervisor.start(count: 10) # 10 worker fibers
+Sourced::Supervisor.start # uses Sourced.config.worker_count and housekeeping_count
 ```
+
+### Running workers with Falcon
+
+If you use [Falcon](https://github.com/socketry/falcon) as your web server, you can run Sourced workers in the same process. Both Falcon and Sourced use the [Async](https://github.com/socketry/async) gem, so workers run as lightweight fibers alongside web requests — no separate worker process needed.
+
+Add `sourced/falcon` to your setup (no hard dependency on Falcon in sourced.gemspec):
+
+```ruby
+# falcon.rb
+#!/usr/bin/env falcon-host
+require 'bundler/setup'
+require 'sourced/falcon'
+require_relative 'config/environment' # app setup, Sourced.configure, register reactors, etc.
+
+service "my-app" do
+  include Sourced::Falcon::Environment
+  include Falcon::Environment::Rackup    # loads config.ru
+
+  # -- Falcon / Async options --
+  url "http://[::]:9292"                 # Server bind URL (default: "http://[::]:9292")
+  count 2                                # Number of OS processes to fork (default: Etc.nprocessors)
+  timeout 30                             # Connection timeout in seconds (default: nil)
+  verbose false                          # Enable verbose logging (default: false)
+  cache true                             # Enable HTTP response caching (default: false)
+
+  # Sourced worker options default to Sourced.config values.
+  # Override per-service if needed:
+  # sourced_worker_count 4
+  # sourced_housekeeping_count 1
+  # sourced_housekeeping_interval 3
+  # sourced_housekeeping_heartbeat_interval 5
+  # sourced_housekeeping_claim_ttl_seconds 120
+end
+```
+
+Run with:
+
+```
+falcon host
+```
+
+Total Sourced workers = `count * sourced_worker_count`. For example, `count 2` and `sourced_worker_count 4` gives 8 worker fibers across 2 OS processes, all competing for events via database locks (same as running multiple Supervisors).
+
+On shutdown (`Ctrl-C` / `SIGTERM`), Falcon signals workers to stop. Their poll loops exit gracefully with no stale claims.
 
 ## Custom attribute types and coercions.
 

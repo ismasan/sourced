@@ -23,13 +23,13 @@ module Sourced
           Sourced::Worker.new(name: "falcon-w-#{i}")
         end
 
-        housekeepers = evaluator.housekeeping_count.times.map do |i|
+        housekeepers = evaluator.sourced_housekeeping_count.times.map do |i|
           Sourced::HouseKeeper.new(
             backend: Sourced.config.backend,
             name: "falcon-hk-#{i}",
-            interval: evaluator.housekeeping_interval,
-            heartbeat_interval: evaluator.housekeeping_heartbeat_interval,
-            claim_ttl_seconds: evaluator.housekeeping_claim_ttl_seconds,
+            interval: evaluator.sourced_housekeeping_interval,
+            heartbeat_interval: evaluator.sourced_housekeeping_heartbeat_interval,
+            claim_ttl_seconds: evaluator.sourced_housekeeping_claim_ttl_seconds,
             worker_ids_provider: -> { workers.map(&:name) }
           )
         end

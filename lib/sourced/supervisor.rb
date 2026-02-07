@@ -38,8 +38,8 @@ module Sourced
     # @param executor [Object] Executor instance for running concurrent workers (defaults to configured executor)
     def initialize(
       logger: Sourced.config.logger, 
-      count: 2,
-      housekeeping_count: 1,
+      count: Sourced.config.worker_count,
+      housekeeping_count: Sourced.config.housekeeping_count,
       housekeeping_interval: Sourced.config.housekeeping_interval,
       housekeeping_heartbeat_interval: Sourced.config.housekeeping_heartbeat_interval,
       housekeeping_claim_ttl_seconds: Sourced.config.housekeeping_claim_ttl_seconds,
