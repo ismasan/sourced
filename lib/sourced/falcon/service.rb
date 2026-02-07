@@ -25,7 +25,7 @@ module Sourced
 
         housekeepers = evaluator.housekeeping_count.times.map do |i|
           Sourced::HouseKeeper.new(
-            backend: Sourced::Router.backend,
+            backend: Sourced.config.backend,
             name: "falcon-hk-#{i}",
             interval: evaluator.housekeeping_interval,
             heartbeat_interval: evaluator.housekeeping_heartbeat_interval,
