@@ -1065,6 +1065,8 @@ This requires managing two processes in deployment: one for your web server, one
 
 If you use [Falcon](https://github.com/socketry/falcon) as your web server, you can run Sourced workers in the same process. Both Falcon and Sourced use the [Async](https://github.com/socketry/async) gem, so workers run as lightweight fibers alongside web requests — no separate worker process needed.
 
+This requires `Sourced.config.executor = :async` (the default). Do not change it to `:thread` when using Falcon, as workers must run as fibers to share Falcon's event loop.
+
 Add `sourced/falcon` to your setup (no hard dependency on Falcon in sourced.gemspec):
 
 ```ruby
