@@ -1056,7 +1056,9 @@ When using a web server that doesn't share Sourced's Async event loop (e.g. Puma
 ```ruby
 # worker.rb
 require_relative 'config/environment'
-Sourced::Supervisor.start
+# start workers with 10 worker fibers or threads per OS process
+# depending on Sourced.config.executor (:async, :thread, or custom)
+Sourced::Supervisor.start(count: 10)
 ```
 
 This requires managing two processes in deployment: one for your web server, one for workers.
@@ -1067,14 +1069,14 @@ If you use [Falcon](https://github.com/socketry/falcon) as your web server, you 
 
 This requires `Sourced.config.executor = :async` (the default). Do not change it to `:thread` when using Falcon, as workers must run as fibers to share Falcon's event loop.
 
-Add `sourced/falcon` to your setup (no hard dependency on Falcon in sourced.gemspec):
+Add a `./falcon.rb` file to the root of your app, which requieres `sourced/falcon`  (no hard dependency on Falcon in sourced.gemspec):
 
 ```ruby
 # falcon.rb
 #!/usr/bin/env falcon-host
 require 'bundler/setup'
 require 'sourced/falcon'
-require_relative 'config/environment' # app setup, Sourced.configure, register reactors, etc.
+require_relative 'config/environment' # <= YOUR app setup, Sourced.configure, register reactors, etc.
 
 service "my-app" do
   include Sourced::Falcon::Environment
@@ -1104,6 +1106,8 @@ falcon host
 ```
 
 Total Sourced workers = `count * sourced_worker_count`. For example, `count 2` and `sourced_worker_count 4` gives 8 worker fibers across 2 OS processes, all competing for events via database locks (same as running multiple Supervisors).
+
+Set `config.worker_count = 0` to run Falcon as a web-only process with no Sourced workers. This is useful if you want to run workers separately via `Sourced::Supervisor` while still using Falcon for HTTP, or if you explicitely don't want workers adding unnecessary pressure on the database.
 
 On shutdown (`Ctrl-C` / `SIGTERM`), Falcon signals workers to stop. Their poll loops exit gracefully with no stale claims.
 
