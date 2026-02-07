@@ -333,7 +333,104 @@ This helps the system keep a full audit trail of the cause-and-effect behaviour 
 
 ## Background vs. foreground execution
 
-TODO
+By default Sourced processes commands and events **asynchronously** through background workers. Each reactor picks up messages at its own pace — the system is eventually consistent.
+
+Sometimes you need **synchronous, all-or-nothing** execution: a web request handler that must know the full outcome before responding, or a test that needs deterministic behaviour. `Sourced::Unit` provides this.
+
+### `Sourced::Unit`
+
+A Unit wires one or more reactors together and runs the full command → event → reaction → command chain inside a **single backend transaction**, using breadth-first traversal of the message graph. If any step raises, the entire transaction rolls back.
+
+```ruby
+unit = Sourced::Unit.new(
+  OrderActor,
+  PaymentActor,
+  InventoryProjector,
+  backend: Sourced.config.backend
+)
+
+cmd = PlaceOrder.new(stream_id: 'order-1', payload: { amount: 100 })
+results = unit.handle(cmd)
+```
+
+Messages produced by one reactor are immediately routed to any other reactor in the unit that handles them — no background workers needed.
+
+#### Extracting results
+
+`Unit#handle` returns a `Results` object you can query per reactor class.
+
+```ruby
+results = unit.handle(cmd)
+
+# Hash of { instance => [events] } for a given reactor
+results[OrderActor].each do |instance, events|
+  puts "#{instance.id}: #{events.map(&:type)}"
+end
+
+# Flat list of events
+results.events_for(OrderActor)
+# => [OrderPlaced, ...]
+```
+
+#### Skipping command persistence
+
+By default every message (commands and events) is written to the store. Pass `persist_commands: false` to write only events.
+
+```ruby
+unit = Sourced::Unit.new(OrderActor, backend: backend, persist_commands: false)
+unit.handle(cmd) # only events are persisted; commands still flow through the chain
+```
+
+This is useful when commands are transient intents that don't need an audit trail.
+
+#### Loop detection
+
+The BFS traversal is capped at 100 iterations by default. If a reaction dispatches a command whose event triggers the same reaction, the unit raises `Sourced::Unit::InfiniteLoopError` before running away.
+
+```ruby
+unit = Sourced::Unit.new(LoopyActor, backend: backend, max_iterations: 10)
+unit.handle(cmd)
+# => raises Sourced::Unit::InfiniteLoopError after 10 steps
+```
+
+#### ACK tracking
+
+After the BFS completes, the unit ACKs every handled message for each reactor's consumer group. This means background workers won't re-process messages that the unit already handled.
+
+#### When to use Unit vs. background workers
+
+| | `Sourced::Unit` | Background workers |
+|---|---|---|
+| Consistency | Immediate (single transaction) | Eventual |
+| Failure mode | All-or-nothing rollback | Per-message retry / stop |
+| Concurrency | Single-threaded BFS | Concurrent across streams |
+| Use case | Web request handlers, tests, scripts | Long-running workflows, side-effects |
+
+You can combine both: use a Unit for the synchronous core of a request, while other reactors pick up the same events asynchronously in the background.
+
+### Actions
+
+Actions are the return values of reactor `.handle` methods. They tell the runtime (Unit or background worker) what side-effects to perform. Each persistable action class implements an `#execute(backend, source_message)` method that correlates messages and persists them via the backend.
+
+| Action | Description | `#execute` behaviour |
+|---|---|---|
+| `Actions::AppendAfter` | Append to a stream with optimistic locking (sequence check) | Correlate → `backend.append_to_stream` |
+| `Actions::AppendNext` | Append to stream(s), auto-incrementing sequence | Correlate → `backend.append_next_to_stream` per stream |
+| `Actions::Schedule` | Schedule messages for future delivery | Correlate → `backend.schedule_messages` |
+| `Actions::Sync` | Run a synchronous side-effect (cache write, API call) | Call the work block, return nil |
+| `Actions::OK` | Acknowledge the message (no persistence) | — |
+| `Actions::RETRY` | Tell the runtime to retry this message later | — |
+| `Actions::Ack` | ACK an arbitrary message by ID | — |
+
+`OK`, `RETRY`, and `Ack` are caller-specific signals — they don't implement `#execute`.
+
+```ruby
+# Inside a reactor's .handle method:
+def self.handle(message)
+  started = Order::Started.build(message.stream_id)
+  [Sourced::Actions::AppendNext.new([started])]
+end
+```
 
 ## Projectors
 
@@ -1215,26 +1312,30 @@ Sourced's concurrency model is designed to process events for the same entity in
 
 ## Gotchas
 
-Currently `Sourced` is focused on eventual consistency and background processing
-of commands and events through background workers. Eventually a synchronous mode
-will be added for simpler use-cases.
+By default `Sourced` processes commands and events asynchronously through
+background workers. This can be confusing if you expect reactions to run
+automatically when you issue commands.
 
-This can be confusing if you expect your reactions to run automatically and
-synchronously when you issue commands.
-
-This can be a gotcha if you're using the `Sourced::CommandMethods` mixin which
-persists events but does not call your reactor right away. If you need to you
-should explicitly call `#react` after issuing commands.
+For synchronous, all-or-nothing execution use [`Sourced::Unit`](#sourcedunit),
+which runs the full command → event → reaction chain inside a single transaction.
 
 ```ruby
+# Synchronous execution with Unit
+unit = Sourced::Unit.new(Chat, backend: Sourced.config.backend)
+results = unit.handle(SendMessage.new(stream_id: 'chat-123', payload: { content: query }))
+results.events_for(Chat) # => [MessageSent, ...]
 ```
+
+If you're using the `Sourced::CommandMethods` mixin directly (without a Unit),
+note that it persists events but does not trigger reactions. You'd need to
+explicitly call `#react` after issuing commands.
+
 ```ruby
 chat = Sourced.load(Chat, 'chat-123')
-# Would persist but not call reactions
+# Persists but does not call reactions
 _cmd, events = chat.send_message!(content: query)
 # Have to react manually
 commands = chat.react(events)
-# now dispatch these commands again?
 ```
 
 

@@ -261,4 +261,5 @@ require 'sourced/handler'
 require 'sourced/projector'
 require 'sourced/supervisor'
 require 'sourced/command_context'
+require 'sourced/unit'
 # require 'sourced/rails/railtie' if defined?(Rails::Railtie)
