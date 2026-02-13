@@ -346,7 +346,7 @@ module Sourced
       # @yieldparam message [Sourced::Message]
       # @yieldparam replaying [Boolean] whether the message is being replayed
       # @yieldreturn actions to process for this message
-      def reserve_next_for_reactor(reactor, batch_size: 1, worker_id: nil, &block)
+      def reserve_next_for_reactor(reactor, batch_size: 1, with_history: false, worker_id: nil, &block)
         worker_id ||= [Process.pid, Thread.current.object_id, Fiber.current.object_id].join('-')
         group_id = reactor.consumer_info.group_id
         handled_messages = reactor.handled_messages.map(&:type).uniq
@@ -355,10 +355,10 @@ module Sourced
         bootstrap_offsets_for(group_id)
 
         start_from = reactor.consumer_info.start_from.call
-        rows = claim_and_fetch_batch(group_id, handled_messages, now, start_from, worker_id, batch_size)
+        rows, history = claim_and_fetch_batch(group_id, handled_messages, now, start_from, worker_id, batch_size, with_history:)
         return unless rows
 
-        reserve_batch(group_id, rows, &block)
+        reserve_batch(group_id, rows, history:, &block)
       end
 
       private def release_offset(offset_id)
@@ -369,7 +369,7 @@ module Sourced
       # in a single lock/ACK cycle. Each message is yielded individually to the block.
       # On RETRY, the batch stops and ACKs up to the last successful message.
       # All side effects are committed in one transaction at the end.
-      private def reserve_batch(group_id, rows, &block)
+      private def reserve_batch(group_id, rows, history: nil, &block)
         first_message = nil
         successful = []
         first_row = rows.first
@@ -380,7 +380,7 @@ module Sourced
             first_message ||= message
 
             # Phase 2: Process message outside of transaction (same as single path)
-            actions = yield(message, row[:replaying])
+            actions = yield(message, row[:replaying], history)
 
             # Check if actions include RETRY
             actions_list = actions.is_a?(Array) ? actions.compact : [actions].compact
@@ -420,20 +420,27 @@ module Sourced
       # Atomically claim an offset and fetch up to batch_size messages in a single CTE query.
       # The CTE finds the first matching message (to identify the stream), claims the offset,
       # and fetches all pending messages from that stream in one round-trip.
-      private def claim_and_fetch_batch(group_id, handled_messages, now, start_from, worker_id, batch_size)
+      private def claim_and_fetch_batch(group_id, handled_messages, now, start_from, worker_id, batch_size, with_history: false)
         sql = if start_from.is_a?(Time)
-          sql_for_claim_and_fetch_batch(handled_messages, group_id:, now:, worker_id:, batch_size:, start_from:)
+          sql_for_claim_and_fetch_batch(handled_messages, group_id:, now:, worker_id:, batch_size:, start_from:, with_history:)
         else
-          sql_for_claim_and_fetch_batch(handled_messages, group_id:, now:, worker_id:, batch_size:)
+          sql_for_claim_and_fetch_batch(handled_messages, group_id:, now:, worker_id:, batch_size:, with_history:)
         end
 
-        rows = db.fetch(sql).all
-        return nil if rows.empty?
+        all_rows = db.fetch(sql).all
+        return [nil, nil] if all_rows.empty?
 
-        rows
+        if with_history
+          batch_rows = all_rows.select { |r| r[:in_batch] }
+          # Deserialize all rows as history (also parses JSON for batch rows since they share objects)
+          history = all_rows.map { |row| deserialize_message(row) }
+          [batch_rows, history]
+        else
+          [all_rows, nil]
+        end
       rescue Sequel::UniqueConstraintViolation
         logger.debug "Batch claim for group #{group_id} already exists, skipping"
-        nil
+        [nil, nil]
       end
 
       # Execute action side effects without ACKing.
@@ -735,7 +742,11 @@ module Sourced
       # 1. first_match: finds the first pending message to identify the stream/offset (FOR UPDATE SKIP LOCKED)
       # 2. claim: claims the offset in the same statement (UPDATE ... RETURNING)
       # 3. outer SELECT: fetches up to batch_size messages from the claimed stream
-      def sql_for_claim_and_fetch_batch(handled_messages, group_id:, now:, worker_id:, batch_size:, start_from: nil)
+      #
+      # When with_history: true, adds a `batch` CTE to identify batch rows, and the outer SELECT
+      # fetches ALL messages from the stream (for history), marking batch rows with `in_batch`.
+      # This saves a separate read_stream query for reactors that need history.
+      def sql_for_claim_and_fetch_batch(handled_messages, group_id:, now:, worker_id:, batch_size:, start_from: nil, with_history: false)
         message_types = handled_messages.map { |e| "'#{e}'" }
         now_literal = db.literal(now)
         group_id_literal = db.literal(group_id)
@@ -744,7 +755,8 @@ module Sourced
         message_types_sql = message_types.any? ? " AND e.type IN(#{message_types.join(',')})" : ''
         time_window_sql = start_from ? " AND e.created_at > #{db.literal(start_from)}" : ''
 
-        <<~SQL
+        # Common CTEs: find first matching message, claim its offset
+        first_match_and_claim = <<~SQL
           WITH first_match AS (
             SELECT
                 so.id as offset_id, ss.stream_id, e.stream_id as stream_id_fk,
@@ -772,18 +784,49 @@ module Sourced
             RETURNING first_match.offset_id, first_match.stream_id, first_match.stream_id_fk,
                       first_match.group_id_fk, first_match.highest_global_seq, first_match.offset_seq
           )
-          SELECT e.global_seq, e.id, claim.stream_id, e.stream_id as stream_id_fk,
-                 e.seq, e.type, e.created_at, e.causation_id, e.correlation_id,
-                 e.metadata, e.payload, claim.offset_id, claim.group_id_fk,
-                 (e.global_seq <= claim.highest_global_seq) AS replaying,
-                 claim.highest_global_seq
-          FROM claim
-          JOIN #{@messages_table_literal} e ON e.stream_id = claim.stream_id_fk
-          WHERE e.global_seq > claim.offset_seq
-            #{message_types_sql}#{time_window_sql}
-          ORDER BY e.global_seq ASC
-          LIMIT #{batch_size_literal};
         SQL
+
+        if with_history
+          # Fetch ALL stream messages + mark which are in the batch via LEFT JOIN.
+          # The batch CTE identifies the batch rows (after offset, matching types, limited).
+          # The outer SELECT returns every message in the stream for history.
+          first_match_and_claim + <<~SQL
+            ,
+            batch AS (
+              SELECT e.global_seq
+              FROM claim
+              JOIN #{@messages_table_literal} e ON e.stream_id = claim.stream_id_fk
+              WHERE e.global_seq > claim.offset_seq
+                #{message_types_sql}#{time_window_sql}
+              ORDER BY e.global_seq ASC
+              LIMIT #{batch_size_literal}
+            )
+            SELECT e.global_seq, e.id, claim.stream_id, e.stream_id as stream_id_fk,
+                   e.seq, e.type, e.created_at, e.causation_id, e.correlation_id,
+                   e.metadata, e.payload, claim.offset_id, claim.group_id_fk,
+                   (e.global_seq <= claim.highest_global_seq) AS replaying,
+                   claim.highest_global_seq,
+                   (batch.global_seq IS NOT NULL) AS in_batch
+            FROM claim
+            JOIN #{@messages_table_literal} e ON e.stream_id = claim.stream_id_fk
+            LEFT JOIN batch ON batch.global_seq = e.global_seq
+            ORDER BY e.global_seq ASC;
+          SQL
+        else
+          first_match_and_claim + <<~SQL
+            SELECT e.global_seq, e.id, claim.stream_id, e.stream_id as stream_id_fk,
+                   e.seq, e.type, e.created_at, e.causation_id, e.correlation_id,
+                   e.metadata, e.payload, claim.offset_id, claim.group_id_fk,
+                   (e.global_seq <= claim.highest_global_seq) AS replaying,
+                   claim.highest_global_seq
+            FROM claim
+            JOIN #{@messages_table_literal} e ON e.stream_id = claim.stream_id_fk
+            WHERE e.global_seq > claim.offset_seq
+              #{message_types_sql}#{time_window_sql}
+            ORDER BY e.global_seq ASC
+            LIMIT #{batch_size_literal};
+          SQL
+        end
       end
 
       def sql_for_ack_on

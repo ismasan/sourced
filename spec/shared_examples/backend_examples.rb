@@ -903,6 +903,71 @@ module BackendExamples
       end
     end
 
+    describe '#reserve_next_for_reactor with_history' do
+      let(:reactor1) do
+        Class.new do
+          def self.consumer_info
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
+          end
+
+          def self.handled_messages
+            [Tests::SomethingHappened1]
+          end
+        end
+      end
+
+      before do
+        backend.register_consumer_group('group1')
+      end
+
+      it 'yields history containing all stream messages when with_history: true' do
+        cmd = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 3 })
+        backend.append_to_stream('s1', [cmd, evt1, evt2])
+
+        yielded_histories = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10, with_history: true) do |_msg, _replaying, history|
+          yielded_histories << history
+          Sourced::Actions::OK
+        end
+
+        # History should include ALL stream messages (cmd + evt1 + evt2), not just batch
+        expect(yielded_histories.size).to eq(2) # two batch messages (evt1, evt2)
+        expect(yielded_histories.first.map(&:id)).to eq([cmd, evt1, evt2].map(&:id))
+        # Same history array for all batch messages
+        expect(yielded_histories.first).to equal(yielded_histories.last)
+      end
+
+      it 'yields nil history when with_history: false (default)' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        backend.append_to_stream('s1', [evt1])
+
+        yielded_history = :not_set
+        backend.reserve_next_for_reactor(reactor1) do |_msg, _replaying, history|
+          yielded_history = history
+          Sourced::Actions::OK
+        end
+
+        expect(yielded_history).to be_nil
+      end
+
+      it 'history does not include messages from other streams' do
+        evt_s1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt_s2 = Tests::SomethingHappened1.parse(stream_id: 's2', seq: 1, payload: { account_id: 2 })
+        backend.append_to_stream('s1', [evt_s1])
+        backend.append_to_stream('s2', [evt_s2])
+
+        yielded_history = nil
+        backend.reserve_next_for_reactor(reactor1, with_history: true) do |_msg, _replaying, history|
+          yielded_history = history
+          Sourced::Actions::OK
+        end
+
+        expect(yielded_history.map(&:stream_id).uniq).to eq([yielded_history.first.stream_id])
+      end
+    end
+
     describe '#reserve_next_for_reactor with retry_at' do
       it 'does not fetch events until retry_at is up' do
         now = Time.now

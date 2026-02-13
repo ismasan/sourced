@@ -77,7 +77,7 @@ module Sourced
 
         NOOP_FILTER = ->(_) { true }
 
-        def reserve_next(handled_messages, time_window, process_actions, batch_size: 1, &block)
+        def reserve_next(handled_messages, time_window, process_actions, batch_size: 1, with_history: false, &block)
           time_filter = time_window.is_a?(Time) ? ->(e) { e.created_at > time_window } : NOOP_FILTER
           evt = nil
           offset = nil
@@ -98,12 +98,12 @@ module Sourced
 
           return unless evt
 
-          reserve_batch(evt, index, offset, handled_messages, time_filter, process_actions, batch_size, &block)
+          reserve_batch(evt, index, offset, handled_messages, time_filter, process_actions, batch_size, with_history:, &block)
         end
 
         private
 
-        def reserve_batch(first_evt, first_index, offset, handled_messages, time_filter, process_actions_callback, batch_size, &block)
+        def reserve_batch(first_evt, first_index, offset, handled_messages, time_filter, process_actions_callback, batch_size, with_history: false, &block)
           stream_id = first_evt.stream_id
           batch = [[first_evt, first_index]]
 
@@ -118,12 +118,17 @@ module Sourced
             batch << [e, idx]
           end
 
+          # Build history if requested: all messages from this stream
+          history = if with_history
+            backend.messages.select { |e| e.stream_id == stream_id }
+          end
+
           # Process batch: yield each message, accumulate successful results
           successful = []
 
           batch.each do |msg, idx|
             replaying = @highest_index >= idx
-            actions = yield(msg, replaying)
+            actions = yield(msg, replaying, history)
 
             actions_list = actions.is_a?(Array) ? actions.compact : [actions].compact
             if actions_list.include?(Actions::RETRY)

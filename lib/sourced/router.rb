@@ -168,15 +168,16 @@ module Sourced
     # - :history - Array of all events in the stream up to this point
     def handle_next_event_for_reactor(reactor, worker_id = nil, raise_on_error = false, batch_size: 1)
       found = false
-      # Cache history per stream_id across a batch to avoid N reads for same stream
-      history_cache = batch_size > 1 ? {} : nil
+      # Request history from the backend when the reactor's #handle signature needs it.
+      # This avoids a separate read_stream query per batch.
+      needs_history = kargs_for_handle[reactor]&.include?(:history)
 
-      backend.reserve_next_for_reactor(reactor, batch_size:, worker_id:) do |event, replaying|
+      backend.reserve_next_for_reactor(reactor, batch_size:, with_history: needs_history, worker_id:) do |event, replaying, history|
         found = true
         log_event('handling event', reactor, event, worker_id)
 
         # Build keyword arguments hash based on what the reactor's #handle method expects
-        kargs = build_reactor_handle_args(reactor, event, replaying, history_cache)
+        kargs = build_reactor_handle_args(reactor, event, replaying, history)
 
         # Call the reactor's handle method with the event and any requested keyword arguments
         reactor.handle(event, **kargs)
@@ -221,17 +222,15 @@ module Sourced
     # @param event [Event] The event being processed
     # @param replaying [Boolean] Whether this is a replay operation
     # @return [Hash] Hash of keyword arguments to pass to reactor.handle
-    def build_reactor_handle_args(reactor, event, replaying, history_cache = nil)
+    def build_reactor_handle_args(reactor, event, replaying, history = nil)
       kargs_for_handle[reactor].each.with_object({}) do |name, hash|
         case name
         when :replaying
           hash[name] = replaying
         when :history
-          if history_cache
-            hash[name] = history_cache[event.stream_id] ||= backend.read_stream(event.stream_id)
-          else
-            hash[name] = backend.read_stream(event.stream_id)
-          end
+          # Use history from the backend's batch query if available,
+          # otherwise fall back to a separate read_stream call.
+          hash[name] = history || backend.read_stream(event.stream_id)
         when :logger
           hash[name] = logger
         end

@@ -249,8 +249,8 @@ RSpec.describe Sourced::Router do
         before { router.register(RouterTest::ReactorWithReplayingOnly) }
 
         it 'passes replaying: true when backend indicates replaying' do
-          allow(backend).to receive(:reserve_next_for_reactor).and_yield(event, true)
-          
+          allow(backend).to receive(:reserve_next_for_reactor).and_yield(event, true, nil)
+
           expect(RouterTest::ReactorWithReplayingOnly).to receive(:handle).with(event, replaying: true)
           router.handle_next_event_for_reactor(RouterTest::ReactorWithReplayingOnly)
         end
@@ -269,7 +269,7 @@ RSpec.describe Sourced::Router do
           allow(backend).to receive(:read_stream).with('other-stream').and_return(other_history)
           
           # Set up the backend to return the other event
-          allow(backend).to receive(:reserve_next_for_reactor).and_yield(other_event, false)
+          allow(backend).to receive(:reserve_next_for_reactor).and_yield(other_event, false, nil)
           
           expect(RouterTest::ReactorWithHistoryOnly).to receive(:handle).with(other_event, history: other_history)
           router.handle_next_event_for_reactor(RouterTest::ReactorWithHistoryOnly)
