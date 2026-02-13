@@ -63,7 +63,7 @@ module Sourced
     #   @return [Object] The configured backend for event storage
     # @!attribute [r] logger
     #   @return [Object] The configured logger instance
-    attr_reader :async_reactors, :backend, :logger, :kargs_for_handle
+    attr_reader :async_reactors, :backend, :logger, :needs_history
 
     # Initialize a new Router instance.
     # @param backend [Object] Backend for event storage (defaults to configured backend)
@@ -72,7 +72,7 @@ module Sourced
       @backend = backend
       @logger = logger
       @registered_lookup = {}
-      @kargs_for_handle = {}
+      @needs_history = {}
       @async_reactors = Set.new
     end
 
@@ -124,9 +124,8 @@ module Sourced
         raise InvalidReactorError, "#{thing.inspect} is not a valid Reactor interface"
       end
 
-      # Analyze the reactor's #handle method signature and store expected keyword arguments
-      # for automatic injection during event processing
-      @kargs_for_handle[thing] = Injector.resolve_args(thing, :handle)
+      # Analyze the reactor's handle_batch signature to determine if it needs history
+      @needs_history[thing] = Injector.resolve_args(thing, :handle_batch).include?(:history)
       @async_reactors << thing
 
       group_id = thing.consumer_info.group_id
@@ -168,27 +167,22 @@ module Sourced
     # - :history - Array of all events in the stream up to this point
     def handle_next_event_for_reactor(reactor, worker_id = nil, raise_on_error = false, batch_size: 1)
       found = false
-      # Request history from the backend when the reactor's #handle signature needs it.
-      # This avoids a separate read_stream query per batch.
-      needs_history = kargs_for_handle[reactor]&.include?(:history)
 
-      backend.reserve_next_for_reactor(reactor, batch_size:, with_history: needs_history, worker_id:) do |event, replaying, history|
+      backend.reserve_next_for_reactor(reactor, batch_size:, with_history: @needs_history[reactor], worker_id:) do |batch, history|
         found = true
-        log_event('handling event', reactor, event, worker_id)
+        first_msg = batch.first&.first
+        log_event('handling batch', reactor, first_msg, worker_id) if first_msg
 
-        # Build keyword arguments hash based on what the reactor's #handle method expects
-        kargs = build_reactor_handle_args(reactor, event, replaying, history)
-
-        # Call the reactor's handle method with the event and any requested keyword arguments
-        reactor.handle(event, **kargs)
+        kargs = {}
+        kargs[:history] = history if @needs_history[reactor]
+        reactor.handle_batch(batch, **kargs)
       rescue StandardError => e
         raise e if raise_on_error
 
-        logger.warn "[#{PID}]: error handling event #{event.class} with reactor #{reactor} #{e}"
+        logger.warn "[#{PID}]: error handling batch with reactor #{reactor} #{e}"
         backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
-          reactor.on_exception(e, event, group)
+          reactor.on_exception(e, batch.first&.first, group)
         end
-        # Do not ACK event for reactor
         Actions::RETRY
       end
       found
@@ -214,28 +208,6 @@ module Sourced
     end
 
     private
-
-    # Build keyword arguments hash for calling a reactor's #handle method.
-    # Only includes arguments that the reactor's method signature actually declares.
-    #
-    # @param reactor [Class] The reactor class 
-    # @param event [Event] The event being processed
-    # @param replaying [Boolean] Whether this is a replay operation
-    # @return [Hash] Hash of keyword arguments to pass to reactor.handle
-    def build_reactor_handle_args(reactor, event, replaying, history = nil)
-      kargs_for_handle[reactor].each.with_object({}) do |name, hash|
-        case name
-        when :replaying
-          hash[name] = replaying
-        when :history
-          # Use history from the backend's batch query if available,
-          # otherwise fall back to a separate read_stream call.
-          hash[name] = history || backend.read_stream(event.stream_id)
-        when :logger
-          hash[name] = logger
-        end
-      end
-    end
 
     def log_event(label, reactor, event, process_name = PID)
       logger.info "[#{process_name}]: #{reactor.consumer_info.group_id} #{label} #{event_info(event)}"

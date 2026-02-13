@@ -242,12 +242,16 @@ module Sourced
       table
     end
 
-    # Pre-resolve keyword argument names for each reactor's #handle method.
+    # Pre-resolve keyword argument names for each reactor's instance #handle method.
+    # Uses instance_method to analyze the signature since class-level handle
+    # may not exist for all reactor types (handle_batch is the class-level interface).
     #
     # @return [Hash{Class => Array<Symbol>}]
     def resolve_kargs
       @reactors.each_with_object({}) do |reactor, hash|
-        hash[reactor] = Injector.resolve_args(reactor, :handle)
+        hash[reactor] = reactor.instance_method(:handle).parameters
+          .select { |type, _| Injector::KEYS.include?(type) }
+          .map { |_, name| name }
       end
     end
 

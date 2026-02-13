@@ -57,6 +57,8 @@ module Sourced
     class Command < Sourced::Command; end
     class Event < Sourced::Event; end
 
+    BLANK_HISTORY = [].freeze
+
     class << self
       def inherited(subclass)
         super
@@ -168,6 +170,23 @@ module Sourced
       def handle(message, history: [], replaying: false)
         instance = new(id: identity_from(message))
         instance.handle(message, history:, replaying:)
+      end
+
+      # Batch processing for actors. Per-message iteration internally.
+      # Replay messages return OK immediately. Live messages create instance and handle.
+      # @param batch [Array<[Message, Boolean]>] array of [message, replaying] pairs
+      # @param history [Array<Message>] full stream history
+      # @return [Array<[actions, source_message]>] action pairs
+      def handle_batch(batch, history: BLANK_HISTORY)
+        batch.map do |message, replaying|
+          if replaying
+            [Actions::OK, message]
+          else
+            instance = new(id: identity_from(message))
+            actions = instance.handle(message, history:)
+            [actions, message]
+          end
+        end
       end
 
       def __message_type(msg_name)

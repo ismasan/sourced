@@ -30,6 +30,14 @@ module RouterTest
 
       Sourced::Actions::AppendNext.new([cmd])
     end
+
+    # Override default handle_batch to forward all kargs
+    def self.handle_batch(batch, history: [])
+      batch.map do |message, replaying|
+        actions = handle(message, replaying:, history:)
+        [actions, message]
+      end
+    end
   end
 
   # Test reactors for argument injection
@@ -41,7 +49,7 @@ module RouterTest
     end
 
     def self.handle(event)
-      Sourced::Actions::AppendNext.new([])
+      Sourced::Actions::OK
     end
   end
 
@@ -53,10 +61,11 @@ module RouterTest
     end
 
     def self.handle(event, replaying:)
-      Sourced::Actions::AppendNext.new([])
+      Sourced::Actions::OK
     end
   end
 
+  # A reactor that needs history — must override handle_batch
   class ReactorWithHistoryOnly
     extend Sourced::Consumer
 
@@ -65,7 +74,14 @@ module RouterTest
     end
 
     def self.handle(event, history:)
-      Sourced::Actions::AppendNext.new([])
+      Sourced::Actions::OK
+    end
+
+    def self.handle_batch(batch, history: [])
+      batch.map do |message, replaying|
+        actions = handle(message, history:)
+        [actions, message]
+      end
     end
   end
 
@@ -77,7 +93,14 @@ module RouterTest
     end
 
     def self.handle(event, replaying:, history:)
-      Sourced::Actions::AppendNext.new([])
+      Sourced::Actions::OK
+    end
+
+    def self.handle_batch(batch, history: [])
+      batch.map do |message, replaying|
+        actions = handle(message, replaying:, history:)
+        [actions, message]
+      end
     end
   end
 
@@ -89,7 +112,7 @@ module RouterTest
     end
 
     def self.handle(event, logger:)
-      Sourced::Actions::AppendNext.new([])
+      Sourced::Actions::OK
     end
   end
 end
@@ -159,7 +182,7 @@ RSpec.describe Sourced::Router do
 
     context 'when reactor raises exception' do
       before do
-        expect(RouterTest::DeciderReactor).to receive(:handle).and_raise('boom')
+        expect(RouterTest::DeciderReactor).to receive(:handle_batch).and_raise('boom')
       end
 
       it 'invokes .on_exception on reactor' do
@@ -185,7 +208,7 @@ RSpec.describe Sourced::Router do
       end
     end
 
-    context 'argument injection' do
+    context 'handle_batch interface' do
       let(:event) { RouterTest::ItemAdded.new(stream_id: '123') }
       let(:event2) { RouterTest::ItemAdded.new(stream_id: '123', seq: 2) }
 
@@ -194,92 +217,68 @@ RSpec.describe Sourced::Router do
         backend.append_to_stream('123', [event, event2])
       end
 
-      context 'with reactor expecting no keyword arguments' do
+      context 'with reactor using default handle_batch (no history)' do
         before { router.register(RouterTest::ReactorWithNoArgs) }
 
-        it 'calls handle with event only' do
-          allow(RouterTest::ReactorWithNoArgs).to receive(:handle).and_call_original
+        it 'calls handle_batch with batch (no history kwarg)' do
+          received_batch = nil
+          allow(RouterTest::ReactorWithNoArgs).to receive(:handle_batch).and_wrap_original do |original, batch, **kargs|
+            received_batch = [batch, kargs]
+            original.call(batch, **kargs)
+          end
           router.handle_next_event_for_reactor(RouterTest::ReactorWithNoArgs)
-          expect(RouterTest::ReactorWithNoArgs).to have_received(:handle).with(event)
+          expect(received_batch).not_to be_nil
+          batch, kargs = received_batch
+          expect(batch.first.first).to eq(event)
+          expect(kargs).not_to have_key(:history)
         end
       end
 
-      context 'with reactor expecting only replaying argument' do
+      context 'with reactor needing history (handle_batch accepts history:)' do
+        before { router.register(RouterTest::ReactorWithHistoryOnly) }
+
+        it 'calls handle_batch with batch and history' do
+          allow(RouterTest::ReactorWithHistoryOnly).to receive(:handle_batch).and_call_original
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithHistoryOnly)
+          expect(RouterTest::ReactorWithHistoryOnly).to have_received(:handle_batch) do |batch, **kargs|
+            expect(batch.first.first).to eq(event)
+            expect(kargs[:history]).to be_an(Array)
+            expect(kargs[:history].map(&:id)).to include(event.id, event2.id)
+          end
+        end
+      end
+
+      context 'with reactor needing both replaying and history' do
+        before { router.register(RouterTest::ReactorWithBothArgs) }
+
+        it 'calls handle_batch with batch and history' do
+          allow(RouterTest::ReactorWithBothArgs).to receive(:handle_batch).and_call_original
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithBothArgs)
+          expect(RouterTest::ReactorWithBothArgs).to have_received(:handle_batch) do |batch, **kargs|
+            expect(batch.first.first).to eq(event)
+            expect(kargs[:history]).to be_an(Array)
+          end
+        end
+      end
+
+      context 'Consumer default handle_batch forwards replaying to handle' do
         before { router.register(RouterTest::ReactorWithReplayingOnly) }
 
-        it 'calls handle with event and replaying status' do
+        it 'passes replaying through to handle via default handle_batch' do
+          # Force handle_kargs caching before spy wraps .handle (spy changes method signature)
+          RouterTest::ReactorWithReplayingOnly.send(:handle_kargs)
           allow(RouterTest::ReactorWithReplayingOnly).to receive(:handle).and_call_original
           router.handle_next_event_for_reactor(RouterTest::ReactorWithReplayingOnly)
           expect(RouterTest::ReactorWithReplayingOnly).to have_received(:handle).with(event, replaying: false)
         end
       end
 
-      context 'with reactor expecting only history argument' do
-        before { router.register(RouterTest::ReactorWithHistoryOnly) }
-
-        it 'calls handle with event and history' do
-          expected_history = [event, event2]
-          allow(backend).to receive(:read_stream).with('123').and_return(expected_history)
-          
-          allow(RouterTest::ReactorWithHistoryOnly).to receive(:handle).and_call_original
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithHistoryOnly)
-          expect(RouterTest::ReactorWithHistoryOnly).to have_received(:handle).with(event, history: expected_history)
-        end
-      end
-
-      context 'with reactor expecting both replaying and history arguments' do
-        before { router.register(RouterTest::ReactorWithBothArgs) }
-
-        it 'calls handle with event, replaying status, and history' do
-          expected_history = [event, event2]
-          allow(backend).to receive(:read_stream).with('123').and_return(expected_history)
-          allow(RouterTest::ReactorWithBothArgs).to receive(:handle).and_call_original
-
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithBothArgs)
-
-          expect(RouterTest::ReactorWithBothArgs).to have_received(:handle).with(
-            event, 
-            replaying: false, 
-            history: expected_history
-          )
-        end
-      end
-
-      context 'when replaying is true' do
-        before { router.register(RouterTest::ReactorWithReplayingOnly) }
-
-        it 'passes replaying: true when backend indicates replaying' do
-          allow(backend).to receive(:reserve_next_for_reactor).and_yield(event, true, nil)
-
-          expect(RouterTest::ReactorWithReplayingOnly).to receive(:handle).with(event, replaying: true)
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithReplayingOnly)
-        end
-      end
-
-      context 'with different stream having different history' do
-        let(:other_event) { RouterTest::ItemAdded.new(stream_id: 'other-stream') }
-
-        before do 
-          router.register(RouterTest::ReactorWithHistoryOnly)
-          backend.append_to_stream('other-stream', other_event)
-        end
-
-        it 'fetches history for the correct stream' do
-          other_history = [other_event]
-          allow(backend).to receive(:read_stream).with('other-stream').and_return(other_history)
-          
-          # Set up the backend to return the other event
-          allow(backend).to receive(:reserve_next_for_reactor).and_yield(other_event, false, nil)
-          
-          expect(RouterTest::ReactorWithHistoryOnly).to receive(:handle).with(other_event, history: other_history)
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithHistoryOnly)
-        end
-      end
-
-      context 'with reactor expecting logger argument' do
+      context 'Consumer default handle_batch forwards logger to handle' do
         before { router.register(RouterTest::ReactorWithLogger) }
 
-        it 'calls handle with event and router logger' do
+        it 'passes logger through to handle via default handle_batch' do
+          # Force handle_kargs caching before spy wraps .handle (spy changes method signature)
+          RouterTest::ReactorWithLogger.send(:handle_kargs)
           allow(RouterTest::ReactorWithLogger).to receive(:handle).and_call_original
           router.handle_next_event_for_reactor(RouterTest::ReactorWithLogger)
           expect(RouterTest::ReactorWithLogger).to have_received(:handle).with(event, logger: router.logger)
@@ -306,9 +305,12 @@ RSpec.describe Sourced::Router do
       expect(backend).to have_received(:register_consumer_group).with(RouterTest::DeciderReactor.consumer_info.group_id)
     end
 
-    it 'computes kargs for .handle in #kargs_for_handle' do
+    it 'determines if reactor needs history from handle_batch signature' do
       router.register(RouterTest::DeciderReactor)
-      expect(router.kargs_for_handle[RouterTest::DeciderReactor]).to eq(%i[replaying history])
+      expect(router.needs_history[RouterTest::DeciderReactor]).to be(true)
+
+      router.register(RouterTest::ReactorWithNoArgs)
+      expect(router.needs_history[RouterTest::ReactorWithNoArgs]).to be(false)
     end
   end
 

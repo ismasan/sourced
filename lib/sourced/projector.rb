@@ -94,10 +94,45 @@ module Sourced
         def handle(message, replaying: false)
           new(id: identity_from(message)).handle(message, replaying:)
         end
+
+        # Optimized batch processing: one state load, one sync for entire batch.
+        # @param batch [Array<[Message, Boolean]>] array of [message, replaying] pairs
+        # @return [Array<[actions, source_message]>] action pairs
+        def handle_batch(batch)
+          first_msg, _ = batch.first
+          instance = new(id: identity_from(first_msg))
+          messages = batch.map(&:first)
+          all_replaying = batch.all? { |_, r| r }
+
+          # 1. Load state from storage
+          instance.state
+          # 2. Evolve ALL batch messages at once
+          instance.evolve(messages)
+          # 3. Single sync for entire batch
+          sync_actions = instance.sync_actions_with(
+            state: instance.state, events: messages, replaying: all_replaying
+          )
+
+          last_msg = messages.last
+          result = [[sync_actions, last_msg]]
+
+          # 4. Reactions (only for non-replaying messages)
+          unless all_replaying
+            batch.each do |msg, replaying|
+              next if replaying
+              if instance.reacts_to?(msg)
+                reaction_cmds = instance.react(msg)
+                result << [Actions.build_for(reaction_cmds), msg] if reaction_cmds.any?
+              end
+            end
+          end
+
+          result
+        end
       end
 
       def handle(message, replaying:)
-        # Load state from storage  
+        # Load state from storage
         state
         # Evolve new message
         evolve(message)
@@ -138,6 +173,44 @@ module Sourced
     #    end
     #  end
     class EventSourced < self
+      BLANK_HISTORY = [].freeze
+
+      class << self
+        # Optimized batch processing: one history evolve, one sync for entire batch.
+        # @param batch [Array<[Message, Boolean]>] array of [message, replaying] pairs
+        # @param history [Array<Message>] full stream history
+        # @return [Array<[actions, source_message]>] action pairs
+        def handle_batch(batch, history: BLANK_HISTORY)
+          first_msg, _ = batch.first
+          instance = new(id: identity_from(first_msg))
+          messages = batch.map(&:first)
+          all_replaying = batch.all? { |_, r| r }
+
+          # 1. Evolve full history (includes batch messages)
+          instance.evolve(history)
+          # 2. Single sync
+          sync_actions = instance.sync_actions_with(
+            state: instance.state, events: messages, replaying: all_replaying
+          )
+
+          last_msg = messages.last
+          result = [[sync_actions, last_msg]]
+
+          # 3. Reactions (only for non-replaying messages)
+          unless all_replaying
+            batch.each do |msg, replaying|
+              next if replaying
+              if instance.reacts_to?(msg)
+                reaction_cmds = instance.react(msg)
+                result << [Actions.build_for(reaction_cmds), msg] if reaction_cmds.any?
+              end
+            end
+          end
+
+          result
+        end
+      end
+
       def handle(message, replaying:, history:)
         # Evolve new message from history
         evolve(history)

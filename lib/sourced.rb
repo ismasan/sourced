@@ -245,7 +245,7 @@ module Sourced
   #   @return [Method] Method to handle incoming events
   # @!attribute [r] on_exception
   #   @return [Method] Method to handle exceptions during event processing
-  ReactorInterface = Types::Interface[:handle, :consumer_info, :handled_messages, :on_exception]
+  ReactorInterface = Types::Interface[:handle_batch, :consumer_info, :handled_messages, :on_exception]
 end
 
 require 'sourced/consumer'

@@ -68,5 +68,29 @@ module Sourced
     def on_exception(exception, message, group)
       Sourced.config.error_strategy.call(exception, message, group)
     end
+
+    # Default handle_batch implementation that wraps per-message .handle calls.
+    # Returns array of [actions, source_message] pairs.
+    # Reactors with optimized batch processing (Projector, Actor) override this.
+    #
+    # @param batch [Array<[Message, Boolean]>] array of [message, replaying] pairs
+    # @return [Array<[actions, source_message]>] action pairs
+    def handle_batch(batch)
+      batch.map do |message, replaying|
+        kargs = {}
+        kargs[:replaying] = replaying if handle_kargs.include?(:replaying)
+        kargs[:logger] = Sourced.config.logger if handle_kargs.include?(:logger)
+        actions = handle(message, **kargs)
+        [actions, message]
+      end
+    end
+
+    private
+
+    # Lazily resolved keyword argument names for the reactor's .handle method.
+    # Cached as a class instance variable.
+    def handle_kargs
+      @handle_kargs ||= Injector.resolve_args(self, :handle)
+    end
   end
 end

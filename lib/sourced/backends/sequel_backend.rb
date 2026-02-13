@@ -365,56 +365,50 @@ module Sourced
         db[offsets_table].where(id: offset_id).update(claimed: false, claimed_at: nil, claimed_by: nil)
       end
 
-      # Batch path: process pre-fetched messages from the same stream
-      # in a single lock/ACK cycle. Each message is yielded individually to the block.
-      # On RETRY, the batch stops and ACKs up to the last successful message.
-      # All side effects are committed in one transaction at the end.
+      # Batch path: build batch of [message, replaying] pairs, yield once to get action_pairs back.
+      # All-or-nothing ACK semantics: on success execute all actions and ACK last message,
+      # on RETRY release offset without ACK.
       private def reserve_batch(group_id, rows, history: nil, &block)
-        first_message = nil
-        successful = []
         first_row = rows.first
 
         begin
-          rows.each do |row|
-            message = deserialize_message(row)
-            first_message ||= message
+          # Build batch of [message, replaying] pairs
+          batch = rows.map { |row| [deserialize_message(row), row[:replaying]] }
 
-            # Phase 2: Process message outside of transaction (same as single path)
-            actions = yield(message, row[:replaying], history)
+          # Yield batch + history once, get back action_pairs or RETRY
+          action_pairs = yield(batch, history)
 
-            # Check if actions include RETRY
-            actions_list = actions.is_a?(Array) ? actions.compact : [actions].compact
-            if actions_list.include?(Actions::RETRY)
-              break # Stop processing this batch
-            end
-
-            successful << [actions, message, row]
-          end
-
-          # Phase 3: Execute side effects and ACK in one transaction
-          if successful.any?
-            db.transaction do
-              last_ack_row = nil
-              successful.each do |actions, message, _row|
-                should_ack = execute_actions(group_id, actions, message)
-                last_ack_row = _row if should_ack
-              end
-
-              if last_ack_row
-                ack_message(group_id, last_ack_row[:stream_id_fk], last_ack_row[:global_seq])
-              end
-            end
-          else
-            # No successful messages (RETRY on first), just release the offset
+          # Handle RETRY (all-or-nothing)
+          if action_pairs == Actions::RETRY
             release_offset(first_row[:offset_id])
+            return batch.first&.first
           end
+
+          # Execute all action pairs and ACK in one transaction
+          db.transaction do
+            last_ack_row = nil
+            action_pairs.each_with_index do |(actions, source_message), idx|
+              should_ack = execute_actions(group_id, actions, source_message)
+              # Find the corresponding row for ACK tracking.
+              # Action pairs may not map 1:1 to rows (e.g. projector returns
+              # sync actions keyed to last_msg plus reaction pairs), so we
+              # ACK the last row in the batch when any action triggers ACK.
+              if should_ack
+                last_ack_row = rows.last
+              end
+            end
+
+            if last_ack_row
+              ack_message(group_id, last_ack_row[:stream_id_fk], last_ack_row[:global_seq])
+            end
+          end
+
+          batch.first&.first
 
         rescue StandardError
           release_offset(first_row[:offset_id])
           raise
         end
-
-        first_message
       end
 
       # Atomically claim an offset and fetch up to batch_size messages in a single CTE query.

@@ -105,17 +105,17 @@ module Sourced
 
         def reserve_batch(first_evt, first_index, offset, handled_messages, time_filter, process_actions_callback, batch_size, with_history: false, &block)
           stream_id = first_evt.stream_id
-          batch = [[first_evt, first_index]]
+          raw_batch = [[first_evt, first_index]]
 
           # Find additional messages from same stream
           backend.messages.each.with_index do |e, idx|
-            break if batch.size >= batch_size
+            break if raw_batch.size >= batch_size
             next if idx <= first_index
             next unless e.stream_id == stream_id
             next unless handled_messages.include?(e.class)
             next unless time_filter.call(e)
 
-            batch << [e, idx]
+            raw_batch << [e, idx]
           end
 
           # Build history if requested: all messages from this stream
@@ -123,33 +123,26 @@ module Sourced
             backend.messages.select { |e| e.stream_id == stream_id }
           end
 
-          # Process batch: yield each message, accumulate successful results
-          successful = []
+          # Build batch of [message, replaying] pairs
+          batch = raw_batch.map { |msg, idx| [msg, @highest_index >= idx] }
 
-          batch.each do |msg, idx|
-            replaying = @highest_index >= idx
-            actions = yield(msg, replaying, history)
+          # Yield batch + history once, get back action_pairs or RETRY
+          action_pairs = yield(batch, history)
 
-            actions_list = actions.is_a?(Array) ? actions.compact : [actions].compact
-            if actions_list.include?(Actions::RETRY)
-              break
-            end
-
-            successful << [actions, msg, idx]
+          if action_pairs == Actions::RETRY
+            offset.locked = false
+            return first_evt
           end
 
-          if successful.any?
-            noop_ack = -> {}
-            successful.each do |actions, msg, _idx|
-              process_actions_callback.(group_id, actions, noop_ack, msg, offset)
-            end
-
-            # ACK once for the last successful message.
-            # Guard against regressing the offset if ack_on already advanced it
-            # further (e.g. Ack action that skips ahead).
-            last_idx = successful.last[2]
-            ack(offset, last_idx) if last_idx > offset.index
+          # Execute all action pairs
+          noop_ack = -> {}
+          action_pairs.each do |actions, source_message|
+            process_actions_callback.(group_id, actions, noop_ack, source_message, offset)
           end
+
+          # ACK once for the last message in batch
+          last_idx = raw_batch.last[1]
+          ack(offset, last_idx) if last_idx > offset.index
 
           offset.locked = false
           first_evt
