@@ -401,38 +401,12 @@ module Sourced
           when Actions::Ack
             ack_on(group_id, action.message_id)
 
-          when Actions::AppendNext
-            messages = action.messages.map do |msg|
-              message.correlate(msg)
-            end
-            messages.group_by(&:stream_id).each do |stream_id, stream_messages|
-              append_next_to_stream(stream_id, stream_messages)
-            end
-            should_ack = true
-
-          when Actions::AppendAfter
-            messages = action.messages.map do |msg|
-              message.correlate(msg)
-            end
-            append_to_stream(action.stream_id, messages)
-            should_ack = true
-
-          when Actions::Schedule
-            messages = action.messages.map do |msg|
-              message.correlate(msg)
-            end
-            schedule_messages(messages, at: action.at)
-            should_ack = true
-
-          when Actions::Sync
-            action.call
-            should_ack = true
-
           when Actions::RETRY
             release_offset(row[:offset_id])
 
           else
-            raise ArgumentError, "Expected Sourced::Actions type, but got: #{action.class}. Group #{group_id}. Message #{message}"
+            action.execute(self, message)
+            should_ack = true
           end
         end
 
