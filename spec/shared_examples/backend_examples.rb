@@ -680,6 +680,229 @@ module BackendExamples
       end
     end
 
+    describe '#reserve_next_for_reactor with batch_size' do
+      let(:reactor1) do
+        Class.new do
+          def self.consumer_info
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
+          end
+
+          def self.handled_messages
+            [Tests::SomethingHappened1]
+          end
+        end
+      end
+
+      before do
+        backend.register_consumer_group('group1')
+      end
+
+      it 'fetches and processes multiple messages from the same stream in one call' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 3 })
+        backend.append_to_stream('s1', [evt1, evt2, evt3])
+
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |msg, _replaying|
+          messages << msg
+          Sourced::Actions::OK
+        end
+
+        expect(messages.map(&:id)).to eq([evt1, evt2, evt3].map(&:id))
+      end
+
+      it 'returns the first message from the batch' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        backend.append_to_stream('s1', [evt1, evt2])
+
+        result = backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |_msg, _replaying|
+          Sourced::Actions::OK
+        end
+
+        expect(result.id).to eq(evt1.id)
+      end
+
+      it 'limits to batch_size messages' do
+        evts = 5.times.map do |i|
+          Tests::SomethingHappened1.parse(stream_id: 's1', seq: i + 1, payload: { account_id: i })
+        end
+        backend.append_to_stream('s1', evts)
+
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 3) do |msg, _replaying|
+          messages << msg
+          Sourced::Actions::OK
+        end
+
+        expect(messages.size).to eq(3)
+        expect(messages.map(&:id)).to eq(evts[0..2].map(&:id))
+
+        # Next batch picks up remaining messages
+        messages2 = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 3) do |msg, _replaying|
+          messages2 << msg
+          Sourced::Actions::OK
+        end
+
+        expect(messages2.size).to eq(2)
+        expect(messages2.map(&:id)).to eq(evts[3..4].map(&:id))
+      end
+
+      it 'ACKs all messages on success' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        backend.append_to_stream('s1', [evt1, evt2])
+
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |_msg, _replaying|
+          Sourced::Actions::OK
+        end
+
+        # Nothing left to process
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |msg, _replaying|
+          messages << msg
+          Sourced::Actions::OK
+        end
+
+        expect(messages).to be_empty
+      end
+
+      it 'stops on RETRY and ACKs only messages before the failure (partial ACK)' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 3 })
+        backend.append_to_stream('s1', [evt1, evt2, evt3])
+
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |msg, _replaying|
+          messages << msg
+          if msg.id == evt2.id
+            Sourced::Actions::RETRY
+          else
+            Sourced::Actions::OK
+          end
+        end
+
+        # evt1 processed, evt2 triggered RETRY, evt3 not reached
+        expect(messages.map(&:id)).to eq([evt1, evt2].map(&:id))
+
+        # Next call should resume from evt2 (the failed message)
+        remaining = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |msg, _replaying|
+          remaining << msg
+          Sourced::Actions::OK
+        end
+
+        expect(remaining.map(&:id)).to eq([evt2, evt3].map(&:id))
+      end
+
+      it 'releases offset without ACK when RETRY on first message' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        backend.append_to_stream('s1', [evt1, evt2])
+
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |_msg, _replaying|
+          Sourced::Actions::RETRY
+        end
+
+        # All messages should still be available
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |msg, _replaying|
+          messages << msg
+          Sourced::Actions::OK
+        end
+
+        expect(messages.map(&:id)).to eq([evt1, evt2].map(&:id))
+      end
+
+      it 'only fetches messages matching handled_messages types' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened2.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 3 })
+        backend.append_to_stream('s1', [evt1, evt2, evt3])
+
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |msg, _replaying|
+          messages << msg
+          Sourced::Actions::OK
+        end
+
+        # reactor1 only handles SomethingHappened1, not SomethingHappened2
+        expect(messages.map(&:id)).to eq([evt1, evt3].map(&:id))
+      end
+
+      it 'sets replaying flag correctly per message' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        backend.append_to_stream('s1', [evt1, evt2])
+
+        # Process both messages first
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |_msg, _replaying|
+          Sourced::Actions::OK
+        end
+
+        # Reset consumer group to trigger replaying
+        backend.reset_consumer_group(reactor1)
+
+        # Add a new message (not replaying)
+        evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 3 })
+        backend.append_to_stream('s1', [evt3])
+
+        replaying_flags = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |_msg, is_replaying|
+          replaying_flags << is_replaying
+          Sourced::Actions::OK
+        end
+
+        # evt1 and evt2 are replaying (global_seq <= highest_global_seq), evt3 is not
+        expect(replaying_flags).to eq([true, true, false])
+      end
+
+      it 'handles AppendNext actions within a batch' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        backend.append_to_stream('s1', [evt1, evt2])
+
+        new_cmd = Tests::DoSomething.parse(stream_id: 's2', payload: { account_id: 99 })
+
+        call_count = 0
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |_msg, _replaying|
+          call_count += 1
+          if call_count == 1
+            Sourced::Actions::AppendNext.new([new_cmd])
+          else
+            Sourced::Actions::OK
+          end
+        end
+
+        # Both messages processed, and the AppendNext command was appended
+        expect(backend.read_stream('s2').map(&:id)).to eq([new_cmd.id])
+      end
+
+      it 'returns nil when there are no messages to process' do
+        result = backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |_msg, _replaying|
+          Sourced::Actions::OK
+        end
+
+        expect(result).to be_nil
+      end
+
+      it 'handles a single message in batch mode' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        backend.append_to_stream('s1', [evt1])
+
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |msg, _replaying|
+          messages << msg
+          Sourced::Actions::OK
+        end
+
+        expect(messages.map(&:id)).to eq([evt1.id])
+      end
+    end
+
     describe '#reserve_next_for_reactor with retry_at' do
       it 'does not fetch events until retry_at is up' do
         now = Time.now

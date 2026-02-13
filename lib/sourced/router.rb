@@ -166,14 +166,17 @@ module Sourced
     # Available injectable arguments:
     # - :replaying - Boolean indicating if this is a replay operation
     # - :history - Array of all events in the stream up to this point
-    def handle_next_event_for_reactor(reactor, worker_id = nil, raise_on_error = false)
+    def handle_next_event_for_reactor(reactor, worker_id = nil, raise_on_error = false, batch_size: 1)
       found = false
-      backend.reserve_next_for_reactor(reactor, worker_id:) do |event, replaying|
+      # Cache history per stream_id across a batch to avoid N reads for same stream
+      history_cache = batch_size > 1 ? {} : nil
+
+      backend.reserve_next_for_reactor(reactor, batch_size:, worker_id:) do |event, replaying|
         found = true
         log_event('handling event', reactor, event, worker_id)
-        
+
         # Build keyword arguments hash based on what the reactor's #handle method expects
-        kargs = build_reactor_handle_args(reactor, event, replaying)
+        kargs = build_reactor_handle_args(reactor, event, replaying, history_cache)
 
         # Call the reactor's handle method with the event and any requested keyword arguments
         reactor.handle(event, **kargs)
@@ -218,13 +221,17 @@ module Sourced
     # @param event [Event] The event being processed
     # @param replaying [Boolean] Whether this is a replay operation
     # @return [Hash] Hash of keyword arguments to pass to reactor.handle
-    def build_reactor_handle_args(reactor, event, replaying)
+    def build_reactor_handle_args(reactor, event, replaying, history_cache = nil)
       kargs_for_handle[reactor].each.with_object({}) do |name, hash|
         case name
         when :replaying
           hash[name] = replaying
         when :history
-          hash[name] = backend.read_stream(event.stream_id)
+          if history_cache
+            hash[name] = history_cache[event.stream_id] ||= backend.read_stream(event.stream_id)
+          else
+            hash[name] = backend.read_stream(event.stream_id)
+          end
         when :logger
           hash[name] = logger
         end

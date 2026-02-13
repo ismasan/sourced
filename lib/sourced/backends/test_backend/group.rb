@@ -42,11 +42,11 @@ module Sourced
           newest_processed = (active_offsets.max_by(&:index)&.index || -1) + 1
           stream_count = active_offsets.size
 
-          { 
-            group_id:, 
-            status: @status.to_s, 
-            oldest_processed:, 
-            newest_processed:, 
+          {
+            group_id:,
+            status: @status.to_s,
+            oldest_processed:,
+            newest_processed:,
             stream_count:,
             retry_at:
           }
@@ -75,9 +75,9 @@ module Sourced
           end
         end
 
-        NOOP_FILTER = ->(_) { true } 
+        NOOP_FILTER = ->(_) { true }
 
-        def reserve_next(handled_messages, time_window, process_actions, &)
+        def reserve_next(handled_messages, time_window, process_actions, batch_size: 1, &block)
           time_filter = time_window.is_a?(Time) ? ->(e) { e.created_at > time_window } : NOOP_FILTER
           evt = nil
           offset = nil
@@ -87,34 +87,71 @@ module Sourced
             offset = @offsets[e.stream_id]
             if offset.locked # stream locked by another consumer in the group
               next
-            elsif idx > offset.index && handled_messages.include?(e.class) && time_filter.call(e) # new message for the stream
+            elsif idx > offset.index && handled_messages.include?(e.class) && time_filter.call(e) # new message for the stream
               evt = e
               offset.locked = true
               index = idx
               break
-            else # messages already consumed
+            else # messages already consumed
             end
           end
 
-          if evt
-            replaying = @highest_index >= index
-            if block_given?
-              actions = yield(evt, replaying)
+          return unless evt
 
-              acker = -> { ack(offset, index) }
-              process_actions.(group_id, actions, acker, evt, offset)
-            end
-
-            offset.locked = false
-          end
-
-          evt
+          reserve_batch(evt, index, offset, handled_messages, time_filter, process_actions, batch_size, &block)
         end
 
         private
 
+        def reserve_batch(first_evt, first_index, offset, handled_messages, time_filter, process_actions_callback, batch_size, &block)
+          stream_id = first_evt.stream_id
+          batch = [[first_evt, first_index]]
+
+          # Find additional messages from same stream
+          backend.messages.each.with_index do |e, idx|
+            break if batch.size >= batch_size
+            next if idx <= first_index
+            next unless e.stream_id == stream_id
+            next unless handled_messages.include?(e.class)
+            next unless time_filter.call(e)
+
+            batch << [e, idx]
+          end
+
+          # Process batch: yield each message, accumulate successful results
+          successful = []
+
+          batch.each do |msg, idx|
+            replaying = @highest_index >= idx
+            actions = yield(msg, replaying)
+
+            actions_list = actions.is_a?(Array) ? actions.compact : [actions].compact
+            if actions_list.include?(Actions::RETRY)
+              break
+            end
+
+            successful << [actions, msg, idx]
+          end
+
+          if successful.any?
+            noop_ack = -> {}
+            successful.each do |actions, msg, _idx|
+              process_actions_callback.(group_id, actions, noop_ack, msg, offset)
+            end
+
+            # ACK once for the last successful message.
+            # Guard against regressing the offset if ack_on already advanced it
+            # further (e.g. Ack action that skips ahead).
+            last_idx = successful.last[2]
+            ack(offset, last_idx) if last_idx > offset.index
+          end
+
+          offset.locked = false
+          first_evt
+        end
+
         def ack(offset, index)
-          # ACK reactor/message
+          # ACK reactor/message
           offset.index = index
           @highest_index = index if index > @highest_index
         end

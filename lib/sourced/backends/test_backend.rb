@@ -34,13 +34,13 @@ module Sourced
         yield
       end
 
-      def reserve_next_for_reactor(reactor, worker_id: Process.pid.to_s, &)
+      def reserve_next_for_reactor(reactor, batch_size: 1, worker_id: Process.pid.to_s, &)
         group_id = reactor.consumer_info.group_id
         start_from = reactor.consumer_info.start_from.call
         transaction do
           group = @state.groups[group_id]
           if group.active? && (group.retry_at.nil? || group.retry_at <= Time.now)
-            group.reserve_next(reactor.handled_messages, start_from, method(:process_actions), &)
+            group.reserve_next(reactor.handled_messages, start_from, method(:process_actions), batch_size:, &)
           end
         end
       end

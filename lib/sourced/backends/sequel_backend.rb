@@ -319,34 +319,34 @@ module Sourced
         raise Sourced::ConcurrentAppendError, e.message
       end
 
-      # Reserve next message for a reactor, based on the reactor's #handled_messages list
-      # This fetches the next un-acknowledged message for the reactor, and processes it in a transaction
-      # which aquires a lock on the message's stream_id and the reactor's group_id
+      # Reserve next message(s) for a reactor, based on the reactor's #handled_messages list.
+      # This fetches the next un-acknowledged message(s) for the reactor, and processes them in a transaction
+      # which acquires a lock on the message's stream_id and the reactor's group_id.
       # So that no other reactor instance in the same group can process the same stream concurrently.
       # This way, messages for the same stream are guaranteed to be processed sequentially for each reactor group.
-      # If the given block returns truthy, the message is marked as acknowledged for this reactor group
-      # (ie. it won't be processed again by the same group).
-      # If the block returns falsey, the message is NOT acknowledged and will be retried,
-      # unless the block also stops the reactor, which is the default behaviour when an exception is raised.
-      # See Router#handle_next_message_for_reactor,
-      # A boolean is passed to the block to indicate whether the message is being replayed 
-      # (ie the reactor group has previously processed it).
-      # This is done by incrementing the group's highest_global_seq with every message acknowledged.
-      # When the group's offsets are reset (in order to re-process all messages), this value is preserved
-      # so that each message's global_seq can be compared against it to determine if the message is being replayed.
       #
-      # @example
+      # When batch_size > 1, fetches multiple messages from the same stream in a single
+      # lock cycle, reducing per-message overhead for catch-up scenarios.
+      # Each message is yielded individually to the block. On RETRY, the batch stops
+      # and ACKs up to the last successful message (partial ACK).
+      #
+      # @example Single message (default)
       #   backend.reserve_next_for_reactor(reactor) do |message, replaying|
-      #     # process message here
-      #     true # ACK message
+      #     Sourced::Actions::OK
+      #   end
+      #
+      # @example Batch processing
+      #   backend.reserve_next_for_reactor(reactor, batch_size: 50) do |message, replaying|
+      #     reactor.handle(message, replaying:)
       #   end
       #
       # @param reactor [Sourced::ReactorInterface]
-      # @option worker_id [String]
-      # @yieldparam [Sourced::Message]
-      # @yieldparam [Boolean] whether the message is being replayed (ie. it has been processed before)
-      # @yieldreturn [Boolean] whether to ACK the message for this reactor group and stream ID.
-      def reserve_next_for_reactor(reactor, worker_id: nil, &)
+      # @param batch_size [Integer] Number of messages to fetch per lock cycle (default: 1)
+      # @param worker_id [String]
+      # @yieldparam message [Sourced::Message]
+      # @yieldparam replaying [Boolean] whether the message is being replayed
+      # @yieldreturn actions to process for this message
+      def reserve_next_for_reactor(reactor, batch_size: 1, worker_id: nil, &block)
         worker_id ||= [Process.pid, Thread.current.object_id, Fiber.current.object_id].join('-')
         group_id = reactor.consumer_info.group_id
         handled_messages = reactor.handled_messages.map(&:type).uniq
@@ -354,44 +354,95 @@ module Sourced
 
         bootstrap_offsets_for(group_id)
 
-        # Phase 1: Claim stream_id/group_id in short transaction
-        # This claim includes :message, :claim_id and :replaying
-        row = claim_next_message(group_id, handled_messages, now, reactor.consumer_info.start_from.call, worker_id)
+        start_from = reactor.consumer_info.start_from.call
+        rows = claim_and_fetch_batch(group_id, handled_messages, now, start_from, worker_id, batch_size)
+        return unless rows
 
-        # return reserve_next_for_reactor(reactor, &) if row == :retry
-        return unless row
-
-        message = deserialize_message(row)
-
-        begin
-          # Phase 2: Process message outside of transaction
-          actions = yield(message, row[:replaying])
-
-          # Phase 3: update state depending on result
-          # Result handling happens in the same transaction
-          # as ACKing the message
-          db.transaction do
-            process_actions(group_id, row, actions, message)
-          end
-
-        rescue StandardError
-          release_offset(row[:offset_id])
-          raise
-        end
-
-        message
+        reserve_batch(group_id, rows, &block)
       end
 
       private def release_offset(offset_id)
         db[offsets_table].where(id: offset_id).update(claimed: false, claimed_at: nil, claimed_by: nil)
       end
 
-      private def process_actions(group_id, row, actions, message)
+      # Batch path: process pre-fetched messages from the same stream
+      # in a single lock/ACK cycle. Each message is yielded individually to the block.
+      # On RETRY, the batch stops and ACKs up to the last successful message.
+      # All side effects are committed in one transaction at the end.
+      private def reserve_batch(group_id, rows, &block)
+        first_message = nil
+        successful = []
+        first_row = rows.first
+
+        begin
+          rows.each do |row|
+            message = deserialize_message(row)
+            first_message ||= message
+
+            # Phase 2: Process message outside of transaction (same as single path)
+            actions = yield(message, row[:replaying])
+
+            # Check if actions include RETRY
+            actions_list = actions.is_a?(Array) ? actions.compact : [actions].compact
+            if actions_list.include?(Actions::RETRY)
+              break # Stop processing this batch
+            end
+
+            successful << [actions, message, row]
+          end
+
+          # Phase 3: Execute side effects and ACK in one transaction
+          if successful.any?
+            db.transaction do
+              last_ack_row = nil
+              successful.each do |actions, message, _row|
+                should_ack = execute_actions(group_id, actions, message)
+                last_ack_row = _row if should_ack
+              end
+
+              if last_ack_row
+                ack_message(group_id, last_ack_row[:stream_id_fk], last_ack_row[:global_seq])
+              end
+            end
+          else
+            # No successful messages (RETRY on first), just release the offset
+            release_offset(first_row[:offset_id])
+          end
+
+        rescue StandardError
+          release_offset(first_row[:offset_id])
+          raise
+        end
+
+        first_message
+      end
+
+      # Atomically claim an offset and fetch up to batch_size messages in a single CTE query.
+      # The CTE finds the first matching message (to identify the stream), claims the offset,
+      # and fetches all pending messages from that stream in one round-trip.
+      private def claim_and_fetch_batch(group_id, handled_messages, now, start_from, worker_id, batch_size)
+        sql = if start_from.is_a?(Time)
+          sql_for_claim_and_fetch_batch(handled_messages, group_id:, now:, worker_id:, batch_size:, start_from:)
+        else
+          sql_for_claim_and_fetch_batch(handled_messages, group_id:, now:, worker_id:, batch_size:)
+        end
+
+        rows = db.fetch(sql).all
+        return nil if rows.empty?
+
+        rows
+      rescue Sequel::UniqueConstraintViolation
+        logger.debug "Batch claim for group #{group_id} already exists, skipping"
+        nil
+      end
+
+      # Execute action side effects without ACKing.
+      # Returns true if the message should be ACKed by the caller.
+      private def execute_actions(group_id, actions, message)
         should_ack = false
         actions = [actions] unless actions.is_a?(Array)
         actions = actions.compact
-        # Empty actions is assumed to be an ACK
-        return ack_message(group_id, row[:stream_id_fk], row[:global_seq]) if actions.empty?
+        return true if actions.empty? # empty = implicit ACK
 
         actions.each do |action|
           case action
@@ -402,7 +453,7 @@ module Sourced
             ack_on(group_id, action.message_id)
 
           when Actions::RETRY
-            release_offset(row[:offset_id])
+            # Should not reach here (filtered by batch loop)
 
           else
             action.execute(self, message)
@@ -410,7 +461,7 @@ module Sourced
           end
         end
 
-        ack_message(group_id, row[:stream_id_fk], row[:global_seq]) if should_ack
+        should_ack
       end
 
       # Insert missing offsets for a consumer group and all streams.
@@ -451,37 +502,6 @@ module Sourced
         end
       end
 
-      # @param group_id [String] Consumer group ID to claim the next message for
-      # @param handle_messages [Array<String>] List of message types to handle
-      # @param now [Time] Current time
-      # @param start_from [Time] Optional starting point for message processing
-      # @param worker_id [String] Unique identifier for the worker claiming the message
-      private def claim_next_message(group_id, handled_messages, now, start_from, worker_id)
-        db.transaction do
-          # 1. get next message for this group_id and handled_messages
-          # Use FOR UPDATE SKIP LOCKED if supported
-          row = if start_from.is_a?(Time)
-            db.fetch(sql_for_reserve_next_with_messages(handled_messages, group_id:, now:, start_from:)).first
-          else
-            db.fetch(sql_for_reserve_next_with_messages(handled_messages, group_id:, now:)).first
-          end
-          return unless row
-
-          # An offset exists, and has been locked with FOR UPDATE SKIP LOCKED
-          # while in the same transaction, we claim it
-          updated = db[offsets_table]
-            .where(id: row[:offset_id])
-            .update(claimed: true, claimed_at: now, claimed_by: worker_id)
-
-          return nil if updated == 0 # already claimed by another worker
-          row
-        end
-
-      rescue Sequel::UniqueConstraintViolation
-        # Another worker has already claimed this message
-        logger.debug "AAA Claim for group #{group_id} already exists, skipping"
-        nil
-      end
 
       def register_consumer_group(group_id)
         db[consumer_groups_table]
@@ -711,31 +731,58 @@ module Sourced
         )
       end
 
-      def sql_for_reserve_next_with_messages(handled_messages, group_id:, now:, start_from: nil)
+      # CTE-based SQL that atomically claims an offset and fetches batch messages in one statement.
+      # 1. first_match: finds the first pending message to identify the stream/offset (FOR UPDATE SKIP LOCKED)
+      # 2. claim: claims the offset in the same statement (UPDATE ... RETURNING)
+      # 3. outer SELECT: fetches up to batch_size messages from the claimed stream
+      def sql_for_claim_and_fetch_batch(handled_messages, group_id:, now:, worker_id:, batch_size:, start_from: nil)
         message_types = handled_messages.map { |e| "'#{e}'" }
-        now = db.literal(now)
-        group_id = db.literal(group_id)
+        now_literal = db.literal(now)
+        group_id_literal = db.literal(group_id)
+        worker_id_literal = db.literal(worker_id)
+        batch_size_literal = db.literal(batch_size)
         message_types_sql = message_types.any? ? " AND e.type IN(#{message_types.join(',')})" : ''
         time_window_sql = start_from ? " AND e.created_at > #{db.literal(start_from)}" : ''
 
         <<~SQL
-          SELECT
-              e.global_seq, e.id, ss.stream_id, e.stream_id as stream_id_fk,
-              e.seq, e.type, e.created_at, e.causation_id, e.correlation_id,
-              e.metadata, e.payload, so.id as offset_id, cg.id as group_id_fk,
-              (e.global_seq <= cg.highest_global_seq) AS replaying
-          FROM #{@messages_table_literal} e
-          JOIN #{@streams_table_literal} ss ON e.stream_id = ss.id
-          JOIN #{@consumer_groups_table_literal} cg ON cg.group_id = #{group_id}
-          JOIN #{@offsets_table_literal} so ON cg.id = so.group_id AND ss.id = so.stream_id
-          WHERE e.global_seq > so.global_seq
-            AND so.claimed = FALSE
-            AND cg.status = 'active'
-            AND (cg.retry_at IS NULL OR cg.retry_at <= #{now})
+          WITH first_match AS (
+            SELECT
+                so.id as offset_id, ss.stream_id, e.stream_id as stream_id_fk,
+                cg.id as group_id_fk,
+                cg.highest_global_seq,
+                so.global_seq as offset_seq
+            FROM #{@messages_table_literal} e
+            JOIN #{@streams_table_literal} ss ON e.stream_id = ss.id
+            JOIN #{@consumer_groups_table_literal} cg ON cg.group_id = #{group_id_literal}
+            JOIN #{@offsets_table_literal} so ON cg.id = so.group_id AND ss.id = so.stream_id
+            WHERE e.global_seq > so.global_seq
+              AND so.claimed = FALSE
+              AND cg.status = 'active'
+              AND (cg.retry_at IS NULL OR cg.retry_at <= #{now_literal})
+              #{message_types_sql}#{time_window_sql}
+            ORDER BY e.global_seq ASC
+            FOR UPDATE OF so SKIP LOCKED
+            LIMIT 1
+          ),
+          claim AS (
+            UPDATE #{@offsets_table_literal}
+            SET claimed = TRUE, claimed_at = #{now_literal}, claimed_by = #{worker_id_literal}
+            FROM first_match
+            WHERE #{@offsets_table_literal}.id = first_match.offset_id
+            RETURNING first_match.offset_id, first_match.stream_id, first_match.stream_id_fk,
+                      first_match.group_id_fk, first_match.highest_global_seq, first_match.offset_seq
+          )
+          SELECT e.global_seq, e.id, claim.stream_id, e.stream_id as stream_id_fk,
+                 e.seq, e.type, e.created_at, e.causation_id, e.correlation_id,
+                 e.metadata, e.payload, claim.offset_id, claim.group_id_fk,
+                 (e.global_seq <= claim.highest_global_seq) AS replaying,
+                 claim.highest_global_seq
+          FROM claim
+          JOIN #{@messages_table_literal} e ON e.stream_id = claim.stream_id_fk
+          WHERE e.global_seq > claim.offset_seq
             #{message_types_sql}#{time_window_sql}
           ORDER BY e.global_seq ASC
-          FOR UPDATE OF so SKIP LOCKED
-          LIMIT 1;
+          LIMIT #{batch_size_literal};
         SQL
       end
 

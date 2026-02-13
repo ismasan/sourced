@@ -37,8 +37,9 @@ module Sourced
     # @param count [Integer] Number of worker fibers to spawn (defaults to 2)
     # @param executor [Object] Executor instance for running concurrent workers (defaults to configured executor)
     def initialize(
-      logger: Sourced.config.logger, 
+      logger: Sourced.config.logger,
       count: Sourced.config.worker_count,
+      batch_size: Sourced.config.worker_batch_size,
       housekeeping_count: Sourced.config.housekeeping_count,
       housekeeping_interval: Sourced.config.housekeeping_interval,
       housekeeping_heartbeat_interval: Sourced.config.housekeeping_heartbeat_interval,
@@ -48,6 +49,7 @@ module Sourced
     )
       @logger = logger
       @count = count
+      @batch_size = batch_size
       @housekeeping_count = housekeeping_count
       @housekeeping_interval = housekeeping_interval
       @housekeeping_heartbeat_interval = housekeeping_heartbeat_interval
@@ -83,7 +85,7 @@ module Sourced
 
       @workers = @count.times.map do |i|
         # TODO: worker names using Process.pid, current thread and fiber id
-        Worker.new(logger:, router:, name: "worker-#{i}")
+        Worker.new(logger:, router:, name: "worker-#{i}", batch_size: @batch_size)
       end
 
       @executor.start do |task|
