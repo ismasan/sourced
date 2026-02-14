@@ -33,7 +33,7 @@ module Sourced
       end
 
       # Override this in subclasses
-      # to make an actor take it's @id from an arbitrary
+      # to make an actor take its @id from an arbitrary
       # field in the message
       #
       # @param message [Sourced::Message]
