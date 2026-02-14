@@ -366,43 +366,71 @@ module Sourced
         db[offsets_table].where(id: offset_id).update(claimed: false, claimed_at: nil, claimed_by: nil)
       end
 
-      # Batch path: build batch of [message, replaying] pairs, yield once to get action_pairs back.
-      # All-or-nothing ACK semantics: on success execute all actions and ACK last message,
-      # on RETRY release offset without ACK.
+      # Process a batch of claimed messages through the reactor and handle the result.
+      #
+      # This is the core processing loop for batch message handling. It follows a
+      # yield-once contract: the caller (Router) receives the full batch and returns
+      # action pairs describing what side effects to execute.
+      #
+      # ## Flow
+      #
+      # 1. Deserialize raw DB rows into [Message, replaying] pairs
+      # 2. Yield the batch + optional history to the caller (reactor.handle_batch)
+      # 3. Handle the return value:
+      #    - Actions::RETRY → release the claimed offset, no ACK (message will be retried)
+      #    - Array of [actions, source_message] pairs → execute side effects and ACK
+      #    - Empty array → release offset (nothing to do, avoid stuck claim)
+      #
+      # ## ACK semantics
+      #
+      # All-or-nothing per batch. On success, all action pairs are executed in a single
+      # DB transaction and the offset is advanced to the last message in the batch.
+      # ack_message() both advances the offset AND releases the claim in one update.
+      #
+      # Action pairs don't map 1:1 to batch messages. For example, a Projector returns
+      # one [sync_actions, last_msg] pair for the whole batch, plus separate
+      # [reaction_actions, triggering_msg] pairs. We ACK based on the last row in the
+      # batch regardless of which action pair triggered it.
+      #
+      # ## Error handling
+      #
+      # Any exception releases the claimed offset (so the batch can be retried by
+      # another worker) and re-raises for the Router to handle via on_exception.
+      #
+      # @param group_id [String] consumer group ID
+      # @param rows [Array<Hash>] raw DB rows from claim_and_fetch_batch
+      # @param history [Array<Message>, nil] deserialized stream history, if requested
+      # @yield [batch, history] yields once to the caller for processing
+      # @return [Message, nil] the first message in the batch (used by Router for logging)
       private def reserve_batch(group_id, rows, history: nil, &block)
         first_row = rows.first
 
         begin
-          # Build batch of [message, replaying] pairs
           batch = rows.map { |row| [deserialize_message(row), row[:replaying]] }
 
-          # Yield batch + history once, get back action_pairs or RETRY
           action_pairs = yield(batch, history)
 
-          # Handle RETRY (all-or-nothing)
+          # RETRY: release offset without ACK. The batch will be picked up again.
           if action_pairs == Actions::RETRY
             release_offset(first_row[:offset_id])
             return batch.first&.first
           end
 
-          # Execute all action pairs and ACK in one transaction
+          # Execute all side effects and ACK in a single transaction.
+          # This ensures actions (AppendNext, Sync, etc.) and the ACK are atomic.
           db.transaction do
             last_ack_row = nil
             action_pairs.each_with_index do |(actions, source_message), idx|
               should_ack = execute_actions(group_id, actions, source_message)
-              # Find the corresponding row for ACK tracking.
-              # Action pairs may not map 1:1 to rows (e.g. projector returns
-              # sync actions keyed to last_msg plus reaction pairs), so we
-              # ACK the last row in the batch when any action triggers ACK.
-              if should_ack
-                last_ack_row = rows.last
-              end
+              last_ack_row = rows.last if should_ack
             end
 
             if last_ack_row
+              # Advance offset to last batch message and release the claim
               ack_message(group_id, last_ack_row[:stream_id_fk], last_ack_row[:global_seq])
             else
-              # Nothing was ACKed — release the claim so another worker can retry
+              # No action pair triggered an ACK (e.g. empty action_pairs).
+              # Release the claim so the batch isn't stuck.
               release_offset(first_row[:offset_id])
             end
           end
@@ -410,6 +438,7 @@ module Sourced
           batch.first&.first
 
         rescue StandardError
+          # Release claim on any error so another worker can pick up the batch
           release_offset(first_row[:offset_id])
           raise
         end
