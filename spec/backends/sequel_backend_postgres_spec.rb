@@ -4,16 +4,23 @@ require 'spec_helper'
 require 'sourced/backends/sequel_backend'
 
 RSpec.describe 'Sourced::Backends::SequelBackend with Postgres', type: :backend do
-  subject(:backend) { Sourced::Backends::SequelBackend.new(db) }
-
-  let(:db) do
-    Sequel.postgres('sourced_test')
+  before(:all) do
+    @db = Sequel.postgres('sourced_test')
+    @backend = Sourced::Backends::SequelBackend.new(@db)
+    @backend.setup!(Sourced.config)
+    @backend.uninstall if @backend.installed?
+    @backend.install
   end
 
+  after(:all) do
+    @db&.disconnect
+  end
+
+  subject(:backend) { @backend }
+  let(:db) { @db }
+
   before do
-    backend.setup!(Sourced.config)
-    backend.uninstall if backend.installed?
-    backend.install
+    backend.clear!
   end
 
   it_behaves_like 'a backend'
