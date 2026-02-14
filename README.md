@@ -958,6 +958,18 @@ class MyBatchReactor
 end
 ```
 
+Individual reactors can override the global `worker_batch_size` via the `consumer` DSL:
+
+```ruby
+class OrderProjector < Sourced::Projector::StateStored
+  consumer do |c|
+    c.batch_size = 100
+  end
+end
+```
+
+When set, the reactor's `batch_size` takes precedence over the global `worker_batch_size`. When not set (default), the global value is used.
+
 ### Reactors that require message history
 
 Reactors that declare the `:history` keyword in their `.handle_batch` (or `.handle`) signature will be provided the full message history for the stream being handled.
