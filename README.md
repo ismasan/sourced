@@ -970,6 +970,33 @@ end
 
 When set, the reactor's `batch_size` takes precedence over the global `worker_batch_size`. When not set (default), the global value is used.
 
+#### Partial ACK on failure
+
+When a message raises mid-batch, Sourced ACKs up to the last successfully processed message instead of retrying the entire batch. The failed message and any subsequent messages are retried in the next batch. This is handled automatically by `each_with_partial_ack` in the Consumer module, which all built-in reactor types use.
+
+**Actors and plain Consumer reactors** process each message independently (a new instance per message), so partial ACK is straightforward and safe with any batch size.
+
+**Projectors** use an evolve-all-sync-once optimization: all batch messages are evolved into a single instance's state, then synced once. Reactions are processed one by one — if a reaction fails mid-batch, all previously successful messages (including their reactions and a correct partial sync) are ACKed, and only the failed message onward is retried. On partial failure, the projector automatically rebuilds a fresh instance with only the successfully processed messages to produce a correct sync (via the `on_partial_sync` block in `sync_and_react`).
+
+```ruby
+class PaymentProcessor < Sourced::Projector::StateStored
+  consumer do |c|
+    c.batch_size = 10
+  end
+
+  reaction PaymentStarted do |state, evt|
+    # If this HTTP call succeeds for messages 1-3 but fails on message 4,
+    # messages 1-3 are fully ACKed (reactions + sync). Message 4 onward is retried.
+    response = PaymentGateway.post(:process_payment, state[:payment_info])
+    if response.ok?
+      dispatch ConfirmPayment, payment_id: response.body[:payment_id]
+    else
+      dispatch RejectPayment, errors: response.body[:errors]
+    end
+  end
+end
+```
+
 ### Reactors that require message history
 
 Reactors that declare the `:history` keyword in their `.handle_batch` (or `.handle`) signature will be provided the full message history for the stream being handled.

@@ -131,6 +131,34 @@ module RouterTest
       Sourced::Actions::OK
     end
   end
+
+  # Reactor that fails on a configurable seq number.
+  # Uses default Consumer handle_batch (per-message .handle calls).
+  class ReactorWithPartialFailure
+    extend Sourced::Consumer
+
+    consumer do |c|
+      c.batch_size = 10
+    end
+
+    def self.handled_messages
+      [ItemAdded]
+    end
+
+    @log = []
+    @fail_on_seq = nil
+
+    class << self
+      attr_accessor :log, :fail_on_seq
+    end
+
+    def self.handle(event)
+      raise "boom on seq #{event.seq}" if fail_on_seq == event.seq
+
+      log << event.seq
+      Sourced::Actions::OK
+    end
+  end
 end
 
 RSpec.describe Sourced::Router do
@@ -315,6 +343,54 @@ RSpec.describe Sourced::Router do
             with_history: false,
             worker_id: nil
           )
+        end
+      end
+
+      context 'partial batch failure' do
+        let(:e1) { RouterTest::ItemAdded.new(stream_id: '123', seq: 1) }
+        let(:e2) { RouterTest::ItemAdded.new(stream_id: '123', seq: 2) }
+        let(:e3) { RouterTest::ItemAdded.new(stream_id: '123', seq: 3) }
+
+        before do
+          backend.clear!
+          backend.append_to_stream('123', [e1, e2, e3])
+          router.register(RouterTest::ReactorWithPartialFailure)
+          allow(RouterTest::ReactorWithPartialFailure).to receive(:on_exception)
+          RouterTest::ReactorWithPartialFailure.fail_on_seq = 3
+          RouterTest::ReactorWithPartialFailure.log = []
+        end
+
+        it 'ACKs successfully processed messages and retries from the failed one' do
+          # First call: batch of 3, e1 and e2 succeed, e3 raises
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithPartialFailure)
+          expect(RouterTest::ReactorWithPartialFailure.log).to eq([1, 2])
+
+          # Second call: should only get e3 (e1 and e2 already ACKed)
+          RouterTest::ReactorWithPartialFailure.fail_on_seq = nil
+          RouterTest::ReactorWithPartialFailure.log = []
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithPartialFailure)
+          expect(RouterTest::ReactorWithPartialFailure.log).to eq([3])
+        end
+
+        it 'calls on_exception for the failed message' do
+          allow(RouterTest::ReactorWithPartialFailure).to receive(:on_exception)
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithPartialFailure)
+
+          expect(RouterTest::ReactorWithPartialFailure).to have_received(:on_exception) do |exception, message, group|
+            expect(exception.message).to eq('boom on seq 3')
+            expect(message.seq).to eq(3)
+          end
+        end
+
+        it 'handles failure on the first message (no partial ACK possible)' do
+          RouterTest::ReactorWithPartialFailure.fail_on_seq = 1
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithPartialFailure)
+          expect(RouterTest::ReactorWithPartialFailure.log).to eq([])
+
+          # Retry: all 3 messages should still be pending
+          RouterTest::ReactorWithPartialFailure.fail_on_seq = nil
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithPartialFailure)
+          expect(RouterTest::ReactorWithPartialFailure.log).to eq([1, 2, 3])
         end
       end
     end

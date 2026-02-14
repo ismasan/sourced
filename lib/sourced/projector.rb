@@ -43,32 +43,52 @@ module Sourced
       private
 
       # Shared batch finalization for both StateStored and EventSourced projectors.
-      # Runs a single sync for the entire batch, then collects reactions for
-      # non-replaying messages.
+      # Runs reaction handlers first (which may issue 3rd party requests),
+      # then builds deferred sync actions last (executed in backend DB transaction).
+      #
+      # Unlike Actors (which create a new instance per message), Projectors use an
+      # evolve-all-sync-once optimization: all batch messages are evolved into a
+      # single instance's state before reactions run. This means on partial failure,
+      # the sync must be rebuilt for only the successfully processed messages.
+      # The block is called with the partial message list to produce correct sync_actions
+      # (e.g. StateStored rebuilds a fresh instance with partial evolve).
       #
       # @param instance [Projector] the projector instance (already evolved)
       # @param batch [Array<[Message, Boolean]>] original batch pairs
       # @param messages [Array<Message>] extracted messages from batch
       # @param all_replaying [Boolean] whether all messages in the batch are replaying
+      # @yield [partial_messages] called on reaction error to build partial sync_actions
+      # @yieldparam partial_messages [Array<Message>] messages successfully processed
+      # @yieldreturn [Array<Sourced::Actions::Sync>] sync actions for partial state
       # @return [Array<[actions, source_message]>] action pairs
-      def sync_and_react(instance, batch, messages, all_replaying)
+      def sync_and_react(instance, batch, messages, all_replaying, &on_partial_sync)
+        reaction_pairs = if all_replaying
+          BLANK_ARRAY
+        else
+          each_with_partial_ack(batch) do |msg, replaying|
+            next if replaying
+            next unless instance.reacts_to?(msg)
+
+            reaction_cmds = instance.react(msg)
+            reaction_cmds.any? ? [Actions.build_for(reaction_cmds), msg] : nil
+          end
+        end
+
+        # All reactions succeeded. Build deferred sync for all messages (runs last in backend transaction).
         sync_actions = instance.sync_actions_with(
           state: instance.state, events: messages, replaying: all_replaying
         )
 
-        result = [[sync_actions, messages.last]]
-
-        unless all_replaying
-          batch.each do |msg, replaying|
-            next if replaying
-            if instance.reacts_to?(msg)
-              reaction_cmds = instance.react(msg)
-              result << [Actions.build_for(reaction_cmds), msg] if reaction_cmds.any?
-            end
-          end
+        reaction_pairs + [[sync_actions, messages.last]]
+      rescue PartialBatchError => e
+        # Augment partial reaction results with sync for the successfully processed messages.
+        fail_idx = messages.index { |m| m.id == e.failed_message.id }
+        partial_messages = messages[0...fail_idx]
+        if on_partial_sync && partial_messages.any?
+          sync_actions = on_partial_sync.call(partial_messages)
+          e.action_pairs << [sync_actions, partial_messages.last] if sync_actions.any?
         end
-
-        result
+        raise
       end
     end
 
@@ -127,6 +147,8 @@ module Sourced
         end
 
         # Optimized batch processing: one state load, one sync for entire batch.
+        # On partial failure, rebuilds a fresh instance with only the successfully
+        # processed messages so the sync persists correct partial state.
         # @param batch [Array<[Message, Boolean]>] array of [message, replaying] pairs
         # @return [Array<[actions, source_message]>] action pairs
         def handle_batch(batch)
@@ -137,7 +159,12 @@ module Sourced
 
           instance.state
           instance.evolve(messages)
-          sync_and_react(instance, batch, messages, all_replaying)
+          sync_and_react(instance, batch, messages, all_replaying) do |partial_messages|
+            partial = new(id: identity_from(first_msg))
+            partial.state
+            partial.evolve(partial_messages)
+            partial.sync_actions_with(state: partial.state, events: partial_messages, replaying: all_replaying)
+          end
         end
       end
 
@@ -187,6 +214,8 @@ module Sourced
 
       class << self
         # Optimized batch processing: one history evolve, one sync for entire batch.
+        # On partial failure, reuses the already-evolved instance for sync since
+        # EventSourced state is rebuilt from history on every invocation (idempotent).
         # @param batch [Array<[Message, Boolean]>] array of [message, replaying] pairs
         # @param history [Array<Message>] full stream history
         # @return [Array<[actions, source_message]>] action pairs
@@ -197,7 +226,11 @@ module Sourced
           all_replaying = batch.all? { |_, r| r }
 
           instance.evolve(history)
-          sync_and_react(instance, batch, messages, all_replaying)
+          sync_and_react(instance, batch, messages, all_replaying) do |partial_messages|
+            # EventSourced state is rebuilt from history, so sync is idempotent.
+            # Reuse the already-evolved instance but sync only partial_messages.
+            instance.sync_actions_with(state: instance.state, events: partial_messages, replaying: all_replaying)
+          end
         end
       end
 

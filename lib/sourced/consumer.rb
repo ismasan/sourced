@@ -77,7 +77,7 @@ module Sourced
     # @param batch [Array<[Message, Boolean]>] array of [message, replaying] pairs
     # @return [Array<[actions, source_message]>] action pairs
     def handle_batch(batch)
-      batch.map do |message, replaying|
+      each_with_partial_ack(batch) do |message, replaying|
         kargs = {}
         kargs[:replaying] = replaying if handle_kargs.include?(:replaying)
         kargs[:logger] = Sourced.config.logger if handle_kargs.include?(:logger)
@@ -87,6 +87,31 @@ module Sourced
     end
 
     private
+
+    # Iterate batch with per-message error handling.
+    # Collects [actions, message] pairs returned by the block.
+    # On mid-batch failure, raises PartialBatchError with pairs collected so far,
+    # allowing the backend to ACK up to the last successful message.
+    # If the first message fails, raises the original error (no partial ACK possible).
+    #
+    # Used by Consumer (default handle_batch), Actor, and Projector (reaction loop)
+    # to provide partial ACK across all reactor types.
+    #
+    # @param batch [Array<[Message, Boolean]>] array of [message, replaying] pairs
+    # @yield [message, replaying] called for each message in the batch
+    # @yieldreturn [Array(actions, Message), nil] action pair, or nil to skip
+    # @return [Array<[actions, source_message]>] action pairs
+    def each_with_partial_ack(batch)
+      results = []
+      batch.each do |message, replaying|
+        pair = yield(message, replaying)
+        results << pair if pair
+      rescue StandardError => e
+        raise e if results.empty?
+        raise PartialBatchError.new(results, message, e)
+      end
+      results
+    end
 
     # Lazily resolved keyword argument names for the reactor's .handle method.
     # Cached as a class instance variable.

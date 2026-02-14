@@ -146,8 +146,12 @@ module Sourced
             process_actions_callback.(group_id, actions, noop_ack, source_message, offset)
           end
 
-          # ACK once for the last message in batch
-          last_idx = raw_batch.last[1]
+          # ACK once for the last successfully processed message.
+          # Find the raw_batch entry matching the last action_pair's source_message,
+          # so partial batches ACK up to the last successful message (not the last in the batch).
+          last_source_message = action_pairs.last&.last
+          last_entry = raw_batch.find { |msg, _idx| msg.id == last_source_message&.id } || raw_batch.last
+          last_idx = last_entry[1]
           ack(offset, last_idx) if last_idx > offset.index
 
           offset.locked = false

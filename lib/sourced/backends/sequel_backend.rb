@@ -420,13 +420,18 @@ module Sourced
           # This ensures actions (AppendNext, Sync, etc.) and the ACK are atomic.
           db.transaction do
             last_ack_row = nil
-            action_pairs.each_with_index do |(actions, source_message), idx|
+            action_pairs.each do |(actions, source_message)|
               should_ack = execute_actions(group_id, actions, source_message)
-              last_ack_row = rows.last if should_ack
+              if should_ack
+                # Find the row matching this action_pair's source_message.
+                # For partial batches (PartialBatchError), this ACKs up to the
+                # last successfully processed message rather than the last batch row.
+                last_ack_row = rows.find { |r| r[:id] == source_message.id } || rows.last
+              end
             end
 
             if last_ack_row
-              # Advance offset to last batch message and release the claim
+              # Advance offset to last successfully processed message and release the claim
               ack_message(group_id, last_ack_row[:stream_id_fk], last_ack_row[:global_seq])
             else
               # No action pair triggered an ACK (e.g. empty action_pairs).

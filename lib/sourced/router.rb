@@ -145,6 +145,14 @@ module Sourced
         kargs = {}
         kargs[:history] = history if @needs_history[reactor]
         reactor.handle_batch(batch, **kargs)
+      rescue PartialBatchError => e
+        raise e if raise_on_error
+
+        logger.warn "[#{PID}]: partial batch failure for reactor #{reactor}: #{e.message}"
+        backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
+          reactor.on_exception(e, e.failed_message, group)
+        end
+        e.action_pairs
       rescue StandardError => e
         raise e if raise_on_error
 

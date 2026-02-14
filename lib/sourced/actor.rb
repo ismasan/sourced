@@ -178,7 +178,7 @@ module Sourced
       # @param history [Array<Message>] full stream history
       # @return [Array<[actions, source_message]>] action pairs
       def handle_batch(batch, history: BLANK_HISTORY)
-        batch.map do |message, replaying|
+        each_with_partial_ack(batch) do |message, replaying|
           if replaying
             [Actions::OK, message]
           else
