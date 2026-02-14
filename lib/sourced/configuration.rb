@@ -63,7 +63,7 @@ module Sourced
       @setup = false
       # Worker and house-keeping defaults
       @worker_count = 2
-      @worker_batch_size = 1
+      @worker_batch_size = 50
       @housekeeping_count = 1
       @housekeeping_interval = 3
       @housekeeping_heartbeat_interval = 5

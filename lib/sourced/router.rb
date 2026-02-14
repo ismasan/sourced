@@ -50,8 +50,8 @@ module Sourced
       # @param process_name [String, nil] Optional process identifier for logging
       # @return [Boolean] true if an event was handled, false if no events available
       # @see #handle_next_event_for_reactor
-      def handle_next_event_for_reactor(reactor, process_name = nil)
-        instance.handle_next_event_for_reactor(reactor, process_name)
+      def handle_next_event_for_reactor(...)
+        instance.handle_next_event_for_reactor(...)
       end
 
       def backend = instance.backend
@@ -171,7 +171,7 @@ module Sourced
       backend.reserve_next_for_reactor(reactor, batch_size:, with_history: @needs_history[reactor], worker_id:) do |batch, history|
         found = true
         first_msg = batch.first&.first
-        log_event('handling batch', reactor, first_msg, worker_id) if first_msg
+        log_event("handling batch(#{batch.size})", reactor, first_msg, worker_id) if first_msg
 
         kargs = {}
         kargs[:history] = history if @needs_history[reactor]
