@@ -885,24 +885,23 @@ See [below](#stopping-and-starting-consumer-groups) for other consumer lifecycle
 
 ## The Reactor Interface
 
-All built-in Reactors (Actors, Projections) build on the low-level Reactor Interface
+All built-in Reactors (Actors, Projections) build on the low-level Reactor Interface.
+
+The runtime invokes `.handle_batch` on each reactor, passing a batch of `[message, replaying]` pairs from the same stream. The `Sourced::Consumer` module provides a default `handle_batch` that delegates to a per-message `.handle` method, so simple reactors only need to implement `.handle`.
 
 ```ruby
 class MyReactor
   extend Sourced::Consumer
   
   # The runtime will poll and hand over messages of this type
-  # to this class' .handle() method
   def self.handled_messages = [Order::Started, Order::Placed]
   
-  # The runtime invokes this method when it finds a new message
-  # of type present in the list above
+  # The default handle_batch (from Consumer) calls this per message.
+  # Return an Array of one or more Actions.
   def self.handle(new_message)
-    # Process message here.
-    # This method can return an Array or one or more of the following
     actions = []
     
-    # Just aknowledge new_message
+    # Just acknowledge new_message
     actions << Sourced::Actions::OK
     
     # Append these new messages to the event store
@@ -919,9 +918,7 @@ class MyReactor
     actions << Sourced::Actions::AppendAfter.new(new_message.stream_id, [started])
     
     # Tell the runtime to retry this message
-    # This is a low-level action and Sourced already uses it when handling exceptions
-    # and retries
-    actions << Sourded::Actions::RETRY
+    actions << Sourced::Actions::RETRY
     
     actions
   end
@@ -934,9 +931,36 @@ You can implement your own low-level reactors following the interface above. The
 Sourced.register MyReactor
 ```
 
+### Batch processing
+
+Workers fetch up to `worker_batch_size` messages per lock cycle (default: 50). Built-in reactors optimize batch processing automatically:
+
+- **Projector::StateStored**: loads state once, evolves all batch messages, syncs once (instead of N state loads + N syncs).
+- **Projector::EventSourced**: evolves history once, syncs once (instead of N x O(H) evolves + N syncs).
+- **Actor**: replaying messages return OK immediately; live messages are handled individually.
+
+For custom reactors, you can override `handle_batch` directly for full control:
+
+```ruby
+class MyBatchReactor
+  extend Sourced::Consumer
+
+  def self.handled_messages = [Order::Started, Order::Placed]
+
+  # Override handle_batch for custom batch processing.
+  # Must return Array of [actions, source_message] pairs.
+  def self.handle_batch(batch)
+    batch.map do |message, replaying|
+      actions = process(message)
+      [actions, message]
+    end
+  end
+end
+```
+
 ### Reactors that require message history
 
-Reactors that declare the `:history` argument will also be provided the full message history for the stream being handled.
+Reactors that declare the `:history` keyword in their `.handle_batch` (or `.handle`) signature will be provided the full message history for the stream being handled.
 
 This is how event-sourced Actors are implemented.
 
@@ -948,7 +972,7 @@ def self.handle(new_message, history:)
 end
 ```
 
-### `:replaying` flag.
+### `:replaying` flag
 
 Your `.handle` method can also declare a `:replaying` boolean, which tells the reactor whether the stream is replaying events, or handling new messages. Reactors use this to run or omit side-effects (for example, replaying Projectors don't run `reaction` blocks).
 
@@ -1097,6 +1121,7 @@ Sourced.configure do |config|
 
   # Worker and housekeeping options (shown with defaults)
   config.worker_count = 2                       # Number of worker fibers
+  config.worker_batch_size = 50                 # Messages fetched per lock cycle (batch processing)
   config.housekeeping_count = 1                 # Number of housekeeper fibers
   config.housekeeping_interval = 3              # Seconds between scheduling cycles
   config.housekeeping_heartbeat_interval = 5    # Seconds between worker heartbeats
@@ -1106,7 +1131,7 @@ end
 Sourced.config.backend.install unless Sourced.config.backend.installed?
 ```
 
-These options are used by both `Sourced::Supervisor` and the Falcon integration. When running workers alongside a web server (Falcon, or any other Async-compatible server), these control how many worker and housekeeper fibers are spawned per OS process.
+These options are used by both `Sourced::Supervisor` and the Falcon integration. When running workers alongside a web server (Falcon, or any other Async-compatible server), these control how many worker and housekeeper fibers are spawned per OS process. The `worker_batch_size` controls how many messages from the same stream are fetched and processed in a single lock cycle (see [Batch processing](#batch-processing)).
 
 ### Generating Sequel migrations
 
@@ -1189,6 +1214,7 @@ service "my-app" do
   # Sourced worker options default to Sourced.config values.
   # Override per-service if needed:
   # sourced_worker_count 4
+  # sourced_worker_batch_size 50
   # sourced_housekeeping_count 1
   # sourced_housekeeping_interval 3
   # sourced_housekeeping_heartbeat_interval 5
