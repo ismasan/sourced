@@ -115,6 +115,22 @@ module RouterTest
       Sourced::Actions::OK
     end
   end
+
+  class ReactorWithBatchSize
+    extend Sourced::Consumer
+
+    consumer do |c|
+      c.batch_size = 10
+    end
+
+    def self.handled_messages
+      [ItemAdded]
+    end
+
+    def self.handle(event)
+      Sourced::Actions::OK
+    end
+  end
 end
 
 RSpec.describe Sourced::Router do
@@ -282,6 +298,23 @@ RSpec.describe Sourced::Router do
           allow(RouterTest::ReactorWithLogger).to receive(:handle).and_call_original
           router.handle_next_event_for_reactor(RouterTest::ReactorWithLogger)
           expect(RouterTest::ReactorWithLogger).to have_received(:handle).with(event, logger: router.logger)
+        end
+      end
+
+      context 'per-reactor batch_size override' do
+        before do
+          router.register(RouterTest::ReactorWithBatchSize)
+        end
+
+        it 'uses the reactor consumer_info.batch_size over the worker-level default' do
+          allow(backend).to receive(:reserve_next_for_reactor).and_call_original
+          router.handle_next_event_for_reactor(RouterTest::ReactorWithBatchSize, nil, false, batch_size: 1)
+          expect(backend).to have_received(:reserve_next_for_reactor).with(
+            RouterTest::ReactorWithBatchSize,
+            batch_size: 10,
+            with_history: false,
+            worker_id: nil
+          )
         end
       end
     end

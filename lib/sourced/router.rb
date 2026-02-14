@@ -134,9 +134,10 @@ module Sourced
     # @param batch_size [Integer] Number of messages to fetch per lock cycle
     # @return [Boolean] true if a batch was handled, false if no messages available
     def handle_next_event_for_reactor(reactor, worker_id = nil, raise_on_error = false, batch_size: 1)
+      effective_batch_size = reactor.consumer_info.batch_size || batch_size
       found = false
 
-      backend.reserve_next_for_reactor(reactor, batch_size:, with_history: @needs_history[reactor], worker_id:) do |batch, history|
+      backend.reserve_next_for_reactor(reactor, batch_size: effective_batch_size, with_history: @needs_history[reactor], worker_id:) do |batch, history|
         found = true
         first_msg = batch.first&.first
         log_event("handling batch(#{batch.size})", reactor, first_msg, worker_id) if first_msg
