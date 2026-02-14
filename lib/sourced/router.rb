@@ -77,46 +77,31 @@ module Sourced
     end
 
     # Register a Reactor with the router.
-    # 
-    # During registration, the router analyzes the reactor's #handle method signature
-    # and stores the expected keyword arguments for automatic injection during event processing.
-    # This enables reactors to declare exactly what contextual information they need.
+    #
+    # During registration, the router analyzes the reactor's #handle_batch method signature
+    # to determine whether it needs stream history. Reactors that declare a `history:` keyword
+    # will receive the full stream history when processing batches.
     #
     # @param thing [Class] Reactor object to register.
     # @return [void]
     # @raise [InvalidReactorError] if the class doesn't implement required interfaces
-    # 
+    #
     # @example Register an actor that handles both commands and events
     #   router.register(CartActor)
     #
-    # @example Reactors with different argument requirements
-    #   # Reactor that only needs the event
+    # @example Reactors with different handle_batch signatures
+    #   # Reactor that doesn't need history (default Consumer wrapper)
     #   class SimpleReactor
-    #     def self.handle(event)
-    #       # Process event
-    #     end
+    #     extend Sourced::Consumer
+    #     def self.handle(event) = Sourced::Actions::OK
     #   end
     #
-    #   # Reactor that needs to know if it's replaying events
-    #   class ReplayAwareReactor  
-    #     def self.handle(event, replaying:)
-    #       return if replaying  # Skip during replay
-    #       # Process event normally
-    #     end
-    #   end
-    #
-    #   # Reactor that needs access to full event history
+    #   # Reactor that needs access to full stream history
     #   class HistoryReactor
-    #     def self.handle(event, history:)
-    #       # Analyze event in context of full stream history
-    #     end
-    #   end
-    #
-    #   # Reactor that needs both pieces of context
-    #   class FullContextReactor
-    #     def self.handle(event, replaying:, history:)
-    #       return if replaying
-    #       # Process with full context
+    #     extend Sourced::Consumer
+    #     def self.handle_batch(batch, history:)
+    #       # batch is Array of [message, replaying] pairs
+    #       # history is Array of all messages in the stream
     #     end
     #   end
     def register(thing)
@@ -137,34 +122,17 @@ module Sourced
       !!@registered_lookup[thing.consumer_info.group_id]
     end
 
-    # Handle the next available event for a specific reactor with automatic argument injection.
+    # Handle the next available batch of messages for a specific reactor.
     #
-    # This method performs argument injection based on the reactor's #handle method signature
-    # that was analyzed during registration. Only the arguments that the reactor actually
-    # declared in its method signature will be provided, enabling reactors to opt into
-    # exactly the contextual information they need.
+    # Fetches a batch of messages from the backend and calls reactor.handle_batch(batch, **kargs).
+    # If the reactor's handle_batch signature includes `history:`, the full stream history
+    # is fetched from the backend and passed through.
     #
     # @param reactor [Class] The reactor class to get events for
     # @param worker_id [String, nil] Optional process identifier for logging
-    # @param raise_on_error [Boolean] Raise error immediatly instead of notifying Reactor#on_exception
-    # @return [Boolean] true if an event was handled, false if no events available
-    #
-    # @example Argument injection behavior
-    #   # For a reactor with signature: def handle(event)
-    #   # Called as: reactor.handle(event)
-    #   
-    #   # For a reactor with signature: def handle(event, replaying:)
-    #   # Called as: reactor.handle(event, replaying: false)  # or true during replay
-    #   
-    #   # For a reactor with signature: def handle(event, history:) 
-    #   # Called as: reactor.handle(event, history: [event1, event2, ...])
-    #   
-    #   # For a reactor with signature: def handle(event, replaying:, history:)
-    #   # Called as: reactor.handle(event, replaying: false, history: [...])
-    #
-    # Available injectable arguments:
-    # - :replaying - Boolean indicating if this is a replay operation
-    # - :history - Array of all events in the stream up to this point
+    # @param raise_on_error [Boolean] Raise error immediately instead of notifying Reactor#on_exception
+    # @param batch_size [Integer] Number of messages to fetch per lock cycle
+    # @return [Boolean] true if a batch was handled, false if no messages available
     def handle_next_event_for_reactor(reactor, worker_id = nil, raise_on_error = false, batch_size: 1)
       found = false
 

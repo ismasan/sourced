@@ -329,25 +329,24 @@ module Sourced
       #
       # When batch_size > 1, fetches multiple messages from the same stream in a single
       # lock cycle, reducing per-message overhead for catch-up scenarios.
-      # Each message is yielded individually to the block. On RETRY, the batch stops
-      # and ACKs up to the last successful message (partial ACK).
       #
-      # @example Single message (default)
-      #   backend.reserve_next_for_reactor(reactor) do |message, replaying|
-      #     Sourced::Actions::OK
-      #   end
+      # The block is yielded once with the full batch and optional history.
+      # All-or-nothing ACK semantics: on success all actions are executed and the last
+      # message is ACKed; on RETRY the offset is released without ACK.
       #
-      # @example Batch processing
-      #   backend.reserve_next_for_reactor(reactor, batch_size: 50) do |message, replaying|
-      #     reactor.handle(message, replaying:)
+      # @example
+      #   backend.reserve_next_for_reactor(reactor, batch_size: 50) do |batch, history|
+      #     # batch is Array of [message, replaying] pairs
+      #     reactor.handle_batch(batch, history:)
       #   end
       #
       # @param reactor [Sourced::ReactorInterface]
       # @param batch_size [Integer] Number of messages to fetch per lock cycle (default: 1)
+      # @param with_history [Boolean] Whether to fetch full stream history
       # @param worker_id [String]
-      # @yieldparam message [Sourced::Message]
-      # @yieldparam replaying [Boolean] whether the message is being replayed
-      # @yieldreturn actions to process for this message
+      # @yieldparam batch [Array<[Sourced::Message, Boolean]>] array of [message, replaying] pairs
+      # @yieldparam history [Array<Sourced::Message>, nil] full stream history if with_history is true
+      # @yieldreturn [Array<[actions, source_message]>, Sourced::Actions::RETRY] action pairs or RETRY
       def reserve_next_for_reactor(reactor, batch_size: 1, with_history: false, worker_id: nil, &block)
         worker_id ||= [Process.pid, Thread.current.object_id, Fiber.current.object_id].join('-')
         group_id = reactor.consumer_info.group_id
