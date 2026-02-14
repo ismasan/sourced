@@ -41,13 +41,15 @@ module Sourced
       name: SecureRandom.hex(4),
       poll_interval: 0.01,
       router: Sourced::Router,
-      shuffler: DEFAULT_SHUFFLER
+      shuffler: DEFAULT_SHUFFLER,
+      batch_size: 1
     )
       @logger = logger
       @running = false
       @name = [Process.pid, name].join('-')
       @poll_interval = poll_interval
       @router = router
+      @batch_size = batch_size
       # TODO: If reactors have a :weight, we can use that
       # to populate this array according to the weight
       # so that some reactors are picked more often than others
@@ -89,7 +91,7 @@ module Sourced
     # @param reactor [Class, nil] Specific reactor to process (defaults to next in rotation)
     # @return [Boolean] true if an event was processed, false otherwise
     def tick(reactor = next_reactor)
-      @router.handle_next_event_for_reactor(reactor, name)
+      @router.handle_next_event_for_reactor(reactor, name, batch_size: @batch_size)
     end
 
     # Get the next reactor in round-robin order.

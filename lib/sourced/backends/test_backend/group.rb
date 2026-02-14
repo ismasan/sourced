@@ -42,11 +42,11 @@ module Sourced
           newest_processed = (active_offsets.max_by(&:index)&.index || -1) + 1
           stream_count = active_offsets.size
 
-          { 
-            group_id:, 
-            status: @status.to_s, 
-            oldest_processed:, 
-            newest_processed:, 
+          {
+            group_id:,
+            status: @status.to_s,
+            oldest_processed:,
+            newest_processed:,
             stream_count:,
             retry_at:
           }
@@ -75,9 +75,9 @@ module Sourced
           end
         end
 
-        NOOP_FILTER = ->(_) { true } 
+        NOOP_FILTER = ->(_) { true }
 
-        def reserve_next(handled_messages, time_window, process_actions, &)
+        def reserve_next(handled_messages, time_window, process_actions, batch_size: 1, with_history: false, &block)
           time_filter = time_window.is_a?(Time) ? ->(e) { e.created_at > time_window } : NOOP_FILTER
           evt = nil
           offset = nil
@@ -87,34 +87,79 @@ module Sourced
             offset = @offsets[e.stream_id]
             if offset.locked # stream locked by another consumer in the group
               next
-            elsif idx > offset.index && handled_messages.include?(e.class) && time_filter.call(e) # new message for the stream
+            elsif idx > offset.index && handled_messages.include?(e.class) && time_filter.call(e) # new message for the stream
               evt = e
               offset.locked = true
               index = idx
               break
-            else # messages already consumed
+            else # messages already consumed
             end
           end
 
-          if evt
-            replaying = @highest_index >= index
-            if block_given?
-              actions = yield(evt, replaying)
+          return unless evt
 
-              acker = -> { ack(offset, index) }
-              process_actions.(group_id, actions, acker, evt, offset)
-            end
-
-            offset.locked = false
-          end
-
-          evt
+          reserve_batch(evt, index, offset, handled_messages, time_filter, process_actions, batch_size, with_history:, &block)
         end
 
         private
 
+        def reserve_batch(first_evt, first_index, offset, handled_messages, time_filter, process_actions_callback, batch_size, with_history: false, &block)
+          stream_id = first_evt.stream_id
+          raw_batch = [[first_evt, first_index]]
+
+          # Find additional messages from same stream
+          backend.messages.each.with_index do |e, idx|
+            break if raw_batch.size >= batch_size
+            next if idx <= first_index
+            next unless e.stream_id == stream_id
+            next unless handled_messages.include?(e.class)
+            next unless time_filter.call(e)
+
+            raw_batch << [e, idx]
+          end
+
+          # Build history if requested: all messages from this stream
+          history = if with_history
+            backend.messages.select { |e| e.stream_id == stream_id }
+          end
+
+          # Build batch of [message, replaying] pairs
+          batch = raw_batch.map { |msg, idx| [msg, @highest_index >= idx] }
+
+          # Yield batch + history once, get back action_pairs or RETRY
+          action_pairs = yield(batch, history)
+
+          if action_pairs == Actions::RETRY
+            offset.locked = false
+            return first_evt
+          end
+
+          # Execute all action pairs
+          if action_pairs.empty?
+            # Nothing to process — release the claim so another worker can retry
+            offset.locked = false
+            return first_evt
+          end
+
+          noop_ack = -> {}
+          action_pairs.each do |actions, source_message|
+            process_actions_callback.(group_id, actions, noop_ack, source_message, offset)
+          end
+
+          # ACK once for the last successfully processed message.
+          # Find the raw_batch entry matching the last action_pair's source_message,
+          # so partial batches ACK up to the last successful message (not the last in the batch).
+          last_source_message = action_pairs.last&.last
+          last_entry = raw_batch.find { |msg, _idx| msg.id == last_source_message&.id } || raw_batch.last
+          last_idx = last_entry[1]
+          ack(offset, last_idx) if last_idx > offset.index
+
+          offset.locked = false
+          first_evt
+        end
+
         def ack(offset, index)
-          # ACK reactor/message
+          # ACK reactor/message
           offset.index = index
           @highest_index = index if index > @highest_index
         end

@@ -27,7 +27,7 @@ RSpec.describe Sourced::Worker do
 
     it 'delegates to Router#handle_next_event_for_reactor with current reactor and worker name' do
       expect(router).to receive(:handle_next_event_for_reactor)
-        .with(reactor1, worker.name)
+        .with(reactor1, worker.name, batch_size: 1)
         .and_return(true)
 
       result = worker.tick
@@ -38,19 +38,19 @@ RSpec.describe Sourced::Worker do
     it 'cycles through reactors in round-robin fashion when called repeatedly' do
       # First call should use reactor1 (index 0)
       expect(router).to receive(:handle_next_event_for_reactor)
-        .with(reactor1, worker.name)
+        .with(reactor1, worker.name, batch_size: 1)
         .and_return(true)
       worker.tick
 
       # Second call should use reactor2 (index 1)  
       expect(router).to receive(:handle_next_event_for_reactor)
-        .with(reactor2, worker.name)
+        .with(reactor2, worker.name, batch_size: 1)
         .and_return(false)
       worker.tick
 
       # Fourth call should wrap around to reactor1 (index 0)
       expect(router).to receive(:handle_next_event_for_reactor)
-        .with(reactor1, worker.name)
+        .with(reactor1, worker.name, batch_size: 1)
         .and_return(false)
       worker.tick
     end
@@ -66,7 +66,7 @@ RSpec.describe Sourced::Worker do
     context 'when called with a specific reactor' do
       it 'uses the provided reactor instead of cycling' do
         expect(router).to receive(:handle_next_event_for_reactor)
-          .with(reactor2, worker.name)
+          .with(reactor2, worker.name, batch_size: 1)
           .and_return(true)
 
         worker.tick(reactor2)
@@ -78,7 +78,7 @@ RSpec.describe Sourced::Worker do
         
         # Next call without reactor should still use reactor1 (first in cycle)
         expect(router).to receive(:handle_next_event_for_reactor)
-          .with(reactor1, worker.name)
+          .with(reactor1, worker.name, batch_size: 1)
           .and_return(true)
         worker.tick
       end

@@ -37,6 +37,20 @@ module Sourced
   
   BackendError = Class.new(Error)
 
+  # Raised when a batch is partially processed before a message raises.
+  # Carries the action_pairs for successfully processed messages,
+  # the failed message, and the original exception as #cause.
+  class PartialBatchError < Error
+    attr_reader :action_pairs, :failed_message
+
+    def initialize(action_pairs, failed_message, cause)
+      @action_pairs = action_pairs
+      @failed_message = failed_message
+      super(cause.message)
+      set_backtrace(cause.backtrace)
+    end
+  end
+
   class InvalidMessageError < Error
     attr_reader :message
 
@@ -245,7 +259,7 @@ module Sourced
   #   @return [Method] Method to handle incoming events
   # @!attribute [r] on_exception
   #   @return [Method] Method to handle exceptions during event processing
-  ReactorInterface = Types::Interface[:handle, :consumer_info, :handled_messages, :on_exception]
+  ReactorInterface = Types::Interface[:handle_batch, :consumer_info, :handled_messages, :on_exception]
 end
 
 require 'sourced/consumer'

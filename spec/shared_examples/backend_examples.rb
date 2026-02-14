@@ -191,13 +191,13 @@ module BackendExamples
 
         messages = []
 
-        backend.reserve_next_for_reactor(reactor1) do |msg|
-          messages << msg
-          Sourced::Actions::OK
+        backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+          batch.each { |msg, _| messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
         end
-        backend.reserve_next_for_reactor(reactor1) do |msg|
-          messages << msg
-          Sourced::Actions::OK
+        backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+          batch.each { |msg, _| messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
         end
 
         expect(messages).to eq([evt_a2])
@@ -222,8 +222,8 @@ module BackendExamples
 
         now = Time.now
 
-        backend.reserve_next_for_reactor(reactor1) do |msg|
-          Sourced::Actions::Schedule.new([evt_b], at: now + 10)
+        backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+          batch.map { |msg, _| [Sourced::Actions::Schedule.new([evt_b], at: now + 10), msg] }
         end
 
         expect(backend.read_stream('s1')).to eq([cmd_a])
@@ -240,9 +240,9 @@ module BackendExamples
           # it won't be claimed again
           # only the new evt_b can be claimed now
           list = []
-          backend.reserve_next_for_reactor(reactor1) do |msg|
-            list << msg
-            Sourced::Actions::OK
+          backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+            batch.each { |msg, _| list << msg }
+            batch.map { |msg, _| [Sourced::Actions::OK, msg] }
           end
           expect(list.map(&:id)).to eq([evt_b.id])
         end
@@ -267,10 +267,12 @@ module BackendExamples
         backend.register_consumer_group('group1')
         now = Time.now
 
-        backend.reserve_next_for_reactor(reactor1) do |msg|
-          action1 = Sourced::Actions::AppendNext.new([evt_b])
-          action2 = Sourced::Actions::Schedule.new([evt_c], at: now + 10)
-          [action1, action2]
+        backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+          batch.map do |msg, _|
+            action1 = Sourced::Actions::AppendNext.new([evt_b])
+            action2 = Sourced::Actions::Schedule.new([evt_c], at: now + 10)
+            [[action1, action2], msg]
+          end
         end
 
         messages = backend.read_stream('s1')
@@ -337,16 +339,16 @@ module BackendExamples
         # never process events for the same stream
         Sourced.config.executor.start do |t|
           t.spawn do
-            backend.reserve_next_for_reactor(reactor1) do |msg|
+            backend.reserve_next_for_reactor(reactor1) do |batch, _history|
               sleep 0.01
-              group1_messages << msg
-              Sourced::Actions::OK
+              batch.each { |msg, _| group1_messages << msg }
+              batch.map { |msg, _| [Sourced::Actions::OK, msg] }
             end
           end
           t.spawn do
-            backend.reserve_next_for_reactor(reactor1) do |msg|
-              group1_messages << msg
-              Sourced::Actions::OK
+            backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+              batch.each { |msg, _| group1_messages << msg }
+              batch.map { |msg, _| [Sourced::Actions::OK, msg] }
             end
           end
         end
@@ -354,26 +356,30 @@ module BackendExamples
         expect(group1_messages).to eq([evt_b1, evt_a1])
 
         # Test that separate groups have their own cursors on streams
-        backend.reserve_next_for_reactor(reactor2) do |msg|
-          group2_messages << msg
-          Sourced::Actions::OK
+        backend.reserve_next_for_reactor(reactor2) do |batch, _history|
+          batch.each { |msg, _| group2_messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
         end
 
         expect(group2_messages).to eq([evt_a1])
 
         # Test stopped reactors are ignored
-        backend.reserve_next_for_reactor(reactor3) do |msg|
-          group3_messages << msg
-          Sourced::Actions::OK
+        backend.reserve_next_for_reactor(reactor3) do |batch, _history|
+          batch.each { |msg, _| group3_messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
         end
 
         expect(group3_messages).to eq([])
 
         # Test that NOOP handlers still advance the cursor
-        backend.reserve_next_for_reactor(reactor2) { |_msg| Sourced::Actions::OK }
+        backend.reserve_next_for_reactor(reactor2) do |batch, _history|
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
 
         # Test returning RETRY does not advance the cursor
-        backend.reserve_next_for_reactor(reactor2) { |_msg| Sourced::Actions::RETRY }
+        backend.reserve_next_for_reactor(reactor2) do |batch, _history|
+          Sourced::Actions::RETRY
+        end
 
         # Verify state of groups with stats
         stats = backend.stats
@@ -402,8 +408,9 @@ module BackendExamples
 
         group4_messages = []
 
-        backend.reserve_next_for_reactor(reactor4) do |msg|
-          group4_messages << msg
+        backend.reserve_next_for_reactor(reactor4) do |batch, _history|
+          batch.each { |msg, _| group4_messages << msg }
+          batch.map { |msg, _| [[], msg] }
         end
 
         expect(group4_messages).to eq([])
@@ -419,9 +426,9 @@ module BackendExamples
         evt_a3 = cmd_a.follow_with_seq(Tests::SomethingHappened2, 4, account_id: cmd_a.payload.account_id)
         backend.append_to_stream('s1', [evt_a3])
 
-        backend.reserve_next_for_reactor(reactor4) do |msg|
-          group4_messages << msg
-          Sourced::Actions::OK
+        backend.reserve_next_for_reactor(reactor4) do |batch, _history|
+          batch.each { |msg, _| group4_messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
         end
 
         expect(group4_messages).to eq([evt_a3])
@@ -434,16 +441,16 @@ module BackendExamples
         ])
 
         #  Test that #reserve_next_for returns next event, or nil
-        evt = backend.reserve_next_for_reactor(reactor2) { Sourced::Actions::OK }
+        evt = backend.reserve_next_for_reactor(reactor2) { |batch, _| batch.map { |msg, _| [Sourced::Actions::OK, msg] } }
         expect(evt).to eq(evt_b1)
 
-        evt = backend.reserve_next_for_reactor(reactor2) { Sourced::Actions::OK }
+        evt = backend.reserve_next_for_reactor(reactor2) { |batch, _| batch.map { |msg, _| [Sourced::Actions::OK, msg] } }
         expect(evt).to be(nil)
       end
     end
 
     describe '#reserve_next_for_reactor and #reset_consumer_group' do
-      it 'reserves events again after reset, yields replaying boolean' do
+      it 'reserves events again after reset, yields batch with replaying flags' do
         evt_a1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
         backend.append_to_stream('s1', [evt_a1])
 
@@ -462,17 +469,15 @@ module BackendExamples
         messages = []
         replaying = []
 
-        backend.reserve_next_for_reactor(reactor1) do |msg, is_replaying|
-          messages << msg
-          replaying << is_replaying
-          Sourced::Actions::OK
+        backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+          batch.each { |msg, is_replaying| messages << msg; replaying << is_replaying }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
         end
 
         # This is a noop since the event is already processed
-        backend.reserve_next_for_reactor(reactor1) do |msg, is_replaying|
-          messages << msg
-          replaying << is_replaying
-          Sourced::Actions::OK
+        backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+          batch.each { |msg, is_replaying| messages << msg; replaying << is_replaying }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
         end
 
         expect(messages).to eq([evt_a1])
@@ -480,10 +485,9 @@ module BackendExamples
         # Anything that responds to #consumer_info.group_id
         expect(backend.reset_consumer_group(reactor1)).to be(true)
 
-        backend.reserve_next_for_reactor(reactor1) do |msg, is_replaying|
-          messages << msg
-          replaying << is_replaying
-          Sourced::Actions::OK
+        backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+          batch.each { |msg, is_replaying| messages << msg; replaying << is_replaying }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
         end
 
         expect(messages).to eq([evt_a1, evt_a1])
@@ -524,8 +528,8 @@ module BackendExamples
 
       describe 'returning Sourced::Actions::OK' do
         it 'ACKS the message' do
-          backend.reserve_next_for_reactor(reactor1) do |_msg|
-            Sourced::Actions::OK
+          backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+            batch.map { |msg, _| [Sourced::Actions::OK, msg] }
           end
 
           expect(backend.stats.groups.first[:newest_processed]).to eq(1)
@@ -534,7 +538,7 @@ module BackendExamples
 
       describe 'returning Sourced::Actions::RETRY' do
         it 'does not ACK the message' do
-          backend.reserve_next_for_reactor(reactor1) do |_msg|
+          backend.reserve_next_for_reactor(reactor1) do |batch, _history|
             Sourced::Actions::RETRY
           end
 
@@ -544,8 +548,8 @@ module BackendExamples
 
       describe 'returning Sourced::Actions::AppendNext' do
         before do
-          backend.reserve_next_for_reactor(reactor1) do |_msg|
-            Sourced::Actions::AppendNext.new([Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 2 })])
+          backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+            batch.map { |msg, _| [Sourced::Actions::AppendNext.new([Tests::SomethingHappened1.parse(stream_id: 's1', payload: { account_id: 2 })]), msg] }
           end
         end
 
@@ -573,14 +577,14 @@ module BackendExamples
           backend.append_to_stream(evt2.stream_id, [evt2])
           # First message yielded will be evt1
           # but we'll ACK evt2 directly
-          backend.reserve_next_for_reactor(reactor1) do |_msg|
-            Sourced::Actions::Ack.new(evt2.id)
+          backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+            batch.map { |msg, _| [Sourced::Actions::Ack.new(evt2.id), msg] }
           end
 
           new_messages = []
           # No new messages to fetch now, because we ACKed the last one
-          backend.reserve_next_for_reactor(reactor1) do |msg|
-            new_messages << msg
+          backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+            batch.each { |msg, _| new_messages << msg }; batch.map { |msg, _| [[], msg] }
           end
 
           expect(new_messages).to eq([])
@@ -591,8 +595,8 @@ module BackendExamples
       describe 'returning Sourced::Actions::AppendAfter' do
         it 'appends messages to stream if sequence do not conflict' do
           new_message = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
-          backend.reserve_next_for_reactor(reactor1) do |_msg|
-            Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message])
+          backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+            batch.map { |msg, _| [Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message]), msg] }
           end
 
           events = backend.read_stream('s1')
@@ -603,8 +607,8 @@ module BackendExamples
         it 'raises Sourced::ConcurrentAppendError if sequences conflict' do
           new_message = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 2 })
           expect do
-            backend.reserve_next_for_reactor(reactor1) do |_msg|
-              Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message])
+            backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+              batch.map { |msg, _| [Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message]), msg] }
             end
           end.to raise_error(Sourced::ConcurrentAppendError)
         end
@@ -615,8 +619,8 @@ module BackendExamples
           # allow(backend).to receive(:ack_event).and_raise(StandardError)
 
           expect do
-            backend.reserve_next_for_reactor(reactor1) do |_msg|
-              Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message])
+            backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+              batch.map { |msg, _| [Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message]), msg] }
             end
           end.to raise_error(StandardError)
 
@@ -625,8 +629,8 @@ module BackendExamples
 
         it 'correlates messages and copies metadata' do
           new_message = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
-          backend.reserve_next_for_reactor(reactor1) do |_msg|
-            Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message])
+          backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+            batch.map { |msg, _| [Sourced::Actions::AppendAfter.new(new_message.stream_id, [new_message]), msg] }
           end
 
           events = backend.read_stream('s1')
@@ -643,8 +647,8 @@ module BackendExamples
             worked = true
           end
 
-          backend.reserve_next_for_reactor(reactor1) do |_msg|
-            Sourced::Actions::Sync.new(work)
+          backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+            batch.map { |msg, _| [Sourced::Actions::Sync.new(work), msg] }
           end
 
           expect(worked).to be(true)
@@ -653,8 +657,8 @@ module BackendExamples
         it 'acks' do
           work = proc{}
 
-          backend.reserve_next_for_reactor(reactor1) do |_msg|
-            Sourced::Actions::Sync.new(work)
+          backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+            batch.map { |msg, _| [Sourced::Actions::Sync.new(work), msg] }
           end
 
           expect(backend.stats.groups.first[:newest_processed]).to eq(1)
@@ -663,20 +667,316 @@ module BackendExamples
 
       describe 'returning empty actions' do
         it 'acks by default' do
-          backend.reserve_next_for_reactor(reactor1) do |_msg|
-            []
+          backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+            batch.map { |msg, _| [[], msg] }
           end
 
           expect(backend.stats.groups.first[:newest_processed]).to eq(1)
         end
 
         it 'acks if nil action' do
-          backend.reserve_next_for_reactor(reactor1) do |_msg|
-            [nil]
+          backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+            batch.map { |msg, _| [[nil], msg] }
           end
 
           expect(backend.stats.groups.first[:newest_processed]).to eq(1)
         end
+      end
+    end
+
+    describe '#reserve_next_for_reactor with batch_size' do
+      let(:reactor1) do
+        Class.new do
+          def self.consumer_info
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
+          end
+
+          def self.handled_messages
+            [Tests::SomethingHappened1]
+          end
+        end
+      end
+
+      before do
+        backend.register_consumer_group('group1')
+      end
+
+      it 'fetches and processes multiple messages from the same stream in one call' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 3 })
+        backend.append_to_stream('s1', [evt1, evt2, evt3])
+
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          batch.each { |msg, _| messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        expect(messages.map(&:id)).to eq([evt1, evt2, evt3].map(&:id))
+      end
+
+      it 'returns the first message from the batch' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        backend.append_to_stream('s1', [evt1, evt2])
+
+        result = backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        expect(result.id).to eq(evt1.id)
+      end
+
+      it 'limits to batch_size messages' do
+        evts = 5.times.map do |i|
+          Tests::SomethingHappened1.parse(stream_id: 's1', seq: i + 1, payload: { account_id: i })
+        end
+        backend.append_to_stream('s1', evts)
+
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 3) do |batch, _history|
+          batch.each { |msg, _| messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        expect(messages.size).to eq(3)
+        expect(messages.map(&:id)).to eq(evts[0..2].map(&:id))
+
+        # Next batch picks up remaining messages
+        messages2 = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 3) do |batch, _history|
+          batch.each { |msg, _| messages2 << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        expect(messages2.size).to eq(2)
+        expect(messages2.map(&:id)).to eq(evts[3..4].map(&:id))
+      end
+
+      it 'ACKs all messages on success' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        backend.append_to_stream('s1', [evt1, evt2])
+
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        # Nothing left to process
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          batch.each { |msg, _| messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        expect(messages).to be_empty
+      end
+
+      it 'returns RETRY for all-or-nothing retry' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 3 })
+        backend.append_to_stream('s1', [evt1, evt2, evt3])
+
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |_batch, _history|
+          Sourced::Actions::RETRY
+        end
+
+        # No messages were ACKed, all should be available on next call
+        remaining = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          batch.each { |msg, _| remaining << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        expect(remaining.map(&:id)).to eq([evt1, evt2, evt3].map(&:id))
+      end
+
+      it 'releases offset without ACK when RETRY returned' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        backend.append_to_stream('s1', [evt1, evt2])
+
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |_batch, _history|
+          Sourced::Actions::RETRY
+        end
+
+        # All messages should still be available
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          batch.each { |msg, _| messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        expect(messages.map(&:id)).to eq([evt1, evt2].map(&:id))
+      end
+
+      it 'only fetches messages matching handled_messages types' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened2.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 3 })
+        backend.append_to_stream('s1', [evt1, evt2, evt3])
+
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          batch.each { |msg, _| messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        # reactor1 only handles SomethingHappened1, not SomethingHappened2
+        expect(messages.map(&:id)).to eq([evt1, evt3].map(&:id))
+      end
+
+      it 'sets replaying flag correctly per message' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        backend.append_to_stream('s1', [evt1, evt2])
+
+        # Process both messages first
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        # Reset consumer group to trigger replaying
+        backend.reset_consumer_group(reactor1)
+
+        # Add a new message (not replaying)
+        evt3 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 3 })
+        backend.append_to_stream('s1', [evt3])
+
+        replaying_flags = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          replaying_flags = batch.map { |_, is_replaying| is_replaying }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        # evt1 and evt2 are replaying (global_seq <= highest_global_seq), evt3 is not
+        expect(replaying_flags).to eq([true, true, false])
+      end
+
+      it 'handles AppendNext actions within a batch' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        backend.append_to_stream('s1', [evt1, evt2])
+
+        new_cmd = Tests::DoSomething.parse(stream_id: 's2', payload: { account_id: 99 })
+
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          batch.map.with_index do |(msg, _), idx|
+            if idx == 0
+              [Sourced::Actions::AppendNext.new([new_cmd]), msg]
+            else
+              [Sourced::Actions::OK, msg]
+            end
+          end
+        end
+
+        # Both messages processed, and the AppendNext command was appended
+        expect(backend.read_stream('s2').map(&:id)).to eq([new_cmd.id])
+      end
+
+      it 'returns nil when there are no messages to process' do
+        result = backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        expect(result).to be_nil
+      end
+
+      it 'handles a single message in batch mode' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        backend.append_to_stream('s1', [evt1])
+
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          batch.each { |msg, _| messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        expect(messages.map(&:id)).to eq([evt1.id])
+      end
+
+      it 'releases offset when block returns empty action_pairs' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        backend.append_to_stream('s1', [evt1])
+
+        # Return empty action_pairs — nothing to ACK
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |_batch, _history|
+          []
+        end
+
+        # Offset should have been released, so the message is available again
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          batch.each { |msg, _| messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        expect(messages.map(&:id)).to eq([evt1.id])
+      end
+    end
+
+    describe '#reserve_next_for_reactor with_history' do
+      let(:reactor1) do
+        Class.new do
+          def self.consumer_info
+            Sourced::Consumer::ConsumerInfo.new(group_id: 'group1')
+          end
+
+          def self.handled_messages
+            [Tests::SomethingHappened1]
+          end
+        end
+      end
+
+      before do
+        backend.register_consumer_group('group1')
+      end
+
+      it 'yields history containing all stream messages when with_history: true' do
+        cmd = Tests::DoSomething.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 2 })
+        evt2 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 3, payload: { account_id: 3 })
+        backend.append_to_stream('s1', [cmd, evt1, evt2])
+
+        yielded_history = nil
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10, with_history: true) do |batch, history|
+          yielded_history = history
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        # History should include ALL stream messages (cmd + evt1 + evt2), not just batch
+        expect(yielded_history).not_to be_nil
+        expect(yielded_history.map(&:id)).to eq([cmd, evt1, evt2].map(&:id))
+      end
+
+      it 'yields nil history when with_history: false (default)' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        backend.append_to_stream('s1', [evt1])
+
+        yielded_history = :not_set
+        backend.reserve_next_for_reactor(reactor1) do |batch, history|
+          yielded_history = history
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        expect(yielded_history).to be_nil
+      end
+
+      it 'history does not include messages from other streams' do
+        evt_s1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        evt_s2 = Tests::SomethingHappened1.parse(stream_id: 's2', seq: 1, payload: { account_id: 2 })
+        backend.append_to_stream('s1', [evt_s1])
+        backend.append_to_stream('s2', [evt_s2])
+
+        yielded_history = nil
+        backend.reserve_next_for_reactor(reactor1, with_history: true) do |batch, history|
+          yielded_history = history
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        expect(yielded_history.map(&:stream_id).uniq).to eq([yielded_history.first.stream_id])
       end
     end
 
@@ -704,9 +1004,9 @@ module BackendExamples
 
         messages = []
 
-        backend.reserve_next_for_reactor(reactor1) do |msg|
-          messages << msg
-          Sourced::Actions::OK
+        backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+          batch.each { |msg, _| messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
         end
 
         expect(messages.any?).to be(false)
@@ -715,9 +1015,9 @@ module BackendExamples
           gr.retry(now - 1)
         end
 
-        backend.reserve_next_for_reactor(reactor1) do |msg|
-          messages << msg
-          Sourced::Actions::OK
+        backend.reserve_next_for_reactor(reactor1) do |batch, _history|
+          batch.each { |msg, _| messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
         end
 
         expect(messages.any?).to be(true)
@@ -747,7 +1047,7 @@ module BackendExamples
       it 'advances a group_id/stream_id offset if no exception' do
         backend.ack_on(reactor.consumer_info.group_id, evt1.id) { true }
 
-        backend.reserve_next_for_reactor(reactor) { Sourced::Actions::OK }
+        backend.reserve_next_for_reactor(reactor) { |batch, _| batch.map { |msg, _| [Sourced::Actions::OK, msg] } }
 
         expect(backend.stats.groups.first[:oldest_processed]).to eq(2)
       end

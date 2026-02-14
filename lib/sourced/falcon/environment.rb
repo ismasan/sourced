@@ -48,6 +48,10 @@ module Sourced
       # Seconds before a claim is considered stale and can be reaped.
       # @return [Numeric]
       def sourced_housekeeping_claim_ttl_seconds = Sourced.config.housekeeping_claim_ttl_seconds
+
+      # Number of messages to fetch per lock cycle for batch processing.
+      # @return [Integer]
+      def sourced_worker_batch_size = Sourced.config.worker_batch_size
     end
   end
 end

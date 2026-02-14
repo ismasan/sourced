@@ -46,6 +46,7 @@ module Sourced
     # claim_ttl_seconds: how long before a worker is considered dead for claim release
     attr_accessor(
       :worker_count,
+      :worker_batch_size,
       :housekeeping_count,
       :housekeeping_interval,
       :housekeeping_heartbeat_interval,
@@ -62,6 +63,7 @@ module Sourced
       @setup = false
       # Worker and house-keeping defaults
       @worker_count = 2
+      @worker_batch_size = 50
       @housekeeping_count = 1
       @housekeeping_interval = 3
       @housekeeping_heartbeat_interval = 5

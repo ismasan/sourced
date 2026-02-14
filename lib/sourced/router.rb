@@ -50,8 +50,8 @@ module Sourced
       # @param process_name [String, nil] Optional process identifier for logging
       # @return [Boolean] true if an event was handled, false if no events available
       # @see #handle_next_event_for_reactor
-      def handle_next_event_for_reactor(reactor, process_name = nil)
-        instance.handle_next_event_for_reactor(reactor, process_name)
+      def handle_next_event_for_reactor(...)
+        instance.handle_next_event_for_reactor(...)
       end
 
       def backend = instance.backend
@@ -63,7 +63,7 @@ module Sourced
     #   @return [Object] The configured backend for event storage
     # @!attribute [r] logger
     #   @return [Object] The configured logger instance
-    attr_reader :async_reactors, :backend, :logger, :kargs_for_handle
+    attr_reader :async_reactors, :backend, :logger, :needs_history
 
     # Initialize a new Router instance.
     # @param backend [Object] Backend for event storage (defaults to configured backend)
@@ -72,51 +72,36 @@ module Sourced
       @backend = backend
       @logger = logger
       @registered_lookup = {}
-      @kargs_for_handle = {}
+      @needs_history = {}
       @async_reactors = Set.new
     end
 
     # Register a Reactor with the router.
-    # 
-    # During registration, the router analyzes the reactor's #handle method signature
-    # and stores the expected keyword arguments for automatic injection during event processing.
-    # This enables reactors to declare exactly what contextual information they need.
+    #
+    # During registration, the router analyzes the reactor's #handle_batch method signature
+    # to determine whether it needs stream history. Reactors that declare a `history:` keyword
+    # will receive the full stream history when processing batches.
     #
     # @param thing [Class] Reactor object to register.
     # @return [void]
     # @raise [InvalidReactorError] if the class doesn't implement required interfaces
-    # 
+    #
     # @example Register an actor that handles both commands and events
     #   router.register(CartActor)
     #
-    # @example Reactors with different argument requirements
-    #   # Reactor that only needs the event
+    # @example Reactors with different handle_batch signatures
+    #   # Reactor that doesn't need history (default Consumer wrapper)
     #   class SimpleReactor
-    #     def self.handle(event)
-    #       # Process event
-    #     end
+    #     extend Sourced::Consumer
+    #     def self.handle(event) = Sourced::Actions::OK
     #   end
     #
-    #   # Reactor that needs to know if it's replaying events
-    #   class ReplayAwareReactor  
-    #     def self.handle(event, replaying:)
-    #       return if replaying  # Skip during replay
-    #       # Process event normally
-    #     end
-    #   end
-    #
-    #   # Reactor that needs access to full event history
+    #   # Reactor that needs access to full stream history
     #   class HistoryReactor
-    #     def self.handle(event, history:)
-    #       # Analyze event in context of full stream history
-    #     end
-    #   end
-    #
-    #   # Reactor that needs both pieces of context
-    #   class FullContextReactor
-    #     def self.handle(event, replaying:, history:)
-    #       return if replaying
-    #       # Process with full context
+    #     extend Sourced::Consumer
+    #     def self.handle_batch(batch, history:)
+    #       # batch is Array of [message, replaying] pairs
+    #       # history is Array of all messages in the stream
     #     end
     #   end
     def register(thing)
@@ -124,9 +109,8 @@ module Sourced
         raise InvalidReactorError, "#{thing.inspect} is not a valid Reactor interface"
       end
 
-      # Analyze the reactor's #handle method signature and store expected keyword arguments
-      # for automatic injection during event processing
-      @kargs_for_handle[thing] = Injector.resolve_args(thing, :handle)
+      # Analyze the reactor's handle_batch signature to determine if it needs history
+      @needs_history[thing] = Injector.resolve_args(thing, :handle_batch).include?(:history)
       @async_reactors << thing
 
       group_id = thing.consumer_info.group_id
@@ -138,53 +122,44 @@ module Sourced
       !!@registered_lookup[thing.consumer_info.group_id]
     end
 
-    # Handle the next available event for a specific reactor with automatic argument injection.
+    # Handle the next available batch of messages for a specific reactor.
     #
-    # This method performs argument injection based on the reactor's #handle method signature
-    # that was analyzed during registration. Only the arguments that the reactor actually
-    # declared in its method signature will be provided, enabling reactors to opt into
-    # exactly the contextual information they need.
+    # Fetches a batch of messages from the backend and calls reactor.handle_batch(batch, **kargs).
+    # If the reactor's handle_batch signature includes `history:`, the full stream history
+    # is fetched from the backend and passed through.
     #
     # @param reactor [Class] The reactor class to get events for
     # @param worker_id [String, nil] Optional process identifier for logging
-    # @param raise_on_error [Boolean] Raise error immediatly instead of notifying Reactor#on_exception
-    # @return [Boolean] true if an event was handled, false if no events available
-    #
-    # @example Argument injection behavior
-    #   # For a reactor with signature: def handle(event)
-    #   # Called as: reactor.handle(event)
-    #   
-    #   # For a reactor with signature: def handle(event, replaying:)
-    #   # Called as: reactor.handle(event, replaying: false)  # or true during replay
-    #   
-    #   # For a reactor with signature: def handle(event, history:) 
-    #   # Called as: reactor.handle(event, history: [event1, event2, ...])
-    #   
-    #   # For a reactor with signature: def handle(event, replaying:, history:)
-    #   # Called as: reactor.handle(event, replaying: false, history: [...])
-    #
-    # Available injectable arguments:
-    # - :replaying - Boolean indicating if this is a replay operation
-    # - :history - Array of all events in the stream up to this point
-    def handle_next_event_for_reactor(reactor, worker_id = nil, raise_on_error = false)
+    # @param raise_on_error [Boolean] Raise error immediately instead of notifying Reactor#on_exception
+    # @param batch_size [Integer] Number of messages to fetch per lock cycle
+    # @return [Boolean] true if a batch was handled, false if no messages available
+    def handle_next_event_for_reactor(reactor, worker_id = nil, raise_on_error = false, batch_size: 1)
+      effective_batch_size = reactor.consumer_info.batch_size || batch_size
       found = false
-      backend.reserve_next_for_reactor(reactor, worker_id:) do |event, replaying|
-        found = true
-        log_event('handling event', reactor, event, worker_id)
-        
-        # Build keyword arguments hash based on what the reactor's #handle method expects
-        kargs = build_reactor_handle_args(reactor, event, replaying)
 
-        # Call the reactor's handle method with the event and any requested keyword arguments
-        reactor.handle(event, **kargs)
+      backend.reserve_next_for_reactor(reactor, batch_size: effective_batch_size, with_history: @needs_history[reactor], worker_id:) do |batch, history|
+        found = true
+        first_msg = batch.first&.first
+        log_event("handling batch(#{batch.size})", reactor, first_msg, worker_id) if first_msg
+
+        kargs = {}
+        kargs[:history] = history if @needs_history[reactor]
+        reactor.handle_batch(batch, **kargs)
+      rescue PartialBatchError => e
+        raise e if raise_on_error
+
+        logger.warn "[#{PID}]: partial batch failure for reactor #{reactor}: #{e.message}"
+        backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
+          reactor.on_exception(e, e.failed_message, group)
+        end
+        e.action_pairs
       rescue StandardError => e
         raise e if raise_on_error
 
-        logger.warn "[#{PID}]: error handling event #{event.class} with reactor #{reactor} #{e}"
+        logger.warn "[#{PID}]: error handling batch with reactor #{reactor} #{e}"
         backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
-          reactor.on_exception(e, event, group)
+          reactor.on_exception(e, batch.first&.first, group)
         end
-        # Do not ACK event for reactor
         Actions::RETRY
       end
       found
@@ -210,26 +185,6 @@ module Sourced
     end
 
     private
-
-    # Build keyword arguments hash for calling a reactor's #handle method.
-    # Only includes arguments that the reactor's method signature actually declares.
-    #
-    # @param reactor [Class] The reactor class 
-    # @param event [Event] The event being processed
-    # @param replaying [Boolean] Whether this is a replay operation
-    # @return [Hash] Hash of keyword arguments to pass to reactor.handle
-    def build_reactor_handle_args(reactor, event, replaying)
-      kargs_for_handle[reactor].each.with_object({}) do |name, hash|
-        case name
-        when :replaying
-          hash[name] = replaying
-        when :history
-          hash[name] = backend.read_stream(event.stream_id)
-        when :logger
-          hash[name] = logger
-        end
-      end
-    end
 
     def log_event(label, reactor, event, process_name = PID)
       logger.info "[#{process_name}]: #{reactor.consumer_info.group_id} #{label} #{event_info(event)}"

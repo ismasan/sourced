@@ -20,7 +20,7 @@ module Sourced
         server = evaluator.make_server(@bound_endpoint)
 
         workers = evaluator.sourced_worker_count.times.map do |i|
-          Sourced::Worker.new(name: "falcon-w-#{i}")
+          Sourced::Worker.new(name: "falcon-w-#{i}", batch_size: evaluator.sourced_worker_batch_size)
         end
 
         housekeepers = evaluator.sourced_housekeeping_count.times.map do |i|
