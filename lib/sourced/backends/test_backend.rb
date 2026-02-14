@@ -48,13 +48,12 @@ module Sourced
       private def process_actions(group_id, actions, ack, event, offset)
         should_ack = false
         actions = [actions] unless actions.is_a?(Array)
-        actions = actions.compact
         # Empty actions is assumed to be an ACK
         return ack.() if actions.empty?
 
         actions.each do |action|
           case action
-          when Actions::OK
+          when nil, Actions::OK
             should_ack = true
 
           when Actions::Ack

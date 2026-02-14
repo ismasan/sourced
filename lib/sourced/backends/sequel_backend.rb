@@ -444,12 +444,11 @@ module Sourced
       private def execute_actions(group_id, actions, message)
         should_ack = false
         actions = [actions] unless actions.is_a?(Array)
-        actions = actions.compact
         return true if actions.empty? # empty = implicit ACK
 
         actions.each do |action|
           case action
-          when Actions::OK
+          when nil, Actions::OK
             should_ack = true
 
           when Actions::Ack
@@ -826,7 +825,7 @@ module Sourced
       end
 
       def sql_for_ack_on
-        <<~SQL
+        @sql_for_ack_on ||= <<~SQL
           WITH candidate_rows AS (
             SELECT
                 e.global_seq,
