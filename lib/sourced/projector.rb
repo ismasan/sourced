@@ -32,13 +32,44 @@ module Sourced
         new(id: identity_from(message)).handle(message, replaying:, history:)
       end
 
-      # Override this in subclasses 
-      # to make an actor take it's @id from an arbitrary 
+      # Override this in subclasses
+      # to make an actor take it's @id from an arbitrary
       # field in the message
       #
       # @param message [Sourced::Message]
       # @return [Object]
       def identity_from(message) = message.stream_id
+
+      private
+
+      # Shared batch finalization for both StateStored and EventSourced projectors.
+      # Runs a single sync for the entire batch, then collects reactions for
+      # non-replaying messages.
+      #
+      # @param instance [Projector] the projector instance (already evolved)
+      # @param batch [Array<[Message, Boolean]>] original batch pairs
+      # @param messages [Array<Message>] extracted messages from batch
+      # @param all_replaying [Boolean] whether all messages in the batch are replaying
+      # @return [Array<[actions, source_message]>] action pairs
+      def sync_and_react(instance, batch, messages, all_replaying)
+        sync_actions = instance.sync_actions_with(
+          state: instance.state, events: messages, replaying: all_replaying
+        )
+
+        result = [[sync_actions, messages.last]]
+
+        unless all_replaying
+          batch.each do |msg, replaying|
+            next if replaying
+            if instance.reacts_to?(msg)
+              reaction_cmds = instance.react(msg)
+              result << [Actions.build_for(reaction_cmds), msg] if reaction_cmds.any?
+            end
+          end
+        end
+
+        result
+      end
     end
 
     attr_reader :id, :seq
@@ -104,30 +135,9 @@ module Sourced
           messages = batch.map(&:first)
           all_replaying = batch.all? { |_, r| r }
 
-          # 1. Load state from storage
           instance.state
-          # 2. Evolve ALL batch messages at once
           instance.evolve(messages)
-          # 3. Single sync for entire batch
-          sync_actions = instance.sync_actions_with(
-            state: instance.state, events: messages, replaying: all_replaying
-          )
-
-          last_msg = messages.last
-          result = [[sync_actions, last_msg]]
-
-          # 4. Reactions (only for non-replaying messages)
-          unless all_replaying
-            batch.each do |msg, replaying|
-              next if replaying
-              if instance.reacts_to?(msg)
-                reaction_cmds = instance.react(msg)
-                result << [Actions.build_for(reaction_cmds), msg] if reaction_cmds.any?
-              end
-            end
-          end
-
-          result
+          sync_and_react(instance, batch, messages, all_replaying)
         end
       end
 
@@ -186,28 +196,8 @@ module Sourced
           messages = batch.map(&:first)
           all_replaying = batch.all? { |_, r| r }
 
-          # 1. Evolve full history (includes batch messages)
           instance.evolve(history)
-          # 2. Single sync
-          sync_actions = instance.sync_actions_with(
-            state: instance.state, events: messages, replaying: all_replaying
-          )
-
-          last_msg = messages.last
-          result = [[sync_actions, last_msg]]
-
-          # 3. Reactions (only for non-replaying messages)
-          unless all_replaying
-            batch.each do |msg, replaying|
-              next if replaying
-              if instance.reacts_to?(msg)
-                reaction_cmds = instance.react(msg)
-                result << [Actions.build_for(reaction_cmds), msg] if reaction_cmds.any?
-              end
-            end
-          end
-
-          result
+          sync_and_react(instance, batch, messages, all_replaying)
         end
       end
 
