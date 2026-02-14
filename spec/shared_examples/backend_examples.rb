@@ -896,6 +896,25 @@ module BackendExamples
 
         expect(messages.map(&:id)).to eq([evt1.id])
       end
+
+      it 'releases offset when block returns empty action_pairs' do
+        evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+        backend.append_to_stream('s1', [evt1])
+
+        # Return empty action_pairs — nothing to ACK
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |_batch, _history|
+          []
+        end
+
+        # Offset should have been released, so the message is available again
+        messages = []
+        backend.reserve_next_for_reactor(reactor1, batch_size: 10) do |batch, _history|
+          batch.each { |msg, _| messages << msg }
+          batch.map { |msg, _| [Sourced::Actions::OK, msg] }
+        end
+
+        expect(messages.map(&:id)).to eq([evt1.id])
+      end
     end
 
     describe '#reserve_next_for_reactor with_history' do

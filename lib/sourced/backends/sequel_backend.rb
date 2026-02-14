@@ -401,6 +401,9 @@ module Sourced
 
             if last_ack_row
               ack_message(group_id, last_ack_row[:stream_id_fk], last_ack_row[:global_seq])
+            else
+              # Nothing was ACKed — release the claim so another worker can retry
+              release_offset(first_row[:offset_id])
             end
           end
 
@@ -427,6 +430,11 @@ module Sourced
 
         if with_history
           batch_rows = all_rows.select { |r| r[:in_batch] }
+          if batch_rows.empty?
+            # Claimed but no batch messages — release the claim
+            release_offset(all_rows.first[:offset_id])
+            return NO_BATCH
+          end
           # Deserialize all rows as history (also parses JSON for batch rows since they share objects)
           history = all_rows.map { |row| deserialize_message(row) }
           [batch_rows, history]

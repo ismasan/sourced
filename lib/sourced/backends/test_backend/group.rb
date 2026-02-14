@@ -135,6 +135,12 @@ module Sourced
           end
 
           # Execute all action pairs
+          if action_pairs.empty?
+            # Nothing to process — release the claim so another worker can retry
+            offset.locked = false
+            return first_evt
+          end
+
           noop_ack = -> {}
           action_pairs.each do |actions, source_message|
             process_actions_callback.(group_id, actions, noop_ack, source_message, offset)
