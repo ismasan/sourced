@@ -34,6 +34,8 @@ module Sourced
       ACTIVE = 'active'
       # Consumer group status indicating stopped processing
       STOPPED = 'stopped'
+      # Pre-allocated return for empty/failed batch claims
+      NO_BATCH = [nil, nil].freeze
 
       # @!attribute [r] pubsub
       #   @return [PubSub] Pub/sub implementation for real-time notifications
@@ -422,7 +424,7 @@ module Sourced
         end
 
         all_rows = db.fetch(sql).all
-        return [nil, nil] if all_rows.empty?
+        return NO_BATCH if all_rows.empty?
 
         if with_history
           batch_rows = all_rows.select { |r| r[:in_batch] }
@@ -434,7 +436,7 @@ module Sourced
         end
       rescue Sequel::UniqueConstraintViolation
         logger.debug "Batch claim for group #{group_id} already exists, skipping"
-        [nil, nil]
+        NO_BATCH
       end
 
       # Execute action side effects without ACKing.
