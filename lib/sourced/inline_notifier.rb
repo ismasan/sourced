@@ -2,49 +2,52 @@
 
 module Sourced
   # Default backend notifier for non-PG backends (TestBackend, SQLite).
-  # Invokes callbacks synchronously. +start+ and +stop+ are no-ops
-  # since there is no background listener.
+  # A simple synchronous pub/sub: {#publish} invokes all subscribers inline.
+  # +start+ and +stop+ are no-ops since there is no background listener.
   #
-  # Implements the same interface as {Backends::SequelBackend::PGNotifier}:
-  # +on_append+, +on_resume+, +notify+, +notify_reactor+, +start+, +stop+.
+  # Implements the same interface as {Backends::SequelBackend::PGNotifier}.
   #
   # @example
   #   notifier = InlineNotifier.new
-  #   notifier.on_append(->(types) { puts types })
-  #   notifier.on_resume(->(group_id) { puts group_id })
-  #   notifier.notify(['orders.created'])
-  #   notifier.notify_reactor('OrderReactor')
+  #   notifier.subscribe(->(event, value) { puts "#{event}: #{value}" })
+  #   notifier.notify_new_messages(['orders.created', 'orders.paid'])
+  #   notifier.notify_reactor_resumed('OrderReactor')
   class InlineNotifier
-    # Register a callback to be invoked when new messages are appended.
-    #
-    # @param callable [#call] receives an Array of unique type strings
-    # @return [void]
-    def on_append(callable)
-      @on_append_callback = callable
+    def initialize
+      @subscribers = []
     end
 
-    # Register a callback to be invoked when a reactor is resumed.
+    # Register a subscriber to receive all published events.
     #
-    # @param callable [#call] receives a group_id String
+    # @param callable [#call] receives +(event_name, value)+ where both are Strings
     # @return [void]
-    def on_resume(callable)
-      @on_resume_callback = callable
+    def subscribe(callable)
+      @subscribers << callable
     end
 
-    # Invoke the +on_append+ callback synchronously with deduplicated types.
+    # Publish an event to all subscribers synchronously.
+    #
+    # @param event_name [String] event name (e.g. +'messages_appended'+)
+    # @param value [String] event payload
+    # @return [void]
+    def publish(event_name, value)
+      @subscribers.each { |s| s.call(event_name, value) }
+    end
+
+    # Notify that new messages were appended.
     #
     # @param types [Array<String>] message type strings
     # @return [void]
-    def notify(types)
-      @on_append_callback&.call(types.uniq)
+    def notify_new_messages(types)
+      publish('messages_appended', types.uniq.join(','))
     end
 
-    # Invoke the +on_resume+ callback synchronously with the given group_id.
+    # Notify that a stopped reactor has been resumed.
     #
     # @param group_id [String] consumer group ID of the resumed reactor
     # @return [void]
-    def notify_reactor(group_id)
-      @on_resume_callback&.call(group_id)
+    def notify_reactor_resumed(group_id)
+      publish('reactor_resumed', group_id)
     end
 
     # No-op. Provided for interface compatibility with {Backends::SequelBackend::PGNotifier}.

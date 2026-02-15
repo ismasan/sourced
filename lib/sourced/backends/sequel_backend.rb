@@ -297,7 +297,7 @@ module Sourced
             db[messages_table].multi_insert(rows)
 
             # NOTIFY delivered on commit — atomically correct
-            notifier.notify(messages_array.map(&:type))
+            notifier.notify_new_messages(messages_array.map(&:type))
           end
 
           true
@@ -327,7 +327,7 @@ module Sourced
           rows = messages_array.map { |e| serialize_message(e, id) }
           db[messages_table].multi_insert(rows)
 
-          notifier.notify(messages_array.map(&:type))
+          notifier.notify_new_messages(messages_array.map(&:type))
         end
 
         true
@@ -599,7 +599,7 @@ module Sourced
         group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         dataset = db[consumer_groups_table].where(group_id: group_id)
         dataset.update(status: ACTIVE, retry_at: nil, error_context: nil)
-        notifier.notify_reactor(group_id)
+        notifier.notify_reactor_resumed(group_id)
       end
 
       # @param group_id [String]

@@ -3,82 +3,74 @@
 module Sourced
   module Backends
     class SequelBackend
-      # PostgreSQL LISTEN/NOTIFY transport for real-time message dispatch.
+      # PostgreSQL LISTEN/NOTIFY pub/sub transport for real-time message dispatch.
       #
-      # Uses a dedicated PG connection to subscribe to the +sourced_new_messages+
-      # channel. Two kinds of signal are multiplexed over this channel:
-      #
-      # - **Type notifications** ({#notify}): comma-separated message type strings
-      #   (e.g. +"orders.created,orders.shipped"+). Routed to the +on_append+ callback.
-      # - **Reactor notifications** ({#notify_reactor}): prefixed with +"reactor:"+
-      #   followed by a consumer group ID (e.g. +"reactor:OrderReactor"+).
-      #   Routed to the +on_resume+ callback.
+      # Events are multiplexed over a single PG channel. The wire format is
+      # +event_name:value+ (split on the first colon).
       #
       # Implements the same interface as {Sourced::InlineNotifier}.
       #
       # @example Wiring in a Dispatcher
       #   pg_notifier = PGNotifier.new(db: Sequel.postgres('mydb'))
-      #   pg_notifier.on_append(queuer)
-      #   pg_notifier.on_resume(queuer.method(:queue_reactor))
+      #   pg_notifier.subscribe(queuer)
       #
       #   # In a dedicated fiber:
       #   pg_notifier.start   # blocks, listening for notifications
       #
       #   # From the append path (inside a transaction):
-      #   pg_notifier.notify(['orders.created', 'orders.shipped'])
+      #   pg_notifier.notify_new_messages(['orders.created', 'orders.shipped'])
       #
       #   # From start_consumer_group:
-      #   pg_notifier.notify_reactor('OrderReactor')
+      #   pg_notifier.notify_reactor_resumed('OrderReactor')
       class PGNotifier
         # @return [String] PG NOTIFY channel name
         CHANNEL = 'sourced_new_messages'
-
-        REACTOR_PREFIX = 'reactor:'
 
         # @param db [Sequel::Database] a PostgreSQL Sequel database connection.
         #   The LISTEN connection should be separate from the one used for writes
         #   to avoid blocking.
         def initialize(db:)
           @db = db
+          @subscribers = []
           @listening = false
         end
 
-        # Register a callback for new-message notifications.
+        # Register a subscriber to receive all published events.
         #
-        # @param callable [#call] receives an +Array<String>+ of message type strings
+        # @param callable [#call] receives +(event_name, value)+ where both are Strings
         # @return [void]
-        def on_append(callable)
-          @on_append_callback = callable
+        def subscribe(callable)
+          @subscribers << callable
         end
 
-        # Register a callback for reactor-resume notifications.
+        # Publish an event via PG NOTIFY. Should be called inside a transaction
+        # so the notification is delivered atomically on commit.
+        # Wire format: +event_name:value+.
         #
-        # @param callable [#call] receives a group_id +String+
+        # @param event_name [String] event name
+        # @param value [String] event payload
         # @return [void]
-        def on_resume(callable)
-          @on_resume_callback = callable
+        def publish(event_name, value)
+          @db.run(Sequel.lit("SELECT pg_notify('#{CHANNEL}', ?)", "#{event_name}:#{value}"))
         end
 
-        # Fire a PG NOTIFY with the given message types. Should be called inside
-        # a transaction so the notification is delivered atomically on commit.
+        # Notify that new messages were appended.
         #
-        # @param types [Array<String>] message type strings to broadcast
+        # @param types [Array<String>] message type strings
         # @return [void]
-        def notify(types)
-          types_str = types.uniq.join(',')
-          @db.run(Sequel.lit("SELECT pg_notify('#{CHANNEL}', ?)", types_str))
+        def notify_new_messages(types)
+          publish('messages_appended', types.uniq.join(','))
         end
 
-        # Fire a PG NOTIFY to signal that a reactor has been resumed.
-        # Payload is prefixed with +"reactor:"+ to distinguish from type notifications.
+        # Notify that a stopped reactor has been resumed.
         #
         # @param group_id [String] consumer group ID of the resumed reactor
         # @return [void]
-        def notify_reactor(group_id)
-          @db.run(Sequel.lit("SELECT pg_notify('#{CHANNEL}', ?)", "#{REACTOR_PREFIX}#{group_id}"))
+        def notify_reactor_resumed(group_id)
+          publish('reactor_resumed', group_id)
         end
 
-        # Block on PG LISTEN, dispatching to the appropriate callback per notification.
+        # Block on PG LISTEN, dispatching events to all subscribers.
         # Loops with a 2-second timeout so {#stop} is checked periodically.
         #
         # @return [void]
@@ -86,13 +78,8 @@ module Sourced
           @listening = true
           while @listening
             @db.listen(CHANNEL, timeout: 2) do |_ch, _pid, payload|
-              if payload.start_with?(REACTOR_PREFIX)
-                group_id = payload.delete_prefix(REACTOR_PREFIX)
-                @on_resume_callback&.call(group_id)
-              else
-                types = payload.split(',').map(&:strip)
-                @on_append_callback&.call(types)
-              end
+              event_name, value = payload.split(':', 2)
+              @subscribers.each { |s| s.call(event_name, value) }
             end
           end
         end

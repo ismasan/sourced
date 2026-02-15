@@ -113,7 +113,7 @@ module Sourced
           group.status = ACTIVE
           group.retry_at = nil
         end
-        notifier.notify_reactor(group_id)
+        notifier.notify_reactor_resumed(group_id)
       end
 
       def stop_consumer_group(group_id, error = nil)
@@ -230,7 +230,7 @@ module Sourced
           end
         end
         @state.groups.each_value(&:reindex)
-        notifier.notify(messages_array.map(&:type))
+        notifier.notify_new_messages(messages_array.map(&:type))
         true
       end
 

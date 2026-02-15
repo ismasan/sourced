@@ -19,9 +19,9 @@ RSpec.describe Sourced::Dispatcher::NotificationQueuer do
     )
   end
 
-  describe '#call' do
+  describe 'messages_appended' do
     it 'pushes matching reactors to work_queue' do
-      queuer.call(['orders.created'])
+      queuer.call('messages_appended', 'orders.created')
 
       popped = []
       popped << work_queue.pop
@@ -30,7 +30,7 @@ RSpec.describe Sourced::Dispatcher::NotificationQueuer do
     end
 
     it 'handles multiple types and deduplicates reactors' do
-      queuer.call(['orders.created', 'orders.shipped'])
+      queuer.call('messages_appended', 'orders.created,orders.shipped')
 
       popped = []
       popped << work_queue.pop
@@ -39,7 +39,7 @@ RSpec.describe Sourced::Dispatcher::NotificationQueuer do
     end
 
     it 'strips whitespace from type strings' do
-      queuer.call([' orders.created '])
+      queuer.call('messages_appended', ' orders.created ')
 
       popped = []
       popped << work_queue.pop
@@ -48,23 +48,31 @@ RSpec.describe Sourced::Dispatcher::NotificationQueuer do
     end
 
     it 'ignores unknown types' do
-      queuer.call(['unknown.type'])
+      queuer.call('messages_appended', 'unknown.type')
 
-      # Nothing should be in the queue; verify by pushing a sentinel
       work_queue.push(:sentinel)
       expect(work_queue.pop).to eq(:sentinel)
     end
   end
 
-  describe '#queue_reactor' do
+  describe 'reactor_resumed' do
     it 'pushes reactor matching the group_id' do
-      queuer.queue_reactor('Reactor1')
+      queuer.call('reactor_resumed', 'Reactor1')
 
       expect(work_queue.pop).to eq(reactor1)
     end
 
     it 'ignores unknown group_ids' do
-      queuer.queue_reactor('Unknown')
+      queuer.call('reactor_resumed', 'Unknown')
+
+      work_queue.push(:sentinel)
+      expect(work_queue.pop).to eq(:sentinel)
+    end
+  end
+
+  describe 'unknown events' do
+    it 'ignores them' do
+      queuer.call('something_else', 'data')
 
       work_queue.push(:sentinel)
       expect(work_queue.pop).to eq(:sentinel)
@@ -75,31 +83,48 @@ end
 RSpec.describe Sourced::InlineNotifier do
   subject(:notifier) { described_class.new }
 
-  describe '#on_append / #notify' do
-    it 'invokes callback with deduped types on notify' do
-      received = nil
-      notifier.on_append(->(types) { received = types })
+  describe '#subscribe / #publish' do
+    it 'delivers events to subscribers' do
+      received = []
+      notifier.subscribe(->(event, value) { received << [event, value] })
 
-      notifier.notify(['a', 'b', 'a'])
-      expect(received).to eq(['a', 'b'])
+      notifier.publish('test_event', 'test_value')
+      expect(received).to eq([['test_event', 'test_value']])
     end
 
-    it 'does not raise when no callback registered' do
-      expect { notifier.notify(['a']) }.not_to raise_error
+    it 'delivers to multiple subscribers' do
+      received1 = []
+      received2 = []
+      notifier.subscribe(->(event, value) { received1 << [event, value] })
+      notifier.subscribe(->(event, value) { received2 << [event, value] })
+
+      notifier.publish('evt', 'val')
+      expect(received1).to eq([['evt', 'val']])
+      expect(received2).to eq([['evt', 'val']])
+    end
+
+    it 'does not raise when no subscribers registered' do
+      expect { notifier.publish('evt', 'val') }.not_to raise_error
     end
   end
 
-  describe '#on_resume / #notify_reactor' do
-    it 'invokes callback with group_id on notify_reactor' do
-      received = nil
-      notifier.on_resume(->(group_id) { received = group_id })
+  describe '#notify_new_messages' do
+    it 'publishes messages_appended with deduped comma-separated types' do
+      received = []
+      notifier.subscribe(->(event, value) { received << [event, value] })
 
-      notifier.notify_reactor('MyReactor')
-      expect(received).to eq('MyReactor')
+      notifier.notify_new_messages(['a', 'b', 'a'])
+      expect(received).to eq([['messages_appended', 'a,b']])
     end
+  end
 
-    it 'does not raise when no callback registered' do
-      expect { notifier.notify_reactor('MyReactor') }.not_to raise_error
+  describe '#notify_reactor_resumed' do
+    it 'publishes reactor_resumed with group_id' do
+      received = []
+      notifier.subscribe(->(event, value) { received << [event, value] })
+
+      notifier.notify_reactor_resumed('MyReactor')
+      expect(received).to eq([['reactor_resumed', 'MyReactor']])
     end
   end
 

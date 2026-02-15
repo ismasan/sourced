@@ -18,137 +18,106 @@ RSpec.describe Sourced::Backends::SequelBackend::PGNotifier do
   let(:listen_db) { @listen_db }
   let(:notify_db) { @notify_db }
 
-  describe '#start / #notify' do
-    it 'delivers notifications to the on_append callback' do
+  describe '#notify_new_messages' do
+    it 'delivers type notifications to subscribers' do
       listener = described_class.new(db: listen_db)
       sender = described_class.new(db: notify_db)
 
       received = []
-      listener.on_append(->(types) { received << types })
-
-      Sourced.config.executor.start do |t|
-        t.spawn do
-          listener.start
-        end
-
-        t.spawn do
-          # Give the listener time to enter LISTEN
-          sleep 0.01
-          sender.notify(['orders.created', 'orders.shipped'])
-          # Wait for the notification to be delivered, then stop
-          sleep 0.01
-          listener.stop
-        end
-      end
-
-      expect(received.size).to eq(1)
-      expect(received.first).to contain_exactly('orders.created', 'orders.shipped')
-    end
-
-    it 'receives multiple notifications' do
-      listener = described_class.new(db: listen_db)
-      sender = described_class.new(db: notify_db)
-
-      received = []
-      listener.on_append(->(types) { received << types })
-
-      Sourced.config.executor.start do |t|
-        t.spawn do
-          listener.start
-        end
-
-        t.spawn do
-          sleep 0.01
-          sender.notify(['orders.created'])
-          sleep 0.05
-          sender.notify(['orders.shipped'])
-          sleep 0.01
-          listener.stop
-        end
-      end
-
-      expect(received.size).to eq(2)
-      expect(received[0]).to eq(['orders.created'])
-      expect(received[1]).to eq(['orders.shipped'])
-    end
-
-    it 'deduplicates types in a single notify call' do
-      listener = described_class.new(db: listen_db)
-      sender = described_class.new(db: notify_db)
-
-      received = []
-      listener.on_append(->(types) { received << types })
+      listener.subscribe(->(event, value) { received << [event, value] })
 
       Sourced.config.executor.start do |t|
         t.spawn { listener.start }
 
         t.spawn do
           sleep 0.01
-          sender.notify(['orders.created', 'orders.created', 'orders.shipped'])
+          sender.notify_new_messages(['orders.created', 'orders.shipped'])
           sleep 0.01
           listener.stop
         end
       end
 
       expect(received.size).to eq(1)
-      expect(received.first).to contain_exactly('orders.created', 'orders.shipped')
+      expect(received.first).to eq(['messages_appended', 'orders.created,orders.shipped'])
+    end
+
+    it 'deduplicates types' do
+      listener = described_class.new(db: listen_db)
+      sender = described_class.new(db: notify_db)
+
+      received = []
+      listener.subscribe(->(event, value) { received << [event, value] })
+
+      Sourced.config.executor.start do |t|
+        t.spawn { listener.start }
+
+        t.spawn do
+          sleep 0.01
+          sender.notify_new_messages(['orders.created', 'orders.created', 'orders.shipped'])
+          sleep 0.01
+          listener.stop
+        end
+      end
+
+      expect(received.size).to eq(1)
+      expect(received.first).to eq(['messages_appended', 'orders.created,orders.shipped'])
     end
   end
 
-  describe '#start / #notify_reactor' do
-    it 'delivers reactor notifications to the on_resume callback' do
+  describe '#notify_reactor_resumed' do
+    it 'delivers reactor notifications to subscribers' do
       listener = described_class.new(db: listen_db)
       sender = described_class.new(db: notify_db)
 
       received = []
-      listener.on_resume(->(group_id) { received << group_id })
-      listener.on_append(->(_) {}) # must be set to avoid nil errors
+      listener.subscribe(->(event, value) { received << [event, value] })
 
       Sourced.config.executor.start do |t|
         t.spawn { listener.start }
 
         t.spawn do
           sleep 0.01
-          sender.notify_reactor('OrderReactor')
+          sender.notify_reactor_resumed('OrderReactor')
           sleep 0.01
           listener.stop
         end
       end
 
-      expect(received).to eq(['OrderReactor'])
+      expect(received).to eq([['reactor_resumed', 'OrderReactor']])
     end
+  end
 
-    it 'routes type and reactor notifications to the correct callbacks' do
+  describe 'multiplexing' do
+    it 'routes type and reactor notifications correctly over the same channel' do
       listener = described_class.new(db: listen_db)
       sender = described_class.new(db: notify_db)
 
-      type_received = []
-      reactor_received = []
-      listener.on_append(->(types) { type_received << types })
-      listener.on_resume(->(group_id) { reactor_received << group_id })
+      received = []
+      listener.subscribe(->(event, value) { received << [event, value] })
 
       Sourced.config.executor.start do |t|
         t.spawn { listener.start }
 
         t.spawn do
           sleep 0.01
-          sender.notify(['orders.created'])
+          sender.notify_new_messages(['orders.created'])
           sleep 0.01
-          sender.notify_reactor('ShipReactor')
+          sender.notify_reactor_resumed('ShipReactor')
           sleep 0.01
           listener.stop
         end
       end
 
-      expect(type_received).to eq([['orders.created']])
-      expect(reactor_received).to eq(['ShipReactor'])
+      expect(received).to eq([
+        ['messages_appended', 'orders.created'],
+        ['reactor_resumed', 'ShipReactor']
+      ])
     end
   end
 
   describe '#stop' do
     it 'breaks out of the listen loop' do
       notifier = described_class.new(db: listen_db)
-      notifier.on_append(->(_) {})
 
       Sourced.config.executor.start do |t|
         t.spawn { notifier.start }
