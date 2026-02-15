@@ -25,11 +25,11 @@ module Sourced
 
         def start
           @listening = true
-          @db.listen(CHANNEL, timeout: 2, loop: true) do |_ch, _pid, payload|
-            break unless @listening
-
-            types = payload.split(',').map(&:strip)
-            @on_append_callback&.call(types)
+          while @listening
+            @db.listen(CHANNEL, timeout: 2) do |_ch, _pid, payload|
+              types = payload.split(',').map(&:strip)
+              @on_append_callback&.call(types)
+            end
           end
         end
 
