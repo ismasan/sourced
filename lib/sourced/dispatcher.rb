@@ -52,12 +52,9 @@ module Sourced
         )
       end
 
-      @notifier = Notifier.new(
-        work_queue: @work_queue,
-        reactors: reactors,
-        backend: router.backend,
-        logger: logger
-      )
+      @notifier = Notifier.new(work_queue: @work_queue, reactors: reactors)
+      @backend_notifier = router.backend.notifier
+      @backend_notifier.on_append(@notifier)
 
       @catchup_poller = CatchUpPoller.new(
         work_queue: @work_queue,
@@ -73,8 +70,8 @@ module Sourced
     def spawn_into(task)
       s = task.respond_to?(:spawn) ? :spawn : :async
 
-      # Notifier (PG LISTEN fiber — no-op for non-PG)
-      task.send(s) { @notifier.run }
+      # Backend notifier (PG LISTEN fiber — no-op for non-PG)
+      task.send(s) { @backend_notifier.start }
 
       # CatchUp poller
       task.send(s) { @catchup_poller.run }
@@ -88,7 +85,7 @@ module Sourced
     # Stop all components and close the work queue.
     def stop
       @logger.info "Dispatcher: stopping #{@workers.size} workers"
-      @notifier.stop
+      @backend_notifier.stop
       @catchup_poller.stop
       @workers.each(&:stop)
       @work_queue.close(@workers.size)

@@ -3,6 +3,7 @@
 require 'sequel'
 require 'json'
 require 'sourced/message'
+require 'sourced/notifier'
 require 'sourced/backends/pg_pub_sub'
 
 Sequel.extension :pg_json if defined?(PG)
@@ -152,6 +153,14 @@ module Sourced
         end
       end
 
+      def notifier
+        @notifier ||= if db.adapter_scheme == :postgres
+          PGNotifier.new(db: db)
+        else
+          InlineNotifier.new
+        end
+      end
+
       def transaction(&)
         db.transaction(&)
       end
@@ -288,7 +297,7 @@ module Sourced
             db[messages_table].multi_insert(rows)
 
             # NOTIFY delivered on commit — atomically correct
-            notify_new_message_types(messages_array.map(&:type))
+            notifier.notify(messages_array.map(&:type))
           end
 
           true
@@ -318,7 +327,7 @@ module Sourced
           rows = messages_array.map { |e| serialize_message(e, id) }
           db[messages_table].multi_insert(rows)
 
-          notify_new_message_types(messages_array.map(&:type))
+          notifier.notify(messages_array.map(&:type))
         end
 
         true
@@ -935,13 +944,6 @@ module Sourced
         Message.from(row)
       end
 
-      def notify_new_message_types(message_types)
-        return unless db.adapter_scheme == :postgres
-
-        types_str = message_types.uniq.join(',')
-        db.run(Sequel.lit("SELECT pg_notify('sourced_new_messages', ?)", types_str))
-      end
-
       def connect(db)
         case db
         when Sequel::Database
@@ -958,3 +960,4 @@ end
 
 require 'sourced/backends/sequel_backend/installer'
 require 'sourced/backends/sequel_backend/group_updater'
+require 'sourced/backends/sequel_backend/pg_notifier'

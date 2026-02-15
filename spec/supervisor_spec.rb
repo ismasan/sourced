@@ -5,7 +5,8 @@ require 'spec_helper'
 RSpec.describe Sourced::Supervisor do
   let(:executor) { double('Executor') }
   let(:logger) { instance_double('Logger', info: nil, warn: nil) }
-  let(:backend) { double('Backend') }
+  let(:backend_notifier) { Sourced::InlineNotifier.new }
+  let(:backend) { double('Backend', notifier: backend_notifier) }
   let(:reactor1) { double('Reactor1', handled_messages: [double(type: 'event1')]) }
   let(:reactors) { Set.new([reactor1]) }
   let(:router) { instance_double(Sourced::Router, backend: backend, async_reactors: reactors) }

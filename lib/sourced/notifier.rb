@@ -1,54 +1,19 @@
 # frozen_string_literal: true
 
 module Sourced
-  # PG LISTEN fiber that wakes workers when new messages arrive.
-  # Listens on the `sourced_new_messages` channel. Payload is comma-separated
-  # type strings (no JSON). Maintains an eager type→reactor lookup built from
-  # each reactor's handled_messages.
-  #
-  # Only active for PostgreSQL — detected via db.adapter_scheme == :postgres.
-  # For non-PG backends this is a no-op.
+  # Callable that maps message type strings to reactors and pushes them
+  # onto a WorkQueue. Registered as the on_append callback on backend notifiers.
   class Notifier
-    CHANNEL = 'sourced_new_messages'
-
     # @param work_queue [WorkQueue]
     # @param reactors [Array<Class>] reactor classes
-    # @param backend [Object] the configured backend
-    # @param logger [Object]
-    def initialize(work_queue:, reactors:, backend:, logger: Sourced.config.logger)
+    def initialize(work_queue:, reactors:)
       @work_queue = work_queue
-      @backend = backend
-      @logger = logger
-      @running = false
       @type_to_reactors = build_type_lookup(reactors)
     end
 
-    # Whether this notifier can actually listen (PG only).
-    def active?
-      pg_backend?
-    end
-
-    # Run the LISTEN loop. Blocks until stopped.
-    # No-op for non-PG backends.
-    def run
-      return unless active?
-
-      @running = true
-      @logger.info "Notifier: listening on #{CHANNEL}"
-
-      db.listen(CHANNEL, timeout: 2, loop: true) do |_channel, _pid, payload|
-        break unless @running
-
-        types = payload.split(',')
-        reactors = types.flat_map { |t| @type_to_reactors.fetch(t.strip, []) }.uniq
-        reactors.each { |r| @work_queue.push(r) }
-      end
-
-      @logger.info 'Notifier: stopped'
-    end
-
-    def stop
-      @running = false
+    def call(types)
+      reactors = types.flat_map { |t| @type_to_reactors.fetch(t.strip, []) }.uniq
+      reactors.each { |r| @work_queue.push(r) }
     end
 
     private
@@ -62,17 +27,20 @@ module Sourced
       end
       lookup
     end
+  end
 
-    def pg_backend?
-      @backend.respond_to?(:pubsub) &&
-        db.respond_to?(:adapter_scheme) &&
-        db.adapter_scheme == :postgres
+  # Synchronous notifier for non-PG backends.
+  # notify() invokes the callback directly. start/stop are no-ops.
+  class InlineNotifier
+    def on_append(callable)
+      @on_append_callback = callable
     end
 
-    def db
-      # Access the Sequel::Database through the backend's private accessor
-      # SequelBackend exposes pubsub which has db, but we need the raw db
-      @backend.send(:db)
+    def notify(types)
+      @on_append_callback&.call(types.uniq)
     end
+
+    def start = nil
+    def stop = nil
   end
 end

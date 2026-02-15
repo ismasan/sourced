@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'thread'
+require 'sourced/notifier'
 
 module Sourced
   module Backends
@@ -26,6 +27,11 @@ module Sourced
       def clear!
         @state = State.new
         @pubsub = TestPubSub.new
+        @notifier = nil
+      end
+
+      def notifier
+        @notifier ||= InlineNotifier.new
       end
 
       def installed? = true
@@ -217,6 +223,7 @@ module Sourced
           end
         end
         @state.groups.each_value(&:reindex)
+        notifier.notify(messages_array.map(&:type))
         true
       end
 
