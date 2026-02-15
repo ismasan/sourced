@@ -9,14 +9,14 @@ module Sourced
       # channel. When messages are appended to the event store, {#notify} fires
       # +pg_notify+ inside the current transaction (delivered atomically on commit).
       # The {#start} loop receives those notifications and invokes the registered
-      # +on_append+ callback (typically a {Sourced::Notifier}).
+      # +on_append+ callback (typically a {Sourced::Dispatcher::NotificationQueuer}).
       #
       # Implements the same interface as {Sourced::InlineNotifier}:
       # +on_append+, +notify+, +start+, +stop+.
       #
       # @example Wiring in a Dispatcher
       #   pg_notifier = PGNotifier.new(db: Sequel.postgres('mydb'))
-      #   pg_notifier.on_append(notifier)  # notifier is a Sourced::Notifier
+      #   pg_notifier.on_append(queuer)  # a Dispatcher::NotificationQueuer
       #
       #   # In a dedicated fiber:
       #   pg_notifier.start   # blocks, listening for notifications

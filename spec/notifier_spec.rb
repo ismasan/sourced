@@ -2,7 +2,7 @@
 
 require 'spec_helper'
 
-RSpec.describe Sourced::Notifier do
+RSpec.describe Sourced::Dispatcher::NotificationQueuer do
   let(:work_queue) { Sourced::WorkQueue.new(max_per_reactor: 2, queue: Queue.new) }
 
   let(:msg_type_a) { double('MsgA', type: 'orders.created') }
@@ -10,7 +10,7 @@ RSpec.describe Sourced::Notifier do
   let(:reactor1) { double('Reactor1', handled_messages: [msg_type_a]) }
   let(:reactor2) { double('Reactor2', handled_messages: [msg_type_a, msg_type_b]) }
 
-  subject(:notifier) do
+  subject(:queuer) do
     described_class.new(
       work_queue: work_queue,
       reactors: [reactor1, reactor2]
@@ -19,7 +19,7 @@ RSpec.describe Sourced::Notifier do
 
   describe '#call' do
     it 'pushes matching reactors to work_queue' do
-      notifier.call(['orders.created'])
+      queuer.call(['orders.created'])
 
       popped = []
       popped << work_queue.pop
@@ -28,7 +28,7 @@ RSpec.describe Sourced::Notifier do
     end
 
     it 'handles multiple types and deduplicates reactors' do
-      notifier.call(['orders.created', 'orders.shipped'])
+      queuer.call(['orders.created', 'orders.shipped'])
 
       popped = []
       popped << work_queue.pop
@@ -37,7 +37,7 @@ RSpec.describe Sourced::Notifier do
     end
 
     it 'strips whitespace from type strings' do
-      notifier.call([' orders.created '])
+      queuer.call([' orders.created '])
 
       popped = []
       popped << work_queue.pop
@@ -46,7 +46,7 @@ RSpec.describe Sourced::Notifier do
     end
 
     it 'ignores unknown types' do
-      notifier.call(['unknown.type'])
+      queuer.call(['unknown.type'])
 
       # Nothing should be in the queue; verify by pushing a sentinel
       work_queue.push(:sentinel)

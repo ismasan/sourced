@@ -2,12 +2,11 @@
 
 require 'sourced/work_queue'
 require 'sourced/worker'
-require 'sourced/notifier'
 require 'sourced/catchup_poller'
 
 module Sourced
   # Orchestrator that wires together the signal-driven dispatch pipeline:
-  # {WorkQueue}, {Notifier}, {CatchUpPoller}, backend notifier, and {Worker}s.
+  # {WorkQueue}, {NotificationQueuer}, {CatchUpPoller}, backend notifier, and {Worker}s.
   #
   # Does not own the process lifecycle — the caller ({Supervisor} or Falcon service)
   # provides the task/fiber context via {#spawn_into}, and triggers shutdown
@@ -25,6 +24,51 @@ module Sourced
   #   queue = WorkQueue.new(max_per_reactor: 2, queue: Queue.new)
   #   dispatcher = Dispatcher.new(router: router, work_queue: queue)
   class Dispatcher
+    # Maps message type strings to interested reactor classes and pushes them
+    # onto a {WorkQueue}. Registered as the +on_append+ callback on the
+    # backend notifier ({InlineNotifier} or {Backends::SequelBackend::PGNotifier}).
+    #
+    # Builds an eager type-to-reactor lookup at initialization from each
+    # reactor's +handled_messages+. Unknown types are silently ignored.
+    #
+    # @example
+    #   queuer = NotificationQueuer.new(work_queue: queue, reactors: [OrderReactor])
+    #   backend.notifier.on_append(queuer)
+    #   queuer.call(['orders.created'])
+    #   # => pushes OrderReactor onto the queue
+    class NotificationQueuer
+      # @param work_queue [WorkQueue] queue to push signaled reactors onto
+      # @param reactors [Array<Class>] reactor classes whose +handled_messages+
+      #   define the type-to-reactor mapping
+      def initialize(work_queue:, reactors:)
+        @work_queue = work_queue
+        @type_to_reactors = build_type_lookup(reactors)
+      end
+
+      # Look up reactors interested in the given message types and push each
+      # onto the work queue. Deduplicates reactors across types.
+      #
+      # @param types [Array<String>] message type strings (e.g. +'orders.created'+)
+      # @return [void]
+      def call(types)
+        reactors = types.flat_map { |t| @type_to_reactors.fetch(t.strip, []) }.uniq
+        reactors.each { |r| @work_queue.push(r) }
+      end
+
+      private
+
+      # @return [Hash{String => Array<Class>}] mapping from type string to reactor classes
+      def build_type_lookup(reactors)
+        lookup = Hash.new { |h, k| h[k] = [] }
+        reactors.each do |reactor|
+          reactor.handled_messages.map(&:type).uniq.each do |type|
+            lookup[type] << reactor
+          end
+        end
+        lookup
+      end
+    end
+
     # @return [Array<Worker>] worker instances managed by this dispatcher
     attr_reader :workers
 
@@ -64,9 +108,9 @@ module Sourced
         )
       end
 
-      @notifier = Notifier.new(work_queue: @work_queue, reactors: reactors)
+      @notification_queuer = NotificationQueuer.new(work_queue: @work_queue, reactors: reactors)
       @backend_notifier = router.backend.notifier
-      @backend_notifier.on_append(@notifier)
+      @backend_notifier.on_append(@notification_queuer)
 
       @catchup_poller = CatchUpPoller.new(
         work_queue: @work_queue,

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require 'thread'
-require 'sourced/notifier'
+require 'sourced/inline_notifier'
 
 module Sourced
   module Backends

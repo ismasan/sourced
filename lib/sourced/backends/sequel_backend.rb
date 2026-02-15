@@ -3,7 +3,7 @@
 require 'sequel'
 require 'json'
 require 'sourced/message'
-require 'sourced/notifier'
+require 'sourced/inline_notifier'
 require 'sourced/backends/pg_pub_sub'
 
 Sequel.extension :pg_json if defined?(PG)
