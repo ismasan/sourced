@@ -108,9 +108,9 @@ module Sourced
         )
       end
 
-      @notification_queuer = NotificationQueuer.new(work_queue: @work_queue, reactors: reactors)
+      notification_queuer = NotificationQueuer.new(work_queue: @work_queue, reactors: reactors)
       @backend_notifier = router.backend.notifier
-      @backend_notifier.on_append(@notification_queuer)
+      @backend_notifier.on_append(notification_queuer)
 
       @catchup_poller = CatchUpPoller.new(
         work_queue: @work_queue,
