@@ -10,6 +10,9 @@ module Sourced
   # For non-PG backends this is a no-op.
   class Notifier
     CHANNEL = 'sourced_new_messages'
+    MAX_RECONNECT_ATTEMPTS = 5
+    RECONNECT_INTERVAL = 1   # seconds, multiplied by attempt number
+    MAX_RECONNECT_WAIT = 30  # cap
 
     # @param work_queue [WorkQueue]
     # @param reactors [Array<Class>] reactor classes
@@ -30,21 +33,41 @@ module Sourced
 
     # Run the LISTEN loop. Blocks until stopped.
     # No-op for non-PG backends.
+    # Reconnects on transient PG disconnects with linear backoff.
+    # Re-raises after MAX_RECONNECT_ATTEMPTS so the error propagates to the supervisor.
     def run
-      unless active?
-        @logger.info 'Notifier: not a PostgreSQL backend, skipping LISTEN'
-        return
-      end
+      return unless active?
 
       @running = true
-      @logger.info "Notifier: listening on #{CHANNEL}"
+      retries = 0
 
-      db.listen(CHANNEL, timeout: 2, loop: true) do |_channel, _pid, payload|
-        break unless @running
+      while @running
+        begin
+          @logger.info "Notifier: listening on #{CHANNEL}"
 
-        types = payload.split(',')
-        reactors = types.flat_map { |t| @type_to_reactors.fetch(t.strip, []) }.uniq
-        reactors.each { |r| @work_queue.push(r) }
+          db.listen(CHANNEL, timeout: 2, loop: true, after_listen: proc { retries = 0 }) do |_channel, _pid, payload|
+            break unless @running
+
+            types = payload.split(',')
+            reactors = types.flat_map { |t| @type_to_reactors.fetch(t.strip, []) }.uniq
+            reactors.each { |r| @work_queue.push(r) }
+          end
+
+          break # clean exit (@running set to false)
+
+        rescue Sequel::DatabaseDisconnectError => e
+          raise unless @running # don't retry during shutdown
+
+          retries += 1
+          if retries > MAX_RECONNECT_ATTEMPTS
+            @logger.error "Notifier: reconnect failed after #{MAX_RECONNECT_ATTEMPTS} attempts"
+            raise
+          end
+
+          wait = reconnect_wait(retries)
+          @logger.warn "Notifier: connection lost (#{e.class}), reconnecting in #{wait}s (attempt #{retries}/#{MAX_RECONNECT_ATTEMPTS})"
+          sleep wait
+        end
       end
 
       @logger.info 'Notifier: stopped'
@@ -70,6 +93,10 @@ module Sourced
       @backend.respond_to?(:pubsub) &&
         db.respond_to?(:adapter_scheme) &&
         db.adapter_scheme == :postgres
+    end
+
+    def reconnect_wait(retries)
+      [RECONNECT_INTERVAL * retries, MAX_RECONNECT_WAIT].min
     end
 
     def db
