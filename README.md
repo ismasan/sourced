@@ -1273,6 +1273,28 @@ Set `config.worker_count = 0` to run Falcon as a web-only process with no Source
 
 On shutdown (`Ctrl-C` / `SIGTERM`), Falcon signals workers to stop. Their poll loops exit gracefully with no stale claims.
 
+### How worker dispatch works
+
+Instead of each worker polling the database independently, Sourced uses a signal-driven dispatch model. Workers block on a shared `WorkQueue` waiting for signals, and two sources feed that queue:
+
+1. **Notifier** (real-time): A single PG `LISTEN` fiber subscribes to the `sourced_new_messages` channel. When messages are appended to the backend, a `pg_notify` fires with the message types. The Notifier maps types to interested reactors and pushes them into the WorkQueue. For non-PG backends the Notifier is a no-op.
+
+2. **CatchUpPoller** (safety net): A single fiber pushes all registered reactors into the WorkQueue every few seconds (default 5). This covers startup catch-up, missed notifications, offset resets, and PG reconnections.
+
+When a worker pops a reactor from the queue, it enters a **bounded drain loop**: it processes up to `max_drain_rounds` batches (default 10) for that reactor, then re-enqueues the reactor if it hit the cap. This ensures no single reactor monopolizes workers, and multiple workers can drain the same reactor concurrently on different streams (via `SKIP LOCKED`).
+
+The `WorkQueue` caps pending entries per reactor (equal to the worker count), so notification bursts are coalesced without queue bloat.
+
+```
+Notifier (PG LISTEN) ──┐
+                        ├──▶ WorkQueue (capped/reactor) ──▶ Worker fibers
+CatchUpPoller (5s)   ──┘         │                           │
+                                 │◀── re-enqueue ────────────┘
+                                      (if max_drain_rounds hit)
+```
+
+This design preserves natural back-pressure (workers only fetch when ready), eliminates polling-interval lag for new messages, and handles both real-time and catch-up work in a single operating mode.
+
 ## Custom attribute types and coercions.
 
 Define a module to hold your attribute types using [Plumb](https://github.com/ismasan/plumb)
