@@ -64,6 +64,7 @@ module Sourced
       def initialize(db, logger: Sourced.config.logger, prefix: 'sourced', schema: nil)
         @db = connect(db)
         @pubsub = PGPubSub.new(db: @db, logger:)
+        @notifier = @db.adapter_scheme == :postgres ? PGNotifier.new(db: @db) : InlineNotifier.new
         @logger = logger
         @prefix = prefix
         @schema = schema
@@ -155,16 +156,10 @@ module Sourced
 
       # Returns the backend's notifier for real-time message dispatch.
       # Returns a {PGNotifier} for PostgreSQL, {InlineNotifier} otherwise.
-      # Memoized — returns the same instance on repeated calls.
+      # Initialized eagerly in the constructor for thread and CoW safety.
       #
       # @return [PGNotifier, InlineNotifier]
-      def notifier
-        @notifier ||= if db.adapter_scheme == :postgres
-          PGNotifier.new(db: db)
-        else
-          InlineNotifier.new
-        end
-      end
+      attr_reader :notifier
 
       def transaction(&)
         db.transaction(&)

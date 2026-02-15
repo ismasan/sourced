@@ -27,16 +27,15 @@ module Sourced
       def clear!
         @state = State.new
         @pubsub = TestPubSub.new
-        @notifier = nil
+        @notifier = InlineNotifier.new
       end
 
       # Returns the backend's notifier for real-time message dispatch.
       # Always returns an {InlineNotifier} since TestBackend has no PG connection.
+      # Eagerly initialized in {#clear!} for thread and CoW safety.
       #
       # @return [InlineNotifier]
-      def notifier
-        @notifier ||= InlineNotifier.new
-      end
+      attr_reader :notifier
 
       def installed? = true
 
