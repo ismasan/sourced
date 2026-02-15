@@ -18,6 +18,10 @@ module Sourced
   #   worker = Sourced::Worker.new(work_queue: queue, name: 'test')
   #   worker.tick(some_reactor)
   class Worker
+    MAX_RECONNECT_ATTEMPTS = 5
+    RECONNECT_INTERVAL = 1   # seconds, multiplied by attempt number
+    MAX_RECONNECT_WAIT = 30  # cap
+
     # @!attribute [r] name
     #   @return [String] Unique identifier for this worker instance
     attr_reader :name
@@ -53,14 +57,34 @@ module Sourced
 
     # Main run loop. Blocks on the work queue waiting for reactor signals.
     # Drains all available work for each signaled reactor before blocking again.
+    # Reconnects on transient PG disconnects with linear backoff.
+    # Re-raises after MAX_RECONNECT_ATTEMPTS consecutive failures.
     def run
       @running = true
+      retries = 0
+
       while @running
         reactor = @work_queue.pop
         break if reactor.nil? # shutdown sentinel
 
-        drain(reactor)
+        begin
+          drain(reactor)
+          retries = 0
+        rescue Sequel::DatabaseDisconnectError => e
+          raise unless @running # don't retry during shutdown
+
+          retries += 1
+          if retries > MAX_RECONNECT_ATTEMPTS
+            @logger.error "Worker #{name}: reconnect failed after #{MAX_RECONNECT_ATTEMPTS} attempts"
+            raise
+          end
+
+          wait = reconnect_wait(retries)
+          @logger.warn "Worker #{name}: connection lost (#{e.class}), retrying in #{wait}s (attempt #{retries}/#{MAX_RECONNECT_ATTEMPTS})"
+          sleep wait
+        end
       end
+
       @logger.info "Worker #{name}: stopped"
     end
 
@@ -91,5 +115,9 @@ module Sourced
     private
 
     attr_reader :logger
+
+    def reconnect_wait(retries)
+      [RECONNECT_INTERVAL * retries, MAX_RECONNECT_WAIT].min
+    end
   end
 end
