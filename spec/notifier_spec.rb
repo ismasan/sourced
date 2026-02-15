@@ -7,8 +7,10 @@ RSpec.describe Sourced::Dispatcher::NotificationQueuer do
 
   let(:msg_type_a) { double('MsgA', type: 'orders.created') }
   let(:msg_type_b) { double('MsgB', type: 'orders.shipped') }
-  let(:reactor1) { double('Reactor1', handled_messages: [msg_type_a]) }
-  let(:reactor2) { double('Reactor2', handled_messages: [msg_type_a, msg_type_b]) }
+  let(:consumer_info1) { double('ConsumerInfo1', group_id: 'Reactor1') }
+  let(:consumer_info2) { double('ConsumerInfo2', group_id: 'Reactor2') }
+  let(:reactor1) { double('Reactor1', handled_messages: [msg_type_a], consumer_info: consumer_info1) }
+  let(:reactor2) { double('Reactor2', handled_messages: [msg_type_a, msg_type_b], consumer_info: consumer_info2) }
 
   subject(:queuer) do
     described_class.new(
@@ -53,6 +55,21 @@ RSpec.describe Sourced::Dispatcher::NotificationQueuer do
       expect(work_queue.pop).to eq(:sentinel)
     end
   end
+
+  describe '#queue_reactor' do
+    it 'pushes reactor matching the group_id' do
+      queuer.queue_reactor('Reactor1')
+
+      expect(work_queue.pop).to eq(reactor1)
+    end
+
+    it 'ignores unknown group_ids' do
+      queuer.queue_reactor('Unknown')
+
+      work_queue.push(:sentinel)
+      expect(work_queue.pop).to eq(:sentinel)
+    end
+  end
 end
 
 RSpec.describe Sourced::InlineNotifier do
@@ -69,6 +86,20 @@ RSpec.describe Sourced::InlineNotifier do
 
     it 'does not raise when no callback registered' do
       expect { notifier.notify(['a']) }.not_to raise_error
+    end
+  end
+
+  describe '#on_resume / #notify_reactor' do
+    it 'invokes callback with group_id on notify_reactor' do
+      received = nil
+      notifier.on_resume(->(group_id) { received = group_id })
+
+      notifier.notify_reactor('MyReactor')
+      expect(received).to eq('MyReactor')
+    end
+
+    it 'does not raise when no callback registered' do
+      expect { notifier.notify_reactor('MyReactor') }.not_to raise_error
     end
   end
 

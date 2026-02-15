@@ -101,6 +101,9 @@ module Sourced
         end
       end
 
+      # Start a consumer group that has been stopped.
+      # Signals the notifier so workers pick up the reactor immediately.
+      #
       # @param group_id [String]
       def start_consumer_group(group_id)
         group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
@@ -110,6 +113,7 @@ module Sourced
           group.status = ACTIVE
           group.retry_at = nil
         end
+        notifier.notify_reactor(group_id)
       end
 
       def stop_consumer_group(group_id, error = nil)

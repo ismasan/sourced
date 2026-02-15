@@ -7,7 +7,7 @@ RSpec.describe Sourced::Supervisor do
   let(:logger) { instance_double('Logger', info: nil, warn: nil) }
   let(:backend_notifier) { Sourced::InlineNotifier.new }
   let(:backend) { double('Backend', notifier: backend_notifier) }
-  let(:reactor1) { double('Reactor1', handled_messages: [double(type: 'event1')]) }
+  let(:reactor1) { double('Reactor1', handled_messages: [double(type: 'event1')], consumer_info: double(group_id: 'Reactor1')) }
   let(:reactors) { Set.new([reactor1]) }
   let(:router) { instance_double(Sourced::Router, backend: backend, async_reactors: reactors) }
   let(:housekeeper) { instance_double(Sourced::HouseKeeper, work: nil, stop: nil) }

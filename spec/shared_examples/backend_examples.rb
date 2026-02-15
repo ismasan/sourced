@@ -1323,10 +1323,12 @@ module BackendExamples
     end
 
     describe '#notifier' do
-      it 'returns an object responding to on_append, notify, start, stop' do
+      it 'returns an object responding to on_append, on_resume, notify, notify_reactor, start, stop' do
         n = backend.notifier
         expect(n).to respond_to(:on_append)
+        expect(n).to respond_to(:on_resume)
         expect(n).to respond_to(:notify)
+        expect(n).to respond_to(:notify_reactor)
         expect(n).to respond_to(:start)
         expect(n).to respond_to(:stop)
       end

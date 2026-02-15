@@ -3,8 +3,8 @@
 require 'spec_helper'
 
 RSpec.describe Sourced::Dispatcher do
-  let(:reactor1) { double('Reactor1', handled_messages: [double(type: 'event1')]) }
-  let(:reactor2) { double('Reactor2', handled_messages: [double(type: 'event2')]) }
+  let(:reactor1) { double('Reactor1', handled_messages: [double(type: 'event1')], consumer_info: double(group_id: 'Reactor1')) }
+  let(:reactor2) { double('Reactor2', handled_messages: [double(type: 'event2')], consumer_info: double(group_id: 'Reactor2')) }
   let(:reactors) { Set.new([reactor1, reactor2]) }
   let(:backend_notifier) { Sourced::InlineNotifier.new }
   let(:backend) { double('Backend', notifier: backend_notifier) }

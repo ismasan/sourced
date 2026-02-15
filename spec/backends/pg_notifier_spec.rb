@@ -95,6 +95,56 @@ RSpec.describe Sourced::Backends::SequelBackend::PGNotifier do
     end
   end
 
+  describe '#start / #notify_reactor' do
+    it 'delivers reactor notifications to the on_resume callback' do
+      listener = described_class.new(db: listen_db)
+      sender = described_class.new(db: notify_db)
+
+      received = []
+      listener.on_resume(->(group_id) { received << group_id })
+      listener.on_append(->(_) {}) # must be set to avoid nil errors
+
+      Sourced.config.executor.start do |t|
+        t.spawn { listener.start }
+
+        t.spawn do
+          sleep 0.01
+          sender.notify_reactor('OrderReactor')
+          sleep 0.01
+          listener.stop
+        end
+      end
+
+      expect(received).to eq(['OrderReactor'])
+    end
+
+    it 'routes type and reactor notifications to the correct callbacks' do
+      listener = described_class.new(db: listen_db)
+      sender = described_class.new(db: notify_db)
+
+      type_received = []
+      reactor_received = []
+      listener.on_append(->(types) { type_received << types })
+      listener.on_resume(->(group_id) { reactor_received << group_id })
+
+      Sourced.config.executor.start do |t|
+        t.spawn { listener.start }
+
+        t.spawn do
+          sleep 0.01
+          sender.notify(['orders.created'])
+          sleep 0.01
+          sender.notify_reactor('ShipReactor')
+          sleep 0.01
+          listener.stop
+        end
+      end
+
+      expect(type_received).to eq([['orders.created']])
+      expect(reactor_received).to eq(['ShipReactor'])
+    end
+  end
+
   describe '#stop' do
     it 'breaks out of the listen loop' do
       notifier = described_class.new(db: listen_db)

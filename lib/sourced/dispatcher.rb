@@ -24,18 +24,20 @@ module Sourced
   #   queue = WorkQueue.new(max_per_reactor: 2, queue: Queue.new)
   #   dispatcher = Dispatcher.new(router: router, work_queue: queue)
   class Dispatcher
-    # Maps message type strings to interested reactor classes and pushes them
-    # onto a {WorkQueue}. Registered as the +on_append+ callback on the
-    # backend notifier ({InlineNotifier} or {Backends::SequelBackend::PGNotifier}).
+    # Routes backend notifications to the {WorkQueue}.
     #
-    # Builds an eager type-to-reactor lookup at initialization from each
-    # reactor's +handled_messages+. Unknown types are silently ignored.
+    # Supports two signal paths:
+    # - {#call}(types) — maps message type strings to interested reactors
+    #   (registered as the +on_append+ callback)
+    # - {#queue_reactor}(group_id) — pushes a reactor directly by its
+    #   consumer group ID (registered as the +on_resume+ callback)
     #
     # @example
     #   queuer = NotificationQueuer.new(work_queue: queue, reactors: [OrderReactor])
     #   backend.notifier.on_append(queuer)
-    #   queuer.call(['orders.created'])
-    #   # => pushes OrderReactor onto the queue
+    #   backend.notifier.on_resume(queuer.method(:queue_reactor))
+    #   queuer.call(['orders.created'])        # type-based (new messages)
+    #   queuer.queue_reactor('OrderReactor')   # direct (reactor resumed)
     class NotificationQueuer
       # @param work_queue [WorkQueue] queue to push signaled reactors onto
       # @param reactors [Array<Class>] reactor classes whose +handled_messages+
@@ -43,6 +45,7 @@ module Sourced
       def initialize(work_queue:, reactors:)
         @work_queue = work_queue
         @type_to_reactors = build_type_lookup(reactors)
+        @group_id_to_reactor = build_group_id_lookup(reactors)
       end
 
       # Look up reactors interested in the given message types and push each
@@ -53,6 +56,16 @@ module Sourced
       def call(types)
         reactors = types.flat_map { |t| @type_to_reactors.fetch(t.strip, []) }.uniq
         reactors.each { |r| @work_queue.push(r) }
+      end
+
+      # Push a reactor onto the work queue by its consumer group ID.
+      # No-op if the group_id is not recognized (e.g. not registered in this process).
+      #
+      # @param group_id [String] consumer group ID (e.g. +'OrderReactor'+)
+      # @return [void]
+      def queue_reactor(group_id)
+        reactor = @group_id_to_reactor[group_id]
+        @work_queue.push(reactor) if reactor
       end
 
       private
@@ -66,6 +79,13 @@ module Sourced
           end
         end
         lookup
+      end
+
+      # @return [Hash{String => Class}] mapping from group_id to reactor class
+      def build_group_id_lookup(reactors)
+        reactors.each_with_object({}) do |reactor, lookup|
+          lookup[reactor.consumer_info.group_id] = reactor
+        end
       end
     end
 
@@ -111,6 +131,7 @@ module Sourced
       notification_queuer = NotificationQueuer.new(work_queue: @work_queue, reactors: reactors)
       @backend_notifier = router.backend.notifier
       @backend_notifier.on_append(notification_queuer)
+      @backend_notifier.on_resume(notification_queuer.method(:queue_reactor))
 
       @catchup_poller = CatchUpPoller.new(
         work_queue: @work_queue,
