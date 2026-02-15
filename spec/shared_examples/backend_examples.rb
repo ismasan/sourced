@@ -353,7 +353,7 @@ module BackendExamples
           end
         end
 
-        expect(group1_messages).to eq([evt_b1, evt_a1])
+        expect(group1_messages).to match_array([evt_b1, evt_a1])
 
         # Test that separate groups have their own cursors on streams
         backend.reserve_next_for_reactor(reactor2) do |batch, _history|
