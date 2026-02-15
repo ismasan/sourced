@@ -5,15 +5,17 @@ require 'spec_helper'
 RSpec.describe Sourced::Supervisor do
   let(:executor) { double('Executor') }
   let(:logger) { instance_double('Logger', info: nil, warn: nil) }
-  let(:router) { instance_double(Sourced::Router, backend: double('Backend')) }
-  let(:worker1) { instance_double(Sourced::Worker, poll: nil, stop: nil, name: 'worker-0') }
-  let(:worker2) { instance_double(Sourced::Worker, poll: nil, stop: nil, name: 'worker-1') }
+  let(:backend) { double('Backend') }
+  let(:reactor1) { double('Reactor1', handled_messages: [double(type: 'event1')]) }
+  let(:reactors) { Set.new([reactor1]) }
+  let(:router) { instance_double(Sourced::Router, backend: backend, async_reactors: reactors) }
   let(:housekeeper) { instance_double(Sourced::HouseKeeper, work: nil, stop: nil) }
   let(:task) { double('Task', spawn: nil) }
+  let(:work_queue) { Sourced::WorkQueue.new(max_per_reactor: 2, queue: Queue.new) }
 
   before do
-    allow(Sourced::Worker).to receive(:new).and_return(worker1, worker2)
     allow(Sourced::HouseKeeper).to receive(:new).and_return(housekeeper)
+    allow(Sourced::WorkQueue).to receive(:new).and_return(work_queue)
     allow(executor).to receive(:start).and_yield(task)
     allow(Signal).to receive(:trap)
   end
@@ -47,39 +49,10 @@ RSpec.describe Sourced::Supervisor do
       supervisor.start
     end
 
-    it 'creates the correct number of workers with proper configuration' do
-      expect(Sourced::Worker).to receive(:new).with(
-        hash_including(
-          logger:,
-          router:,
-          name: 'worker-0'
-        )
-      ).and_return(worker1)
-
-      expect(Sourced::Worker).to receive(:new).with(
-        hash_including(
-          logger:,
-          router:,
-          name: 'worker-1'
-        )
-      ).and_return(worker2)
-
-      supervisor.start
-    end
-
-    it 'spawns tasks for housekeepers and workers via executor' do
+    it 'spawns tasks for housekeepers and dispatcher components via executor' do
       expect(executor).to receive(:start).and_yield(task)
-      expect(task).to receive(:spawn).exactly(3).times # 1 housekeeper + 2 workers
-      
-      supervisor.start
-    end
-
-    it 'calls work on housekeepers and poll on workers in spawned tasks' do
-      allow(task).to receive(:spawn).and_yield
-
-      expect(housekeeper).to receive(:work)
-      expect(worker1).to receive(:poll)
-      expect(worker2).to receive(:poll)
+      # 1 housekeeper + 1 notifier + 1 catchup_poller + 2 workers = 5 spawns
+      expect(task).to receive(:spawn).exactly(5).times
 
       supervisor.start
     end
@@ -93,7 +66,9 @@ RSpec.describe Sourced::Supervisor do
 
       supervisor.start
 
-      expect(worker_ids_provider.call).to eq(['worker-0', 'worker-1'])
+      names = worker_ids_provider.call
+      expect(names.size).to eq(2)
+      expect(names).to all(match(/worker-\d$/))
     end
   end
 
@@ -109,18 +84,14 @@ RSpec.describe Sourced::Supervisor do
     end
 
     before do
-      supervisor.start # Create workers and housekeepers
+      supervisor.start
     end
 
     it 'logs shutdown information' do
-      expect(logger).to receive(:info).with(/Stopping 2 workers and 1 house-keepers/)
+      expect(logger).to receive(:info).with(/Stopping dispatcher/)
       expect(logger).to receive(:info).with('All workers stopped')
-      supervisor.stop
-    end
-
-    it 'calls stop on all workers' do
-      expect(worker1).to receive(:stop)
-      expect(worker2).to receive(:stop)
+      # Dispatcher also logs
+      allow(logger).to receive(:info)
       supervisor.stop
     end
 
@@ -155,7 +126,7 @@ RSpec.describe Sourced::Supervisor do
     it 'traps INT and TERM signals to call stop' do
       int_handler = nil
       term_handler = nil
-      
+
       allow(Signal).to receive(:trap) do |signal, &block|
         int_handler = block if signal == 'INT'
         term_handler = block if signal == 'TERM'
@@ -166,7 +137,7 @@ RSpec.describe Sourced::Supervisor do
       expect(supervisor).to receive(:stop)
       int_handler.call
 
-      expect(supervisor).to receive(:stop)  
+      expect(supervisor).to receive(:stop)
       term_handler.call
     end
   end

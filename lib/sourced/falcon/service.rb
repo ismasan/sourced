@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require 'sourced/worker'
+require 'sourced/dispatcher'
 require 'sourced/house_keeper'
 
 module Sourced
@@ -8,20 +8,19 @@ module Sourced
     # A Falcon service that runs both the web server and Sourced background workers
     # as sibling fibers within the same Async reactor.
     #
-    # This enables a single-process deployment model where Falcon's fiber-based
-    # event loop hosts web requests and Sourced worker polling concurrently.
-    # The Worker#poll and HouseKeeper#work methods use `sleep` calls which become
-    # fiber yields in the Async context, allowing natural interleaving.
-    #
+    # Uses a Dispatcher for signal-driven worker dispatch instead of blind polling.
     # Lifecycle is managed by Falcon's container — no need for a separate Supervisor
     # process or signal handling.
     class Service < ::Falcon::Service::Server
       def run(instance, evaluator)
         server = evaluator.make_server(@bound_endpoint)
 
-        workers = evaluator.sourced_worker_count.times.map do |i|
-          Sourced::Worker.new(name: "falcon-w-#{i}", batch_size: evaluator.sourced_worker_batch_size)
-        end
+        @dispatcher = Sourced::Dispatcher.new(
+          router: Sourced::Router,
+          worker_count: evaluator.sourced_worker_count,
+          batch_size: evaluator.sourced_worker_batch_size,
+          logger: Sourced.config.logger
+        )
 
         housekeepers = evaluator.sourced_housekeeping_count.times.map do |i|
           Sourced::HouseKeeper.new(
@@ -30,17 +29,16 @@ module Sourced
             interval: evaluator.sourced_housekeeping_interval,
             heartbeat_interval: evaluator.sourced_housekeeping_heartbeat_interval,
             claim_ttl_seconds: evaluator.sourced_housekeeping_claim_ttl_seconds,
-            worker_ids_provider: -> { workers.map(&:name) }
+            worker_ids_provider: -> { @dispatcher.workers.map(&:name) }
           )
         end
 
-        @sourced_workers = workers
         @sourced_housekeepers = housekeepers
 
         Async do |task|
           server.run
           housekeepers.each { |hk| task.async { hk.work } }
-          workers.each { |w| task.async { w.poll } }
+          @dispatcher.spawn_into(task)
           task.children.each(&:wait)
         end
 
@@ -48,7 +46,7 @@ module Sourced
       end
 
       def stop(...)
-        @sourced_workers&.each(&:stop)
+        @dispatcher&.stop
         @sourced_housekeepers&.each(&:stop)
         super
       end

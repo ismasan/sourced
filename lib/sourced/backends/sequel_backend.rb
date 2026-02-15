@@ -286,6 +286,9 @@ module Sourced
 
             # Bulk insert all messages
             db[messages_table].multi_insert(rows)
+
+            # NOTIFY delivered on commit — atomically correct
+            notify_new_message_types(messages_array.map(&:type))
           end
 
           true
@@ -314,6 +317,8 @@ module Sourced
           id = db[streams_table].insert_conflict(target: :stream_id, update: { seq:, updated_at: Time.now }).insert(stream_id:, seq:)
           rows = messages_array.map { |e| serialize_message(e, id) }
           db[messages_table].multi_insert(rows)
+
+          notify_new_message_types(messages_array.map(&:type))
         end
 
         true
@@ -928,6 +933,13 @@ module Sourced
         row[:payload] = parse_json(row[:payload]) if row[:payload]
         row[:metadata] = parse_json(row[:metadata]) if row[:metadata]
         Message.from(row)
+      end
+
+      def notify_new_message_types(message_types)
+        return unless db.adapter_scheme == :postgres
+
+        types_str = message_types.uniq.join(',')
+        db.run(Sequel.lit("SELECT pg_notify('sourced_new_messages', ?)", types_str))
       end
 
       def connect(db)

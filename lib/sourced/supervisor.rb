@@ -2,13 +2,13 @@
 
 require 'async'
 require 'console'
-require 'sourced/worker'
+require 'sourced/dispatcher'
 require 'sourced/house_keeper'
 
 module Sourced
-  # The Supervisor manages a pool of background workers that process events and commands.
-  # It relies on the configured executor (Async by default) to coordinate multiple workers running concurrently
-  # and handles graceful shutdown via signal handling.
+  # The Supervisor manages background workers that process events and commands.
+  # It uses a Dispatcher for signal-driven worker dispatch and HouseKeepers
+  # for maintenance tasks (heartbeats, stale claim release, scheduled messages).
   #
   # The supervisor automatically sets up signal handlers for INT and TERM signals
   # to ensure workers shut down cleanly when the process is terminated.
@@ -21,25 +21,27 @@ module Sourced
   #   supervisor.start  # This will block until interrupted
   class Supervisor
     # Start a new supervisor instance with the given options.
-    # This is a convenience method that creates and starts a supervisor.
     #
     # @param args [Hash] Arguments passed to {#initialize}
     # @return [void] This method blocks until the supervisor is stopped
-    # @see #initialize
     def self.start(...)
       new(...).start
     end
 
     # Initialize a new supervisor instance.
-    # Workers are created when {#start} is called, not during initialization.
     #
-    # @param logger [Object] Logger instance for supervisor output (defaults to configured logger)
-    # @param count [Integer] Number of worker fibers to spawn (defaults to 2)
-    # @param executor [Object] Executor instance for running concurrent workers (defaults to configured executor)
+    # @param logger [Object] Logger instance for supervisor output
+    # @param count [Integer] Number of worker fibers to spawn
+    # @param batch_size [Integer] Messages per backend fetch
+    # @param max_drain_rounds [Integer] Max drain iterations per reactor pickup
+    # @param catchup_interval [Numeric] Seconds between catch-up polls
+    # @param executor [Object] Executor instance for running concurrent workers
     def initialize(
       logger: Sourced.config.logger,
       count: Sourced.config.worker_count,
       batch_size: Sourced.config.worker_batch_size,
+      max_drain_rounds: Sourced.config.max_drain_rounds,
+      catchup_interval: Sourced.config.catchup_interval,
       housekeeping_count: Sourced.config.housekeeping_count,
       housekeeping_interval: Sourced.config.housekeeping_interval,
       housekeeping_heartbeat_interval: Sourced.config.housekeeping_heartbeat_interval,
@@ -50,25 +52,30 @@ module Sourced
       @logger = logger
       @count = count
       @batch_size = batch_size
+      @max_drain_rounds = max_drain_rounds
+      @catchup_interval = catchup_interval
       @housekeeping_count = housekeeping_count
       @housekeeping_interval = housekeeping_interval
       @housekeeping_heartbeat_interval = housekeeping_heartbeat_interval
       @housekeeping_claim_ttl_seconds = housekeeping_claim_ttl_seconds
       @executor = executor
       @router = router
-      @workers = []
     end
 
-    # Start the supervisor and all worker fibers.
+    # Start the supervisor, dispatcher, and housekeepers.
     # This method blocks until the supervisor receives a shutdown signal.
-    # Workers are spawned as concurrent tasks using the configured executor 
-    # and will begin polling for events and commands immediately.
-    # TODO: consistently inject config, defaulting to Sourced.config values
-    #
-    # @return [void] Blocks until interrupted by signal
     def start
-      logger.info("Starting sync supervisor with #{@count} workers and #{@executor} executor")
+      logger.info("Starting supervisor with #{@count} workers and #{@executor} executor")
       set_signal_handlers
+
+      @dispatcher = Dispatcher.new(
+        router: router,
+        worker_count: @count,
+        batch_size: @batch_size,
+        max_drain_rounds: @max_drain_rounds,
+        catchup_interval: @catchup_interval,
+        logger: logger
+      )
 
       @housekeepers = @housekeeping_count.times.map do |i|
         HouseKeeper.new(
@@ -78,14 +85,8 @@ module Sourced
           interval: @housekeeping_interval,
           heartbeat_interval: @housekeeping_heartbeat_interval,
           claim_ttl_seconds: @housekeeping_claim_ttl_seconds,
-          # Provide live worker IDs for heartbeats
-          worker_ids_provider: -> { @workers.map(&:name) }
+          worker_ids_provider: -> { @dispatcher.workers.map(&:name) }
         )
-      end
-
-      @workers = @count.times.map do |i|
-        # TODO: worker names using Process.pid, current thread and fiber id
-        Worker.new(logger:, router:, name: "worker-#{i}", batch_size: @batch_size)
       end
 
       @executor.start do |task|
@@ -95,31 +96,19 @@ module Sourced
           end
         end
 
-        @workers.each do |wrk|
-          task.spawn do
-            wrk.poll
-          end
-        end
+        @dispatcher.spawn_into(task)
       end
     end
 
-    # Stop all workers gracefully.
-    # Sends stop signals to all workers and waits for them to finish
-    # their current work before shutting down.
-    #
-    # @return [void]
+    # Stop all components gracefully.
     def stop
-      logger.info("Stopping #{@workers.size} workers and #{@housekeepers.size} house-keepers")
-      @workers.each(&:stop)
-      @housekeepers.each(&:stop)
+      logger.info("Stopping dispatcher and #{@housekeepers&.size || 0} house-keepers")
+      @dispatcher&.stop
+      @housekeepers&.each(&:stop)
       logger.info('All workers stopped')
     end
 
     # Set up signal handlers for graceful shutdown.
-    # Traps INT (Ctrl+C) and TERM signals to call {#stop}.
-    #
-    # @return [void]
-    # @api private
     def set_signal_handlers
       Signal.trap('INT') { stop }
       Signal.trap('TERM') { stop }
