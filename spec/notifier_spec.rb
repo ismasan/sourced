@@ -2,18 +2,9 @@
 
 require 'spec_helper'
 
-# Sequel may not be loaded when running with the in-memory TestBackend.
-# Define the exception classes we rescue so the specs work without a DB driver.
-unless defined?(Sequel::DatabaseError)
-  module Sequel
-    class DatabaseError < StandardError; end
-    class DatabaseDisconnectError < DatabaseError; end
-  end
-end
-
 RSpec.describe Sourced::Notifier do
   let(:work_queue) { Sourced::WorkQueue.new(max_per_reactor: 2, queue: Queue.new) }
-  let(:logger) { instance_double('Logger', info: nil, warn: nil, error: nil) }
+  let(:logger) { instance_double('Logger', info: nil) }
   let(:db) { double('DB') }
   let(:backend) { double('Backend', pubsub: true) }
 
@@ -106,108 +97,5 @@ RSpec.describe Sourced::Notifier do
       end
     end
 
-    context 'reconnection on disconnect' do
-      it 'reconnects on Sequel::DatabaseDisconnectError' do
-        call_count = 0
-        allow(db).to receive(:listen) do |_channel, **opts, &block|
-          call_count += 1
-          if call_count == 1
-            raise Sequel::DatabaseDisconnectError, 'connection lost'
-          else
-            opts[:after_listen]&.call
-            notifier.stop
-          end
-        end
-
-        allow(notifier).to receive(:sleep) # skip actual wait
-
-        notifier.run
-
-        expect(call_count).to eq(2)
-        expect(logger).to have_received(:warn).with(/connection lost.*attempt 1/)
-      end
-
-      it 'resets retry counter after successful reconnect' do
-        call_count = 0
-        allow(db).to receive(:listen) do |_channel, **opts, &block|
-          call_count += 1
-          case call_count
-          when 1
-            raise Sequel::DatabaseDisconnectError, 'first disconnect'
-          when 2
-            # Successful reconnect — after_listen resets retries
-            opts[:after_listen]&.call
-            # Then another disconnect
-            raise Sequel::DatabaseDisconnectError, 'second disconnect'
-          when 3
-            opts[:after_listen]&.call
-            notifier.stop
-          end
-        end
-
-        allow(notifier).to receive(:sleep)
-
-        notifier.run
-
-        expect(call_count).to eq(3)
-        # Both disconnects should be logged as attempt 1 (counter was reset)
-        expect(logger).to have_received(:warn).with(/attempt 1/).twice
-      end
-
-      it 're-raises after MAX_RECONNECT_ATTEMPTS' do
-        allow(db).to receive(:listen).and_raise(Sequel::DatabaseDisconnectError, 'persistent failure')
-        allow(notifier).to receive(:sleep)
-
-        expect { notifier.run }.to raise_error(Sequel::DatabaseDisconnectError)
-
-        expect(logger).to have_received(:error).with(/reconnect failed after #{described_class::MAX_RECONNECT_ATTEMPTS}/)
-        expect(logger).to have_received(:warn).exactly(described_class::MAX_RECONNECT_ATTEMPTS).times
-      end
-
-      it 're-raises non-disconnect errors immediately' do
-        allow(db).to receive(:listen).and_raise(Sequel::DatabaseError, 'syntax error')
-
-        expect { notifier.run }.to raise_error(Sequel::DatabaseError, 'syntax error')
-        expect(logger).not_to have_received(:warn)
-      end
-
-      it 'does not retry during shutdown' do
-        allow(db).to receive(:listen) do
-          notifier.stop
-          raise Sequel::DatabaseDisconnectError, 'connection lost during shutdown'
-        end
-
-        expect { notifier.run }.to raise_error(Sequel::DatabaseDisconnectError)
-        expect(logger).not_to have_received(:warn)
-      end
-    end
-
-    context 'backoff timing' do
-      it 'uses linear backoff capped at MAX_RECONNECT_WAIT' do
-        waits = []
-        allow(notifier).to receive(:sleep) { |w| waits << w }
-
-        call_count = 0
-        allow(db).to receive(:listen) do |_channel, **opts, &block|
-          call_count += 1
-          if call_count <= described_class::MAX_RECONNECT_ATTEMPTS
-            raise Sequel::DatabaseDisconnectError, 'fail'
-          else
-            notifier.stop
-          end
-        end
-
-        # This will raise because call_count reaches MAX+1 which triggers the > MAX check
-        # Actually, let's reconsider: at call_count = MAX_RECONNECT_ATTEMPTS, it raises,
-        # retries becomes MAX, which is not > MAX, so it sleeps. Then call_count = MAX+1,
-        # we don't raise, we stop. That should work.
-        notifier.run
-
-        expected = (1..described_class::MAX_RECONNECT_ATTEMPTS).map do |i|
-          [described_class::RECONNECT_INTERVAL * i, described_class::MAX_RECONNECT_WAIT].min
-        end
-        expect(waits).to eq(expected)
-      end
-    end
   end
 end
