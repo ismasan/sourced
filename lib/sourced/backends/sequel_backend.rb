@@ -153,6 +153,11 @@ module Sourced
         end
       end
 
+      # Returns the backend's notifier for real-time message dispatch.
+      # Returns a {PGNotifier} for PostgreSQL, {InlineNotifier} otherwise.
+      # Memoized — returns the same instance on repeated calls.
+      #
+      # @return [PGNotifier, InlineNotifier]
       def notifier
         @notifier ||= if db.adapter_scheme == :postgres
           PGNotifier.new(db: db)

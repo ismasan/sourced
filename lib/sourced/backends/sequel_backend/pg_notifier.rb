@@ -3,26 +3,63 @@
 module Sourced
   module Backends
     class SequelBackend
-      # PG LISTEN/NOTIFY transport for real-time message dispatch.
-      # notify() fires pg_notify inside the current transaction.
-      # start() blocks on LISTEN, invoking the on_append callback per notification.
+      # PostgreSQL LISTEN/NOTIFY transport for real-time message dispatch.
+      #
+      # Uses a dedicated PG connection to subscribe to the +sourced_new_messages+
+      # channel. When messages are appended to the event store, {#notify} fires
+      # +pg_notify+ inside the current transaction (delivered atomically on commit).
+      # The {#start} loop receives those notifications and invokes the registered
+      # +on_append+ callback (typically a {Sourced::Notifier}).
+      #
+      # Implements the same interface as {Sourced::InlineNotifier}:
+      # +on_append+, +notify+, +start+, +stop+.
+      #
+      # @example Wiring in a Dispatcher
+      #   pg_notifier = PGNotifier.new(db: Sequel.postgres('mydb'))
+      #   pg_notifier.on_append(notifier)  # notifier is a Sourced::Notifier
+      #
+      #   # In a dedicated fiber:
+      #   pg_notifier.start   # blocks, listening for notifications
+      #
+      #   # From the append path (inside a transaction):
+      #   pg_notifier.notify(['orders.created', 'orders.shipped'])
+      #
+      #   # On shutdown:
+      #   pg_notifier.stop
       class PGNotifier
+        # @return [String] PG NOTIFY channel name
         CHANNEL = 'sourced_new_messages'
 
+        # @param db [Sequel::Database] a PostgreSQL Sequel database connection.
+        #   The LISTEN connection should be separate from the one used for writes
+        #   to avoid blocking.
         def initialize(db:)
           @db = db
           @listening = false
         end
 
+        # Register a callback to be invoked when a notification is received.
+        #
+        # @param callable [#call] receives an +Array<String>+ of message type strings
+        # @return [void]
         def on_append(callable)
           @on_append_callback = callable
         end
 
+        # Fire a PG NOTIFY with the given message types. Should be called inside
+        # a transaction so the notification is delivered atomically on commit.
+        #
+        # @param types [Array<String>] message type strings to broadcast
+        # @return [void]
         def notify(types)
           types_str = types.uniq.join(',')
           @db.run(Sequel.lit("SELECT pg_notify('#{CHANNEL}', ?)", types_str))
         end
 
+        # Block on PG LISTEN, invoking the +on_append+ callback for each notification.
+        # Loops with a 2-second timeout so {#stop} is checked periodically.
+        #
+        # @return [void]
         def start
           @listening = true
           while @listening
@@ -33,6 +70,9 @@ module Sourced
           end
         end
 
+        # Signal the LISTEN loop to exit after the current timeout cycle.
+        #
+        # @return [void]
         def stop
           @listening = false
         end

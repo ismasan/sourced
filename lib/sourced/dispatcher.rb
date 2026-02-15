@@ -6,25 +6,37 @@ require 'sourced/notifier'
 require 'sourced/catchup_poller'
 
 module Sourced
-  # Orchestrator that owns WorkQueue, Notifier, CatchUpPoller, and Workers.
-  # No lifecycle ownership — caller (Supervisor or Falcon) owns the process.
+  # Orchestrator that wires together the signal-driven dispatch pipeline:
+  # {WorkQueue}, {Notifier}, {CatchUpPoller}, backend notifier, and {Worker}s.
+  #
+  # Does not own the process lifecycle — the caller ({Supervisor} or Falcon service)
+  # provides the task/fiber context via {#spawn_into}, and triggers shutdown
+  # via {#stop}.
   #
   # @example Usage with Supervisor
   #   dispatcher = Dispatcher.new(router: Sourced::Router, worker_count: 4)
   #   executor.start do |task|
   #     dispatcher.spawn_into(task)
   #   end
+  #   # On shutdown:
   #   dispatcher.stop
+  #
+  # @example With custom queue for testing
+  #   queue = WorkQueue.new(max_per_reactor: 2, queue: Queue.new)
+  #   dispatcher = Dispatcher.new(router: router, work_queue: queue)
   class Dispatcher
+    # @return [Array<Worker>] worker instances managed by this dispatcher
     attr_reader :workers
 
-    # @param router [Router] the router instance
-    # @param worker_count [Integer] number of worker fibers to spawn
-    # @param batch_size [Integer] messages per backend fetch
-    # @param max_drain_rounds [Integer] max drain iterations per reactor pickup
-    # @param catchup_interval [Numeric] seconds between catch-up polls
-    # @param work_queue [WorkQueue, nil] optional pre-built queue (for testing)
-    # @param logger [Object]
+    # @param router [Router] the router providing async_reactors and backend
+    # @param worker_count [Integer] number of worker fibers to spawn (default 2)
+    # @param batch_size [Integer] messages per backend fetch (default 1)
+    # @param max_drain_rounds [Integer] max drain iterations before a worker
+    #   re-enqueues a reactor (default 10)
+    # @param catchup_interval [Numeric] seconds between catch-up polls (default 5)
+    # @param work_queue [WorkQueue, nil] optional pre-built queue (useful for testing
+    #   with a plain +Queue.new+ to avoid Async dependency)
+    # @param logger [Object] logger instance
     def initialize(
       router:,
       worker_count: 2,
@@ -64,9 +76,13 @@ module Sourced
       )
     end
 
-    # Spawn all fibers into the caller's task context.
-    # Supports both the executor's Task (#spawn) and Async::Task (#async).
-    # @param task [Object] an executor task or Async::Task
+    # Spawn all component fibers into the caller's task context.
+    # Spawns: backend notifier (LISTEN), catch-up poller, and N workers.
+    #
+    # Supports both the executor's Task (+#spawn+) and Async::Task (+#async+).
+    #
+    # @param task [Object] an executor task or Async::Task to spawn fibers into
+    # @return [void]
     def spawn_into(task)
       s = task.respond_to?(:spawn) ? :spawn : :async
 
@@ -83,6 +99,10 @@ module Sourced
     end
 
     # Stop all components and close the work queue.
+    # Stops in order: backend notifier, catch-up poller, workers, then
+    # pushes shutdown sentinels into the queue to unblock any waiting workers.
+    #
+    # @return [void]
     def stop
       @logger.info "Dispatcher: stopping #{@workers.size} workers"
       @backend_notifier.stop

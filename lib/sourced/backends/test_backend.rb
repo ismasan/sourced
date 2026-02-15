@@ -30,6 +30,10 @@ module Sourced
         @notifier = nil
       end
 
+      # Returns the backend's notifier for real-time message dispatch.
+      # Always returns an {InlineNotifier} since TestBackend has no PG connection.
+      #
+      # @return [InlineNotifier]
       def notifier
         @notifier ||= InlineNotifier.new
       end
