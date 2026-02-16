@@ -125,6 +125,10 @@ module Sourced
         @handled_messages_for_react ||= []
       end
 
+      def catch_all_react_events
+        @catch_all_react_events ||= Set.new
+      end
+
       # Define a reaction to an event
       # @example
       #   reaction SomethingHappened do |state, event|
@@ -166,6 +170,7 @@ module Sourced
           handled_messages_for_evolve.each do |e|
             method_name = Sourced.message_method_name(React::PREFIX, e.to_s)
             if !instance_methods.include?(method_name.to_sym)
+              catch_all_react_events << e
               reaction e, &block
             end
           end

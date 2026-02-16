@@ -11,6 +11,7 @@ module Sourced
     CommandNode = Struct.new(:type, :id, :name, :group_id, :produces, :schema, keyword_init: true)
     EventNode = Struct.new(:type, :id, :name, :group_id, :produces, :schema, keyword_init: true)
     AutomationNode = Struct.new(:type, :id, :name, :group_id, :consumes, :produces, keyword_init: true)
+    ReadModelNode = Struct.new(:type, :id, :name, :group_id, :consumes, :produces, :schema, keyword_init: true)
 
     # Analyze registered reactors and build the topology graph.
     # @param reactors [Enumerable<Class>] reactor classes (Actors, Projectors)
@@ -85,21 +86,74 @@ module Sourced
           end
         end
 
+        is_projector = reactor < Sourced::Projector
+        rm_id = is_projector ? "#{Sourced::Types::ModuleToMessageType.parse(group_id)}-rm" : nil
+        projector_aut_ids = []
+
         # Automation nodes from reactions
         if reactor.respond_to?(:handled_messages_for_react)
-          reactor.handled_messages_for_react.each do |evt_class|
+          catch_all_events = reactor.respond_to?(:catch_all_react_events) ? reactor.catch_all_react_events : Set.new
+          specific_events = reactor.handled_messages_for_react.reject { |e| catch_all_events.include?(e) }
+
+          # Specific reactions: one automation node per event
+          specific_events.each do |evt_class|
             produced_refs = analyzer.commands_dispatched_by(reactor, evt_class)
             produced_types = resolve_refs(produced_refs, reactor, :command)
 
+            aut_id = "#{evt_class.type}-#{group_id}-aut"
+            projector_aut_ids << aut_id if is_projector
+
             nodes << AutomationNode.new(
               type: 'automation',
-              id: "#{evt_class.type}-#{group_id}-aut",
+              id: aut_id,
               name: "reaction(#{evt_class.name})",
               group_id: group_id,
-              consumes: [evt_class.type],
+              consumes: is_projector ? [rm_id] : [evt_class.type],
               produces: produced_types
             )
           end
+
+          # Catch-all reaction: single automation node for all catch-all events
+          if catch_all_events.any?
+            produced_refs = analyzer.commands_dispatched_by(reactor, catch_all_events.first)
+            produced_types = resolve_refs(produced_refs, reactor, :command)
+
+            group_type_id = Sourced::Types::ModuleToMessageType.parse(group_id)
+            aut_id = "#{group_type_id}-aut"
+            projector_aut_ids << aut_id if is_projector
+
+            consumes = if is_projector
+              [rm_id]
+            else
+              catch_all_events.map(&:type)
+            end
+
+            nodes << AutomationNode.new(
+              type: 'automation',
+              id: aut_id,
+              name: "reaction(#{group_id})",
+              group_id: group_id,
+              consumes: consumes,
+              produces: produced_types
+            )
+          end
+        end
+
+        # ReadModel nodes (projectors only)
+        if is_projector
+          consumes = reactor.handled_messages_for_evolve
+            .reject { |c| c < Sourced::Command }
+            .map(&:type)
+
+          nodes << ReadModelNode.new(
+            type: 'readmodel',
+            id: rm_id,
+            name: group_id,
+            group_id: group_id,
+            consumes: consumes,
+            produces: projector_aut_ids,
+            schema: {}
+          )
         end
       end
 

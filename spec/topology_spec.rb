@@ -125,6 +125,107 @@ RSpec.describe Sourced::Topology do
       node = find_node('unittest.thing_created')
       expect(node.group_id).to eq('UnitTest::ThingProjector')
     end
+
+    it 'builds a readmodel node' do
+      node = find_node('unit_test.thing_projector-rm')
+      expect(node).not_to be_nil
+      expect(node.type).to eq('readmodel')
+    end
+
+    it 'sets correct name and group_id on readmodel node' do
+      node = find_node('unit_test.thing_projector-rm')
+      expect(node.name).to eq('UnitTest::ThingProjector')
+      expect(node.group_id).to eq('UnitTest::ThingProjector')
+    end
+
+    it 'readmodel consumes the evolved event types' do
+      node = find_node('unit_test.thing_projector-rm')
+      expect(node.consumes).to eq(['unittest.thing_created'])
+    end
+
+    it 'readmodel produces nothing' do
+      node = find_node('unit_test.thing_projector-rm')
+      expect(node.produces).to eq([])
+    end
+
+    it 'readmodel schema is empty' do
+      node = find_node('unit_test.thing_projector-rm')
+      expect(node.schema).to eq({})
+    end
+  end
+
+  context 'with ReactingProjector (projector with catch-all reaction)' do
+    let(:reactors) { [UnitTest::ReactingProjector] }
+    let(:rm_id) { 'unit_test.reacting_projector-rm' }
+    let(:aut_id) { 'unit_test.reacting_projector-aut' }
+
+    it 'builds a readmodel node' do
+      node = find_node(rm_id)
+      expect(node).not_to be_nil
+      expect(node.type).to eq('readmodel')
+    end
+
+    it 'readmodel consumes the evolved event types' do
+      node = find_node(rm_id)
+      expect(node.consumes).to eq(['unittest.thing_created'])
+    end
+
+    it 'readmodel produces a single automation node' do
+      node = find_node(rm_id)
+      expect(node.produces).to eq([aut_id])
+    end
+
+    it 'builds a single catch-all automation node' do
+      aut_nodes = find_nodes_by_type('automation')
+      expect(aut_nodes.size).to eq(1)
+      node = aut_nodes.first
+      expect(node.id).to eq(aut_id)
+      expect(node.name).to eq('reaction(UnitTest::ReactingProjector)')
+    end
+
+    it 'automation node consumes the readmodel' do
+      node = find_node(aut_id)
+      expect(node.consumes).to eq([rm_id])
+    end
+
+    it 'automation node produces dispatched commands' do
+      node = find_node(aut_id)
+      expect(node.produces).to eq(['unittest.notify_thing'])
+    end
+  end
+
+  context 'with MixedReactingProjector (specific + catch-all reactions)' do
+    let(:reactors) { [UnitTest::MixedReactingProjector] }
+    let(:rm_id) { 'unit_test.mixed_reacting_projector-rm' }
+    let(:specific_aut_id) { 'unittest.thing_created-UnitTest::MixedReactingProjector-aut' }
+    let(:catchall_aut_id) { 'unit_test.mixed_reacting_projector-aut' }
+
+    it 'builds two automation nodes: one specific and one catch-all' do
+      aut_nodes = find_nodes_by_type('automation')
+      expect(aut_nodes.map(&:id)).to contain_exactly(specific_aut_id, catchall_aut_id)
+    end
+
+    it 'specific automation is named after the event' do
+      node = find_node(specific_aut_id)
+      expect(node.name).to eq('reaction(UnitTest::ThingCreated)')
+    end
+
+    it 'catch-all automation is named after the reactor' do
+      node = find_node(catchall_aut_id)
+      expect(node.name).to eq('reaction(UnitTest::MixedReactingProjector)')
+    end
+
+    it 'both automation nodes consume the readmodel' do
+      [specific_aut_id, catchall_aut_id].each do |id|
+        node = find_node(id)
+        expect(node.consumes).to eq([rm_id])
+      end
+    end
+
+    it 'readmodel produces both automation node IDs' do
+      node = find_node(rm_id)
+      expect(node.produces).to contain_exactly(specific_aut_id, catchall_aut_id)
+    end
   end
 
   context 'with SchedulingActor (chained dispatch)' do
@@ -213,6 +314,7 @@ RSpec.describe Sourced::Topology do
         UnitTest::ThingActor,
         UnitTest::NotifierActor,
         UnitTest::ThingProjector,
+        UnitTest::ReactingProjector,
         UnitTest::SchedulingActor,
         UnitTest::LoopingActor
       ]
@@ -221,7 +323,7 @@ RSpec.describe Sourced::Topology do
     it 'returns flat array of node structs' do
       nodes.each do |n|
         expect(n).to be_a(Struct)
-        expect(%w[command event automation]).to include(n.type)
+        expect(%w[command event automation readmodel]).to include(n.type)
       end
     end
 

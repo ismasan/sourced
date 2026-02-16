@@ -60,6 +60,13 @@ class ReactTestReactor
 end
 
 RSpec.describe Sourced::React do
+  specify '.catch_all_react_events tracks events registered via catch-all reaction' do
+    expect(ReactTestReactor.catch_all_react_events).to eq(Set[
+      ReactTestReactor::Event4,
+      ReactTestReactor::Event5,
+    ])
+  end
+
   specify '.handled_messages_for_react' do
     expect(ReactTestReactor.handled_messages_for_react).to eq([
       ReactTestReactor::Event1,

@@ -79,6 +79,47 @@ module UnitTest
     end
   end
 
+  # A projector with a catch-all reaction (reacts to all evolved events)
+  class ReactingProjector < Sourced::Projector::StateStored
+    state do |id|
+      { id: id, things: [] }
+    end
+
+    event ThingCreated do |state, event|
+      state[:things] << event.payload.name
+    end
+
+    reaction do |state, event|
+      dispatch(NotifyThing, name: state[:things].last)
+    end
+  end
+
+  # A projector that evolves multiple events, with a specific reaction on one
+  # and a catch-all reaction covering the rest
+  class MixedReactingProjector < Sourced::Projector::StateStored
+    state do |id|
+      { id: id, things: [], notifications: [] }
+    end
+
+    event ThingCreated do |state, event|
+      state[:things] << event.payload.name
+    end
+
+    event ThingNotified do |state, event|
+      state[:notifications] << event.payload.name
+    end
+
+    # Specific reaction for ThingCreated
+    reaction ThingCreated do |state, event|
+      dispatch(NotifyThing, name: state[:things].last)
+    end
+
+    # Catch-all covers ThingNotified (ThingCreated already has a specific reaction)
+    reaction do |state, event|
+      dispatch(CreateThing, name: 'from-catchall')
+    end
+  end
+
   # For infinite loop tests: an actor that reacts to its own events
   LoopCmd = Sourced::Command.define('unittest.loop_cmd')
   LoopEvent = Sourced::Event.define('unittest.loop_event')
