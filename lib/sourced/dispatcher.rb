@@ -110,6 +110,9 @@ module Sourced
     )
       @logger = logger
       @router = router
+      @workers = []
+
+      return if worker_count.zero?
 
       reactors = router.async_reactors.select { |r| r.handled_messages.any? }.to_a
 
@@ -146,6 +149,8 @@ module Sourced
     # @param task [Object] an executor task or Async::Task to spawn fibers into
     # @return [void]
     def spawn_into(task)
+      return if @workers.empty?
+
       s = task.respond_to?(:spawn) ? :spawn : :async
 
       # Backend notifier (PG LISTEN fiber — no-op for non-PG)
@@ -166,6 +171,8 @@ module Sourced
     #
     # @return [void]
     def stop
+      return if @workers.empty?
+
       @logger.info "Dispatcher: stopping #{@workers.size} workers"
       @backend_notifier.stop
       @catchup_poller.stop
