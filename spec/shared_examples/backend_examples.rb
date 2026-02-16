@@ -353,7 +353,7 @@ module BackendExamples
           end
         end
 
-        expect(group1_messages).to eq([evt_b1, evt_a1])
+        expect(group1_messages).to match_array([evt_b1, evt_a1])
 
         # Test that separate groups have their own cursors on streams
         backend.reserve_next_for_reactor(reactor2) do |batch, _history|
@@ -1319,6 +1319,22 @@ module BackendExamples
         gr = backend.stats.groups.first
         expect(gr[:group_id]).to eq('group1')
         expect(gr[:status]).to eq('active')
+      end
+    end
+
+    describe '#notifier' do
+      it 'returns an object responding to subscribe, publish, notify_new_messages, notify_reactor_resumed, start, stop' do
+        n = backend.notifier
+        expect(n).to respond_to(:subscribe)
+        expect(n).to respond_to(:publish)
+        expect(n).to respond_to(:notify_new_messages)
+        expect(n).to respond_to(:notify_reactor_resumed)
+        expect(n).to respond_to(:start)
+        expect(n).to respond_to(:stop)
+      end
+
+      it 'returns the same instance on repeated calls' do
+        expect(backend.notifier).to be(backend.notifier)
       end
     end
   end

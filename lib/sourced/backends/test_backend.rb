@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'thread'
+require 'sourced/inline_notifier'
 
 module Sourced
   module Backends
@@ -26,7 +27,15 @@ module Sourced
       def clear!
         @state = State.new
         @pubsub = TestPubSub.new
+        @notifier = InlineNotifier.new
       end
+
+      # Returns the backend's notifier for real-time message dispatch.
+      # Always returns an {InlineNotifier} since TestBackend has no PG connection.
+      # Eagerly initialized in {#clear!} for thread and CoW safety.
+      #
+      # @return [InlineNotifier]
+      attr_reader :notifier
 
       def installed? = true
 
@@ -92,6 +101,9 @@ module Sourced
         end
       end
 
+      # Start a consumer group that has been stopped.
+      # Signals the notifier so workers pick up the reactor immediately.
+      #
       # @param group_id [String]
       def start_consumer_group(group_id)
         group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
@@ -101,6 +113,7 @@ module Sourced
           group.status = ACTIVE
           group.retry_at = nil
         end
+        notifier.notify_reactor_resumed(group_id)
       end
 
       def stop_consumer_group(group_id, error = nil)
@@ -217,6 +230,7 @@ module Sourced
           end
         end
         @state.groups.each_value(&:reindex)
+        notifier.notify_new_messages(messages_array.map(&:type))
         true
       end
 

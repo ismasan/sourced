@@ -81,15 +81,19 @@ RSpec.describe 'Processing events concurrently', type: :backend do
   end
 
   specify 'consumes streams concurrently, maintaining per-stream event ordering, consuming all available events for each stream' do
+    work_queue = Sourced::WorkQueue.new(max_per_reactor: 3, queue: Queue.new)
     workers = 3.times.map do |i|
-      Sourced::Worker.new(name: "worker-#{i}", router:)
+      Sourced::Worker.new(work_queue:, name: "worker-#{i}", router:)
     end
 
     threads = workers.map do |worker|
       Thread.new do
-        worker.poll
+        worker.run
       end
     end
+
+    # Push the reactor to wake up workers
+    3.times { work_queue.push(ConcurrencyExamples::Projector) }
 
     count = 0
     while count < 220
@@ -98,6 +102,7 @@ RSpec.describe 'Processing events concurrently', type: :backend do
     end
 
     workers.each(&:stop)
+    work_queue.close(workers.size)
     threads.each(&:join)
 
     duplicates = ConcurrencyExamples::STORE.data['stream1'][:seqs].group_by(&:itself).select {|k,v| v.size > 1 }

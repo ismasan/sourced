@@ -3,6 +3,7 @@
 require 'sequel'
 require 'json'
 require 'sourced/message'
+require 'sourced/inline_notifier'
 require 'sourced/backends/pg_pub_sub'
 
 Sequel.extension :pg_json if defined?(PG)
@@ -63,6 +64,7 @@ module Sourced
       def initialize(db, logger: Sourced.config.logger, prefix: 'sourced', schema: nil)
         @db = connect(db)
         @pubsub = PGPubSub.new(db: @db, logger:)
+        @notifier = @db.adapter_scheme == :postgres ? PGNotifier.new(db: @db) : InlineNotifier.new
         @logger = logger
         @prefix = prefix
         @schema = schema
@@ -151,6 +153,13 @@ module Sourced
           Stream.new(**row)
         end
       end
+
+      # Returns the backend's notifier for real-time message dispatch.
+      # Returns a {PGNotifier} for PostgreSQL, {InlineNotifier} otherwise.
+      # Initialized eagerly in the constructor for thread and CoW safety.
+      #
+      # @return [PGNotifier, InlineNotifier]
+      attr_reader :notifier
 
       def transaction(&)
         db.transaction(&)
@@ -286,6 +295,9 @@ module Sourced
 
             # Bulk insert all messages
             db[messages_table].multi_insert(rows)
+
+            # NOTIFY delivered on commit — atomically correct
+            notifier.notify_new_messages(messages_array.map(&:type))
           end
 
           true
@@ -314,6 +326,8 @@ module Sourced
           id = db[streams_table].insert_conflict(target: :stream_id, update: { seq:, updated_at: Time.now }).insert(stream_id:, seq:)
           rows = messages_array.map { |e| serialize_message(e, id) }
           db[messages_table].multi_insert(rows)
+
+          notifier.notify_new_messages(messages_array.map(&:type))
         end
 
         true
@@ -578,12 +592,14 @@ module Sourced
       end
 
       # Start a consumer group that has been stopped.
+      # Signals the notifier so workers pick up the reactor immediately.
       #
       # @param group_id [String]
       def start_consumer_group(group_id)
         group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         dataset = db[consumer_groups_table].where(group_id: group_id)
         dataset.update(status: ACTIVE, retry_at: nil, error_context: nil)
+        notifier.notify_reactor_resumed(group_id)
       end
 
       # @param group_id [String]
@@ -946,3 +962,4 @@ end
 
 require 'sourced/backends/sequel_backend/installer'
 require 'sourced/backends/sequel_backend/group_updater'
+require 'sourced/backends/sequel_backend/pg_notifier'

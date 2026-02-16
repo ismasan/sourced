@@ -50,7 +50,9 @@ module Sourced
       :housekeeping_count,
       :housekeeping_interval,
       :housekeeping_heartbeat_interval,
-      :housekeeping_claim_ttl_seconds
+      :housekeeping_claim_ttl_seconds,
+      :catchup_interval,
+      :max_drain_rounds
     )
 
     attr_reader :backend, :executor
@@ -68,6 +70,8 @@ module Sourced
       @housekeeping_interval = 3
       @housekeeping_heartbeat_interval = 5
       @housekeeping_claim_ttl_seconds = 120
+      @catchup_interval = 5
+      @max_drain_rounds = 10
       @subscribers = []
     end
 
