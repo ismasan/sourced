@@ -228,6 +228,19 @@ module Sourced
     config.backend.read_stream(stream_id, after:, upto:)
   end
 
+  # Build the topology graph from all registered async reactors.
+  # Returns a flat array of CommandNode, EventNode, and AutomationNode structs.
+  # The result is memoized; call Sourced.reset_topology to clear.
+  #
+  # @return [Array<Topology::CommandNode, Topology::EventNode, Topology::AutomationNode>]
+  def self.topology
+    @topology ||= Topology.build(Router.instance.async_reactors)
+  end
+
+  def self.reset_topology
+    @topology = nil
+  end
+
   # Generate a standardized method name for message handlers.
   # Used internally to create consistent handler method names.
   #
@@ -276,4 +289,5 @@ require 'sourced/projector'
 require 'sourced/supervisor'
 require 'sourced/command_context'
 require 'sourced/unit'
+require 'sourced/topology'
 # require 'sourced/rails/railtie' if defined?(Rails::Railtie)
