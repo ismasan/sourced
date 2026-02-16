@@ -1360,6 +1360,118 @@ Sourced.config.backend.stop_consumer_group('Carts::Listings')
 Sourced.config.backend.start_consumer_group('Carts::Listings')
 ```
 
+## Topology
+
+`Sourced.topology` returns a flat array of node structs describing the message flow graph of all registered reactors. This is useful for building visualizations, documentation, or tooling that needs to understand how commands, events, automations and read models connect.
+
+```ruby
+Sourced.register(Cart)
+Sourced.register(CartListings)
+
+nodes = Sourced.topology
+# => [CommandNode, EventNode, AutomationNode, ReadModelNode, ...]
+```
+
+The result is memoized. Call `Sourced.reset_topology` to clear the cache after registering new reactors.
+
+### Node types
+
+#### CommandNode
+
+Represents a command handled by an actor. `produces` lists the event type strings that the command handler can emit (extracted via static analysis).
+
+```ruby
+# Fields: type, id, name, group_id, produces, schema
+{ type: "command", id: "carts.add_item", name: "Carts::AddItem",
+  group_id: "Carts::Cart", produces: ["carts.item_added"],
+  schema: { "type" => "object", "properties" => { ... } } }
+```
+
+#### EventNode
+
+Represents an event type. Deduplicated across reactors — the first reactor to reference an event owns its `group_id`.
+
+```ruby
+# Fields: type, id, name, group_id, produces, schema
+{ type: "event", id: "carts.item_added", name: "Carts::ItemAdded",
+  group_id: "Carts::Cart", produces: [],
+  schema: { "type" => "object", "properties" => { ... } } }
+```
+
+#### AutomationNode
+
+Represents a `.reaction` block. `consumes` lists what triggers the reaction (event types for actors, readmodel IDs for projectors). `produces` lists the command type strings dispatched by the reaction (extracted via static analysis).
+
+```ruby
+# Fields: type, id, name, group_id, consumes, produces
+# Actor reaction — consumes an event directly:
+{ type: "automation", id: "carts.item_added-Carts::Cart-aut",
+  name: "reaction(Carts::ItemAdded)", group_id: "Carts::Cart",
+  consumes: ["carts.item_added"], produces: ["carts.check_inventory"] }
+
+# Projector reaction — consumes the readmodel:
+{ type: "automation", id: "carts.item_added-Carts::CartListings-aut",
+  name: "reaction(Carts::ItemAdded)", group_id: "Carts::CartListings",
+  consumes: ["carts.cart_listings-rm"], produces: ["carts.notify_admin"] }
+```
+
+#### ReadModelNode
+
+Represents a projector as a consumer of events. `consumes` lists the event types the projector evolves. `produces` lists the IDs of any automation nodes derived from the projector's reactions.
+
+```ruby
+# Fields: type, id, name, group_id, consumes, produces, schema
+{ type: "readmodel", id: "carts.cart_listings-rm",
+  name: "Carts::CartListings", group_id: "Carts::CartListings",
+  consumes: ["carts.item_added", "carts.placed"],
+  produces: ["carts.item_added-Carts::CartListings-aut"],
+  schema: {} }
+```
+
+### How nodes link together
+
+The `produces` and `consumes` fields reference other node IDs, forming a directed graph:
+
+```
+CommandNode ──produces──▶ EventNode
+EventNode ──consumes──▶ AutomationNode (actor reactions)
+EventNode ──consumes──▶ ReadModelNode ──produces──▶ AutomationNode (projector reactions)
+AutomationNode ──produces──▶ CommandNode
+```
+
+### Catch-all reactions
+
+When a reactor uses a catch-all `reaction do ... end` (no event argument), the topology collapses all covered events into a single automation node named after the reactor, instead of one automation per event.
+
+```ruby
+class ReadyOrders < Sourced::Projector::StateStored
+  event Orders::PaymentConfirmed do |state, event|
+    # ...
+  end
+
+  event Orders::BuildConfirmed do |state, event|
+    # ...
+  end
+
+  # Catch-all: reacts to all evolved events
+  reaction do |state, event|
+    if state[:ready]
+      dispatch Orders::Release
+    end
+  end
+end
+```
+
+This produces a single automation node:
+
+```ruby
+{ type: "automation", id: "ready_orders-aut",
+  name: "reaction(ReadyOrders)", group_id: "ReadyOrders",
+  consumes: ["ready_orders-rm"], produces: ["orders.release"] }
+```
+
+Rather than separate automation nodes for `PaymentConfirmed` and `BuildConfirmed`.
+
 ## Rails integration
 
 Soon.
