@@ -58,23 +58,11 @@ module Sourced
       #   # => tables: my_app.evt_messages, my_app.evt_streams, etc.
       def initialize(db, logger: Sourced.config.logger, prefix: 'sourced', schema: nil)
         @db = connect(db)
-        @notifier = @db.adapter_scheme == :postgres ? PGNotifier.new(db: @db) : InlineNotifier.new
         @logger = logger
         @prefix = prefix
         @schema = schema
-        @workers_table = table_name(:workers)
-        @scheduled_messages_table = table_name(:scheduled_messages)
-        @streams_table = table_name(:streams)
-        @offsets_table = table_name(:offsets)
-        @consumer_groups_table = table_name(:consumer_groups)
-        @messages_table = table_name(:messages)
-        # Literal SQL strings for use in raw SQL interpolation.
-        # Sequel qualified identifiers don't produce valid SQL via #to_s,
-        # so we pre-compute literal versions for the 3 raw SQL methods.
-        @messages_table_literal = @db.literal(@messages_table)
-        @streams_table_literal = @db.literal(@streams_table)
-        @offsets_table_literal = @db.literal(@offsets_table)
-        @consumer_groups_table_literal = @db.literal(@consumer_groups_table)
+        setup_adapter
+        setup_tables
         @setup = false
         logger.info("Connected to #{@db}")
       end
@@ -771,16 +759,48 @@ module Sourced
         installer.copy_migration_to(dir, &block)
       end
 
+      protected
+
+      # Override in subclasses to configure pubsub and notifier.
+      # Default: PGPubSub + auto-detected notifier (PGNotifier for PG, InlineNotifier otherwise).
+      def setup_adapter
+        @pubsub = PGPubSub.new(db: @db, logger: @logger)
+        @notifier = @db.adapter_scheme == :postgres ? PGNotifier.new(db: @db) : InlineNotifier.new
+      end
+
+      # Assign table name ivars and their literal SQL representations.
+      def setup_tables
+        @workers_table = table_name(:workers)
+        @scheduled_messages_table = table_name(:scheduled_messages)
+        @streams_table = table_name(:streams)
+        @offsets_table = table_name(:offsets)
+        @consumer_groups_table = table_name(:consumer_groups)
+        @messages_table = table_name(:messages)
+        # Literal SQL strings for use in raw SQL interpolation.
+        # Sequel qualified identifiers don't produce valid SQL via #to_s,
+        # so we pre-compute literal versions for the raw SQL methods.
+        @messages_table_literal = @db.literal(@messages_table)
+        @streams_table_literal = @db.literal(@streams_table)
+        @offsets_table_literal = @db.literal(@offsets_table)
+        @consumer_groups_table_literal = @db.literal(@consumer_groups_table)
+      end
+
       private
 
       attr_reader :db, :logger, :prefix, :schema, :messages_table, :streams_table, :offsets_table, :consumer_groups_table, :scheduled_messages_table, :workers_table
+
+      # Override in subclasses to use a different migration template.
+      def migration_template_name
+        '001_create_sourced_tables.rb.erb'
+      end
 
       def installer
         @installer ||= Installer.new(
           @db,
           logger:,
           schema:,
-          prefix:
+          prefix:,
+          migration_template: migration_template_name
         )
       end
 

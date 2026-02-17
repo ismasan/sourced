@@ -100,6 +100,8 @@ module BackendExamples
       end
 
       it 'blocks concurrent workers from selecting the same messages' do
+        skip 'PG-only: requires SKIP LOCKED' unless backend.pubsub
+
         now = Time.now - 10
         cmd1 = Tests::DoSomething.parse(stream_id: 'as1', payload: { account_id: 1 })
         cmd2 = Tests::DoSomething.parse(stream_id: 'as1', payload: { account_id: 1 })
@@ -1064,6 +1066,8 @@ module BackendExamples
       end
 
       it 'raises exception if concurrently processed by the same group' do
+        skip 'PG-only: requires advisory locks' unless backend.pubsub
+
         expect do
           Sourced.config.executor.start do |t|
             t.spawn do

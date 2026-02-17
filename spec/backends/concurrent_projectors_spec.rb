@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'sourced/backends/sequel_backend'
+require 'sourced/backends/pg_backend'
 
 module ConcurrencyExamples
   SomethingHappened = Sourced::Message.define('concurrent.something_happened') do
@@ -48,7 +48,7 @@ module ConcurrencyExamples
 end
 
 RSpec.describe 'Processing events concurrently', type: :backend do
-  subject(:backend) { Sourced::Backends::SequelBackend.new(db) }
+  subject(:backend) { Sourced::Backends::PGBackend.new(db) }
 
   let(:db) do
     # Sequel.sqlite

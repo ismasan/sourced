@@ -105,8 +105,8 @@ module Sourced
         @pubsub = PubSub::PG.new(db: bnd, logger: @logger)
         Sourced::Backends::SequelBackend.new(bnd)
       when 'Sequel::SQLite::Database'
-        require 'sourced/backends/sequel_backend'
-        Sourced::Backends::SequelBackend.new(bnd)
+        require 'sourced/backends/sqlite_backend'
+        Sourced::Backends::SQLiteBackend.new(bnd)
       else
         BackendInterface.parse(bnd)
       end

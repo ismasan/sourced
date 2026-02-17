@@ -32,9 +32,9 @@ RSpec.describe Sourced::Configuration do
   end
 
   describe '#backend=' do
-    it 'can configure backend with a Sequel database' do
+    it 'can configure backend with a Sequel SQLite database' do
       config.backend = Sequel.sqlite
-      expect(config.backend).to be_a(Sourced::Backends::SequelBackend)
+      expect(config.backend).to be_a(Sourced::Backends::SQLiteBackend)
     end
 
     it 'accepts anything with the Backend interface' do

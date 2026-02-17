@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'sourced/backends/sequel_backend'
+require 'sourced/backends/pg_backend'
 
-RSpec.describe 'Sourced::Backends::SequelBackend with Postgres', type: :backend do
+RSpec.describe 'Sourced::Backends::PGBackend', type: :backend do
   before(:all) do
     @db = Sequel.postgres('sourced_test')
-    @backend = Sourced::Backends::SequelBackend.new(@db)
+    @backend = Sourced::Backends::PGBackend.new(@db)
     @backend.setup!(Sourced.config)
     @backend.uninstall if @backend.installed?
     @backend.install
