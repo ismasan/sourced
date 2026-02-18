@@ -9,8 +9,6 @@ module Sourced
       ACTIVE = 'active'
       STOPPED = 'stopped'
 
-      attr_reader :pubsub
-
       def initialize
         clear!
         @mutex = Mutex.new
@@ -26,7 +24,6 @@ module Sourced
 
       def clear!
         @state = State.new
-        @pubsub = TestPubSub.new
         @notifier = InlineNotifier.new
       end
 
@@ -277,4 +274,3 @@ end
 
 require 'sourced/backends/test_backend/group'
 require 'sourced/backends/test_backend/state'
-require 'sourced/backends/test_backend/test_pub_sub'

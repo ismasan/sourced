@@ -4,7 +4,6 @@ require 'sequel'
 require 'json'
 require 'sourced/message'
 require 'sourced/inline_notifier'
-require 'sourced/backends/pg_pub_sub'
 
 Sequel.extension :pg_json if defined?(PG)
 
@@ -38,10 +37,6 @@ module Sourced
       # Pre-allocated return for empty/failed batch claims
       NO_BATCH = [nil, nil].freeze
 
-      # @!attribute [r] pubsub
-      #   @return [PubSub] Pub/sub implementation for real-time notifications
-      attr_reader :pubsub
-
       # Initialize a new Sequel backend instance.
       # Automatically sets up database connection, table names, and pub/sub system.
       #
@@ -63,7 +58,6 @@ module Sourced
       #   # => tables: my_app.evt_messages, my_app.evt_streams, etc.
       def initialize(db, logger: Sourced.config.logger, prefix: 'sourced', schema: nil)
         @db = connect(db)
-        @pubsub = PGPubSub.new(db: @db, logger:)
         @notifier = @db.adapter_scheme == :postgres ? PGNotifier.new(db: @db) : InlineNotifier.new
         @logger = logger
         @prefix = prefix
