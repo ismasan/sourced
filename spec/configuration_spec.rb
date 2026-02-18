@@ -83,6 +83,10 @@ RSpec.describe Sourced::Configuration do
       config.pubsub = custom
       expect(config.pubsub).to eq(custom)
     end
+
+    it 'fails loudly if the pubsub does not implement the PubSub interface' do
+      expect { config.pubsub = Object.new }.to raise_error(Plumb::ParseError)
+    end
   end
 
   specify '#executor' do

@@ -33,6 +33,8 @@ module Sourced
       :reset_consumer_group
     ]
 
+    PubSubInterface = Types::Interface[:publish, :subscribe]
+
     # Interface that all executors must implement
     # @see AsyncExecutor
     # @see ThreadExecutor
@@ -116,7 +118,7 @@ module Sourced
     # Can be overridden with any object implementing `subscribe` and `publish`.
     # @param ps [#subscribe, #publish]
     def pubsub=(ps)
-      @pubsub = ps
+      @pubsub = PubSubInterface.parse(ps)
     end
 
     # Configure the executor for the app.
