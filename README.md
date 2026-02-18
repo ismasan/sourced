@@ -1203,7 +1203,7 @@ Passing a `Sequel::SQLite::Database` connection auto-selects `SQLiteBackend`. Th
 
 **Differences from PostgreSQL:**
 
-- No pub/sub notifications — workers use the `CatchUpPoller` (periodic polling) instead of real-time `LISTEN/NOTIFY`.
+- **In-process pub/sub**: Uses an in-memory, thread/fiber-safe pub/sub (`PubSub::Test`) instead of PG `LISTEN/NOTIFY`. Worker dispatch is synchronous (the `InlineNotifier` pushes work to the `WorkQueue` inline when messages are appended), with the `CatchUpPoller` as a safety net.
 - No advisory locks or `SKIP LOCKED` — concurrency is handled via SQLite's transaction-level write locks.
 - Best suited for single-process deployments, development, scripts, and tests.
 
