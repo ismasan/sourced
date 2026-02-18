@@ -761,7 +761,7 @@ module Sourced
         installer.copy_migration_to(dir, &block)
       end
 
-      protected
+      private
 
       # Override in subclasses to configure the notifier.
       # Default: PGNotifier for PG, InlineNotifier otherwise.
@@ -785,8 +785,6 @@ module Sourced
         @offsets_table_literal = @db.literal(@offsets_table)
         @consumer_groups_table_literal = @db.literal(@consumer_groups_table)
       end
-
-      private
 
       attr_reader :db, :logger, :prefix, :schema, :messages_table, :streams_table, :offsets_table, :consumer_groups_table, :scheduled_messages_table, :workers_table
 

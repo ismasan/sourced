@@ -236,7 +236,7 @@ module Sourced
         db.run("DELETE FROM sqlite_sequence") if db.table_exists?(:sqlite_sequence)
       end
 
-      protected
+      private
 
       # Configure SQLite-specific PRAGMAs and set up the {InlineNotifier}.
       #

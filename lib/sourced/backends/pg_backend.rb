@@ -11,7 +11,7 @@ module Sourced
     #   db = Sequel.postgres('myapp')
     #   backend = Sourced::Backends::PGBackend.new(db)
     class PGBackend < SequelBackend
-      protected
+      private
 
       def setup_adapter
         @notifier = PGNotifier.new(db: @db)
