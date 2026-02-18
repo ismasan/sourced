@@ -4,17 +4,38 @@ require 'sourced/backends/sequel_backend'
 
 module Sourced
   module Backends
-    # SQLite-specific backend. Inherits shared behaviour from SequelBackend
-    # and overrides methods that use PG-specific features (CTEs with UPDATE RETURNING,
-    # FOR UPDATE SKIP LOCKED, advisory locks, TRUNCATE, greatest()).
+    # SQLite-specific backend. Inherits shared behaviour from {SequelBackend}
+    # and overrides methods that rely on PG-specific features:
     #
-    # PubSub is not supported — uses InlineNotifier for dispatch.
+    # - No CTEs with +UPDATE ... RETURNING+ — uses separate SELECT/UPDATE steps
+    # - No +FOR UPDATE SKIP LOCKED+ — relies on SQLite's transaction-level write lock
+    # - No advisory locks — +ack_on+ runs inside a plain transaction
+    # - No +TRUNCATE+ — +clear!+ uses +DELETE+
+    # - No +greatest()+ — uses +max()+ instead
     #
-    # @example
+    # Uses {InlineNotifier} for synchronous worker dispatch (no PG +LISTEN/NOTIFY+).
+    # The {CatchUpPoller} provides a safety-net poll for startup catch-up and missed signals.
+    #
+    # Best suited for single-process deployments, development, scripts, and tests.
+    #
+    # @example File-based database
     #   db = Sequel.sqlite('myapp.db')
     #   backend = Sourced::Backends::SQLiteBackend.new(db)
     #   backend.install unless backend.installed?
+    #
+    # @example In-memory database (useful for scripts and tests)
+    #   db = Sequel.sqlite
+    #   backend = Sourced::Backends::SQLiteBackend.new(db)
+    #
+    # @see SequelBackend
     class SQLiteBackend < SequelBackend
+      # Move scheduled messages whose +available_at+ has passed into the main message log.
+      #
+      # Unlike the PG version, this does not use +FOR UPDATE SKIP LOCKED+ to prevent
+      # concurrent workers from selecting the same rows. Instead, SQLite's database-level
+      # write lock serializes concurrent callers.
+      #
+      # @return [Integer] number of scheduled messages promoted
       def update_schedule!
         now = Time.now
 
@@ -44,6 +65,17 @@ module Sourced
         end
       end
 
+      # Append messages to a stream, auto-incrementing sequence numbers.
+      #
+      # SQLite doesn't support +RETURNING+ on +INSERT ... ON CONFLICT+, so the stream
+      # record is fetched with a separate +SELECT+ after the upsert. Retries on
+      # +UniqueConstraintViolation+ with linear backoff up to +max_retries+.
+      #
+      # @param stream_id [String] the stream to append to
+      # @param messages [Message, Array<Message>] messages to append
+      # @param max_retries [Integer] retry limit for constraint violations (default: 3)
+      # @return [true]
+      # @raise [Sourced::ConcurrentAppendError] after exhausting retries
       def append_next_to_stream(stream_id, messages, max_retries: 3)
         messages_array = Array(messages)
         return true if messages_array.empty?
@@ -91,6 +123,15 @@ module Sourced
         end
       end
 
+      # Append messages to a stream with optimistic locking (sequence check).
+      #
+      # Messages must carry pre-assigned +seq+ values. A +UniqueConstraintViolation+
+      # on the +[stream_id, seq]+ index signals a concurrent append.
+      #
+      # @param stream_id [String] the stream to append to
+      # @param messages [Message, Array<Message>] messages with pre-assigned sequences
+      # @return [true]
+      # @raise [Sourced::ConcurrentAppendError] on sequence conflict
       def append_to_stream(stream_id, messages)
         messages_array = Array(messages)
         return false if messages_array.empty?
@@ -120,6 +161,14 @@ module Sourced
         raise Sourced::ConcurrentAppendError, e.message
       end
 
+      # Yield a {GroupUpdater} for the given consumer group inside a transaction.
+      #
+      # The PG version uses +FOR UPDATE+ to row-lock the group. SQLite relies on its
+      # database-level transaction lock instead.
+      #
+      # @param group_id [String] consumer group identifier
+      # @yield [GroupUpdater] group updater for setting retry_at, stop, etc.
+      # @raise [ArgumentError] if the consumer group is not found
       def updating_consumer_group(group_id, &)
         db.transaction do
           dataset = db[consumer_groups_table].where(group_id:)
@@ -136,6 +185,18 @@ module Sourced
         end
       end
 
+      # Acknowledge a message for a consumer group, running an optional block
+      # inside the same transaction.
+      #
+      # The PG version uses +pg_try_advisory_xact_lock+ to prevent concurrent
+      # processing of the same stream by the same group. SQLite relies on the
+      # database-level write lock instead, so a second concurrent caller will
+      # block until the first commits.
+      #
+      # @param group_id [String] consumer group identifier
+      # @param message_id [String] UUID of the message to acknowledge
+      # @yield optional block to run inside the transaction before ACKing
+      # @raise [Sourced::ConcurrentAckError] if the message is not found
       def ack_on(group_id, message_id, &)
         db.transaction do
           row = db[messages_table]
@@ -155,6 +216,14 @@ module Sourced
         end
       end
 
+      # Clear all data. For tests only.
+      #
+      # Uses +DELETE+ instead of +TRUNCATE+ (not supported by SQLite).
+      # Also resets the +sqlite_sequence+ table so +global_seq+ auto-increment
+      # restarts from 1.
+      #
+      # @raise [RuntimeError] if +ENV['ENVIRONMENT']+ is not +'test'+
+      # @return [void]
       def clear!
         raise 'Not in test environment' unless ENV['ENVIRONMENT'] == 'test'
         db[offsets_table].delete
@@ -169,6 +238,13 @@ module Sourced
 
       protected
 
+      # Configure SQLite-specific PRAGMAs and set up the {InlineNotifier}.
+      #
+      # - +foreign_keys = ON+ — enforce FK constraints (off by default in SQLite)
+      # - +journal_mode = WAL+ — allow concurrent reads during writes
+      # - +busy_timeout = 5000+ — wait up to 5 s for a write lock before raising
+      #
+      # @return [void]
       def setup_adapter
         @notifier = InlineNotifier.new
         @db.run('PRAGMA foreign_keys = ON')
@@ -178,10 +254,20 @@ module Sourced
 
       private
 
+      # @return [String] filename of the SQLite-specific migration ERB template
       def migration_template_name
         '001_create_sourced_tables_sqlite.rb.erb'
       end
 
+      # Acknowledge a message by advancing the consumer group's offset.
+      #
+      # Uses +max()+ instead of PG's +greatest()+ to update +highest_global_seq+.
+      # Falls back to +INSERT+ if the consumer group row doesn't exist yet.
+      #
+      # @param group_id [String] consumer group identifier
+      # @param stream_id [Integer] stream FK (internal integer ID, not the string stream_id)
+      # @param global_seq [Integer] global sequence number of the acknowledged message
+      # @return [void]
       def ack_message(group_id, stream_id, global_seq)
         db.transaction do
           # Update consumer group — use max() instead of greatest()
@@ -213,7 +299,19 @@ module Sourced
       end
 
       # Decompose the PG CTE (claim + fetch in one statement) into
-      # separate SELECT → UPDATE → SELECT steps within a transaction.
+      # separate SELECT, UPDATE, SELECT steps within a transaction.
+      #
+      # SQLite has no +FOR UPDATE SKIP LOCKED+, so two concurrent workers
+      # contend for the database-level write lock rather than skipping locked rows.
+      #
+      # @param group_id [String] consumer group identifier
+      # @param handled_messages [Array<String>] message type strings to filter
+      # @param now [Time] current time for claim timestamps and retry_at checks
+      # @param start_from [Time, nil] optional time window lower bound
+      # @param worker_id [String] identifier for the claiming worker
+      # @param batch_size [Integer] maximum messages to fetch
+      # @param with_history [Boolean] whether to include full stream history
+      # @return [Array(Array<Hash>, Array<Message>?), NO_BATCH] batch rows and optional history
       def claim_and_fetch_batch(group_id, handled_messages, now, start_from, worker_id, batch_size, with_history: false)
         message_types_sql = handled_messages.any? ? " AND e.type IN(#{handled_messages.map { |e| db.literal(e) }.join(',')})" : ''
         time_window_sql = start_from.is_a?(Time) ? " AND e.created_at > #{db.literal(start_from)}" : ''
@@ -260,6 +358,13 @@ module Sourced
         NO_BATCH
       end
 
+      # Fetch a batch of messages for the claimed offset.
+      #
+      # @param first_match [Hash] the claimed offset row
+      # @param message_types_sql [String] SQL fragment filtering message types
+      # @param time_window_sql [String] SQL fragment filtering by time
+      # @param batch_size [Integer] maximum messages to fetch
+      # @return [Array(Array<Hash>, nil), NO_BATCH]
       def fetch_batch(first_match, message_types_sql, time_window_sql, batch_size)
         rows = db.fetch(<<~SQL).all
           SELECT e.global_seq, e.id, #{db.literal(first_match[:stream_id])} as stream_id,
@@ -283,6 +388,13 @@ module Sourced
         [rows, nil]
       end
 
+      # Fetch a batch of messages along with full stream history.
+      #
+      # @param first_match [Hash] the claimed offset row
+      # @param message_types_sql [String] SQL fragment filtering message types
+      # @param time_window_sql [String] SQL fragment filtering by time
+      # @param batch_size [Integer] maximum messages to fetch
+      # @return [Array(Array<Hash>, Array<Message>), NO_BATCH]
       def fetch_batch_with_history(first_match, message_types_sql, time_window_sql, batch_size)
         # Fetch all stream messages for history
         all_rows = db.fetch(<<~SQL).all
@@ -326,8 +438,14 @@ module Sourced
         [batch_rows, history]
       end
 
-      # SQLite boolean expressions return 0/1, not true/false.
-      # Convert :replaying so downstream code works with Ruby booleans.
+      # Convert SQLite integer booleans (0/1) to Ruby booleans.
+      #
+      # SQLite boolean expressions like +(expr) AS replaying+ return +0+ or +1+
+      # rather than +true+/+false+. This normalizes the +:replaying+ field so
+      # downstream code works with Ruby booleans.
+      #
+      # @param rows [Array<Hash>] rows to mutate in place
+      # @return [void]
       def coerce_booleans!(rows)
         rows.each { |r| r[:replaying] = (r[:replaying] == 1 || r[:replaying] == true) }
       end
