@@ -37,6 +37,11 @@ RSpec.describe Sourced::Configuration do
       expect(config.backend).to be_a(Sourced::Backends::SQLiteBackend)
     end
 
+    it 'uses PGBackend for Postgres databases' do
+      config.backend = Sequel.postgres('sourced_test')
+      expect(config.backend).to be_a(Sourced::Backends::PGBackend)
+    end
+
     it 'accepts anything with the Backend interface' do
       backend = Struct.new(
         :installed?,

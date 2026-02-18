@@ -725,6 +725,8 @@ module Sourced
         db[consumer_groups_table].delete
         db[offsets_table].delete
         db[streams_table].delete
+        db[scheduled_messages_table].delete
+        db[workers_table].delete
       end
 
       # Called after Sourced.configure

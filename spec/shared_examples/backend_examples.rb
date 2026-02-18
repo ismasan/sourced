@@ -101,6 +101,24 @@ module BackendExamples
 
     end
 
+    describe '#clear!' do
+      it 'clears scheduled messages and workers' do
+        msg = Tests::DoSomething.parse(stream_id: 's1', payload: { account_id: 1 })
+        backend.schedule_messages([msg], at: Time.now + 60)
+        backend.worker_heartbeat(['worker-1'])
+
+        backend.clear!
+
+        # Scheduled messages should be gone
+        Timecop.freeze(Time.now + 120) do
+          expect(backend.update_schedule!).to eq(0)
+        end
+
+        # Streams and messages should be gone
+        expect(backend.read_stream('s1')).to be_empty
+      end
+    end
+
     describe '#append_next_to_stream' do
       it 'appends single event to stream incrementing :seq automatically' do
         evt1 = Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
