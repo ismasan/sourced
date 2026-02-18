@@ -3,6 +3,7 @@
 require 'console' #  comes with async gem
 require 'sourced/types'
 require 'sourced/backends/test_backend'
+require 'sourced/pubsub/test'
 require 'sourced/error_strategy'
 require 'sourced/async_executor'
 
@@ -32,6 +33,8 @@ module Sourced
       :reset_consumer_group
     ]
 
+    PubSubInterface = Types::Interface[:publish, :subscribe]
+
     # Interface that all executors must implement
     # @see AsyncExecutor
     # @see ThreadExecutor
@@ -55,11 +58,12 @@ module Sourced
       :max_drain_rounds
     )
 
-    attr_reader :backend, :executor
+    attr_reader :backend, :executor, :pubsub
 
     def initialize
       @logger = Console
       @backend = Backends::TestBackend.new
+      @pubsub = PubSub::Test.new
       @error_strategy = ErrorStrategy.new
       @executor = AsyncExecutor.new
       @setup = false
@@ -91,15 +95,30 @@ module Sourced
 
     # Configure the backend for the app.
     # Defaults to in-memory TestBackend
+    # Also auto-sets pubsub when backend is a PG database.
     # @param bnd [BackendInterface]
     def backend=(bnd)
       @backend = case bnd.class.name
-      when 'Sequel::Postgres::Database', 'Sequel::SQLite::Database'
+      when 'Sequel::Postgres::Database'
+        require 'sourced/backends/sequel_backend'
+        require 'sourced/pubsub/pg'
+        @pubsub = PubSub::PG.new(db: bnd, logger: @logger)
+        Sourced::Backends::SequelBackend.new(bnd)
+      when 'Sequel::SQLite::Database'
         require 'sourced/backends/sequel_backend'
         Sourced::Backends::SequelBackend.new(bnd)
       else
         BackendInterface.parse(bnd)
       end
+    end
+
+    # Configure the pubsub implementation for the app.
+    # Defaults to in-memory PubSub::Test.
+    # Automatically set when backend is a PG database.
+    # Can be overridden with any object implementing `subscribe` and `publish`.
+    # @param ps [#subscribe, #publish]
+    def pubsub=(ps)
+      @pubsub = PubSubInterface.parse(ps)
     end
 
     # Configure the executor for the app.

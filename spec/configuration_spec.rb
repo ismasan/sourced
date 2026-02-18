@@ -63,6 +63,32 @@ RSpec.describe Sourced::Configuration do
     end
   end
 
+  describe '#pubsub' do
+    it 'defaults to PubSub::Test' do
+      expect(config.pubsub).to be_a(Sourced::PubSub::Test)
+    end
+
+    it 'auto-sets PubSub::PG when backend is a Postgres database' do
+      config.backend = Sequel.postgres('sourced_test')
+      expect(config.pubsub).to be_a(Sourced::PubSub::PG)
+    end
+
+    it 'keeps current pubsub when backend is SQLite' do
+      config.backend = Sequel.sqlite
+      expect(config.pubsub).to be_a(Sourced::PubSub::Test)
+    end
+
+    it 'can be overridden with pubsub=' do
+      custom = Struct.new(:subscribe, :publish).new
+      config.pubsub = custom
+      expect(config.pubsub).to eq(custom)
+    end
+
+    it 'fails loudly if the pubsub does not implement the PubSub interface' do
+      expect { config.pubsub = Object.new }.to raise_error(Plumb::ParseError)
+    end
+  end
+
   specify '#executor' do
     expect(config.executor).to be_a(Sourced::AsyncExecutor)
   end

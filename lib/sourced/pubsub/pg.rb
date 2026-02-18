@@ -5,7 +5,7 @@ require 'thread'
 require 'json'
 
 module Sourced
-  module Backends
+  module PubSub
     # a PubSub implementation using Postgres' LISTEN/NOTIFY
     #
     # This class provides a publish-subscribe mechanism using Postgres LISTEN/NOTIFY,
@@ -14,13 +14,13 @@ module Sourced
     # Relies on Sourced's configured Executor to use Threads or Fibers for concurrency
     #
     # @example Publishing a message
-    #   backend = Sourced.config.backend
+    #   pubsub = Sourced.config.pubsub
     #   event = MyEvent.new(stream_id: '111', payload: 'hello')
-    #   backend.pub_sub.publish('my_channel', event)
+    #   pubsub.publish('my_channel', event)
     #
     # @example Subscribing to messages
-    #   backend = Sourced.config.backend
-    #   channel = backend.pub_sub.subscribe('my_channel')
+    #   pubsub = Sourced.config.pubsub
+    #   channel = pubsub.subscribe('my_channel')
     #   channel.start do |event, ch|
     #     case event
     #     when MyEvent
@@ -31,16 +31,16 @@ module Sourced
     # @example Multiple subscribers to the same channel
     #   # Both threads listen to the same channel but receive all messages
     #   Thread.new do
-    #     ch1 = backend.pub_sub.subscribe('events')
+    #     ch1 = pubsub.subscribe('events')
     #     ch1.start { |event| puts "Subscriber 1: #{event}" }
     #   end
     #
     #   Thread.new do
-    #     ch2 = backend.pub_sub.subscribe('events')
+    #     ch2 = pubsub.subscribe('events')
     #     ch2.start { |event| puts "Subscriber 2: #{event}" }
     #   end
     #
-    class PGPubSub
+    class PG
       # Listener holds a single DB connection per channel name/process
       # Channel instances with the same name instantiated in different threads/fibers but the same process
       # share a Listener instance
