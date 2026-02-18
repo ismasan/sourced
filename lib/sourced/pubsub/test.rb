@@ -8,7 +8,7 @@ module Sourced
     class Test
       def initialize
         @mutex = Mutex.new
-        @subscribers = Hash.new { |h, k| h[k] = [] }
+        @subscribers = {}
       end
 
       # @param channel_name [String]
@@ -16,7 +16,7 @@ module Sourced
       def subscribe(channel_name)
         channel = Channel.new(name: channel_name, pubsub: self)
         @mutex.synchronize do
-          @subscribers[channel_name] << channel
+          @subscribers[channel_name] = (@subscribers[channel_name] || []) + [channel]
         end
         channel
       end
@@ -25,7 +25,8 @@ module Sourced
       # @param channel [Channel]
       def unsubscribe(channel)
         @mutex.synchronize do
-          @subscribers[channel.name]&.delete(channel)
+          arr = @subscribers[channel.name]
+          @subscribers[channel.name] = arr - [channel] if arr
         end
       end
 
@@ -33,7 +34,9 @@ module Sourced
       # @param event [Sourced::Message]
       # @return [self]
       def publish(channel_name, event)
-        channels = @mutex.synchronize { @subscribers[channel_name].dup }
+        channels = @subscribers[channel_name]
+        return self unless channels
+
         channels.each { |ch| ch << event }
         self
       end

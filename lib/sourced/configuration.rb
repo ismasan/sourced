@@ -100,13 +100,13 @@ module Sourced
     def backend=(bnd)
       @backend = case bnd.class.name
       when 'Sequel::Postgres::Database'
-        require 'sourced/backends/sequel_backend'
+        require 'sourced/backends/pg_backend'
         require 'sourced/pubsub/pg'
         @pubsub = PubSub::PG.new(db: bnd, logger: @logger)
-        Sourced::Backends::SequelBackend.new(bnd)
+        Sourced::Backends::PGBackend.new(bnd)
       when 'Sequel::SQLite::Database'
-        require 'sourced/backends/sequel_backend'
-        Sourced::Backends::SequelBackend.new(bnd)
+        require 'sourced/backends/sqlite_backend'
+        Sourced::Backends::SQLiteBackend.new(bnd)
       else
         BackendInterface.parse(bnd)
       end

@@ -8,7 +8,7 @@ module Sourced
   module Backends
     class SequelBackend
       class Installer
-        def initialize(db, logger:, schema: nil, prefix: 'sourced')
+        def initialize(db, logger:, schema: nil, prefix: 'sourced', migration_template: '001_create_sourced_tables.rb.erb')
           raise ArgumentError, "invalid prefix: #{prefix}" unless prefix.match?(/\A[a-zA-Z_]\w*\z/)
           raise ArgumentError, "invalid schema: #{schema}" if schema && !schema.match?(/\A[a-zA-Z_]\w*\z/)
 
@@ -16,6 +16,7 @@ module Sourced
           @logger = logger
           @schema = schema
           @prefix = prefix
+          @migration_template = migration_template
         end
 
         # Eval the rendered migration and apply :up directly.
@@ -62,7 +63,7 @@ module Sourced
 
         def rendered_migration
           @rendered_migration ||= begin
-            template_path = File.join(__dir__, 'migrations', '001_create_sourced_tables.rb.erb')
+            template_path = File.join(__dir__, 'migrations', @migration_template)
             ERB.new(File.read(template_path)).result(binding)
           end
         end

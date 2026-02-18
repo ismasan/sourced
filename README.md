@@ -1141,6 +1141,10 @@ end
 
 ## Setup
 
+Sourced uses the Sequel gem for database access. It supports **PostgreSQL** (recommended for production) and **SQLite** (useful for development, scripts, and single-process apps).
+
+### PostgreSQL
+
 You'll need the `pg` and `sequel` gems.
 
 ```ruby
@@ -1149,10 +1153,7 @@ gem 'pg'
 gem 'sequel'
 ```
 
-Create a Postgres database.
-For now Sourced uses the Sequel gem. In future there'll be an ActiveRecord adapter with migrations support.
-
-Configure and migrate the database.
+Create a Postgres database and configure the backend.
 
 ```ruby
 Sourced.configure do |config|
@@ -1170,7 +1171,43 @@ end
 Sourced.config.backend.install unless Sourced.config.backend.installed?
 ```
 
+Passing a `Sequel::Postgres::Database` connection auto-selects `PGBackend`, which supports PG-specific features: `LISTEN/NOTIFY` for real-time worker dispatch, advisory locks, and `FOR UPDATE SKIP LOCKED` for concurrent stream processing.
+
 These options are used by both `Sourced::Supervisor` and the Falcon integration. When running workers alongside a web server (Falcon, or any other Async-compatible server), these control how many worker and housekeeper fibers are spawned per OS process. The `worker_batch_size` controls how many messages from the same stream are fetched and processed in a single lock cycle (see [Batch processing](#batch-processing)).
+
+### SQLite
+
+You'll need the `sqlite3` and `sequel` gems.
+
+```ruby
+gem 'sourced', github: 'ismasan/sourced'
+gem 'sqlite3'
+gem 'sequel'
+```
+
+Configure with a Sequel SQLite connection.
+
+```ruby
+Sourced.configure do |config|
+  # File-based database
+  config.backend = Sequel.sqlite('myapp.db')
+
+  # Or in-memory (useful for scripts and tests)
+  # config.backend = Sequel.sqlite
+end
+
+Sourced.config.backend.install unless Sourced.config.backend.installed?
+```
+
+Passing a `Sequel::SQLite::Database` connection auto-selects `SQLiteBackend`. The SQLite backend sets up WAL mode and busy timeouts automatically.
+
+**Differences from PostgreSQL:**
+
+- **In-process pub/sub**: Uses an in-memory, thread/fiber-safe pub/sub (`PubSub::Test`) instead of PG `LISTEN/NOTIFY`. Worker dispatch is synchronous (the `InlineNotifier` pushes work to the `WorkQueue` inline when messages are appended), with the `CatchUpPoller` as a safety net.
+- No advisory locks or `SKIP LOCKED` — concurrency is handled via SQLite's transaction-level write locks.
+- Best suited for single-process deployments, development, scripts, and tests.
+
+See `examples/lite_cart.rb` for a complete working example.
 
 ### Generating Sequel migrations
 
