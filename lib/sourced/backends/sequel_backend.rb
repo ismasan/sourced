@@ -761,10 +761,9 @@ module Sourced
 
       protected
 
-      # Override in subclasses to configure pubsub and notifier.
-      # Default: PGPubSub + auto-detected notifier (PGNotifier for PG, InlineNotifier otherwise).
+      # Override in subclasses to configure the notifier.
+      # Default: PGNotifier for PG, InlineNotifier otherwise.
       def setup_adapter
-        @pubsub = PGPubSub.new(db: @db, logger: @logger)
         @notifier = @db.adapter_scheme == :postgres ? PGNotifier.new(db: @db) : InlineNotifier.new
       end
 

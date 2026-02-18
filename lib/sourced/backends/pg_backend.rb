@@ -14,7 +14,6 @@ module Sourced
       protected
 
       def setup_adapter
-        @pubsub = PGPubSub.new(db: @db, logger: @logger)
         @notifier = PGNotifier.new(db: @db)
       end
     end

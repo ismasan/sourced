@@ -99,23 +99,6 @@ module BackendExamples
         end
       end
 
-      it 'blocks concurrent workers from selecting the same messages' do
-        skip 'PG-only: requires SKIP LOCKED' unless backend.pubsub
-
-        now = Time.now - 10
-        cmd1 = Tests::DoSomething.parse(stream_id: 'as1', payload: { account_id: 1 })
-        cmd2 = Tests::DoSomething.parse(stream_id: 'as1', payload: { account_id: 1 })
-        backend.schedule_messages([cmd1, cmd2], at: now)
-        Sourced.config.executor.start do |t|
-          2.times.each do
-            t.spawn do
-              backend.update_schedule!
-            end
-          end
-        end
-
-        expect(backend.read_stream('as1').map(&:id)).to eq([cmd1, cmd2].map(&:id))
-      end
     end
 
     describe '#append_next_to_stream' do
@@ -1065,20 +1048,6 @@ module BackendExamples
         expect(backend.stats.groups.size).to eq(0)
       end
 
-      it 'raises exception if concurrently processed by the same group' do
-        skip 'PG-only: requires advisory locks' unless backend.pubsub
-
-        expect do
-          Sourced.config.executor.start do |t|
-            t.spawn do
-              backend.ack_on(reactor.consumer_info.group_id, evt1.id) { sleep 0.01 }
-            end
-            t.spawn do
-              backend.ack_on(reactor.consumer_info.group_id, evt2.id) { true }
-            end
-          end
-        end.to raise_error(Sourced::ConcurrentAckError)
-      end
     end
 
     describe '#read_correlation_batch' do

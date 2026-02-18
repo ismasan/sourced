@@ -170,7 +170,6 @@ module Sourced
       protected
 
       def setup_adapter
-        @pubsub = nil
         @notifier = InlineNotifier.new
         @db.run('PRAGMA foreign_keys = ON')
         @db.run('PRAGMA journal_mode = WAL')

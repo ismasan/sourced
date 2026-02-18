@@ -25,6 +25,43 @@ RSpec.describe 'Sourced::Backends::PGBackend', type: :backend do
 
   it_behaves_like 'a backend'
 
+  describe '#update_schedule!' do
+    it 'blocks concurrent workers from selecting the same messages' do
+      now = Time.now - 10
+      cmd1 = BackendExamples::Tests::DoSomething.parse(stream_id: 'as1', payload: { account_id: 1 })
+      cmd2 = BackendExamples::Tests::DoSomething.parse(stream_id: 'as1', payload: { account_id: 1 })
+      backend.schedule_messages([cmd1, cmd2], at: now)
+      Sourced.config.executor.start do |t|
+        2.times.each do
+          t.spawn do
+            backend.update_schedule!
+          end
+        end
+      end
+
+      expect(backend.read_stream('as1').map(&:id)).to eq([cmd1, cmd2].map(&:id))
+    end
+  end
+
+  describe '#ack_on' do
+    it 'raises exception if concurrently processed by the same group' do
+      evt1 = BackendExamples::Tests::SomethingHappened1.parse(stream_id: 's1', seq: 1, payload: { account_id: 1 })
+      evt2 = BackendExamples::Tests::SomethingHappened1.parse(stream_id: 's1', seq: 2, payload: { account_id: 1 })
+      backend.append_to_stream('s1', [evt1, evt2])
+
+      expect do
+        Sourced.config.executor.start do |t|
+          t.spawn do
+            backend.ack_on('group1', evt1.id) { sleep 0.01 }
+          end
+          t.spawn do
+            backend.ack_on('group1', evt2.id) { true }
+          end
+        end
+      end.to raise_error(Sourced::ConcurrentAckError)
+    end
+  end
+
   describe 'worker heartbeats and stale claim reaping' do
     it 'records heartbeats and releases stale claims' do
       # Prepare a consumer group and a stream with one event
