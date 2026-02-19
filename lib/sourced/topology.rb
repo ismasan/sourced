@@ -364,7 +364,7 @@ module Sourced
           end
 
           def visit_call_node(node)
-            if node.location.start_line == @target_line && node.block
+            if node.block && (node.location.start_line == @target_line || node.block.location.start_line == @target_line)
               @found_block = node.block
             end
             super

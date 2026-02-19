@@ -197,6 +197,26 @@ module UnitTest
     end
   end
 
+  # For testing multi-line command definitions with symbol event names
+  class MultiLineCommandActor < Sourced::Actor
+    state do |id|
+      { id: id }
+    end
+
+    command(
+      :process_item,
+      list_id: String,
+      item_id: String,
+      text: String
+    ) do |_, cmd|
+      event :item_processed, list_id: cmd.payload.list_id, item_id: cmd.payload.item_id
+    end
+
+    event :item_processed, list_id: String, item_id: String do |state, event|
+      state[:item_id] = event.payload.item_id
+    end
+  end
+
   # For testing sync actions
   SyncLog = []
 

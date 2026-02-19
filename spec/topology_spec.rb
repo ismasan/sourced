@@ -248,6 +248,16 @@ RSpec.describe Sourced::Topology do
     end
   end
 
+  context 'with MultiLineCommandActor (multi-line command with symbol events)' do
+    let(:reactors) { [UnitTest::MultiLineCommandActor] }
+
+    it 'extracts produced events from multi-line command definitions' do
+      node = find_node('unit_test.multi_line_command_actor.process_item')
+      expect(node).not_to be_nil
+      expect(node.produces).to eq(['unit_test.multi_line_command_actor.item_processed'])
+    end
+  end
+
   context 'with LoopingActor (self-referencing)' do
     let(:reactors) { [UnitTest::LoopingActor] }
 
