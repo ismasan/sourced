@@ -163,6 +163,40 @@ module UnitTest
     end
   end
 
+  # For testing bracket-accessor dispatch syntax: Reactor[:command_name]
+  # Uses inline command definitions so that Reactor[] can resolve them.
+  class InlineNotifierActor < Sourced::Actor
+    state do |id|
+      { id: id, notified: false }
+    end
+
+    command :notify_inline, name: String do |state, cmd|
+      event :inline_notified, name: cmd.payload.name
+    end
+
+    event :inline_notified, name: String do |state, event|
+      state[:notified] = true
+    end
+  end
+
+  class BracketDispatchActor < Sourced::Actor
+    state do |id|
+      { id: id }
+    end
+
+    command CreateThing do |state, cmd|
+      event ThingCreated, name: cmd.payload.name
+    end
+
+    event ThingCreated do |state, event|
+      state[:name] = event.payload.name
+    end
+
+    reaction ThingCreated do |state, event|
+      dispatch(InlineNotifierActor[:notify_inline], name: state[:name])
+    end
+  end
+
   # For testing sync actions
   SyncLog = []
 

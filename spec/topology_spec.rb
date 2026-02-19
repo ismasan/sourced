@@ -238,6 +238,16 @@ RSpec.describe Sourced::Topology do
     end
   end
 
+  context 'with BracketDispatchActor (Reactor[:command] syntax)' do
+    let(:reactors) { [UnitTest::BracketDispatchActor, UnitTest::InlineNotifierActor] }
+
+    it 'detects dispatched commands via bracket accessor syntax' do
+      node = find_node('unittest.thing_created-UnitTest::BracketDispatchActor-aut')
+      expect(node).not_to be_nil
+      expect(node.produces).to eq(['unit_test.inline_notifier_actor.notify_inline'])
+    end
+  end
+
   context 'with LoopingActor (self-referencing)' do
     let(:reactors) { [UnitTest::LoopingActor] }
 

@@ -180,6 +180,8 @@ module Sourced
         resolve_const_ref(ref_value, reactor)
       when :const_path
         resolve_const_path_ref(ref_value)
+      when :const_index
+        resolve_const_index_ref(ref_value, reactor)
       end
     end
 
@@ -210,6 +212,23 @@ module Sourced
       klass = Object.const_get(path)
       klass.type
     rescue NameError
+      nil
+    end
+
+    # Resolve Reactor[:symbol] bracket-accessor references.
+    # @param ref [Hash] with :receiver (const name string) and :index (symbol name string)
+    # @param reactor [Class] reactor class for namespace resolution
+    def self.resolve_const_index_ref(ref, reactor)
+      receiver_name = ref[:receiver]
+      klass = if receiver_name.include?('::')
+                Object.const_get(receiver_name)
+              else
+                resolve_constant_in_context(receiver_name, reactor)
+              end
+      return nil unless klass && klass.respond_to?(:[])
+
+      klass[ref[:index].to_sym].type
+    rescue StandardError
       nil
     end
 
@@ -264,6 +283,7 @@ module Sourced
 
     private_class_method :resolve_refs, :resolve_ref, :resolve_symbol_ref,
                          :resolve_const_ref, :resolve_const_path_ref,
+                         :resolve_const_index_ref,
                          :resolve_constant_in_context, :find_event_class,
                          :extract_schema
 
@@ -393,8 +413,31 @@ module Sourced
                     [:const, arg.name.to_s]
                   when Prism::ConstantPathNode
                     [:const_path, constant_path_to_string(arg)]
+                  when Prism::CallNode
+                    extract_const_index(arg)
                   end
             @refs << ref if ref
+          end
+
+          # Extract Reactor[:symbol] bracket-accessor pattern.
+          # Returns [:const_index, { receiver: "Reactor", index: "symbol" }] or nil.
+          def extract_const_index(call_node)
+            return unless call_node.name == :[]
+            return unless call_node.arguments&.arguments&.size == 1
+
+            sym_arg = call_node.arguments.arguments.first
+            return unless sym_arg.is_a?(Prism::SymbolNode)
+
+            receiver = call_node.receiver
+            receiver_name = case receiver
+                            when Prism::ConstantReadNode
+                              receiver.name.to_s
+                            when Prism::ConstantPathNode
+                              constant_path_to_string(receiver)
+                            end
+            return unless receiver_name
+
+            [:const_index, { receiver: receiver_name, index: sym_arg.unescaped }]
           end
 
           def constant_path_to_string(node)
