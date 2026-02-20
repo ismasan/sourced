@@ -5,6 +5,7 @@ require 'sourced/types'
 module Sourced
   module CCC
     QueryCondition = Data.define(:message_type, :key_name, :key_value)
+    ConsistencyGuard = Data.define(:conditions, :last_position)
 
     class Message < Types::Data
       attribute :id, Types::AutoUUID

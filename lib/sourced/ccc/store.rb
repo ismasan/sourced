@@ -69,14 +69,22 @@ module Sourced
       end
 
       # Append messages to the store. Extracts keys and indexes them.
+      # When a ConsistencyGuard is provided via `guard:`, checks for conflicts
+      # before inserting. Raises Sourced::ConcurrentAppendError if conflicting
+      # messages have been appended since the guard's position.
       # Returns the last assigned position.
-      def append(messages)
+      def append(messages, guard: nil)
         messages = Array(messages)
         return latest_position if messages.empty?
 
         last_position = nil
 
         db.transaction do
+          if guard
+            conflicts = check_conflicts(guard.conditions, guard.last_position)
+            raise Sourced::ConcurrentAppendError, "Conflicting messages found after position #{guard.last_position}" if conflicts.any?
+          end
+
           messages.each do |msg|
             payload_json = msg.payload ? JSON.dump(msg.payload.to_h) : '{}'
             metadata_json = msg.metadata.empty? ? nil : JSON.dump(msg.metadata)
@@ -112,8 +120,41 @@ module Sourced
       # Conditions are OR'd together.
       def read(conditions, from_position: nil, limit: nil)
         conditions = Array(conditions)
-        return [] if conditions.empty?
+        if conditions.empty?
+          guard = ConsistencyGuard.new(conditions: conditions, last_position: from_position || latest_position)
+          return [[], guard]
+        end
 
+        messages = query_messages(conditions, from_position: from_position, limit: limit)
+        last_pos = messages.any? ? messages.last.position : (from_position || latest_position)
+        guard = ConsistencyGuard.new(conditions: conditions, last_position: last_pos)
+        [messages, guard]
+      end
+
+      # Conflict detection: returns messages matching conditions that appeared
+      # after the given position. Empty array means no conflicts.
+      # Returns [messages, guard] like #read.
+      def messages_since(conditions, position)
+        read(conditions, from_position: position)
+      end
+
+      # Current max position, or 0 if the store is empty.
+      def latest_position
+        db[:ccc_messages].max(:position) || 0
+      end
+
+      # Clear all tables. For testing only.
+      def clear!
+        db[:ccc_message_key_pairs].delete
+        db[:ccc_key_pairs].delete
+        db[:ccc_messages].delete
+        db.run('DELETE FROM sqlite_sequence') if db.table_exists?(:sqlite_sequence)
+      end
+
+      private
+
+      # Core query logic shared by #read and #check_conflicts.
+      def query_messages(conditions, from_position: nil, limit: nil)
         # Step 1: resolve key_pair IDs
         key_lookups = conditions.map { |c| [c.key_name, c.key_value] }.uniq
         or_clauses = key_lookups.map { |n, v| "(name = #{db.literal(n)} AND value = #{db.literal(v)})" }
@@ -146,26 +187,12 @@ module Sourced
         db.fetch(sql).map { |row| deserialize(row) }
       end
 
-      # Conflict detection: returns messages matching conditions that appeared
-      # after the given position. Empty array means no conflicts.
-      def messages_since(conditions, position)
-        read(conditions, from_position: position)
-      end
+      # Check for conflicting messages after a given position.
+      def check_conflicts(conditions, after_position)
+        return [] if conditions.empty?
 
-      # Current max position, or 0 if the store is empty.
-      def latest_position
-        db[:ccc_messages].max(:position) || 0
+        query_messages(conditions, from_position: after_position)
       end
-
-      # Clear all tables. For testing only.
-      def clear!
-        db[:ccc_message_key_pairs].delete
-        db[:ccc_key_pairs].delete
-        db[:ccc_messages].delete
-        db.run('DELETE FROM sqlite_sequence') if db.table_exists?(:sqlite_sequence)
-      end
-
-      private
 
       def deserialize(row)
         payload = JSON.parse(row[:payload], symbolize_names: true)
