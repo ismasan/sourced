@@ -136,3 +136,35 @@ end
 - Default error strategy logs exceptions and stops consumer groups
 - Configurable retry/backoff strategies available
 - Consumer groups can be stopped/started programmatically via backend API
+
+## CCC Module — Stream-less Event Sourcing (Experimental)
+
+`Sourced::CCC` is a prototype for aggregateless, stream-less event sourcing inspired by "Context-driven Consistency Checks". Events go into a flat, globally-ordered log. Consistency context is assembled dynamically by querying relevant facts via normalized key-value pairs extracted from event payloads.
+
+### Files
+- `lib/sourced/ccc.rb` — module entrypoint
+- `lib/sourced/ccc/message.rb` — `CCC::Message` base class, `QueryCondition`
+- `lib/sourced/ccc/store.rb` — `CCC::Store` (SQLite), `PositionedMessage` wrapper
+- `spec/sourced/ccc/` — specs (40 examples)
+
+### CCC::Message
+- Extends `Types::Data` like `Sourced::Message`, but without `stream_id`, `seq`, `causation_id`, `correlation_id`
+- Own `Registry`, separate from `Sourced::Message.registry`
+- `.define(type_str, &block)` — creates subclass with typed payload (same DSL as `Sourced::Message`)
+- `.from(hash)` — instantiate correct subclass from type string
+- `#extracted_keys` — auto-extracts `[[name, value], ...]` from all top-level payload attributes (skips nils)
+
+### CCC::Store
+- Accepts a `Sequel::SQLite::Database` connection
+- 3 tables: `ccc_messages` (append-only log with auto-increment position), `ccc_key_pairs` (deduplicated name/value pairs), `ccc_message_key_pairs` (join table)
+- `append(messages)` — writes messages + auto-indexes all payload keys, returns last position
+- `read(conditions, from_position:, limit:)` — queries by `QueryCondition` array (message_type + key_name + key_value), OR semantics
+- `messages_since(conditions, position)` — conflict detection (messages matching conditions after position)
+- `PositionedMessage` — `SimpleDelegator` wrapper adding `#position` to frozen `Types::Data` instances
+
+### CCC::QueryCondition
+- `Data.define(:message_type, :key_name, :key_value)` — used to query the store
+
+### Design Reference
+- Article: `plans/ccc/ccc.md`
+- TypeScript reference: [Boundless SQLite storage](https://github.com/SBortz/boundless)
