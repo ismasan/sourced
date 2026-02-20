@@ -79,6 +79,32 @@ module Sourced
         super(attrs)
       end
 
+      # Returns the payload attribute names for this message class.
+      def self.payload_attribute_names
+        return [] unless const_defined?(:Payload)
+
+        self::Payload._schema.to_h.keys.map(&:to_sym)
+      end
+
+      # Build QueryConditions for the intersection of this message's attributes
+      # and the given key-value pairs.
+      # Example:
+      #   CourseCreated.to_conditions(course_name: 'Algebra', user_id: 'joe')
+      #   # => [QueryCondition('course.created', 'course_name', 'Algebra')]
+      #   # user_id is ignored because CourseCreated doesn't have it
+      def self.to_conditions(**attrs)
+        supported = payload_attribute_names
+        attrs.filter_map do |key, value|
+          next unless supported.include?(key)
+
+          QueryCondition.new(
+            message_type: type,
+            key_name: key.to_s,
+            key_value: value.to_s
+          )
+        end
+      end
+
       # Auto-extract key-value pairs from all top-level payload attributes.
       # Skips nil values. Returns array of [name, value] pairs.
       def extracted_keys

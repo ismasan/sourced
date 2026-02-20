@@ -122,6 +122,38 @@ RSpec.describe Sourced::CCC::Message do
     end
   end
 
+  describe '.payload_attribute_names' do
+    it 'returns attribute names for a defined message class' do
+      expect(CCCTestMessages::DeviceRegistered.payload_attribute_names).to eq([:device_id, :name])
+    end
+
+    it 'returns empty array for a bare message class' do
+      bare = Sourced::CCC::Message.define('test.payload_attrs.bare')
+      expect(bare.payload_attribute_names).to eq([])
+    end
+  end
+
+  describe '.to_conditions' do
+    it 'returns conditions only for attributes the message class has' do
+      conditions = CCCTestMessages::DeviceRegistered.to_conditions(device_id: 'dev-1', asset_id: 'asset-1')
+      expect(conditions.size).to eq(1)
+      expect(conditions.first.message_type).to eq('device.registered')
+      expect(conditions.first.key_name).to eq('device_id')
+      expect(conditions.first.key_value).to eq('dev-1')
+    end
+
+    it 'returns conditions for all matching attributes' do
+      conditions = CCCTestMessages::DeviceRegistered.to_conditions(device_id: 'dev-1', name: 'Sensor A')
+      expect(conditions.size).to eq(2)
+      expect(conditions.map(&:key_name).sort).to eq(['device_id', 'name'])
+    end
+
+    it 'returns empty array when no attributes match' do
+      conditions = CCCTestMessages::DeviceRegistered.to_conditions(course_name: 'Algebra')
+      expect(conditions).to eq([])
+    end
+  end
+
   describe Sourced::CCC::QueryCondition do
     it 'is a Data struct with message_type, key_name, key_value' do
       cond = Sourced::CCC::QueryCondition.new(
