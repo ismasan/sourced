@@ -8,6 +8,8 @@ module Sourced
     ConsistencyGuard = Data.define(:conditions, :last_position)
 
     class Message < Types::Data
+      EMPTY_ARRAY = [].freeze
+
       attribute :id, Types::AutoUUID
       attribute :type, Types::String.present
       attribute :created_at, Types::Forms::Time.default { Time.now }
@@ -61,8 +63,11 @@ module Sourced
 
           attribute :type, Types::Static[type_str]
           if block_given?
-            const_set(:Payload, Class.new(Payload, &payload_block))
-            attribute :payload, self::Payload
+            payload_class = Class.new(Payload, &payload_block)
+            const_set(:Payload, payload_class)
+            attribute :payload, payload_class
+            names = payload_class._schema.to_h.keys.map(&:to_sym).freeze
+            define_singleton_method(:payload_attribute_names) { names }
           end
         end
       end
@@ -80,11 +85,8 @@ module Sourced
       end
 
       # Returns the payload attribute names for this message class.
-      def self.payload_attribute_names
-        return [] unless const_defined?(:Payload)
-
-        self::Payload._schema.to_h.keys.map(&:to_sym)
-      end
+      # Subclasses created via .define override this with a cached frozen array.
+      def self.payload_attribute_names = EMPTY_ARRAY
 
       # Build QueryConditions for the intersection of this message's attributes
       # and the given key-value pairs.
