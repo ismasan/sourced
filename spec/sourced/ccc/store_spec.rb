@@ -572,6 +572,7 @@ RSpec.describe Sourced::CCC::Store do
       expect(result[:messages].size).to eq(1)
       expect(result[:messages].first).to be_a(CCCStoreTestMessages::DeviceRegistered)
       expect(result[:messages].first.position).to eq(1)
+      expect(result[:guard]).to be_a(Sourced::CCC::ConsistencyGuard)
     end
 
     it 'returns multiple pending messages for same partition' do
@@ -672,6 +673,57 @@ RSpec.describe Sourced::CCC::Store do
       r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       expect(r2).not_to be_nil
       expect(r2[:partition_value]).to eq({ 'device_id' => 'dev-3' })
+    end
+
+    it 'returns a guard with conditions for each handled_type × partition key_pair' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      guard = result[:guard]
+
+      expect(guard).to be_a(Sourced::CCC::ConsistencyGuard)
+      expect(guard.last_position).to eq(result[:messages].last.position)
+
+      # 1 key_pair (device_id=dev-1) × 1 handled_type = 1 condition
+      expect(guard.conditions.size).to eq(1)
+      cond = guard.conditions.first
+      expect(cond.message_type).to eq('store_test.device.registered')
+      expect(cond.key_name).to eq('device_id')
+      expect(cond.key_value).to eq('dev-1')
+    end
+
+    it 'guard can be used for optimistic concurrency on append' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+
+      # No concurrent writes — append with guard succeeds
+      new_event = CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
+      expect { store.append(new_event, guard: result[:guard]) }.not_to raise_error
+
+      store.ack(group_id, offset_id: result[:offset_id], position: result[:messages].last.position)
+    end
+
+    it 'guard detects concurrent conflicting writes' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+
+      # Simulate concurrent write after claim
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Concurrent' })
+      )
+
+      new_event = CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
+      expect {
+        store.append(new_event, guard: result[:guard])
+      }.to raise_error(Sourced::ConcurrentAppendError)
     end
   end
 
@@ -785,6 +837,48 @@ RSpec.describe Sourced::CCC::Store do
       # Whichever partition we get, the other course's join should be excluded
       courses = result[:messages].map { |m| m.payload.course_name }
       expect(courses.uniq.size).to eq(1)
+    end
+
+    it 'returns guard with conditions for each handled_type × partition key_pair' do
+      store.append([
+        CCCStoreTestMessages::CourseCreated.new(payload: { course_name: 'Algebra' }),
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
+      ])
+
+      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      guard = result[:guard]
+
+      expect(guard.last_position).to eq(result[:messages].last.position)
+
+      # 2 key_pairs × 4 handled_types = 8 conditions
+      expect(guard.conditions.size).to eq(8)
+
+      # Check that conditions cover both key_pairs
+      key_names = guard.conditions.map(&:key_name).uniq.sort
+      expect(key_names).to eq(['course_name', 'user_id'])
+
+      # Check that conditions cover all handled_types
+      types = guard.conditions.map(&:message_type).uniq.sort
+      expect(types).to eq(handled_types.sort)
+    end
+
+    it 'guard detects concurrent writes in composite partition' do
+      store.append([
+        CCCStoreTestMessages::CourseCreated.new(payload: { course_name: 'Algebra' }),
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
+      ])
+
+      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+
+      # Concurrent write: course closed while decider was processing
+      store.append(
+        CCCStoreTestMessages::CourseClosed.new(payload: { course_name: 'Algebra' })
+      )
+
+      new_event = CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
+      expect {
+        store.append(new_event, guard: result[:guard])
+      }.to raise_error(Sourced::ConcurrentAppendError)
     end
   end
 
