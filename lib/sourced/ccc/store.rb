@@ -235,19 +235,21 @@ module Sourced
           return nil
         end
 
-        # Build partition_value hash and guard conditions from key_pairs
+        # Build partition_value hash from key_pairs
         partition_value = {}
-        guard_conditions = []
         db[:ccc_key_pairs].where(id: key_pair_ids).each do |kp|
           partition_value[kp[:name]] = kp[:value]
-          handled_types.each do |type|
-            guard_conditions << QueryCondition.new(
-              message_type: type,
-              key_name: kp[:name],
-              key_value: kp[:value]
-            )
-          end
         end
+
+        # Build guard conditions from handled_types.
+        # Each class's to_conditions only generates conditions for attributes it actually has.
+        # We use handled_types (not just fetched messages) so the guard also covers
+        # message types that haven't appeared yet but would be conflicts.
+        partition_attrs = partition_value.transform_keys(&:to_sym)
+        guard_conditions = handled_types.filter_map do |type|
+          klass = Message.registry[type]
+          klass&.to_conditions(**partition_attrs)
+        end.flatten
 
         last_pos = messages.last.position
         guard = ConsistencyGuard.new(conditions: guard_conditions, last_position: last_pos)

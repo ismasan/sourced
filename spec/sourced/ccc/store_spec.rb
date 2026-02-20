@@ -675,7 +675,7 @@ RSpec.describe Sourced::CCC::Store do
       expect(r2[:partition_value]).to eq({ 'device_id' => 'dev-3' })
     end
 
-    it 'returns a guard with conditions for each handled_type × partition key_pair' do
+    it 'returns a guard with conditions only for key_names each type actually has' do
       store.append(
         CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
@@ -839,7 +839,7 @@ RSpec.describe Sourced::CCC::Store do
       expect(courses.uniq.size).to eq(1)
     end
 
-    it 'returns guard with conditions for each handled_type × partition key_pair' do
+    it 'returns guard with conditions only for key_names each message type actually has' do
       store.append([
         CCCStoreTestMessages::CourseCreated.new(payload: { course_name: 'Algebra' }),
         CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
@@ -850,16 +850,28 @@ RSpec.describe Sourced::CCC::Store do
 
       expect(guard.last_position).to eq(result[:messages].last.position)
 
-      # 2 key_pairs × 4 handled_types = 8 conditions
-      expect(guard.conditions.size).to eq(8)
+      # Expected conditions (derived from message class definitions, not store data):
+      #   CourseCreated     has course_name only     → 1 condition
+      #   UserRegistered    has user_id (+ name, not a partition attr) → 1 condition
+      #   CourseClosed      has course_name only     → 1 condition
+      #   UserJoinedCourse  has course_name + user_id → 2 conditions
+      # Total: 5 conditions
+      expect(guard.conditions.size).to eq(5)
 
-      # Check that conditions cover both key_pairs
-      key_names = guard.conditions.map(&:key_name).uniq.sort
-      expect(key_names).to eq(['course_name', 'user_id'])
+      # CourseCreated should NOT have a user_id condition
+      course_created_conditions = guard.conditions.select { |c| c.message_type == 'store_test.course.created' }
+      expect(course_created_conditions.size).to eq(1)
+      expect(course_created_conditions.first.key_name).to eq('course_name')
 
-      # Check that conditions cover all handled_types
-      types = guard.conditions.map(&:message_type).uniq.sort
-      expect(types).to eq(handled_types.sort)
+      # UserRegistered should NOT have a course_name condition
+      user_registered_conditions = guard.conditions.select { |c| c.message_type == 'store_test.user.registered' }
+      expect(user_registered_conditions.size).to eq(1)
+      expect(user_registered_conditions.first.key_name).to eq('user_id')
+
+      # UserJoinedCourse has both
+      joined_conditions = guard.conditions.select { |c| c.message_type == 'store_test.user.joined_course' }
+      expect(joined_conditions.size).to eq(2)
+      expect(joined_conditions.map(&:key_name).sort).to eq(['course_name', 'user_id'])
     end
 
     it 'guard detects concurrent writes in composite partition' do
