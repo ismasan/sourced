@@ -121,6 +121,85 @@ RSpec.describe Sourced::CCC::Store do
     end
   end
 
+  describe '#append with guard (conditional append)' do
+    let(:cond) do
+      Sourced::CCC::QueryCondition.new(
+        message_type: 'store_test.device.registered',
+        key_name: 'device_id',
+        key_value: 'dev-1'
+      )
+    end
+
+    it 'succeeds when no conflicts exist' do
+      msg1 = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      store.append(msg1)
+
+      _events, guard = store.read([cond])
+
+      msg2 = CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
+      pos = store.append(msg2, guard: guard)
+      expect(pos).to eq(2)
+    end
+
+    it 'raises ConcurrentAppendError when conflicts exist' do
+      msg1 = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      store.append(msg1)
+
+      _events, guard = store.read([cond])
+
+      # Concurrent write by another process
+      conflicting = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A v2' })
+      store.append(conflicting)
+
+      new_msg = CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
+      expect {
+        store.append(new_msg, guard: guard)
+      }.to raise_error(Sourced::ConcurrentAppendError)
+    end
+
+    it 'is atomic — failed append does not change store state' do
+      msg1 = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      store.append(msg1)
+
+      _events, guard = store.read([cond])
+
+      # Concurrent write
+      conflicting = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A v2' })
+      store.append(conflicting)
+
+      position_before = store.latest_position
+      count_before = db[:ccc_messages].count
+
+      new_msg = CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
+      expect {
+        store.append(new_msg, guard: guard)
+      }.to raise_error(Sourced::ConcurrentAppendError)
+
+      expect(store.latest_position).to eq(position_before)
+      expect(db[:ccc_messages].count).to eq(count_before)
+    end
+
+    it 'works with a manually constructed guard' do
+      msg1 = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      store.append(msg1)
+
+      guard = Sourced::CCC::ConsistencyGuard.new(conditions: [cond], last_position: store.latest_position)
+
+      msg2 = CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
+      pos = store.append(msg2, guard: guard)
+      expect(pos).to eq(2)
+    end
+
+    it 'append without guard still works unconditionally' do
+      msg1 = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      store.append(msg1)
+
+      msg2 = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A v2' })
+      pos = store.append(msg2)
+      expect(pos).to eq(2)
+    end
+  end
+
   describe '#read' do
     before do
       store.append([
@@ -137,7 +216,7 @@ RSpec.describe Sourced::CCC::Store do
         key_name: 'device_id',
         key_value: 'dev-1'
       )
-      results = store.read([cond])
+      results, guard = store.read([cond])
       expect(results.size).to eq(1)
       expect(results.first.type).to eq('store_test.device.registered')
       expect(results.first.payload.device_id).to eq('dev-1')
@@ -149,7 +228,7 @@ RSpec.describe Sourced::CCC::Store do
         key_name: 'device_id',
         key_value: 'dev-1'
       )
-      results = store.read([cond])
+      results, _guard = store.read([cond])
       expect(results.first.position).to eq(1)
     end
 
@@ -166,7 +245,7 @@ RSpec.describe Sourced::CCC::Store do
           key_value: 'dev-1'
         )
       ]
-      results = store.read(conditions)
+      results, _guard = store.read(conditions)
       expect(results.size).to eq(2)
       expect(results.map(&:type)).to contain_exactly(
         'store_test.device.registered',
@@ -181,11 +260,11 @@ RSpec.describe Sourced::CCC::Store do
         key_value: 'dev-1'
       )
       # dev-1 registered is at position 1, so from_position: 1 should return nothing
-      results = store.read([cond], from_position: 1)
+      results, _guard = store.read([cond], from_position: 1)
       expect(results).to be_empty
 
       # from_position: 0 should return it
-      results = store.read([cond], from_position: 0)
+      results, _guard = store.read([cond], from_position: 0)
       expect(results.size).to eq(1)
     end
 
@@ -202,7 +281,7 @@ RSpec.describe Sourced::CCC::Store do
           key_value: 'dev-1'
         )
       ]
-      results = store.read(conditions, limit: 1)
+      results, _guard = store.read(conditions, limit: 1)
       expect(results.size).to eq(1)
       expect(results.first.position).to eq(1) # first by position order
     end
@@ -213,12 +292,13 @@ RSpec.describe Sourced::CCC::Store do
         key_name: 'device_id',
         key_value: 'nonexistent'
       )
-      results = store.read([cond])
+      results, _guard = store.read([cond])
       expect(results).to be_empty
     end
 
     it 'returns empty for empty conditions' do
-      expect(store.read([])).to be_empty
+      results, _guard = store.read([])
+      expect(results).to be_empty
     end
 
     it 'deserializes into correct message subclasses' do
@@ -227,11 +307,54 @@ RSpec.describe Sourced::CCC::Store do
         key_name: 'device_id',
         key_value: 'dev-1'
       )
-      results = store.read([cond])
+      results, _guard = store.read([cond])
       msg = results.first
       expect(msg).to be_a(CCCStoreTestMessages::DeviceRegistered)
       expect(msg.id).to match(/\A[0-9a-f-]{36}\z/)
       expect(msg.created_at).to be_a(Time)
+    end
+
+    it 'returns a ConsistencyGuard with correct conditions' do
+      cond = Sourced::CCC::QueryCondition.new(
+        message_type: 'store_test.device.registered',
+        key_name: 'device_id',
+        key_value: 'dev-1'
+      )
+      _results, guard = store.read([cond])
+      expect(guard).to be_a(Sourced::CCC::ConsistencyGuard)
+      expect(guard.conditions).to eq([cond])
+    end
+
+    it 'guard last_position reflects the last result position' do
+      cond = Sourced::CCC::QueryCondition.new(
+        message_type: 'store_test.device.registered',
+        key_name: 'device_id',
+        key_value: 'dev-2'
+      )
+      results, guard = store.read([cond])
+      # dev-2 is at position 4
+      expect(results.size).to eq(1)
+      expect(guard.last_position).to eq(4)
+    end
+
+    it 'guard last_position falls back to latest_position when no results' do
+      cond = Sourced::CCC::QueryCondition.new(
+        message_type: 'store_test.device.registered',
+        key_name: 'device_id',
+        key_value: 'nonexistent'
+      )
+      _results, guard = store.read([cond])
+      expect(guard.last_position).to eq(store.latest_position)
+    end
+
+    it 'guard last_position falls back to from_position when no results and from_position given' do
+      cond = Sourced::CCC::QueryCondition.new(
+        message_type: 'store_test.device.registered',
+        key_name: 'device_id',
+        key_value: 'nonexistent'
+      )
+      _results, guard = store.read([cond], from_position: 2)
+      expect(guard.last_position).to eq(2)
     end
   end
 
@@ -250,9 +373,10 @@ RSpec.describe Sourced::CCC::Store do
         key_value: 'dev-1'
       )
 
-      conflicts = store.messages_since([cond], pos)
+      conflicts, guard = store.messages_since([cond], pos)
       expect(conflicts.size).to eq(1)
       expect(conflicts.first.payload.name).to eq('Sensor A Updated')
+      expect(guard).to be_a(Sourced::CCC::ConsistencyGuard)
     end
 
     it 'returns empty when no new messages' do
@@ -266,7 +390,7 @@ RSpec.describe Sourced::CCC::Store do
         key_value: 'dev-1'
       )
 
-      conflicts = store.messages_since([cond], pos)
+      conflicts, _guard = store.messages_since([cond], pos)
       expect(conflicts).to be_empty
     end
   end
