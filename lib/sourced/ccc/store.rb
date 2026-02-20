@@ -20,6 +20,9 @@ module Sourced
     end
 
     class Store
+      ACTIVE = 'active'
+      STOPPED = 'stopped'
+
       attr_reader :db
 
       def initialize(db)
@@ -32,7 +35,10 @@ module Sourced
       def installed?
         db.table_exists?(:ccc_messages) &&
           db.table_exists?(:ccc_key_pairs) &&
-          db.table_exists?(:ccc_message_key_pairs)
+          db.table_exists?(:ccc_message_key_pairs) &&
+          db.table_exists?(:ccc_consumer_groups) &&
+          db.table_exists?(:ccc_offsets) &&
+          db.table_exists?(:ccc_offset_key_pairs)
       end
 
       def install!
@@ -66,6 +72,39 @@ module Sourced
           )
         SQL
         db.run('CREATE INDEX IF NOT EXISTS idx_ccc_mkp_key ON ccc_message_key_pairs(key_pair_id, message_position)')
+
+        db.run(<<~SQL)
+          CREATE TABLE IF NOT EXISTS ccc_consumer_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT '#{ACTIVE}',
+            error_context TEXT,
+            retry_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          )
+        SQL
+
+        db.run(<<~SQL)
+          CREATE TABLE IF NOT EXISTS ccc_offsets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            consumer_group_id INTEGER NOT NULL REFERENCES ccc_consumer_groups(id) ON DELETE CASCADE,
+            partition_key TEXT NOT NULL,
+            last_position INTEGER NOT NULL DEFAULT 0,
+            claimed INTEGER NOT NULL DEFAULT 0,
+            claimed_at TEXT,
+            claimed_by TEXT,
+            UNIQUE(consumer_group_id, partition_key)
+          )
+        SQL
+
+        db.run(<<~SQL)
+          CREATE TABLE IF NOT EXISTS ccc_offset_key_pairs (
+            offset_id INTEGER NOT NULL REFERENCES ccc_offsets(id) ON DELETE CASCADE,
+            key_pair_id INTEGER NOT NULL REFERENCES ccc_key_pairs(id),
+            PRIMARY KEY (offset_id, key_pair_id)
+          )
+        SQL
       end
 
       # Append messages to the store. Extracts keys and indexes them.
@@ -138,6 +177,104 @@ module Sourced
         read(conditions, from_position: position)
       end
 
+      # Register a consumer group. Idempotent.
+      def register_consumer_group(group_id)
+        now = Time.now.iso8601
+        db.run(<<~SQL)
+          INSERT OR IGNORE INTO ccc_consumer_groups (group_id, status, created_at, updated_at)
+          VALUES (#{db.literal(group_id)}, '#{ACTIVE}', #{db.literal(now)}, #{db.literal(now)})
+        SQL
+      end
+
+      def consumer_group_active?(group_id)
+        row = db[:ccc_consumer_groups].where(group_id: group_id).select(:status).first
+        return false unless row
+
+        row[:status] == ACTIVE
+      end
+
+      def stop_consumer_group(group_id)
+        db[:ccc_consumer_groups].where(group_id: group_id).update(status: STOPPED, updated_at: Time.now.iso8601)
+      end
+
+      def start_consumer_group(group_id)
+        db[:ccc_consumer_groups].where(group_id: group_id).update(status: ACTIVE, updated_at: Time.now.iso8601)
+      end
+
+      def reset_consumer_group(group_id)
+        cg = db[:ccc_consumer_groups].where(group_id: group_id).first
+        return unless cg
+
+        db[:ccc_offsets].where(consumer_group_id: cg[:id]).delete
+      end
+
+      # Claim the next available partition for processing.
+      # partition_by: String or Array of attribute names
+      # handled_types: Array of message type strings
+      # worker_id: String identifying the claiming worker
+      # Returns Hash { offset_id:, key_pair_ids:, partition_key:, partition_value:, messages: } or nil
+      def claim_next(group_id, partition_by:, handled_types:, worker_id:)
+        partition_by = Array(partition_by).sort
+        cg = db[:ccc_consumer_groups].where(group_id: group_id, status: ACTIVE).first
+        return nil unless cg
+
+        bootstrap_offsets(cg[:id], partition_by)
+
+        claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+        return nil unless claimed
+
+        key_pair_ids = db[:ccc_offset_key_pairs]
+          .where(offset_id: claimed[:offset_id])
+          .select_map(:key_pair_id)
+
+        messages = fetch_partition_messages(key_pair_ids, claimed[:last_position], handled_types)
+
+        # If no messages pass the conditional AND filter, release and return nil
+        if messages.empty?
+          release(group_id, offset_id: claimed[:offset_id])
+          return nil
+        end
+
+        # Build partition_value hash from key_pairs
+        partition_value = {}
+        db[:ccc_key_pairs].where(id: key_pair_ids).each do |kp|
+          partition_value[kp[:name]] = kp[:value]
+        end
+
+        {
+          offset_id: claimed[:offset_id],
+          key_pair_ids: key_pair_ids,
+          partition_key: claimed[:partition_key],
+          partition_value: partition_value,
+          messages: messages
+        }
+      end
+
+      # Acknowledge processing: advance offset and release claim.
+      def ack(group_id, offset_id:, position:)
+        cg = db[:ccc_consumer_groups].where(group_id: group_id).first
+        return unless cg
+
+        db[:ccc_offsets].where(id: offset_id, consumer_group_id: cg[:id]).update(
+          last_position: position,
+          claimed: 0,
+          claimed_at: nil,
+          claimed_by: nil
+        )
+      end
+
+      # Release claim without advancing offset (for error recovery).
+      def release(group_id, offset_id:)
+        cg = db[:ccc_consumer_groups].where(group_id: group_id).first
+        return unless cg
+
+        db[:ccc_offsets].where(id: offset_id, consumer_group_id: cg[:id]).update(
+          claimed: 0,
+          claimed_at: nil,
+          claimed_by: nil
+        )
+      end
+
       # Current max position, or 0 if the store is empty.
       def latest_position
         db[:ccc_messages].max(:position) || 0
@@ -145,6 +282,9 @@ module Sourced
 
       # Clear all tables. For testing only.
       def clear!
+        db[:ccc_offset_key_pairs].delete
+        db[:ccc_offsets].delete
+        db[:ccc_consumer_groups].delete
         db[:ccc_message_key_pairs].delete
         db[:ccc_key_pairs].delete
         db[:ccc_messages].delete
@@ -152,6 +292,132 @@ module Sourced
       end
 
       private
+
+      # Build canonical partition key string from attribute names and values.
+      # Sorted by attribute name for consistency.
+      def build_partition_key(partition_by, values)
+        partition_by.sort.map { |attr| "#{attr}:#{values[attr]}" }.join('|')
+      end
+
+      # Discover partition tuples via AND self-joins and create offset + key_pair rows.
+      # Only messages with ALL partition attributes create partition tuples.
+      def bootstrap_offsets(cg_id, partition_by)
+        # Build AND self-join query to find all unique tuples
+        joins = []
+        selects = []
+        partition_by.each_with_index do |attr, i|
+          joins << "JOIN ccc_message_key_pairs mkp#{i} ON m.position = mkp#{i}.message_position"
+          joins << "JOIN ccc_key_pairs kp#{i} ON mkp#{i}.key_pair_id = kp#{i}.id AND kp#{i}.name = #{db.literal(attr)}"
+          selects << "kp#{i}.id AS kp_id_#{i}, kp#{i}.value AS val_#{i}"
+        end
+
+        group_by = partition_by.each_index.map { |i| "kp#{i}.id" }.join(', ')
+
+        sql = <<~SQL
+          SELECT #{selects.join(', ')}
+          FROM ccc_messages m
+          #{joins.join("\n")}
+          GROUP BY #{group_by}
+        SQL
+
+        db.fetch(sql).each do |row|
+          # Build the values hash and collect key_pair_ids
+          values = {}
+          kp_ids = []
+          partition_by.each_with_index do |attr, i|
+            values[attr] = row[:"val_#{i}"]
+            kp_ids << row[:"kp_id_#{i}"]
+          end
+
+          partition_key = build_partition_key(partition_by, values)
+
+          # INSERT OR IGNORE the offset row
+          db.run(<<~SQL)
+            INSERT OR IGNORE INTO ccc_offsets (consumer_group_id, partition_key, last_position, claimed)
+            VALUES (#{db.literal(cg_id)}, #{db.literal(partition_key)}, 0, 0)
+          SQL
+
+          offset_id = db[:ccc_offsets].where(consumer_group_id: cg_id, partition_key: partition_key).get(:id)
+
+          # INSERT OR IGNORE the offset_key_pairs join rows
+          kp_ids.each do |kp_id|
+            db.run(<<~SQL)
+              INSERT OR IGNORE INTO ccc_offset_key_pairs (offset_id, key_pair_id)
+              VALUES (#{db.literal(offset_id)}, #{db.literal(kp_id)})
+            SQL
+          end
+        end
+      end
+
+      # Find the next unclaimed partition with pending messages and claim it.
+      # Uses OR semantics for detection (any matching key_pair); exact filtering at fetch time.
+      def find_and_claim_partition(cg_id, handled_types, worker_id)
+        types_list = handled_types.map { |t| db.literal(t) }.join(', ')
+
+        sql = <<~SQL
+          SELECT o.id AS offset_id, o.partition_key, o.last_position,
+                 MIN(m.position) AS next_position
+          FROM ccc_offsets o
+          JOIN ccc_offset_key_pairs okp ON o.id = okp.offset_id
+          JOIN ccc_message_key_pairs mkp ON okp.key_pair_id = mkp.key_pair_id
+          JOIN ccc_messages m ON mkp.message_position = m.position
+          WHERE o.consumer_group_id = #{db.literal(cg_id)}
+            AND o.claimed = 0
+            AND m.position > o.last_position
+            AND m.message_type IN (#{types_list})
+          GROUP BY o.id
+          ORDER BY next_position ASC
+          LIMIT 1
+        SQL
+
+        row = db.fetch(sql).first
+        return nil unless row
+
+        now = Time.now.iso8601
+        updated = db[:ccc_offsets]
+          .where(id: row[:offset_id], claimed: 0)
+          .update(claimed: 1, claimed_at: now, claimed_by: worker_id)
+
+        return nil if updated == 0
+
+        { offset_id: row[:offset_id], partition_key: row[:partition_key], last_position: row[:last_position] }
+      end
+
+      # Fetch messages for a partition using conditional AND semantics.
+      # For each message: match against ALL of the partition's attributes that the message has.
+      def fetch_partition_messages(key_pair_ids, last_position, handled_types)
+        return [] if key_pair_ids.empty?
+
+        kp_ids_list = key_pair_ids.map { |id| db.literal(id) }.join(', ')
+        types_list = handled_types.map { |t| db.literal(t) }.join(', ')
+
+        sql = <<~SQL
+          SELECT DISTINCT m.position, m.message_id, m.message_type, m.payload, m.metadata, m.created_at
+          FROM ccc_messages m
+          WHERE m.position > #{db.literal(last_position)}
+            AND m.message_type IN (#{types_list})
+            AND EXISTS (
+              SELECT 1 FROM ccc_message_key_pairs mkp
+              WHERE mkp.message_position = m.position
+                AND mkp.key_pair_id IN (#{kp_ids_list})
+            )
+            AND (
+              SELECT COUNT(*) FROM ccc_message_key_pairs mkp
+              WHERE mkp.message_position = m.position
+                AND mkp.key_pair_id IN (#{kp_ids_list})
+            ) = (
+              SELECT COUNT(DISTINCT kp_part.name)
+              FROM ccc_message_key_pairs mkp2
+              JOIN ccc_key_pairs kp_msg ON mkp2.key_pair_id = kp_msg.id
+              JOIN ccc_key_pairs kp_part ON kp_part.id IN (#{kp_ids_list})
+                AND kp_part.name = kp_msg.name
+              WHERE mkp2.message_position = m.position
+            )
+          ORDER BY m.position ASC
+        SQL
+
+        db.fetch(sql).map { |row| deserialize(row) }
+      end
 
       # Core query logic shared by #read and #check_conflicts.
       def query_messages(conditions, from_position: nil, limit: nil)

@@ -20,6 +20,25 @@ module CCCStoreTestMessages
     attribute :device_id, String
     attribute :asset_id, String
   end
+
+  # Course/user messages for composite partition tests
+  CourseCreated = Sourced::CCC::Message.define('store_test.course.created') do
+    attribute :course_name, String
+  end
+
+  UserRegistered = Sourced::CCC::Message.define('store_test.user.registered') do
+    attribute :user_id, String
+    attribute :name, String
+  end
+
+  UserJoinedCourse = Sourced::CCC::Message.define('store_test.user.joined_course') do
+    attribute :course_name, String
+    attribute :user_id, String
+  end
+
+  CourseClosed = Sourced::CCC::Message.define('store_test.course.closed') do
+    attribute :course_name, String
+  end
 end
 
 RSpec.describe Sourced::CCC::Store do
@@ -434,6 +453,418 @@ RSpec.describe Sourced::CCC::Store do
         CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
       )
       expect(pos).to eq(1)
+    end
+
+    it 'clears consumer groups, offsets, and offset_key_pairs' do
+      store.register_consumer_group('test-group')
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      store.claim_next('test-group',
+        partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'],
+        worker_id: 'w-1')
+
+      store.clear!
+
+      expect(db[:ccc_consumer_groups].count).to eq(0)
+      expect(db[:ccc_offsets].count).to eq(0)
+      expect(db[:ccc_offset_key_pairs].count).to eq(0)
+    end
+  end
+
+  describe '#register_consumer_group' do
+    it 'creates row with active status' do
+      store.register_consumer_group('my-group')
+      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      expect(row).not_to be_nil
+      expect(row[:status]).to eq('active')
+      expect(row[:created_at]).not_to be_nil
+      expect(row[:updated_at]).not_to be_nil
+    end
+
+    it 'is idempotent' do
+      store.register_consumer_group('my-group')
+      expect { store.register_consumer_group('my-group') }.not_to raise_error
+      expect(db[:ccc_consumer_groups].where(group_id: 'my-group').count).to eq(1)
+    end
+  end
+
+  describe '#consumer_group_active?' do
+    it 'returns true for active group' do
+      store.register_consumer_group('my-group')
+      expect(store.consumer_group_active?('my-group')).to be true
+    end
+
+    it 'returns false for stopped group' do
+      store.register_consumer_group('my-group')
+      store.stop_consumer_group('my-group')
+      expect(store.consumer_group_active?('my-group')).to be false
+    end
+
+    it 'returns false for nonexistent group' do
+      expect(store.consumer_group_active?('nope')).to be false
+    end
+  end
+
+  describe '#stop/start_consumer_group' do
+    it 'toggles status' do
+      store.register_consumer_group('my-group')
+      store.stop_consumer_group('my-group')
+      expect(store.consumer_group_active?('my-group')).to be false
+
+      store.start_consumer_group('my-group')
+      expect(store.consumer_group_active?('my-group')).to be true
+    end
+  end
+
+  describe '#reset_consumer_group' do
+    it 'deletes all offsets' do
+      store.register_consumer_group('my-group')
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      store.claim_next('my-group',
+        partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'],
+        worker_id: 'w-1')
+
+      expect(db[:ccc_offsets].count).to be > 0
+      store.reset_consumer_group('my-group')
+      expect(db[:ccc_offsets].count).to eq(0)
+    end
+  end
+
+  describe '#claim_next (single attribute partition)' do
+    let(:group_id) { 'single-test' }
+    let(:handled_types) { ['store_test.device.registered'] }
+
+    before do
+      store.register_consumer_group(group_id)
+    end
+
+    it 'bootstraps offsets for new partitions' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(db[:ccc_offsets].count).to be >= 1
+    end
+
+    it 'returns nil when no pending messages' do
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(result).to be_nil
+    end
+
+    it 'returns messages for next unclaimed partition with correct shape' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(result).not_to be_nil
+      expect(result[:offset_id]).to be_a(Integer)
+      expect(result[:key_pair_ids]).to be_a(Array)
+      expect(result[:partition_key]).to eq('device_id:dev-1')
+      expect(result[:partition_value]).to eq({ 'device_id' => 'dev-1' })
+      expect(result[:messages]).to be_a(Array)
+      expect(result[:messages].size).to eq(1)
+      expect(result[:messages].first).to be_a(CCCStoreTestMessages::DeviceRegistered)
+      expect(result[:messages].first.position).to eq(1)
+    end
+
+    it 'returns multiple pending messages for same partition' do
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
+      ])
+
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(result[:messages].size).to eq(2)
+    end
+
+    it 'skips claimed partitions — second worker gets different partition' do
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
+      ])
+
+      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-2')
+
+      expect(r1[:partition_key]).not_to eq(r2[:partition_key])
+    end
+
+    it 'returns nil when all partitions claimed' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-2')
+      expect(result).to be_nil
+    end
+
+    it 'respects handled_types filter' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: ['store_test.asset.registered'], worker_id: 'w-1')
+      expect(result).to be_nil
+    end
+
+    it 'only returns messages after last_position' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.ack(group_id, offset_id: r1[:offset_id], position: r1[:messages].last.position)
+
+      # Append another message for same partition
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A updated' })
+      )
+
+      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(r2[:messages].size).to eq(1)
+      expect(r2[:messages].first.payload.name).to eq('A updated')
+    end
+
+    it 'returns nil for stopped consumer group' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      store.stop_consumer_group(group_id)
+
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(result).to be_nil
+    end
+
+    it 'prioritizes partition with earliest pending message' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
+      )
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      # dev-2 was appended first (position 1), so it should be prioritized
+      expect(result[:partition_value]).to eq({ 'device_id' => 'dev-2' })
+    end
+
+    it 'bootstraps newly appeared partitions on subsequent calls' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.ack(group_id, offset_id: r1[:offset_id], position: r1[:messages].last.position)
+
+      # New partition appears
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-3', name: 'C' })
+      )
+
+      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(r2).not_to be_nil
+      expect(r2[:partition_value]).to eq({ 'device_id' => 'dev-3' })
+    end
+  end
+
+  describe '#claim_next (composite partition — conditional AND fetch)' do
+    let(:group_id) { 'composite-test' }
+    let(:handled_types) do
+      [
+        'store_test.course.created',
+        'store_test.user.registered',
+        'store_test.user.joined_course',
+        'store_test.course.closed'
+      ]
+    end
+
+    before do
+      store.register_consumer_group(group_id)
+    end
+
+    it 'bootstraps composite partitions (only messages with ALL attributes create partitions)' do
+      # CourseCreated only has course_name — not enough for a (course_name, user_id) partition
+      store.append(
+        CCCStoreTestMessages::CourseCreated.new(payload: { course_name: 'Algebra' })
+      )
+
+      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      expect(result).to be_nil
+
+      # UserJoinedCourse has both — NOW a partition is created
+      store.append(
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
+      )
+
+      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      expect(result).not_to be_nil
+      expect(result[:partition_value]).to eq({ 'course_name' => 'Algebra', 'user_id' => 'joe' })
+    end
+
+    it 'fetches messages with single partition attribute matching' do
+      store.append([
+        CCCStoreTestMessages::CourseCreated.new(payload: { course_name: 'Algebra' }),
+        CCCStoreTestMessages::UserRegistered.new(payload: { user_id: 'joe', name: 'Joe' }),
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
+      ])
+
+      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      types = result[:messages].map(&:type)
+      expect(types).to contain_exactly(
+        'store_test.course.created',
+        'store_test.user.registered',
+        'store_test.user.joined_course'
+      )
+    end
+
+    it 'different composite partitions can be claimed in parallel' do
+      store.append([
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' }),
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Physics', user_id: 'jake' })
+      ])
+
+      r1 = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      r2 = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-2')
+
+      expect(r1).not_to be_nil
+      expect(r2).not_to be_nil
+      expect(r1[:partition_key]).not_to eq(r2[:partition_key])
+    end
+
+    it 'excludes messages with ALL partition attributes that do not match ALL values' do
+      store.append([
+        CCCStoreTestMessages::CourseCreated.new(payload: { course_name: 'Algebra' }),
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' }),
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'jake' })
+      ])
+
+      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+
+      # The first partition claimed should be one of the two — let's check its messages
+      if result[:partition_value]['user_id'] == 'joe'
+        # Should include CourseCreated (1 attr, matches) and joe's join (2 attrs, both match)
+        # Should NOT include jake's join (2 attrs, user_id doesn't match)
+        user_ids = result[:messages]
+          .select { |m| m.type == 'store_test.user.joined_course' }
+          .map { |m| m.payload.user_id }
+        expect(user_ids).to eq(['joe'])
+      else
+        user_ids = result[:messages]
+          .select { |m| m.type == 'store_test.user.joined_course' }
+          .map { |m| m.payload.user_id }
+        expect(user_ids).to eq(['jake'])
+      end
+    end
+
+    it 'messages with ALL partition attributes matching are not duplicated' do
+      store.append([
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
+      ])
+
+      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      # The join message matches both key_pairs but should appear only once
+      expect(result[:messages].size).to eq(1)
+    end
+
+    it 'excludes messages with partial attributes matching wrong value' do
+      store.append([
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' }),
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'History', user_id: 'joe' })
+      ])
+
+      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+
+      # Whichever partition we get, the other course's join should be excluded
+      courses = result[:messages].map { |m| m.payload.course_name }
+      expect(courses.uniq.size).to eq(1)
+    end
+  end
+
+  describe '#ack' do
+    let(:group_id) { 'ack-test' }
+
+    before do
+      store.register_consumer_group(group_id)
+    end
+
+    it 'advances offset and releases claim' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      result = store.claim_next(group_id, partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+
+      store.ack(group_id, offset_id: result[:offset_id], position: result[:messages].last.position)
+
+      offset = db[:ccc_offsets].where(id: result[:offset_id]).first
+      expect(offset[:last_position]).to eq(result[:messages].last.position)
+      expect(offset[:claimed]).to eq(0)
+      expect(offset[:claimed_at]).to be_nil
+      expect(offset[:claimed_by]).to be_nil
+    end
+
+    it 'after ack, subsequent claim skips processed messages' do
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
+      ])
+
+      r1 = store.claim_next(group_id, partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      store.ack(group_id, offset_id: r1[:offset_id], position: r1[:messages].last.position)
+
+      # No new messages — should return nil
+      r2 = store.claim_next(group_id, partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      expect(r2).to be_nil
+    end
+  end
+
+  describe '#release' do
+    let(:group_id) { 'release-test' }
+
+    before do
+      store.register_consumer_group(group_id)
+    end
+
+    it 'releases claim without advancing' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      result = store.claim_next(group_id, partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+
+      store.release(group_id, offset_id: result[:offset_id])
+
+      offset = db[:ccc_offsets].where(id: result[:offset_id]).first
+      expect(offset[:last_position]).to eq(0) # not advanced
+      expect(offset[:claimed]).to eq(0)
+    end
+
+    it 'after release, same partition re-claimed with same messages' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      r1 = store.claim_next(group_id, partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      store.release(group_id, offset_id: r1[:offset_id])
+
+      r2 = store.claim_next(group_id, partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'], worker_id: 'w-2')
+
+      expect(r2[:offset_id]).to eq(r1[:offset_id])
+      expect(r2[:messages].map(&:position)).to eq(r1[:messages].map(&:position))
     end
   end
 end
