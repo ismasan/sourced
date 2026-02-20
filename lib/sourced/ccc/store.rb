@@ -235,18 +235,30 @@ module Sourced
           return nil
         end
 
-        # Build partition_value hash from key_pairs
+        # Build partition_value hash and guard conditions from key_pairs
         partition_value = {}
+        guard_conditions = []
         db[:ccc_key_pairs].where(id: key_pair_ids).each do |kp|
           partition_value[kp[:name]] = kp[:value]
+          handled_types.each do |type|
+            guard_conditions << QueryCondition.new(
+              message_type: type,
+              key_name: kp[:name],
+              key_value: kp[:value]
+            )
+          end
         end
+
+        last_pos = messages.last.position
+        guard = ConsistencyGuard.new(conditions: guard_conditions, last_position: last_pos)
 
         {
           offset_id: claimed[:offset_id],
           key_pair_ids: key_pair_ids,
           partition_key: claimed[:partition_key],
           partition_value: partition_value,
-          messages: messages
+          messages: messages,
+          guard: guard
         }
       end
 
