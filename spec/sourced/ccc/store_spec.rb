@@ -134,6 +134,28 @@ RSpec.describe Sourced::CCC::Store do
       expect(meta[:user_id]).to eq(42)
     end
 
+    it 'persists and round-trips causation_id and correlation_id' do
+      source = CCCStoreTestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' }
+      )
+      caused = source.correlate(
+        CCCStoreTestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'Truck' })
+      )
+      store.append([source, caused])
+
+      cond1 = Sourced::CCC::QueryCondition.new(message_type: 'store_test.device.registered', key_name: 'device_id', key_value: 'dev-1')
+      cond2 = Sourced::CCC::QueryCondition.new(message_type: 'store_test.asset.registered', key_name: 'asset_id', key_value: 'asset-1')
+      messages, = store.read([cond1, cond2])
+
+      src = messages.find { |m| m.type == 'store_test.device.registered' }
+      csd = messages.find { |m| m.type == 'store_test.asset.registered' }
+
+      expect(src.causation_id).to eq(src.id)
+      expect(src.correlation_id).to eq(src.id)
+      expect(csd.causation_id).to eq(source.id)
+      expect(csd.correlation_id).to eq(source.correlation_id)
+    end
+
     it 'returns latest_position for empty array' do
       pos = store.append([])
       expect(pos).to eq(0)

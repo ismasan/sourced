@@ -14,8 +14,11 @@ module Sourced
     ConsistencyGuard = Data.define(:conditions, :last_position)
 
     # Base message class for CCC's stream-less event sourcing.
-    # Unlike {Sourced::Message}, CCC messages have no stream_id, seq,
-    # or causation_id — they go into a flat, globally-ordered log.
+    # Unlike {Sourced::Message}, CCC messages have no stream_id or seq
+    # — they go into a flat, globally-ordered log.
+    #
+    # Supports +causation_id+ and +correlation_id+ for tracing causal chains
+    # across messages, similar to {Sourced::Message}.
     #
     # Define message types via {.define}:
     #
@@ -28,6 +31,8 @@ module Sourced
 
       attribute :id, Types::AutoUUID
       attribute :type, Types::String.present
+      attribute? :causation_id, Types::UUID::V4
+      attribute? :correlation_id, Types::UUID::V4
       attribute :created_at, Types::Forms::Time.default { Time.now }
       attribute :metadata, Types::Hash.default(Plumb::BLANK_HASH)
       attribute :payload, Types::Static[nil]
@@ -138,6 +143,25 @@ module Sourced
         super(attrs)
       end
 
+      # Set causation and correlation IDs on another message, establishing
+      # a causal link from this message to +message+. Merges metadata.
+      #
+      # @param message [Message] the message to correlate
+      # @return [Message] a copy of +message+ with causation/correlation set
+      #
+      # @example
+      #   caused = source_event.correlate(SomeCommand.new(payload: { ... }))
+      #   caused.causation_id  # => source_event.id
+      #   caused.correlation_id # => source_event.correlation_id
+      def correlate(message)
+        attrs = {
+          causation_id: id,
+          correlation_id: correlation_id,
+          metadata: metadata.merge(message.metadata || Plumb::BLANK_HASH)
+        }
+        message.with(attrs)
+      end
+
       # Returns the declared payload attribute names for this message class.
       # Subclasses created via {.define} override this with a cached frozen array.
       #
@@ -178,6 +202,16 @@ module Sourced
         payload.to_h.filter_map { |k, v|
           [k.to_s, v.to_s] unless v.nil?
         }
+      end
+
+      private
+
+      # Hook called by Plumb after schema parsing, when +:id+ has been resolved.
+      # Defaults +causation_id+ and +correlation_id+ to the message's own +id+.
+      def prepare_attributes(attrs)
+        attrs[:correlation_id] = attrs[:id] unless attrs[:correlation_id]
+        attrs[:causation_id] = attrs[:id] unless attrs[:causation_id]
+        attrs
       end
     end
   end
