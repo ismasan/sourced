@@ -4,9 +4,25 @@ require 'sourced/types'
 
 module Sourced
   module CCC
+    # A query condition for reading messages from the store.
+    # Matches on (message_type AND key_name AND key_value).
+    # Multiple conditions are OR'd when passed to {Store#read}.
     QueryCondition = Data.define(:message_type, :key_name, :key_value)
+
+    # Returned by {Store#read} and {Store#claim_next} for optimistic concurrency.
+    # Pass to {Store#append} via +guard:+ to detect conflicting writes.
     ConsistencyGuard = Data.define(:conditions, :last_position)
 
+    # Base message class for CCC's stream-less event sourcing.
+    # Unlike {Sourced::Message}, CCC messages have no stream_id, seq,
+    # or causation_id — they go into a flat, globally-ordered log.
+    #
+    # Define message types via {.define}:
+    #
+    #   CourseCreated = CCC::Message.define('course.created') do
+    #     attribute :course_name, String
+    #   end
+    #
     class Message < Types::Data
       EMPTY_ARRAY = [].freeze
 
@@ -16,19 +32,34 @@ module Sourced
       attribute :metadata, Types::Hash.default(Plumb::BLANK_HASH)
       attribute :payload, Types::Static[nil]
 
+      # Lookup table mapping type strings to message subclasses.
+      # Separate from {Sourced::Message}'s registry.
       class Registry
+        # @param message_class [Class] the root message class for this registry
         def initialize(message_class)
           @message_class = message_class
           @lookup = {}
         end
 
+        # @return [Array<String>] registered type strings
         def keys = @lookup.keys
+
+        # @return [Array<Class>] direct subclasses of the root message class
         def subclasses = message_class.subclasses
 
+        # Register a message class under a type string.
+        #
+        # @param key [String] message type string
+        # @param klass [Class] message subclass
         def []=(key, klass)
           @lookup[key] = klass
         end
 
+        # Look up a message class by type string.
+        # Searches this registry first, then recurses into subclass registries.
+        #
+        # @param key [String] message type string
+        # @return [Class, nil]
         def [](key)
           klass = lookup[key]
           return klass if klass
@@ -45,15 +76,33 @@ module Sourced
         attr_reader :lookup, :message_class
       end
 
+      # @return [Registry] the message type registry for this class
       def self.registry
         @registry ||= Registry.new(self)
       end
 
+      # Base class for typed message payloads.
       class Payload < Types::Data
+        # @param key [Symbol] attribute name
+        # @return [Object] attribute value
         def [](key) = attributes[key]
+
+        # @see Hash#fetch
         def fetch(...) = to_h.fetch(...)
       end
 
+      # Define a new message type. Registers it in the {.registry} and
+      # optionally defines a typed payload.
+      #
+      # @param type_str [String] unique message type identifier (e.g. 'course.created')
+      # @yield optional block to define payload attributes via +attribute+ DSL
+      # @return [Class] the new message subclass
+      #
+      # @example
+      #   UserJoined = CCC::Message.define('user.joined') do
+      #     attribute :course_name, String
+      #     attribute :user_id, String
+      #   end
       def self.define(type_str, &payload_block)
         type_str.freeze unless type_str.frozen?
 
@@ -72,6 +121,11 @@ module Sourced
         end
       end
 
+      # Instantiate the correct message subclass from a hash with a +:type+ key.
+      #
+      # @param attrs [Hash] must include +:type+ matching a registered type string
+      # @return [Message] instance of the appropriate subclass
+      # @raise [Sourced::UnknownMessageError] if the type string is not registered
       def self.from(attrs)
         klass = registry[attrs[:type]]
         raise Sourced::UnknownMessageError, "Unknown message type: #{attrs[:type]}" unless klass
@@ -84,16 +138,23 @@ module Sourced
         super(attrs)
       end
 
-      # Returns the payload attribute names for this message class.
-      # Subclasses created via .define override this with a cached frozen array.
+      # Returns the declared payload attribute names for this message class.
+      # Subclasses created via {.define} override this with a cached frozen array.
+      #
+      # @return [Array<Symbol>] attribute names (e.g. +[:course_name, :user_id]+)
       def self.payload_attribute_names = EMPTY_ARRAY
 
-      # Build QueryConditions for the intersection of this message's attributes
-      # and the given key-value pairs.
-      # Example:
+      # Build {QueryCondition}s for the intersection of this message's declared
+      # attributes and the given key-value pairs. Attributes not declared on this
+      # message class are silently ignored.
+      #
+      # @param attrs [Hash{Symbol => String}] partition attribute values
+      # @return [Array<QueryCondition>]
+      #
+      # @example
       #   CourseCreated.to_conditions(course_name: 'Algebra', user_id: 'joe')
       #   # => [QueryCondition('course.created', 'course_name', 'Algebra')]
-      #   # user_id is ignored because CourseCreated doesn't have it
+      #   # user_id ignored — CourseCreated doesn't declare it
       def self.to_conditions(**attrs)
         supported = payload_attribute_names
         attrs.filter_map do |key, value|
@@ -108,7 +169,9 @@ module Sourced
       end
 
       # Auto-extract key-value pairs from all top-level payload attributes.
-      # Skips nil values. Returns array of [name, value] pairs.
+      # Used by {Store#append} to index messages for querying.
+      #
+      # @return [Array<Array(String, String)>] pairs of [name, value], skipping nils
       def extracted_keys
         return [] unless payload
 
