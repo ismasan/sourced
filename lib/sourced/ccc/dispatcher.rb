@@ -3,6 +3,7 @@
 require 'sourced/work_queue'
 require 'sourced/catchup_poller'
 require 'sourced/ccc/worker'
+require 'sourced/ccc/stale_claim_reaper'
 
 module Sourced
   module CCC
@@ -95,6 +96,8 @@ module Sourced
       # @param batch_size [Integer] max messages per claim (default 50)
       # @param max_drain_rounds [Integer] max drain iterations before re-enqueue (default 10)
       # @param catchup_interval [Numeric] seconds between catch-up polls (default 5)
+      # @param housekeeping_interval [Numeric] seconds between heartbeat/reap cycles (default 30)
+      # @param claim_ttl_seconds [Integer] stale claim age threshold in seconds (default 120)
       # @param work_queue [WorkQueue, nil] optional pre-built queue (useful for testing)
       # @param logger [Object] logger instance
       def initialize(
@@ -103,6 +106,8 @@ module Sourced
         batch_size: 50,
         max_drain_rounds: 10,
         catchup_interval: 5,
+        housekeeping_interval: 30,
+        claim_ttl_seconds: 120,
         work_queue: nil,
         logger: Sourced.config.logger
       )
@@ -137,6 +142,14 @@ module Sourced
           interval: catchup_interval,
           logger: logger
         )
+
+        @stale_claim_reaper = StaleClaimReaper.new(
+          store: router.store,
+          interval: housekeeping_interval,
+          ttl_seconds: claim_ttl_seconds,
+          worker_ids_provider: -> { @workers.map(&:name) },
+          logger: logger
+        )
       end
 
       # Spawn all component fibers into the caller's task context.
@@ -155,6 +168,9 @@ module Sourced
         # CatchUp poller
         task.send(s) { @catchup_poller.run }
 
+        # Stale claim reaper
+        task.send(s) { @stale_claim_reaper.run }
+
         # Workers
         @workers.each do |w|
           task.send(s) { w.run }
@@ -170,6 +186,7 @@ module Sourced
         @logger.info "CCC::Dispatcher: stopping #{@workers.size} workers"
         @store_notifier.stop
         @catchup_poller.stop
+        @stale_claim_reaper.stop
         @workers.each(&:stop)
         @work_queue.close(@workers.size)
         @logger.info 'CCC::Dispatcher: all components stopped'
