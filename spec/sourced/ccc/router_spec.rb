@@ -50,6 +50,10 @@ class RouterTestDecider < Sourced::CCC::Decider
     raise 'Already bound' if state[:bound]
     event CCCRouterTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
+
+  reaction CCCRouterTestMessages::DeviceBound do |_state, evt|
+    CCCRouterTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
+  end
 end
 
 # Test projector for router specs
@@ -222,30 +226,47 @@ RSpec.describe Sourced::CCC::Router do
       router.register(RouterTestProjector)
     end
 
-    it 'end-to-end flow works' do
-      # 1. Register device (event — goes to projector directly)
-      store.append(
-        CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
-      )
+    it 'events are correlated with the command that produced them' do
+      reg = CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      store.append(reg)
 
-      # 2. Send bind command (decider will produce DeviceBound event)
-      store.append(
-        CCCRouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
-      )
+      cmd = CCCRouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      store.append(cmd)
 
-      # 3. Drain — decider processes command, projector processes events
       router.drain
 
-      # 4. Verify DeviceBound was appended
+      # Read the DeviceBound event
       conds = CCCRouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
-      read_result = store.read(conds)
-      bound_events = read_result.messages.select { |m| m.is_a?(CCCRouterTestMessages::DeviceBound) }
-      expect(bound_events.size).to eq(1)
+      bound = store.read(conds).messages.find { |m| m.is_a?(CCCRouterTestMessages::DeviceBound) }
 
-      # Verify causation chain
-      bound = bound_events.first
-      expect(bound.causation_id).not_to be_nil
-      expect(bound.correlation_id).not_to be_nil
+      expect(bound).not_to be_nil
+      expect(bound.causation_id).to eq(cmd.id)
+      expect(bound.correlation_id).to eq(cmd.correlation_id)
+    end
+
+    it 'reaction messages are correlated with the event reacted to, not the command' do
+      reg = CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      store.append(reg)
+
+      cmd = CCCRouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      store.append(cmd)
+
+      router.drain
+
+      # Read the DeviceBound event (produced by command handler)
+      bound_conds = CCCRouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
+      bound = store.read(bound_conds).messages.find { |m| m.is_a?(CCCRouterTestMessages::DeviceBound) }
+
+      # Read the NotifyBound reaction message (produced by reaction handler)
+      notify_conds = CCCRouterTestMessages::NotifyBound.to_conditions(device_id: 'd1')
+      notify = store.read(notify_conds).messages.find { |m| m.is_a?(CCCRouterTestMessages::NotifyBound) }
+
+      expect(notify).not_to be_nil
+      # Reaction is correlated with the event, not the command
+      expect(notify.causation_id).to eq(bound.id)
+      expect(notify.correlation_id).to eq(bound.correlation_id)
+      # The whole chain shares the same correlation_id (the command's)
+      expect(notify.correlation_id).to eq(cmd.correlation_id)
     end
   end
 end
