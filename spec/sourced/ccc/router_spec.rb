@@ -28,6 +28,12 @@ module CCCRouterTestMessages
   DeviceListed = Sourced::CCC::Message.define('router_test.device.listed') do
     attribute :device_id, String
   end
+
+  # Simple reactor messages
+  DeviceAudited = Sourced::CCC::Message.define('router_test.device.audited') do
+    attribute :device_id, String
+    attribute :event_type, String
+  end
 end
 
 # Test decider for router specs
@@ -74,6 +80,28 @@ class RouterTestProjector < Sourced::CCC::Projector
   sync do |state:, messages:, replaying:|
     # In a real projector, this would persist to DB
     state[:synced] = true
+  end
+end
+
+# Simple reactor: just extends Consumer, defines handled_messages, implements handle_batch.
+# Logs an audit trail message for every DeviceRegistered or DeviceBound it sees.
+class RouterTestAuditReactor
+  extend Sourced::CCC::Consumer
+
+  partition_by :device_id
+  consumer_group 'router-test-audit'
+
+  def self.handled_messages
+    [CCCRouterTestMessages::DeviceRegistered, CCCRouterTestMessages::DeviceBound]
+  end
+
+  def self.handle_batch(claim)
+    each_with_partial_ack(claim.messages) do |msg|
+      audit = CCCRouterTestMessages::DeviceAudited.new(
+        payload: { device_id: msg.payload.device_id, event_type: msg.type }
+      )
+      [Sourced::CCC::Actions::Append.new(audit), msg]
+    end
   end
 end
 
@@ -267,6 +295,78 @@ RSpec.describe Sourced::CCC::Router do
       expect(notify.correlation_id).to eq(bound.correlation_id)
       # The whole chain shares the same correlation_id (the command's)
       expect(notify.correlation_id).to eq(cmd.correlation_id)
+    end
+  end
+
+  describe 'simple Consumer reactor (no Decider/Projector)' do
+    before do
+      router.register(RouterTestAuditReactor)
+    end
+
+    it 'registers and processes messages through the router' do
+      reg = CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      store.append(reg)
+
+      router.drain
+
+      # Audit message should have been appended
+      conds = CCCRouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
+      audits = store.read(conds).messages
+      expect(audits.size).to eq(1)
+      expect(audits.first).to be_a(CCCRouterTestMessages::DeviceAudited)
+      expect(audits.first.payload.event_type).to eq('router_test.device.registered')
+    end
+
+    it 'appended messages are correlated with the source message' do
+      reg = CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      store.append(reg)
+
+      router.drain
+
+      conds = CCCRouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
+      audit = store.read(conds).messages.first
+
+      expect(audit.causation_id).to eq(reg.id)
+      expect(audit.correlation_id).to eq(reg.correlation_id)
+    end
+
+    it 'handles multiple messages across partitions' do
+      store.append(CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor A' }))
+      store.append(CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd2', name: 'Sensor B' }))
+
+      router.drain
+
+      d1_conds = CCCRouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
+      d2_conds = CCCRouterTestMessages::DeviceAudited.to_conditions(device_id: 'd2')
+
+      expect(store.read(d1_conds).messages.size).to eq(1)
+      expect(store.read(d2_conds).messages.size).to eq(1)
+    end
+
+    it 'context_for returns empty conditions (no evolve types)' do
+      expect(RouterTestAuditReactor.context_for(device_id: 'd1')).to eq([])
+    end
+
+    it 'works alongside deciders and projectors' do
+      router.register(RouterTestDecider)
+
+      reg = CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      store.append(reg)
+
+      cmd = CCCRouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      store.append(cmd)
+
+      router.drain
+
+      # Audit reactor sees DeviceRegistered and DeviceBound
+      conds = CCCRouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
+      audits = store.read(conds).messages
+      types = audits.map { |m| m.payload.event_type }.sort
+
+      expect(types).to eq([
+        'router_test.device.bound',
+        'router_test.device.registered'
+      ])
     end
   end
 end
