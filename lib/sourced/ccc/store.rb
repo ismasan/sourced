@@ -204,6 +204,47 @@ module Sourced
         ReadResult.new(messages: messages, guard: guard)
       end
 
+      # Read messages for a specific partition using AND semantics.
+      # A message is included only when every partition attribute it declares
+      # matches the given value. Messages that don't declare a partition
+      # attribute pass through (same logic as {#claim_next}).
+      #
+      # @param partition_attrs [Hash{Symbol|String => String}] partition attribute values
+      # @param handled_types [Array<String>] message type strings to include
+      # @param from_position [Integer] fetch messages after this position (default 0)
+      # @return [ReadResult] messages and a guard for optimistic concurrency
+      def read_partition(partition_attrs, handled_types:, from_position: 0)
+        # Resolve key_pair_ids for each partition attribute
+        key_pair_ids = partition_attrs.filter_map do |name, value|
+          db[:ccc_key_pairs].where(name: name.to_s, value: value.to_s).get(:id)
+        end
+
+        # If any key pair doesn't exist in the store, no messages can match
+        if key_pair_ids.size < partition_attrs.size
+          guard = ConsistencyGuard.new(conditions: [], last_position: from_position)
+          return ReadResult.new(messages: [], guard: guard)
+        end
+
+        messages = fetch_partition_messages(key_pair_ids, from_position, handled_types)
+
+        # Build guard conditions from handled_types, scoped to partition attrs.
+        # These use OR semantics so the guard detects any concurrent write
+        # in the broader partition context (e.g. another student enrolling).
+        partition_sym = partition_attrs.transform_keys(&:to_sym)
+        guard_conditions = handled_types.filter_map do |type|
+          klass = Message.registry[type]
+          klass&.to_conditions(**partition_sym)
+        end.flatten
+
+        # The guard's last_position must cover the full OR-context, not just
+        # the AND-filtered messages. Otherwise a message that passes the OR
+        # conditions but was excluded by AND filtering would look like a conflict.
+        last_pos = max_position_for(guard_conditions, from_position: from_position)
+
+        guard = ConsistencyGuard.new(conditions: guard_conditions, last_position: last_pos)
+        ReadResult.new(messages: messages, guard: guard)
+      end
+
       # Conflict detection: returns messages matching conditions that appeared
       # after the given position. Empty array means no conflicts.
       #
@@ -603,6 +644,42 @@ module Sourced
         return [] if conditions.empty?
 
         query_messages(conditions, from_position: after_position)
+      end
+
+      # Max position among messages matching the given conditions (OR semantics).
+      # Returns from_position (or latest_position) if no matches.
+      #
+      # @param conditions [Array<QueryCondition>]
+      # @param from_position [Integer, nil]
+      # @return [Integer]
+      def max_position_for(conditions, from_position: nil)
+        return from_position || latest_position if conditions.empty?
+
+        key_lookups = conditions.map { |c| [c.key_name, c.key_value] }.uniq
+        or_clauses = key_lookups.map { |n, v| "(name = #{db.literal(n)} AND value = #{db.literal(v)})" }
+        key_rows = db.fetch("SELECT id, name, value FROM ccc_key_pairs WHERE #{or_clauses.join(' OR ')}").all
+
+        key_pair_index = {}
+        key_rows.each { |r| key_pair_index[[r[:name], r[:value]]] = r[:id] }
+
+        where_parts = conditions.filter_map do |c|
+          kp_id = key_pair_index[[c.key_name, c.key_value]]
+          next unless kp_id
+          "(m.message_type = #{db.literal(c.message_type)} AND mkp.key_pair_id = #{db.literal(kp_id)})"
+        end
+
+        return from_position || latest_position if where_parts.empty?
+
+        sql = <<~SQL
+          SELECT MAX(m.position) AS max_pos
+          FROM ccc_messages m
+          JOIN ccc_message_key_pairs mkp ON m.position = mkp.message_position
+          WHERE (#{where_parts.join(' OR ')})
+        SQL
+        sql += " AND m.position > #{db.literal(from_position)}" if from_position
+
+        row = db.fetch(sql).first
+        row[:max_pos] || from_position || latest_position
       end
 
       # Deserialize a database row into a {PositionedMessage}.
