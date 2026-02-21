@@ -586,15 +586,16 @@ RSpec.describe Sourced::CCC::Store do
 
       result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       expect(result).not_to be_nil
-      expect(result[:offset_id]).to be_a(Integer)
-      expect(result[:key_pair_ids]).to be_a(Array)
-      expect(result[:partition_key]).to eq('device_id:dev-1')
-      expect(result[:partition_value]).to eq({ 'device_id' => 'dev-1' })
-      expect(result[:messages]).to be_a(Array)
-      expect(result[:messages].size).to eq(1)
-      expect(result[:messages].first).to be_a(CCCStoreTestMessages::DeviceRegistered)
-      expect(result[:messages].first.position).to eq(1)
-      expect(result[:guard]).to be_a(Sourced::CCC::ConsistencyGuard)
+      expect(result).to be_a(Sourced::CCC::ClaimResult)
+      expect(result.offset_id).to be_a(Integer)
+      expect(result.key_pair_ids).to be_a(Array)
+      expect(result.partition_key).to eq('device_id:dev-1')
+      expect(result.partition_value).to eq({ 'device_id' => 'dev-1' })
+      expect(result.messages).to be_a(Array)
+      expect(result.messages.size).to eq(1)
+      expect(result.messages.first).to be_a(CCCStoreTestMessages::DeviceRegistered)
+      expect(result.messages.first.position).to eq(1)
+      expect(result.guard).to be_a(Sourced::CCC::ConsistencyGuard)
     end
 
     it 'returns multiple pending messages for same partition' do
@@ -604,7 +605,7 @@ RSpec.describe Sourced::CCC::Store do
       ])
 
       result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      expect(result[:messages].size).to eq(2)
+      expect(result.messages.size).to eq(2)
     end
 
     it 'skips claimed partitions — second worker gets different partition' do
@@ -616,7 +617,7 @@ RSpec.describe Sourced::CCC::Store do
       r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-2')
 
-      expect(r1[:partition_key]).not_to eq(r2[:partition_key])
+      expect(r1.partition_key).not_to eq(r2.partition_key)
     end
 
     it 'returns nil when all partitions claimed' do
@@ -644,7 +645,7 @@ RSpec.describe Sourced::CCC::Store do
       )
 
       r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1[:offset_id], position: r1[:messages].last.position)
+      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # Append another message for same partition
       store.append(
@@ -652,8 +653,8 @@ RSpec.describe Sourced::CCC::Store do
       )
 
       r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      expect(r2[:messages].size).to eq(1)
-      expect(r2[:messages].first.payload.name).to eq('A updated')
+      expect(r2.messages.size).to eq(1)
+      expect(r2.messages.first.payload.name).to eq('A updated')
     end
 
     it 'returns nil for stopped consumer group' do
@@ -676,7 +677,7 @@ RSpec.describe Sourced::CCC::Store do
 
       result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       # dev-2 was appended first (position 1), so it should be prioritized
-      expect(result[:partition_value]).to eq({ 'device_id' => 'dev-2' })
+      expect(result.partition_value).to eq({ 'device_id' => 'dev-2' })
     end
 
     it 'bootstraps newly appeared partitions on subsequent calls' do
@@ -685,7 +686,7 @@ RSpec.describe Sourced::CCC::Store do
       )
 
       r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1[:offset_id], position: r1[:messages].last.position)
+      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # New partition appears
       store.append(
@@ -694,7 +695,7 @@ RSpec.describe Sourced::CCC::Store do
 
       r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       expect(r2).not_to be_nil
-      expect(r2[:partition_value]).to eq({ 'device_id' => 'dev-3' })
+      expect(r2.partition_value).to eq({ 'device_id' => 'dev-3' })
     end
 
     it 'returns a guard with conditions only for key_names each type actually has' do
@@ -703,10 +704,10 @@ RSpec.describe Sourced::CCC::Store do
       )
 
       result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      guard = result[:guard]
+      guard = result.guard
 
       expect(guard).to be_a(Sourced::CCC::ConsistencyGuard)
-      expect(guard.last_position).to eq(result[:messages].last.position)
+      expect(guard.last_position).to eq(result.messages.last.position)
 
       # 1 key_pair (device_id=dev-1) × 1 handled_type = 1 condition
       expect(guard.conditions.size).to eq(1)
@@ -725,9 +726,9 @@ RSpec.describe Sourced::CCC::Store do
 
       # No concurrent writes — append with guard succeeds
       new_event = CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
-      expect { store.append(new_event, guard: result[:guard]) }.not_to raise_error
+      expect { store.append(new_event, guard: result.guard) }.not_to raise_error
 
-      store.ack(group_id, offset_id: result[:offset_id], position: result[:messages].last.position)
+      store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
     end
 
     it 'guard detects concurrent conflicting writes' do
@@ -744,7 +745,7 @@ RSpec.describe Sourced::CCC::Store do
 
       new_event = CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
       expect {
-        store.append(new_event, guard: result[:guard])
+        store.append(new_event, guard: result.guard)
       }.to raise_error(Sourced::ConcurrentAppendError)
     end
 
@@ -754,7 +755,7 @@ RSpec.describe Sourced::CCC::Store do
       )
 
       result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      expect(result[:replaying]).to be false
+      expect(result.replaying).to be false
     end
 
     it 'replaying is false for new messages after ack' do
@@ -763,7 +764,7 @@ RSpec.describe Sourced::CCC::Store do
       )
 
       r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1[:offset_id], position: r1[:messages].last.position)
+      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # New message arrives after ack
       store.append(
@@ -771,7 +772,7 @@ RSpec.describe Sourced::CCC::Store do
       )
 
       r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      expect(r2[:replaying]).to be false
+      expect(r2.replaying).to be false
     end
 
     it 'replaying is true when offset is reset and messages are re-claimed' do
@@ -782,15 +783,15 @@ RSpec.describe Sourced::CCC::Store do
 
       # Process and ack — highest_position advances to 2
       r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1[:offset_id], position: r1[:messages].last.position)
+      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # Reset offsets — highest_position stays at 2
       store.reset_consumer_group(group_id)
 
       # Re-claim same messages — replaying because positions <= highest_position
       r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      expect(r2[:replaying]).to be true
-      expect(r2[:messages].size).to eq(2)
+      expect(r2.replaying).to be true
+      expect(r2.messages.size).to eq(2)
     end
 
     it 'replaying transitions to false once consumer passes highest_position after reset' do
@@ -800,7 +801,7 @@ RSpec.describe Sourced::CCC::Store do
 
       # Process and ack up to position 1
       r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1[:offset_id], position: r1[:messages].last.position)
+      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # Reset offsets
       store.reset_consumer_group(group_id)
@@ -812,8 +813,8 @@ RSpec.describe Sourced::CCC::Store do
 
       # Re-claim: both messages, but last position (2) > highest_position (1)
       r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      expect(r2[:replaying]).to be false
-      expect(r2[:messages].size).to eq(2)
+      expect(r2.replaying).to be false
+      expect(r2.messages.size).to eq(2)
     end
   end
 
@@ -848,7 +849,7 @@ RSpec.describe Sourced::CCC::Store do
 
       result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
       expect(result).not_to be_nil
-      expect(result[:partition_value]).to eq({ 'course_name' => 'Algebra', 'user_id' => 'joe' })
+      expect(result.partition_value).to eq({ 'course_name' => 'Algebra', 'user_id' => 'joe' })
     end
 
     it 'fetches messages with single partition attribute matching' do
@@ -859,7 +860,7 @@ RSpec.describe Sourced::CCC::Store do
       ])
 
       result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
-      types = result[:messages].map(&:type)
+      types = result.messages.map(&:type)
       expect(types).to contain_exactly(
         'store_test.course.created',
         'store_test.user.registered',
@@ -878,7 +879,7 @@ RSpec.describe Sourced::CCC::Store do
 
       expect(r1).not_to be_nil
       expect(r2).not_to be_nil
-      expect(r1[:partition_key]).not_to eq(r2[:partition_key])
+      expect(r1.partition_key).not_to eq(r2.partition_key)
     end
 
     it 'excludes messages with ALL partition attributes that do not match ALL values' do
@@ -891,15 +892,15 @@ RSpec.describe Sourced::CCC::Store do
       result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
 
       # The first partition claimed should be one of the two — let's check its messages
-      if result[:partition_value]['user_id'] == 'joe'
+      if result.partition_value['user_id'] == 'joe'
         # Should include CourseCreated (1 attr, matches) and joe's join (2 attrs, both match)
         # Should NOT include jake's join (2 attrs, user_id doesn't match)
-        user_ids = result[:messages]
+        user_ids = result.messages
           .select { |m| m.type == 'store_test.user.joined_course' }
           .map { |m| m.payload.user_id }
         expect(user_ids).to eq(['joe'])
       else
-        user_ids = result[:messages]
+        user_ids = result.messages
           .select { |m| m.type == 'store_test.user.joined_course' }
           .map { |m| m.payload.user_id }
         expect(user_ids).to eq(['jake'])
@@ -913,7 +914,7 @@ RSpec.describe Sourced::CCC::Store do
 
       result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
       # The join message matches both key_pairs but should appear only once
-      expect(result[:messages].size).to eq(1)
+      expect(result.messages.size).to eq(1)
     end
 
     it 'excludes messages with partial attributes matching wrong value' do
@@ -925,7 +926,7 @@ RSpec.describe Sourced::CCC::Store do
       result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
 
       # Whichever partition we get, the other course's join should be excluded
-      courses = result[:messages].map { |m| m.payload.course_name }
+      courses = result.messages.map { |m| m.payload.course_name }
       expect(courses.uniq.size).to eq(1)
     end
 
@@ -936,9 +937,9 @@ RSpec.describe Sourced::CCC::Store do
       ])
 
       result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
-      guard = result[:guard]
+      guard = result.guard
 
-      expect(guard.last_position).to eq(result[:messages].last.position)
+      expect(guard.last_position).to eq(result.messages.last.position)
 
       # Expected conditions (derived from message class definitions, not store data):
       #   CourseCreated     has course_name only     → 1 condition
@@ -979,7 +980,7 @@ RSpec.describe Sourced::CCC::Store do
 
       new_event = CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
       expect {
-        store.append(new_event, guard: result[:guard])
+        store.append(new_event, guard: result.guard)
       }.to raise_error(Sourced::ConcurrentAppendError)
     end
   end
@@ -999,10 +1000,10 @@ RSpec.describe Sourced::CCC::Store do
       result = store.claim_next(group_id, partition_by: 'device_id',
         handled_types: ['store_test.device.registered'], worker_id: 'w-1')
 
-      store.ack(group_id, offset_id: result[:offset_id], position: result[:messages].last.position)
+      store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
 
-      offset = db[:ccc_offsets].where(id: result[:offset_id]).first
-      expect(offset[:last_position]).to eq(result[:messages].last.position)
+      offset = db[:ccc_offsets].where(id: result.offset_id).first
+      expect(offset[:last_position]).to eq(result.messages.last.position)
       expect(offset[:claimed]).to eq(0)
       expect(offset[:claimed_at]).to be_nil
       expect(offset[:claimed_by]).to be_nil
@@ -1016,7 +1017,7 @@ RSpec.describe Sourced::CCC::Store do
 
       r1 = store.claim_next(group_id, partition_by: 'device_id',
         handled_types: ['store_test.device.registered'], worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1[:offset_id], position: r1[:messages].last.position)
+      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # No new messages — should return nil
       r2 = store.claim_next(group_id, partition_by: 'device_id',
@@ -1040,9 +1041,9 @@ RSpec.describe Sourced::CCC::Store do
       result = store.claim_next(group_id, partition_by: 'device_id',
         handled_types: ['store_test.device.registered'], worker_id: 'w-1')
 
-      store.release(group_id, offset_id: result[:offset_id])
+      store.release(group_id, offset_id: result.offset_id)
 
-      offset = db[:ccc_offsets].where(id: result[:offset_id]).first
+      offset = db[:ccc_offsets].where(id: result.offset_id).first
       expect(offset[:last_position]).to eq(0) # not advanced
       expect(offset[:claimed]).to eq(0)
     end
@@ -1054,13 +1055,13 @@ RSpec.describe Sourced::CCC::Store do
 
       r1 = store.claim_next(group_id, partition_by: 'device_id',
         handled_types: ['store_test.device.registered'], worker_id: 'w-1')
-      store.release(group_id, offset_id: r1[:offset_id])
+      store.release(group_id, offset_id: r1.offset_id)
 
       r2 = store.claim_next(group_id, partition_by: 'device_id',
         handled_types: ['store_test.device.registered'], worker_id: 'w-2')
 
-      expect(r2[:offset_id]).to eq(r1[:offset_id])
-      expect(r2[:messages].map(&:position)).to eq(r1[:messages].map(&:position))
+      expect(r2.offset_id).to eq(r1.offset_id)
+      expect(r2.messages.map(&:position)).to eq(r1.messages.map(&:position))
     end
   end
 end

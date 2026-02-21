@@ -19,6 +19,9 @@ module Sourced
       def instance_of?(klass) = __getobj__.instance_of?(klass)
     end
 
+    # Returned by {Store#claim_next} with everything needed to process and ack a partition.
+    ClaimResult = Data.define(:offset_id, :key_pair_ids, :partition_key, :partition_value, :messages, :replaying, :guard)
+
     # SQLite-backed store for CCC's flat, globally-ordered message log.
     # Provides message storage with automatic key-pair indexing,
     # consumer group management, and partition-based offset tracking
@@ -319,7 +322,7 @@ module Sourced
         # ever acked by this consumer group (i.e. they've been processed before).
         replaying = messages.last.position <= cg[:highest_position]
 
-        {
+        ClaimResult.new(
           offset_id: claimed[:offset_id],
           key_pair_ids: key_pair_ids,
           partition_key: claimed[:partition_key],
@@ -327,7 +330,7 @@ module Sourced
           messages: messages,
           replaying: replaying,
           guard: guard
-        }
+        )
       end
 
       # Acknowledge processing: advance the offset to +position+ and release the claim.
