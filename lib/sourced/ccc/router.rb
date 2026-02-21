@@ -19,14 +19,15 @@ module Sourced
         @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_batch).include?(:history)
       end
 
-      def handle_next_for(reactor_class, worker_id: 'default')
+      def handle_next_for(reactor_class, worker_id: 'default', batch_size: nil)
         handled_types = reactor_class.handled_messages.map(&:type).uniq
 
         claim = store.claim_next(
           reactor_class.group_id,
           partition_by: reactor_class.partition_keys.map(&:to_s),
           handled_types: handled_types,
-          worker_id: worker_id
+          worker_id: worker_id,
+          batch_size: batch_size
         )
         return false unless claim
 

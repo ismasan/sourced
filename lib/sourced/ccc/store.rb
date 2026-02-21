@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'sourced/inline_notifier'
 
 module Sourced
   module CCC
@@ -40,9 +41,14 @@ module Sourced
       # @return [Sequel::SQLite::Database]
       attr_reader :db
 
+      # @return [Sourced::InlineNotifier]
+      attr_reader :notifier
+
       # @param db [Sequel::SQLite::Database] a Sequel SQLite connection
-      def initialize(db)
+      # @param notifier [#notify_new_messages, #notify_reactor_resumed, nil] optional notifier for dispatch signals
+      def initialize(db, notifier: nil)
         @db = db
+        @notifier = notifier || Sourced::InlineNotifier.new
         @db.run('PRAGMA foreign_keys = ON')
         @db.run('PRAGMA journal_mode = WAL')
         @db.run('PRAGMA busy_timeout = 5000')
@@ -181,6 +187,8 @@ module Sourced
           end
         end
 
+        notifier.notify_new_messages(messages.map(&:type).uniq)
+
         last_position
       end
 
@@ -292,6 +300,7 @@ module Sourced
       # @return [void]
       def start_consumer_group(group_id)
         db[:ccc_consumer_groups].where(group_id: group_id).update(status: ACTIVE, updated_at: Time.now.iso8601)
+        notifier.notify_reactor_resumed(group_id)
       end
 
       # Delete all offsets for a consumer group, resetting it to process from the beginning.
@@ -324,8 +333,9 @@ module Sourced
       # @param partition_by [String, Array<String>] attribute name(s) defining partitions
       # @param handled_types [Array<String>] message type strings this consumer handles
       # @param worker_id [String] identifier for the claiming worker
+      # @param batch_size [Integer, nil] max messages to fetch per claim (nil = unlimited)
       # @return [Hash, nil] +{ offset_id:, key_pair_ids:, partition_key:, partition_value:, messages:, replaying:, guard: }+ or nil
-      def claim_next(group_id, partition_by:, handled_types:, worker_id:)
+      def claim_next(group_id, partition_by:, handled_types:, worker_id:, batch_size: nil)
         partition_by = Array(partition_by).sort
         cg = db[:ccc_consumer_groups].where(group_id: group_id, status: ACTIVE).first
         return nil unless cg
@@ -339,7 +349,7 @@ module Sourced
           .where(offset_id: claimed[:offset_id])
           .select_map(:key_pair_id)
 
-        messages = fetch_partition_messages(key_pair_ids, claimed[:last_position], handled_types)
+        messages = fetch_partition_messages(key_pair_ids, claimed[:last_position], handled_types, limit: batch_size)
 
         # If no messages pass the conditional AND filter, release and return nil
         if messages.empty?
@@ -560,8 +570,9 @@ module Sourced
       # @param key_pair_ids [Array<Integer>] partition key_pair IDs
       # @param last_position [Integer] fetch messages after this position
       # @param handled_types [Array<String>] message type strings
+      # @param limit [Integer, nil] max messages to return (nil = unlimited)
       # @return [Array<PositionedMessage>]
-      def fetch_partition_messages(key_pair_ids, last_position, handled_types)
+      def fetch_partition_messages(key_pair_ids, last_position, handled_types, limit: nil)
         return [] if key_pair_ids.empty?
 
         kp_ids_list = key_pair_ids.map { |id| db.literal(id) }.join(', ')
@@ -591,6 +602,7 @@ module Sourced
             )
           ORDER BY m.position ASC
         SQL
+        sql += " LIMIT #{db.literal(limit)}" if limit
 
         db.fetch(sql).map { |row| deserialize(row) }
       end
