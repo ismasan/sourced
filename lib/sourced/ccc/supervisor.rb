@@ -37,14 +37,14 @@ module Sourced
       # @param claim_ttl_seconds [Integer] Stale claim age threshold in seconds
       # @param executor [Object] Executor instance for running concurrent workers
       def initialize(
-        router:,
-        logger: Sourced.config.logger,
-        count: 2,
-        batch_size: 50,
-        max_drain_rounds: 10,
-        catchup_interval: 5,
-        housekeeping_interval: 30,
-        claim_ttl_seconds: 120,
+        router: CCC.router,
+        logger: CCC.config.logger,
+        count: CCC.config.worker_count,
+        batch_size: CCC.config.batch_size,
+        max_drain_rounds: CCC.config.max_drain_rounds,
+        catchup_interval: CCC.config.catchup_interval,
+        housekeeping_interval: CCC.config.housekeeping_interval,
+        claim_ttl_seconds: CCC.config.claim_ttl_seconds,
         executor: Sourced.config.executor
       )
         @router = router

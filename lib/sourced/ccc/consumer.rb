@@ -37,7 +37,7 @@ module Sourced
       end
 
       def on_exception(exception, message, group)
-        Sourced.config.error_strategy.call(exception, message, group)
+        CCC.config.error_strategy.call(exception, message, group)
       end
 
       # Iterate messages collecting [actions, message] pairs.

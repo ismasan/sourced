@@ -81,7 +81,7 @@ RSpec.describe 'Sourced::CCC.load' do
 
     it 'returns an evolved instance and a ReadResult' do
       instance, read_result = Sourced::CCC.load(
-        LoadTestDecider, store,
+        LoadTestDecider, store: store,
         course_id: 'algebra', student_id: 'joe'
       )
 
@@ -91,7 +91,7 @@ RSpec.describe 'Sourced::CCC.load' do
 
     it 'evolves state from matching messages' do
       instance, _read_result = Sourced::CCC.load(
-        LoadTestDecider, store,
+        LoadTestDecider, store: store,
         course_id: 'algebra', student_id: 'joe'
       )
 
@@ -101,7 +101,7 @@ RSpec.describe 'Sourced::CCC.load' do
 
     it 'sets partition_values on the instance' do
       instance, _read_result = Sourced::CCC.load(
-        LoadTestDecider, store,
+        LoadTestDecider, store: store,
         course_id: 'algebra', student_id: 'joe'
       )
 
@@ -110,7 +110,7 @@ RSpec.describe 'Sourced::CCC.load' do
 
     it 'read_result contains the messages used for evolution' do
       _instance, read_result = Sourced::CCC.load(
-        LoadTestDecider, store,
+        LoadTestDecider, store: store,
         course_id: 'algebra', student_id: 'joe'
       )
 
@@ -121,7 +121,7 @@ RSpec.describe 'Sourced::CCC.load' do
 
     it 'read_result contains a guard for subsequent appends' do
       _instance, read_result = Sourced::CCC.load(
-        LoadTestDecider, store,
+        LoadTestDecider, store: store,
         course_id: 'algebra', student_id: 'joe'
       )
 
@@ -131,7 +131,7 @@ RSpec.describe 'Sourced::CCC.load' do
 
     it 'guard can be used for optimistic concurrency on append' do
       instance, read_result = Sourced::CCC.load(
-        LoadTestDecider, store,
+        LoadTestDecider, store: store,
         course_id: 'algebra', student_id: 'joe'
       )
 
@@ -154,7 +154,7 @@ RSpec.describe 'Sourced::CCC.load' do
 
     it 'excludes messages from other partitions (AND filtering at SQL level)' do
       instance, read_result = Sourced::CCC.load(
-        LoadTestDecider, store,
+        LoadTestDecider, store: store,
         course_id: 'algebra', student_id: 'joe'
       )
 
@@ -175,7 +175,7 @@ RSpec.describe 'Sourced::CCC.load' do
 
     it 'guard detects conflicts from concurrent writes to the partition' do
       _instance, read_result = Sourced::CCC.load(
-        LoadTestDecider, store,
+        LoadTestDecider, store: store,
         course_id: 'algebra', student_id: 'joe'
       )
 
@@ -214,7 +214,7 @@ RSpec.describe 'Sourced::CCC.load' do
 
     it 'evolves projector state from matching messages' do
       instance, _read_result = Sourced::CCC.load(
-        LoadTestProjector, store,
+        LoadTestProjector, store: store,
         course_id: 'algebra'
       )
 
@@ -224,7 +224,7 @@ RSpec.describe 'Sourced::CCC.load' do
 
     it 'passes partition values to state initializer' do
       instance, _read_result = Sourced::CCC.load(
-        LoadTestProjector, store,
+        LoadTestProjector, store: store,
         course_id: 'algebra'
       )
 
@@ -235,7 +235,7 @@ RSpec.describe 'Sourced::CCC.load' do
   describe 'empty history' do
     it 'returns instance with initial state when no matching messages' do
       instance, read_result = Sourced::CCC.load(
-        LoadTestDecider, store,
+        LoadTestDecider, store: store,
         course_id: 'nonexistent', student_id: 'nobody'
       )
 

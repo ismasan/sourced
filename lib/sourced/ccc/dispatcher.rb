@@ -109,7 +109,7 @@ module Sourced
         housekeeping_interval: 30,
         claim_ttl_seconds: 120,
         work_queue: nil,
-        logger: Sourced.config.logger
+        logger: CCC.config.logger
       )
         @logger = logger
         @router = router
