@@ -19,12 +19,18 @@ module Sourced
       def instance_of?(klass) = __getobj__.instance_of?(klass)
     end
 
+    # SQLite-backed store for CCC's flat, globally-ordered message log.
+    # Provides message storage with automatic key-pair indexing,
+    # consumer group management, and partition-based offset tracking
+    # for parallel background processing.
     class Store
       ACTIVE = 'active'
       STOPPED = 'stopped'
 
+      # @return [Sequel::SQLite::Database]
       attr_reader :db
 
+      # @param db [Sequel::SQLite::Database] a Sequel SQLite connection
       def initialize(db)
         @db = db
         @db.run('PRAGMA foreign_keys = ON')
@@ -32,6 +38,8 @@ module Sourced
         @db.run('PRAGMA busy_timeout = 5000')
       end
 
+      # Whether all required tables exist.
+      # @return [Boolean]
       def installed?
         db.table_exists?(:ccc_messages) &&
           db.table_exists?(:ccc_key_pairs) &&
@@ -41,6 +49,8 @@ module Sourced
           db.table_exists?(:ccc_offset_key_pairs)
       end
 
+      # Create all required tables and indexes. Idempotent.
+      # @return [void]
       def install!
         db.run(<<~SQL)
           CREATE TABLE IF NOT EXISTS ccc_messages (
@@ -107,11 +117,16 @@ module Sourced
         SQL
       end
 
-      # Append messages to the store. Extracts keys and indexes them.
-      # When a ConsistencyGuard is provided via `guard:`, checks for conflicts
-      # before inserting. Raises Sourced::ConcurrentAppendError if conflicting
-      # messages have been appended since the guard's position.
-      # Returns the last assigned position.
+      # Append messages to the store. Extracts and indexes key-value pairs
+      # from each message's payload automatically.
+      #
+      # When a {ConsistencyGuard} is provided, checks for conflicting messages
+      # before inserting (optimistic concurrency).
+      #
+      # @param messages [CCC::Message, Array<CCC::Message>] one or more messages to append
+      # @param guard [ConsistencyGuard, nil] optional guard for conflict detection
+      # @return [Integer] the last assigned position
+      # @raise [Sourced::ConcurrentAppendError] if conflicting messages found after guard position
       def append(messages, guard: nil)
         messages = Array(messages)
         return latest_position if messages.empty?
@@ -154,9 +169,13 @@ module Sourced
         last_position
       end
 
-      # Query messages by conditions (array of QueryCondition).
-      # Each condition matches (message_type AND key_name/key_value).
-      # Conditions are OR'd together.
+      # Query messages by conditions. Each condition matches on
+      # (message_type AND key_name AND key_value). Multiple conditions are OR'd.
+      #
+      # @param conditions [QueryCondition, Array<QueryCondition>] query conditions
+      # @param from_position [Integer, nil] only return messages after this position
+      # @param limit [Integer, nil] max number of messages to return
+      # @return [Array(Array<PositionedMessage>, ConsistencyGuard)] messages and a guard
       def read(conditions, from_position: nil, limit: nil)
         conditions = Array(conditions)
         if conditions.empty?
@@ -172,12 +191,18 @@ module Sourced
 
       # Conflict detection: returns messages matching conditions that appeared
       # after the given position. Empty array means no conflicts.
-      # Returns [messages, guard] like #read.
+      #
+      # @param conditions [Array<QueryCondition>] conditions to check
+      # @param position [Integer] check for messages after this position
+      # @return [Array(Array<PositionedMessage>, ConsistencyGuard)]
       def messages_since(conditions, position)
         read(conditions, from_position: position)
       end
 
       # Register a consumer group. Idempotent.
+      #
+      # @param group_id [String] unique identifier for the consumer group
+      # @return [void]
       def register_consumer_group(group_id)
         now = Time.now.iso8601
         db.run(<<~SQL)
@@ -186,6 +211,10 @@ module Sourced
         SQL
       end
 
+      # Whether the consumer group exists and is active.
+      #
+      # @param group_id [String]
+      # @return [Boolean]
       def consumer_group_active?(group_id)
         row = db[:ccc_consumer_groups].where(group_id: group_id).select(:status).first
         return false unless row
@@ -193,14 +222,26 @@ module Sourced
         row[:status] == ACTIVE
       end
 
+      # Stop a consumer group. Stopped groups are skipped by {#claim_next}.
+      #
+      # @param group_id [String]
+      # @return [void]
       def stop_consumer_group(group_id)
         db[:ccc_consumer_groups].where(group_id: group_id).update(status: STOPPED, updated_at: Time.now.iso8601)
       end
 
+      # Re-activate a stopped consumer group.
+      #
+      # @param group_id [String]
+      # @return [void]
       def start_consumer_group(group_id)
         db[:ccc_consumer_groups].where(group_id: group_id).update(status: ACTIVE, updated_at: Time.now.iso8601)
       end
 
+      # Delete all offsets for a consumer group, resetting it to process from the beginning.
+      #
+      # @param group_id [String]
+      # @return [void]
       def reset_consumer_group(group_id)
         cg = db[:ccc_consumer_groups].where(group_id: group_id).first
         return unless cg
@@ -209,10 +250,19 @@ module Sourced
       end
 
       # Claim the next available partition for processing.
-      # partition_by: String or Array of attribute names
-      # handled_types: Array of message type strings
-      # worker_id: String identifying the claiming worker
-      # Returns Hash { offset_id:, key_pair_ids:, partition_key:, partition_value:, messages: } or nil
+      #
+      # Bootstraps partition offsets (discovering new partitions from messages with
+      # ALL +partition_by+ attributes), finds the unclaimed partition with the earliest
+      # pending message, claims it, and fetches messages using conditional AND semantics.
+      #
+      # Returns a {ConsistencyGuard} alongside the messages, built from each handled
+      # message class's declared payload attributes via {Message.to_conditions}.
+      #
+      # @param group_id [String] consumer group identifier
+      # @param partition_by [String, Array<String>] attribute name(s) defining partitions
+      # @param handled_types [Array<String>] message type strings this consumer handles
+      # @param worker_id [String] identifier for the claiming worker
+      # @return [Hash, nil] +{ offset_id:, key_pair_ids:, partition_key:, partition_value:, messages:, guard: }+ or nil
       def claim_next(group_id, partition_by:, handled_types:, worker_id:)
         partition_by = Array(partition_by).sort
         cg = db[:ccc_consumer_groups].where(group_id: group_id, status: ACTIVE).first
@@ -264,7 +314,12 @@ module Sourced
         }
       end
 
-      # Acknowledge processing: advance offset and release claim.
+      # Acknowledge processing: advance the offset to +position+ and release the claim.
+      #
+      # @param group_id [String] consumer group identifier
+      # @param offset_id [Integer] offset ID from the claim result
+      # @param position [Integer] position of the last processed message
+      # @return [void]
       def ack(group_id, offset_id:, position:)
         cg = db[:ccc_consumer_groups].where(group_id: group_id).first
         return unless cg
@@ -277,7 +332,12 @@ module Sourced
         )
       end
 
-      # Release claim without advancing offset (for error recovery).
+      # Release a claim without advancing the offset. Use for error recovery
+      # so the partition can be re-claimed and retried.
+      #
+      # @param group_id [String] consumer group identifier
+      # @param offset_id [Integer] offset ID from the claim result
+      # @return [void]
       def release(group_id, offset_id:)
         cg = db[:ccc_consumer_groups].where(group_id: group_id).first
         return unless cg
@@ -289,12 +349,16 @@ module Sourced
         )
       end
 
-      # Current max position, or 0 if the store is empty.
+      # Current max position in the message log.
+      #
+      # @return [Integer] max position, or 0 if the store is empty
       def latest_position
         db[:ccc_messages].max(:position) || 0
       end
 
-      # Clear all tables. For testing only.
+      # Delete all data from all tables and reset autoincrement. For testing only.
+      #
+      # @return [void]
       def clear!
         db[:ccc_offset_key_pairs].delete
         db[:ccc_offsets].delete
@@ -308,13 +372,21 @@ module Sourced
       private
 
       # Build canonical partition key string from attribute names and values.
-      # Sorted by attribute name for consistency.
+      # Sorted by attribute name for deterministic uniqueness.
+      #
+      # @param partition_by [Array<String>] attribute names
+      # @param values [Hash{String => String}] attribute values keyed by name
+      # @return [String] e.g. "course_name:Algebra|user_id:joe"
       def build_partition_key(partition_by, values)
         partition_by.sort.map { |attr| "#{attr}:#{values[attr]}" }.join('|')
       end
 
       # Discover partition tuples via AND self-joins and create offset + key_pair rows.
       # Only messages with ALL partition attributes create partition tuples.
+      #
+      # @param cg_id [Integer] consumer group internal ID
+      # @param partition_by [Array<String>] sorted attribute names
+      # @return [void]
       def bootstrap_offsets(cg_id, partition_by)
         # Build AND self-join query to find all unique tuples
         joins = []
@@ -364,7 +436,13 @@ module Sourced
       end
 
       # Find the next unclaimed partition with pending messages and claim it.
-      # Uses OR semantics for detection (any matching key_pair); exact filtering at fetch time.
+      # Uses OR semantics for detection (any matching key_pair is sufficient);
+      # exact conditional AND filtering happens at fetch time.
+      #
+      # @param cg_id [Integer] consumer group internal ID
+      # @param handled_types [Array<String>] message type strings
+      # @param worker_id [String] claiming worker identifier
+      # @return [Hash, nil] +{ offset_id:, partition_key:, last_position: }+ or nil
       def find_and_claim_partition(cg_id, handled_types, worker_id)
         types_list = handled_types.map { |t| db.literal(t) }.join(', ')
 
@@ -398,7 +476,14 @@ module Sourced
       end
 
       # Fetch messages for a partition using conditional AND semantics.
-      # For each message: match against ALL of the partition's attributes that the message has.
+      # For each candidate message, it must match ALL of the partition's attributes
+      # that the message itself has. Messages with a single partition attribute match
+      # on that one; messages with multiple must match all of them.
+      #
+      # @param key_pair_ids [Array<Integer>] partition key_pair IDs
+      # @param last_position [Integer] fetch messages after this position
+      # @param handled_types [Array<String>] message type strings
+      # @return [Array<PositionedMessage>]
       def fetch_partition_messages(key_pair_ids, last_position, handled_types)
         return [] if key_pair_ids.empty?
 
@@ -433,7 +518,13 @@ module Sourced
         db.fetch(sql).map { |row| deserialize(row) }
       end
 
-      # Core query logic shared by #read and #check_conflicts.
+      # Core query logic shared by {#read} and {#check_conflicts}.
+      # Resolves key_pair IDs from conditions, then queries messages via OR'd clauses.
+      #
+      # @param conditions [Array<QueryCondition>]
+      # @param from_position [Integer, nil]
+      # @param limit [Integer, nil]
+      # @return [Array<PositionedMessage>]
       def query_messages(conditions, from_position: nil, limit: nil)
         # Step 1: resolve key_pair IDs
         key_lookups = conditions.map { |c| [c.key_name, c.key_value] }.uniq
@@ -468,12 +559,21 @@ module Sourced
       end
 
       # Check for conflicting messages after a given position.
+      #
+      # @param conditions [Array<QueryCondition>]
+      # @param after_position [Integer]
+      # @return [Array<PositionedMessage>]
       def check_conflicts(conditions, after_position)
         return [] if conditions.empty?
 
         query_messages(conditions, from_position: after_position)
       end
 
+      # Deserialize a database row into a {PositionedMessage}.
+      # Looks up the message class from the registry; falls back to base {Message}.
+      #
+      # @param row [Hash] database row with :position, :message_id, :message_type, :payload, :metadata, :created_at
+      # @return [PositionedMessage]
       def deserialize(row)
         payload = JSON.parse(row[:payload], symbolize_names: true)
         metadata = row[:metadata] ? JSON.parse(row[:metadata], symbolize_names: true) : {}
