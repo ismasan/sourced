@@ -90,6 +90,7 @@ module Sourced
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             group_id TEXT NOT NULL UNIQUE,
             status TEXT NOT NULL DEFAULT '#{ACTIVE}',
+            highest_position INTEGER NOT NULL DEFAULT 0,
             error_context TEXT,
             retry_at TEXT,
             created_at TEXT NOT NULL,
@@ -210,8 +211,8 @@ module Sourced
       def register_consumer_group(group_id)
         now = Time.now.iso8601
         db.run(<<~SQL)
-          INSERT OR IGNORE INTO ccc_consumer_groups (group_id, status, created_at, updated_at)
-          VALUES (#{db.literal(group_id)}, '#{ACTIVE}', #{db.literal(now)}, #{db.literal(now)})
+          INSERT OR IGNORE INTO ccc_consumer_groups (group_id, status, highest_position, created_at, updated_at)
+          VALUES (#{db.literal(group_id)}, '#{ACTIVE}', 0, #{db.literal(now)}, #{db.literal(now)})
         SQL
       end
 
@@ -262,11 +263,17 @@ module Sourced
       # Returns a {ConsistencyGuard} alongside the messages, built from each handled
       # message class's declared payload attributes via {Message.to_conditions}.
       #
+      # The +replaying+ flag indicates whether the returned messages have been
+      # processed by this consumer group before. A message is replaying when its
+      # position is at or before the consumer group's +highest_position+ — the
+      # furthest position ever successfully acked. After a reset, re-claimed
+      # messages are correctly flagged as replaying.
+      #
       # @param group_id [String] consumer group identifier
       # @param partition_by [String, Array<String>] attribute name(s) defining partitions
       # @param handled_types [Array<String>] message type strings this consumer handles
       # @param worker_id [String] identifier for the claiming worker
-      # @return [Hash, nil] +{ offset_id:, key_pair_ids:, partition_key:, partition_value:, messages:, guard: }+ or nil
+      # @return [Hash, nil] +{ offset_id:, key_pair_ids:, partition_key:, partition_value:, messages:, replaying:, guard: }+ or nil
       def claim_next(group_id, partition_by:, handled_types:, worker_id:)
         partition_by = Array(partition_by).sort
         cg = db[:ccc_consumer_groups].where(group_id: group_id, status: ACTIVE).first
@@ -308,17 +315,24 @@ module Sourced
         last_pos = messages.last.position
         guard = ConsistencyGuard.new(conditions: guard_conditions, last_position: last_pos)
 
+        # replaying: true when all messages are at or below the highest position
+        # ever acked by this consumer group (i.e. they've been processed before).
+        replaying = messages.last.position <= cg[:highest_position]
+
         {
           offset_id: claimed[:offset_id],
           key_pair_ids: key_pair_ids,
           partition_key: claimed[:partition_key],
           partition_value: partition_value,
           messages: messages,
+          replaying: replaying,
           guard: guard
         }
       end
 
       # Acknowledge processing: advance the offset to +position+ and release the claim.
+      # Also advances the consumer group's +highest_position+ watermark (never decreases),
+      # which drives the {#claim_next} +replaying+ flag.
       #
       # @param group_id [String] consumer group identifier
       # @param offset_id [Integer] offset ID from the claim result
@@ -334,6 +348,14 @@ module Sourced
           claimed_at: nil,
           claimed_by: nil
         )
+
+        # Advance the high watermark (never decrease)
+        if position > cg[:highest_position]
+          db[:ccc_consumer_groups].where(id: cg[:id]).update(
+            highest_position: position,
+            updated_at: Time.now.iso8601
+          )
+        end
       end
 
       # Release a claim without advancing the offset. Use for error recovery
