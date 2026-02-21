@@ -3,6 +3,21 @@
 module Sourced
   module CCC
     class Configuration
+      StoreInterface = Types::Interface[
+        :installed?,
+        :install!,
+        :append,
+        :read,
+        :read_partition,
+        :claim_next,
+        :ack,
+        :release,
+        :register_consumer_group,
+        :worker_heartbeat,
+        :release_stale_claims,
+        :notifier
+      ]
+
       attr_accessor :logger, :worker_count, :batch_size,
                     :catchup_interval, :max_drain_rounds,
                     :claim_ttl_seconds, :housekeeping_interval
@@ -25,10 +40,13 @@ module Sourced
 
       # Accepts either a CCC::Store instance or a Sequel::SQLite::Database connection.
       # When given a DB connection, wraps it in CCC::Store.new(db).
+      # Accepts a CCC::Store, a Sequel::SQLite::Database (auto-wrapped),
+      # or any object implementing StoreInterface.
       def store=(s)
         @store = case s
         when Store then s
-        else Store.new(s)
+        when ->(v) { v.class.name == 'Sequel::SQLite::Database' } then Store.new(s)
+        else StoreInterface.parse(s)
         end
       end
 
