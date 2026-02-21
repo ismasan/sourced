@@ -281,15 +281,15 @@ RSpec.describe Sourced::CCC::Dispatcher do
 
     it 'spawns via #spawn when task responds to spawn' do
       task = double('Task')
-      # 1 notifier + 1 catchup_poller + 2 workers = 4 spawns
-      expect(task).to receive(:spawn).exactly(4).times
+      # 1 notifier + 1 catchup_poller + 1 stale_claim_reaper + 2 workers = 5 spawns
+      expect(task).to receive(:spawn).exactly(5).times
       dispatcher.spawn_into(task)
     end
 
     it 'spawns via #async when task does not respond to spawn' do
       task = Object.new
       def task.async; end
-      expect(task).to receive(:async).exactly(4).times
+      expect(task).to receive(:async).exactly(5).times
       dispatcher.spawn_into(task)
     end
 

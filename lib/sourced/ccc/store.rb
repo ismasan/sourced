@@ -62,7 +62,8 @@ module Sourced
           db.table_exists?(:ccc_message_key_pairs) &&
           db.table_exists?(:ccc_consumer_groups) &&
           db.table_exists?(:ccc_offsets) &&
-          db.table_exists?(:ccc_offset_key_pairs)
+          db.table_exists?(:ccc_offset_key_pairs) &&
+          db.table_exists?(:ccc_workers)
       end
 
       # Create all required tables and indexes. Idempotent.
@@ -132,6 +133,13 @@ module Sourced
             offset_id INTEGER NOT NULL REFERENCES ccc_offsets(id) ON DELETE CASCADE,
             key_pair_id INTEGER NOT NULL REFERENCES ccc_key_pairs(id),
             PRIMARY KEY (offset_id, key_pair_id)
+          )
+        SQL
+
+        db.run(<<~SQL)
+          CREATE TABLE IF NOT EXISTS ccc_workers (
+            id TEXT PRIMARY KEY,
+            last_seen TEXT NOT NULL
           )
         SQL
       end
@@ -436,6 +444,44 @@ module Sourced
         )
       end
 
+      # Upsert heartbeat timestamps for active workers.
+      #
+      # @param worker_ids [Array<String>] worker identifiers
+      # @param at [Time] timestamp to record (default Time.now)
+      # @return [Integer] number of workers heartbeated
+      def worker_heartbeat(worker_ids, at: Time.now)
+        ids = Array(worker_ids).uniq
+        return 0 if ids.empty?
+
+        now = at.iso8601
+        ids.each do |id|
+          db.run(<<~SQL)
+            INSERT INTO ccc_workers (id, last_seen) VALUES (#{db.literal(id)}, #{db.literal(now)})
+            ON CONFLICT(id) DO UPDATE SET last_seen = #{db.literal(now)}
+          SQL
+        end
+        ids.size
+      end
+
+      # Release claims held by workers that haven't heartbeated within ttl_seconds.
+      #
+      # @param ttl_seconds [Integer] age threshold
+      # @return [Integer] number of claims released
+      def release_stale_claims(ttl_seconds: 120)
+        cutoff = (Time.now - ttl_seconds).iso8601
+
+        stale_worker_ids = db[:ccc_workers]
+          .where(Sequel.lit('last_seen <= ?', cutoff))
+          .select_map(:id)
+
+        return 0 if stale_worker_ids.empty?
+
+        db[:ccc_offsets]
+          .where(claimed: 1)
+          .where(claimed_by: stale_worker_ids)
+          .update(claimed: 0, claimed_at: nil, claimed_by: nil)
+      end
+
       # Current max position in the message log.
       #
       # @return [Integer] max position, or 0 if the store is empty
@@ -453,6 +499,7 @@ module Sourced
         db[:ccc_message_key_pairs].delete
         db[:ccc_key_pairs].delete
         db[:ccc_messages].delete
+        db[:ccc_workers].delete
         db.run('DELETE FROM sqlite_sequence') if db.table_exists?(:sqlite_sequence)
       end
 
