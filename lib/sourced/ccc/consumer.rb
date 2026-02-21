@@ -21,6 +21,13 @@ module Sourced
         @group_id = id
       end
 
+      # Message types this consumer evolves from. Used by {#context_for}
+      # to build query conditions for history reads.
+      # Defaults to empty; overridden by CCC::Evolve mixin.
+      def handled_messages_for_evolve
+        @handled_messages_for_evolve ||= []
+      end
+
       # Build query conditions from partition attributes and handled evolve types.
       # Override in reactor for custom per-command conditions.
       def context_for(partition_attrs)
