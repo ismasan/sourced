@@ -747,6 +747,74 @@ RSpec.describe Sourced::CCC::Store do
         store.append(new_event, guard: result[:guard])
       }.to raise_error(Sourced::ConcurrentAppendError)
     end
+
+    it 'replaying is false when consumer group has never processed the partition' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(result[:replaying]).to be false
+    end
+
+    it 'replaying is false for new messages after ack' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.ack(group_id, offset_id: r1[:offset_id], position: r1[:messages].last.position)
+
+      # New message arrives after ack
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
+      )
+
+      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(r2[:replaying]).to be false
+    end
+
+    it 'replaying is true when offset is reset and messages are re-claimed' do
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
+      ])
+
+      # Process and ack — highest_position advances to 2
+      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.ack(group_id, offset_id: r1[:offset_id], position: r1[:messages].last.position)
+
+      # Reset offsets — highest_position stays at 2
+      store.reset_consumer_group(group_id)
+
+      # Re-claim same messages — replaying because positions <= highest_position
+      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(r2[:replaying]).to be true
+      expect(r2[:messages].size).to eq(2)
+    end
+
+    it 'replaying transitions to false once consumer passes highest_position after reset' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      # Process and ack up to position 1
+      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.ack(group_id, offset_id: r1[:offset_id], position: r1[:messages].last.position)
+
+      # Reset offsets
+      store.reset_consumer_group(group_id)
+
+      # Add a new message at position 2
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
+      )
+
+      # Re-claim: both messages, but last position (2) > highest_position (1)
+      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(r2[:replaying]).to be false
+      expect(r2[:messages].size).to eq(2)
+    end
   end
 
   describe '#claim_next (composite partition — conditional AND fetch)' do
