@@ -57,6 +57,8 @@ module Sourced
             position INTEGER PRIMARY KEY AUTOINCREMENT,
             message_id TEXT NOT NULL UNIQUE,
             message_type TEXT NOT NULL,
+            causation_id TEXT,
+            correlation_id TEXT,
             payload TEXT NOT NULL,
             metadata TEXT,
             created_at TEXT NOT NULL
@@ -146,6 +148,8 @@ module Sourced
             db[:ccc_messages].insert(
               message_id: msg.id,
               message_type: msg.type,
+              causation_id: msg.causation_id,
+              correlation_id: msg.correlation_id,
               payload: payload_json,
               metadata: metadata_json,
               created_at: msg.created_at.iso8601
@@ -491,7 +495,7 @@ module Sourced
         types_list = handled_types.map { |t| db.literal(t) }.join(', ')
 
         sql = <<~SQL
-          SELECT DISTINCT m.position, m.message_id, m.message_type, m.payload, m.metadata, m.created_at
+          SELECT DISTINCT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.created_at
           FROM ccc_messages m
           WHERE m.position > #{db.literal(last_position)}
             AND m.message_type IN (#{types_list})
@@ -545,7 +549,7 @@ module Sourced
         return [] if where_parts.empty?
 
         sql = <<~SQL
-          SELECT DISTINCT m.position, m.message_id, m.message_type, m.payload, m.metadata, m.created_at
+          SELECT DISTINCT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.created_at
           FROM ccc_messages m
           JOIN ccc_message_key_pairs mkp ON m.position = mkp.message_position
           WHERE (#{where_parts.join(' OR ')})
@@ -572,7 +576,7 @@ module Sourced
       # Deserialize a database row into a {PositionedMessage}.
       # Looks up the message class from the registry; falls back to base {Message}.
       #
-      # @param row [Hash] database row with :position, :message_id, :message_type, :payload, :metadata, :created_at
+      # @param row [Hash] database row with :position, :message_id, :message_type, :causation_id, :correlation_id, :payload, :metadata, :created_at
       # @return [PositionedMessage]
       def deserialize(row)
         payload = JSON.parse(row[:payload], symbolize_names: true)
@@ -582,6 +586,8 @@ module Sourced
         attrs = {
           id: row[:message_id],
           type: row[:message_type],
+          causation_id: row[:causation_id],
+          correlation_id: row[:correlation_id],
           created_at: row[:created_at],
           metadata: metadata,
           payload: payload

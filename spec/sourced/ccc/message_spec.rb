@@ -64,6 +64,22 @@ RSpec.describe Sourced::CCC::Message do
       )
       expect(msg.metadata[:user_id]).to eq(42)
     end
+
+    it 'defaults causation_id and correlation_id to id' do
+      msg = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      expect(msg.causation_id).to eq(msg.id)
+      expect(msg.correlation_id).to eq(msg.id)
+    end
+
+    it 'accepts explicit causation_id and correlation_id' do
+      msg = CCCTestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' },
+        causation_id: 'cause-1',
+        correlation_id: 'corr-1'
+      )
+      expect(msg.causation_id).to eq('cause-1')
+      expect(msg.correlation_id).to eq('corr-1')
+    end
   end
 
   describe '.from' do
@@ -151,6 +167,57 @@ RSpec.describe Sourced::CCC::Message do
     it 'returns empty array when no attributes match' do
       conditions = CCCTestMessages::DeviceRegistered.to_conditions(course_name: 'Algebra')
       expect(conditions).to eq([])
+    end
+  end
+
+  describe '#correlate' do
+    it 'sets causation_id to source message id' do
+      source = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      target = CCCTestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'Label' })
+
+      correlated = source.correlate(target)
+      expect(correlated.causation_id).to eq(source.id)
+    end
+
+    it 'propagates correlation_id from source' do
+      source = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      target = CCCTestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'Label' })
+
+      correlated = source.correlate(target)
+      expect(correlated.correlation_id).to eq(source.correlation_id)
+    end
+
+    it 'preserves correlation_id through a chain' do
+      first = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      second = first.correlate(CCCTestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'Label' }))
+      third = second.correlate(CCCTestMessages::SystemUpdated.new(payload: { version: 'v1' }))
+
+      expect(third.causation_id).to eq(second.id)
+      expect(third.correlation_id).to eq(first.id)
+    end
+
+    it 'merges metadata from both messages' do
+      source = CCCTestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' },
+        metadata: { user_id: 42 }
+      )
+      target = CCCTestMessages::AssetRegistered.new(
+        payload: { asset_id: 'asset-1', label: 'Label' },
+        metadata: { request_id: 'req-1' }
+      )
+
+      correlated = source.correlate(target)
+      expect(correlated.metadata).to eq({ user_id: 42, request_id: 'req-1' })
+    end
+
+    it 'returns a new instance without mutating the original' do
+      source = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      target = CCCTestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'Label' })
+
+      correlated = source.correlate(target)
+      expect(correlated).not_to equal(target)
+      expect(correlated).to be_a(CCCTestMessages::AssetRegistered)
+      expect(target.causation_id).to eq(target.id) # original unchanged
     end
   end
 
