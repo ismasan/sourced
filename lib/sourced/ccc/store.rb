@@ -22,6 +22,13 @@ module Sourced
     # Returned by {Store#claim_next} with everything needed to process and ack a partition.
     ClaimResult = Data.define(:offset_id, :key_pair_ids, :partition_key, :partition_value, :messages, :replaying, :guard)
 
+    # Returned by {Store#read} with messages and a consistency guard.
+    # Supports array destructuring via #to_ary for backwards compatibility:
+    #   messages, guard = store.read(conditions)
+    ReadResult = Data.define(:messages, :guard) do
+      def to_ary = [messages, guard]
+    end
+
     # SQLite-backed store for CCC's flat, globally-ordered message log.
     # Provides message storage with automatic key-pair indexing,
     # consumer group management, and partition-based offset tracking
@@ -183,18 +190,18 @@ module Sourced
       # @param conditions [QueryCondition, Array<QueryCondition>] query conditions
       # @param from_position [Integer, nil] only return messages after this position
       # @param limit [Integer, nil] max number of messages to return
-      # @return [Array(Array<PositionedMessage>, ConsistencyGuard)] messages and a guard
+      # @return [ReadResult] messages and a guard
       def read(conditions, from_position: nil, limit: nil)
         conditions = Array(conditions)
         if conditions.empty?
           guard = ConsistencyGuard.new(conditions: conditions, last_position: from_position || latest_position)
-          return [[], guard]
+          return ReadResult.new(messages: [], guard: guard)
         end
 
         messages = query_messages(conditions, from_position: from_position, limit: limit)
         last_pos = messages.any? ? messages.last.position : (from_position || latest_position)
         guard = ConsistencyGuard.new(conditions: conditions, last_position: last_pos)
-        [messages, guard]
+        ReadResult.new(messages: messages, guard: guard)
       end
 
       # Conflict detection: returns messages matching conditions that appeared
@@ -202,7 +209,7 @@ module Sourced
       #
       # @param conditions [Array<QueryCondition>] conditions to check
       # @param position [Integer] check for messages after this position
-      # @return [Array(Array<PositionedMessage>, ConsistencyGuard)]
+      # @return [ReadResult]
       def messages_since(conditions, position)
         read(conditions, from_position: position)
       end
