@@ -29,7 +29,7 @@ module Sourced
       # @param ttl_seconds [Integer] age threshold for stale claims (default 120)
       # @param worker_ids_provider [Proc] returns Array<String> of active worker IDs
       # @param logger [Object] logger instance
-      def initialize(store:, interval: 30, ttl_seconds: 120, worker_ids_provider: -> { [] }, logger: Sourced.config.logger)
+      def initialize(store:, interval: 30, ttl_seconds: 120, worker_ids_provider: -> { [] }, logger: CCC.config.logger)
         @store = store
         @interval = interval
         @ttl_seconds = ttl_seconds

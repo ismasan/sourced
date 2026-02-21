@@ -31,7 +31,7 @@ module Sourced
         name: SecureRandom.hex(4),
         batch_size: 50,
         max_drain_rounds: 10,
-        logger: Sourced.config.logger
+        logger: CCC.config.logger
       )
         @work_queue = work_queue
         @router = router

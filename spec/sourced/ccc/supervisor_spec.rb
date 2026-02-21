@@ -20,6 +20,10 @@ RSpec.describe Sourced::CCC::Supervisor do
     allow(Signal).to receive(:trap)
   end
 
+  after do
+    Sourced::CCC.reset!
+  end
+
   describe '.start' do
     it 'creates a new supervisor instance and starts it' do
       supervisor_instance = instance_double(described_class)
