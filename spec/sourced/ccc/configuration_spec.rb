@@ -106,6 +106,24 @@ RSpec.describe Sourced::CCC::Configuration do
       expect(config.store).to be_a(Sourced::CCC::Store)
       expect(config.store.db).to be(db)
     end
+
+    it 'accepts any object implementing StoreInterface' do
+      fake_store = double('CustomStore',
+        installed?: true, install!: nil, append: nil, read: nil,
+        read_partition: nil, claim_next: nil, ack: nil, release: nil,
+        register_consumer_group: nil, worker_heartbeat: nil,
+        release_stale_claims: nil, notifier: nil
+      )
+
+      config = described_class.new
+      config.store = fake_store
+      expect(config.store).to be(fake_store)
+    end
+
+    it 'raises for objects not implementing StoreInterface' do
+      config = described_class.new
+      expect { config.store = Object.new }.to raise_error(Plumb::ParseError)
+    end
   end
 
   describe '#error_strategy' do
