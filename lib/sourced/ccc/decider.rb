@@ -33,18 +33,19 @@ module Sourced
 
           each_with_partial_ack(claim.messages) do |msg|
             if handled_commands.include?(msg.class)
-              events = instance.decide(msg)
+              raw_events = instance.decide(msg)
+              correlated_events = raw_events.map { |e| msg.correlate(e) }
               actions = []
-              actions << Actions::Append.new(events, guard: history.guard) if events.any?
+              actions << Actions::Append.new(correlated_events, guard: history.guard, correlated: true) if correlated_events.any?
 
-              events.each do |evt|
+              correlated_events.each do |evt|
                 next unless instance.reacts_to?(evt)
                 reaction_msgs = Array(instance.react(evt))
-                actions << Actions::Append.new(reaction_msgs) if reaction_msgs.any?
+                actions << Actions::Append.new(reaction_msgs, source: evt) if reaction_msgs.any?
               end
 
               actions += instance.sync_actions(
-                state: instance.state, messages: [msg], events: events
+                state: instance.state, messages: [msg], events: raw_events
               )
 
               [actions, msg]
