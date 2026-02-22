@@ -47,7 +47,7 @@ RSpec.describe Sourced::CCC::Configuration do
 
   describe 'CCC.register' do
     let(:reactor_class) do
-      Class.new(Sourced::CCC::Projector) do
+      Class.new(Sourced::CCC::Projector::StateStored) do
         def self.name = 'TestConfigReactor'
 
         consumer_group 'test-config-reactor'

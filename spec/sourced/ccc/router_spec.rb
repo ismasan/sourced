@@ -63,7 +63,7 @@ class RouterTestDecider < Sourced::CCC::Decider
 end
 
 # Test projector for router specs
-class RouterTestProjector < Sourced::CCC::Projector
+class RouterTestProjector < Sourced::CCC::Projector::StateStored
   partition_by :device_id
   consumer_group 'router-test-projector'
 

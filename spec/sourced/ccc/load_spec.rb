@@ -37,7 +37,7 @@ class LoadTestDecider < Sourced::CCC::Decider
   end
 end
 
-class LoadTestProjector < Sourced::CCC::Projector
+class LoadTestProjector < Sourced::CCC::Projector::StateStored
   partition_by :course_id
   consumer_group 'load-test-projector'
 

@@ -14,12 +14,14 @@ module Sourced
           (handled_messages_for_evolve + handled_messages_for_react).uniq
         end
 
-        # No history: — uses claim.messages directly.
-        def handle_batch(claim)
-          values = partition_keys.map { |k| claim.partition_value[k.to_s] }
-          instance = new(values)
-          instance.evolve(claim.messages)
+        private
 
+        def build_instance(claim)
+          values = partition_keys.map { |k| claim.partition_value[k.to_s] }
+          new(values)
+        end
+
+        def build_action_pairs(instance, claim)
           sync_actions = instance.sync_actions(
             state: instance.state, messages: claim.messages, replaying: claim.replaying
           )
@@ -42,6 +44,28 @@ module Sourced
 
       def initialize(partition_values = [])
         @partition_values = partition_values
+      end
+
+      # StateStored: loads persisted state via `state` block, evolves only new messages.
+      class StateStored < self
+        class << self
+          def handle_batch(claim)
+            instance = build_instance(claim)
+            instance.evolve(claim.messages)
+            build_action_pairs(instance, claim)
+          end
+        end
+      end
+
+      # EventSourced: rebuilds state from full history each time.
+      class EventSourced < self
+        class << self
+          def handle_batch(claim, history:)
+            instance = build_instance(claim)
+            instance.evolve(history.messages)
+            build_action_pairs(instance, claim)
+          end
+        end
       end
     end
   end

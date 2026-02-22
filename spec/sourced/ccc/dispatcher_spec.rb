@@ -42,7 +42,7 @@ class DispatchTestDecider < Sourced::CCC::Decider
   end
 end
 
-class DispatchTestProjector < Sourced::CCC::Projector
+class DispatchTestProjector < Sourced::CCC::Projector::StateStored
   partition_by :device_id
   consumer_group 'dispatch-test-projector'
 
