@@ -1130,6 +1130,171 @@ RSpec.describe Sourced::CCC::Store do
     end
   end
 
+  describe '#advance_offset' do
+    let(:group_id) { 'advance-test' }
+    let(:handled_types) { ['store_test.device.registered', 'store_test.device.bound'] }
+
+    before do
+      store.register_consumer_group(group_id)
+    end
+
+    it 'bootstraps and advances offset for a new partition' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      store.advance_offset(group_id,
+        partition: { 'device_id' => 'dev-1' },
+        position: 1
+      )
+
+      offset = db[:ccc_offsets].join(:ccc_consumer_groups, id: :consumer_group_id)
+        .where(Sequel[:ccc_consumer_groups][:group_id] => group_id)
+        .first
+      expect(offset[:last_position]).to eq(1)
+    end
+
+    it 'advances highest_position on the consumer group' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      store.advance_offset(group_id,
+        partition: { 'device_id' => 'dev-1' },
+        position: 1
+      )
+
+      cg = db[:ccc_consumer_groups].where(group_id: group_id).first
+      expect(cg[:highest_position]).to eq(1)
+    end
+
+    it 'never decreases the offset' do
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
+      ])
+
+      store.advance_offset(group_id,
+        partition: { 'device_id' => 'dev-1' },
+        position: 2
+      )
+
+      # Try to go backwards
+      store.advance_offset(group_id,
+        partition: { 'device_id' => 'dev-1' },
+        position: 1
+      )
+
+      offset = db[:ccc_offsets].join(:ccc_consumer_groups, id: :consumer_group_id)
+        .where(Sequel[:ccc_consumer_groups][:group_id] => group_id)
+        .first
+      expect(offset[:last_position]).to eq(2)
+    end
+
+    it 'never decreases highest_position' do
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
+      ])
+
+      store.advance_offset(group_id,
+        partition: { 'device_id' => 'dev-1' },
+        position: 2
+      )
+
+      store.advance_offset(group_id,
+        partition: { 'device_id' => 'dev-2' },
+        position: 1
+      )
+
+      cg = db[:ccc_consumer_groups].where(group_id: group_id).first
+      expect(cg[:highest_position]).to eq(2)
+    end
+
+    it 'causes claim_next to skip the advanced partition' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      store.advance_offset(group_id,
+        partition: { 'device_id' => 'dev-1' },
+        position: 1
+      )
+
+      result = store.claim_next(group_id,
+        partition_by: 'device_id',
+        handled_types: handled_types,
+        worker_id: 'w-1'
+      )
+      expect(result).to be_nil
+    end
+
+    it 'only skips messages up to the advanced position' do
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'a1' })
+      ])
+
+      # Advance past only the first message
+      store.advance_offset(group_id,
+        partition: { 'device_id' => 'dev-1' },
+        position: 1
+      )
+
+      result = store.claim_next(group_id,
+        partition_by: 'device_id',
+        handled_types: handled_types,
+        worker_id: 'w-1'
+      )
+      expect(result).not_to be_nil
+      expect(result.messages.size).to eq(1)
+      expect(result.messages.first.type).to eq('store_test.device.bound')
+    end
+
+    it 'is a no-op for nonexistent consumer group' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      expect {
+        store.advance_offset('nonexistent',
+          partition: { 'device_id' => 'dev-1' },
+          position: 1
+        )
+      }.not_to raise_error
+
+      expect(db[:ccc_offsets].count).to eq(0)
+    end
+
+    it 'is a no-op when partition has no messages in the store' do
+      expect {
+        store.advance_offset(group_id,
+          partition: { 'device_id' => 'dev-1' },
+          position: 1
+        )
+      }.not_to raise_error
+
+      expect(db[:ccc_offsets].count).to eq(0)
+    end
+
+    it 'works with composite partitions' do
+      store.append(
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
+      )
+
+      store.advance_offset(group_id,
+        partition: { 'course_name' => 'Algebra', 'user_id' => 'joe' },
+        position: 1
+      )
+
+      offset = db[:ccc_offsets].join(:ccc_consumer_groups, id: :consumer_group_id)
+        .where(Sequel[:ccc_consumer_groups][:group_id] => group_id)
+        .first
+      expect(offset[:last_position]).to eq(1)
+      expect(offset[:partition_key]).to eq('course_name:Algebra|user_id:joe')
+    end
+  end
+
   describe '#release' do
     let(:group_id) { 'release-test' }
 

@@ -516,6 +516,36 @@ module Sourced
           .update(claimed: 0, claimed_at: nil, claimed_by: nil)
       end
 
+      # Advance a consumer group's offset for a specific partition to at least +position+.
+      # Bootstraps the offset row if it doesn't exist yet.
+      # Unlike {#ack}, this does not require a prior claim.
+      #
+      # @param group_id [String] consumer group identifier
+      # @param partition [Hash{String => String}] partition attribute names and values
+      # @param position [Integer] advance offset to at least this position
+      # @return [void]
+      def advance_offset(group_id, partition:, position:)
+        cg = db[:ccc_consumer_groups].where(group_id: group_id).first
+        return unless cg
+
+        partition_by = partition.keys.sort
+        bootstrap_offsets(cg[:id], partition_by)
+
+        partition_key = build_partition_key(partition_by, partition)
+        offset = db[:ccc_offsets].where(consumer_group_id: cg[:id], partition_key: partition_key).first
+        return unless offset
+        return if offset[:last_position] >= position
+
+        db[:ccc_offsets].where(id: offset[:id]).update(last_position: position)
+
+        if position > cg[:highest_position]
+          db[:ccc_consumer_groups].where(id: cg[:id]).update(
+            highest_position: position,
+            updated_at: Time.now.iso8601
+          )
+        end
+      end
+
       # Current max position in the message log.
       #
       # @return [Integer] max position, or 0 if the store is empty
