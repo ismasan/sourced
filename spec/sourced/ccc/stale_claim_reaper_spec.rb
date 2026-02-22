@@ -11,7 +11,7 @@ module StaleClaimReaperTestMessages
   end
 end
 
-class ReaperTestProjector < Sourced::CCC::Projector
+class ReaperTestProjector < Sourced::CCC::Projector::StateStored
   partition_by :device_id
   consumer_group 'reaper-test-projector'
 
