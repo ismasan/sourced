@@ -16,7 +16,7 @@ module Sourced
       end
 
       def stop(exception:, message:)
-        @logger.error "CCC: stopping consumer group #{group_id} message: '#{message.type}' (#{message.id}). #{exception.class}: #{exception.message}"
+        @logger.error "CCC: stopping consumer group #{group_id} message: '#{message&.type}' (#{message&.id}). #{exception&.class}: #{exception&.message}"
         @updates[:status] = Store::STOPPED
         @updates[:retry_at] = nil
         @updates[:updated_at] = Time.now.iso8601
