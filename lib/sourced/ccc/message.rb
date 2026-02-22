@@ -214,5 +214,8 @@ module Sourced
         attrs
       end
     end
+
+    class Command < Message; end
+    class Event < Message; end
   end
 end
