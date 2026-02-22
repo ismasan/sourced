@@ -51,14 +51,18 @@ module Sourced
 
         rescue Sourced::PartialBatchError => e
           execute_actions(e.action_pairs, claim, reactor_class.group_id)
-          reactor_class.on_exception(e, e.failed_message, nil)
+          store.updating_consumer_group(reactor_class.group_id) do |group|
+            reactor_class.on_exception(e, e.failed_message, group)
+          end
           true
         rescue Sourced::ConcurrentAppendError
           store.release(reactor_class.group_id, offset_id: claim.offset_id)
           true
         rescue StandardError => e
           store.release(reactor_class.group_id, offset_id: claim.offset_id)
-          reactor_class.on_exception(e, claim.messages.first, nil)
+          store.updating_consumer_group(reactor_class.group_id) do |group|
+            reactor_class.on_exception(e, claim.messages.first, group)
+          end
           true
         end
       end

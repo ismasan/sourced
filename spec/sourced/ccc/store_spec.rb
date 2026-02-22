@@ -538,6 +538,82 @@ RSpec.describe Sourced::CCC::Store do
       store.start_consumer_group('my-group')
       expect(store.consumer_group_active?('my-group')).to be true
     end
+
+    it 'start_consumer_group clears retry_at and error_context' do
+      store.register_consumer_group('my-group')
+
+      # Set retry_at and error_context via updating_consumer_group
+      store.updating_consumer_group('my-group') do |group|
+        group.retry(Time.now + 60, retry_count: 1)
+      end
+
+      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      expect(row[:retry_at]).not_to be_nil
+      expect(row[:error_context]).not_to be_nil
+
+      store.start_consumer_group('my-group')
+
+      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      expect(row[:retry_at]).to be_nil
+      expect(row[:error_context]).to be_nil
+      expect(row[:status]).to eq('active')
+    end
+  end
+
+  describe '#updating_consumer_group' do
+    before do
+      store.register_consumer_group('my-group')
+    end
+
+    it 'yields a GroupUpdater and persists error_context' do
+      store.updating_consumer_group('my-group') do |group|
+        expect(group).to be_a(Sourced::CCC::GroupUpdater)
+        group.retry(Time.now + 30, retry_count: 1)
+      end
+
+      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      ctx = JSON.parse(row[:error_context], symbolize_names: true)
+      expect(ctx[:retry_count]).to eq(1)
+      expect(row[:retry_at]).not_to be_nil
+    end
+
+    it 'persists error_context across successive calls (retry_count increments)' do
+      store.updating_consumer_group('my-group') do |group|
+        group.retry(Time.now + 30, retry_count: 1)
+      end
+
+      store.updating_consumer_group('my-group') do |group|
+        expect(group.error_context[:retry_count]).to eq(1)
+        group.retry(Time.now + 60, retry_count: 2)
+      end
+
+      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      ctx = JSON.parse(row[:error_context], symbolize_names: true)
+      expect(ctx[:retry_count]).to eq(2)
+    end
+
+    it 'raises ArgumentError for nonexistent group' do
+      expect {
+        store.updating_consumer_group('nonexistent') { |_| }
+      }.to raise_error(ArgumentError, /nonexistent/)
+    end
+
+    it 'stop sets status to STOPPED and clears retry_at' do
+      # First set a retry_at
+      store.updating_consumer_group('my-group') do |group|
+        group.retry(Time.now + 30, retry_count: 1)
+      end
+
+      err = RuntimeError.new('test error')
+      msg = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      store.updating_consumer_group('my-group') do |group|
+        group.stop(exception: err, message: msg)
+      end
+
+      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      expect(row[:status]).to eq('stopped')
+      expect(row[:retry_at]).to be_nil
+    end
   end
 
   describe '#reset_consumer_group' do
@@ -665,6 +741,34 @@ RSpec.describe Sourced::CCC::Store do
 
       result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       expect(result).to be_nil
+    end
+
+    it 'returns nil when retry_at is in the future' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      # Set retry_at to the future
+      store.updating_consumer_group(group_id) do |group|
+        group.retry(Time.now + 3600, retry_count: 1)
+      end
+
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(result).to be_nil
+    end
+
+    it 'returns claims when retry_at is in the past' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      # Set retry_at to the past
+      store.updating_consumer_group(group_id) do |group|
+        group.retry(Time.now - 1, retry_count: 1)
+      end
+
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(result).not_to be_nil
     end
 
     it 'prioritizes partition with earliest pending message' do

@@ -2,6 +2,34 @@
 
 module Sourced
   module CCC
+    # Accumulates mutations to a consumer group row for atomic persistence.
+    # Mirrors Sourced::Backends::SequelBackend::GroupUpdater.
+    # Used by {Store#updating_consumer_group}.
+    class GroupUpdater
+      attr_reader :group_id, :updates, :error_context
+
+      def initialize(group_id, row, logger)
+        @group_id = group_id
+        @logger = logger
+        @error_context = row[:error_context]
+        @updates = { error_context: @error_context.dup }
+      end
+
+      def stop(exception:, message:)
+        @logger.error "CCC: stopping consumer group #{group_id} message: '#{message.type}' (#{message.id}). #{exception.class}: #{exception.message}"
+        @updates[:status] = Store::STOPPED
+        @updates[:retry_at] = nil
+        @updates[:updated_at] = Time.now.iso8601
+      end
+
+      def retry(time, **ctx)
+        @logger.warn "CCC: retrying consumer group #{group_id} at #{time}"
+        @updates[:updated_at] = Time.now.iso8601
+        @updates[:retry_at] = time.iso8601
+        @updates[:error_context].merge!(ctx)
+      end
+    end
+
     # Shared consumer configuration for CCC reactors.
     # Extended (not included) onto reactor classes.
     module Consumer

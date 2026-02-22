@@ -44,11 +44,16 @@ module Sourced
       # @return [Sourced::InlineNotifier]
       attr_reader :notifier
 
+      # @return [Logger]
+      attr_reader :logger
+
       # @param db [Sequel::SQLite::Database] a Sequel SQLite connection
       # @param notifier [#notify_new_messages, #notify_reactor_resumed, nil] optional notifier for dispatch signals
-      def initialize(db, notifier: nil)
+      # @param logger [Logger, nil] optional logger (defaults to Sourced.config.logger)
+      def initialize(db, notifier: nil, logger: nil)
         @db = db
         @notifier = notifier || Sourced::InlineNotifier.new
+        @logger = logger || Sourced.config.logger
         @db.run('PRAGMA foreign_keys = ON')
         @db.run('PRAGMA journal_mode = WAL')
         @db.run('PRAGMA busy_timeout = 5000')
@@ -302,13 +307,38 @@ module Sourced
         db[:ccc_consumer_groups].where(group_id: group_id).update(status: STOPPED, updated_at: Time.now.iso8601)
       end
 
-      # Re-activate a stopped consumer group.
+      # Re-activate a stopped consumer group, clearing retry state.
       #
       # @param group_id [String]
       # @return [void]
       def start_consumer_group(group_id)
-        db[:ccc_consumer_groups].where(group_id: group_id).update(status: ACTIVE, updated_at: Time.now.iso8601)
+        db[:ccc_consumer_groups]
+          .where(group_id: group_id)
+          .update(status: ACTIVE, retry_at: nil, error_context: nil, updated_at: Time.now.iso8601)
         notifier.notify_reactor_resumed(group_id)
+      end
+
+      # Load a consumer group row, yield a {GroupUpdater} for mutation,
+      # then persist the accumulated updates atomically.
+      # Mirrors SequelBackend#updating_consumer_group.
+      #
+      # @param group_id [String]
+      # @yieldparam group [CCC::GroupUpdater]
+      # @return [void]
+      def updating_consumer_group(group_id)
+        dataset = db[:ccc_consumer_groups].where(group_id: group_id)
+        row = dataset.first
+        raise ArgumentError, "Consumer group #{group_id} not found" unless row
+
+        ctx = row[:error_context] ? JSON.parse(row[:error_context], symbolize_names: true) : {}
+        row[:error_context] = ctx
+
+        group = CCC::GroupUpdater.new(group_id, row, logger)
+        yield group
+
+        updates = group.updates.dup
+        updates[:error_context] = JSON.dump(updates[:error_context])
+        dataset.update(updates)
       end
 
       # Delete all offsets for a consumer group, resetting it to process from the beginning.
@@ -345,7 +375,11 @@ module Sourced
       # @return [Hash, nil] +{ offset_id:, key_pair_ids:, partition_key:, partition_value:, messages:, replaying:, guard: }+ or nil
       def claim_next(group_id, partition_by:, handled_types:, worker_id:, batch_size: nil)
         partition_by = Array(partition_by).sort
-        cg = db[:ccc_consumer_groups].where(group_id: group_id, status: ACTIVE).first
+        now = Time.now.iso8601
+        cg = db[:ccc_consumer_groups]
+          .where(group_id: group_id, status: ACTIVE)
+          .where { Sequel.|({retry_at: nil}, Sequel.lit('retry_at <= ?', now)) }
+          .first
         return nil unless cg
 
         bootstrap_offsets(cg[:id], partition_by)

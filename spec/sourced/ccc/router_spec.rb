@@ -220,6 +220,62 @@ RSpec.describe Sourced::CCC::Router do
       expect(result).to be true
       expect(RouterTestDecider).to have_received(:on_exception)
     end
+
+    it 'on_exception stops consumer group when default strategy' do
+      store.append(
+        CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+      store.append(
+        CCCRouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      )
+
+      allow(RouterTestDecider).to receive(:handle_batch).and_raise(RuntimeError, 'boom')
+
+      router.handle_next_for(RouterTestDecider)
+      expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be false
+    end
+
+    it 'on_exception persists error_context in the database' do
+      store.append(
+        CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+      store.append(
+        CCCRouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      )
+
+      allow(RouterTestDecider).to receive(:handle_batch).and_raise(RuntimeError, 'boom')
+
+      router.handle_next_for(RouterTestDecider)
+
+      row = db[:ccc_consumer_groups].where(group_id: RouterTestDecider.group_id).first
+      expect(row[:error_context]).not_to be_nil
+      expect(row[:status]).to eq('stopped')
+    end
+
+    it 'on_exception with retry strategy sets retry_at on consumer group' do
+      store.append(
+        CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+      store.append(
+        CCCRouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      )
+
+      retry_strategy = Sourced::ErrorStrategy.new do |s|
+        s.retry(times: 3, after: 5)
+      end
+      allow(Sourced::CCC).to receive_message_chain(:config, :error_strategy).and_return(retry_strategy)
+
+      allow(RouterTestDecider).to receive(:handle_batch).and_raise(RuntimeError, 'boom')
+
+      router.handle_next_for(RouterTestDecider)
+
+      row = db[:ccc_consumer_groups].where(group_id: RouterTestDecider.group_id).first
+      expect(row[:retry_at]).not_to be_nil
+      expect(row[:status]).to eq('active')
+
+      ctx = JSON.parse(row[:error_context], symbolize_names: true)
+      expect(ctx[:retry_count]).to eq(2)
+    end
   end
 
   describe '#drain' do
