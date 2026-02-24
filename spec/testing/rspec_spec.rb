@@ -122,6 +122,95 @@ RSpec.describe Sourced::Testing::RSpec do
       end
     end
 
+    context 'when expecting an exception' do
+      it 'passes when the expected exception is raised' do
+        error_class = Class.new(StandardError)
+
+        klass = Class.new do
+          extend Sourced::Consumer
+          def self.handled_messages = [Testing::Start]
+        end
+        klass.define_singleton_method(:handle) do |message, history:|
+          raise error_class, 'boom'
+        end
+
+        with_reactor(klass, 'a')
+          .when(Testing::Start, name: 'Joe')
+          .then(error_class)
+      end
+
+      it 'fails when expected exception is not raised' do
+        error_class = Class.new(StandardError)
+
+        with_reactor(Testing::Reactor, 'a')
+          .when(Testing::Start, name: 'Joe')
+          .then(Testing::Started.build('a', name: 'Joe'))
+
+        expect {
+          with_reactor(Testing::Reactor, 'a')
+            .when(Testing::Start, name: 'Joe')
+            .then(error_class)
+        }.to raise_error(RSpec::Expectations::ExpectationNotMetError, /expected .* to be raised/)
+      end
+
+      it 'works with Actor instances' do
+        error_class = Class.new(StandardError)
+
+        klass = Class.new(Sourced::Actor) do
+          state do |id|
+            { id: }
+          end
+
+          command Testing::Start do |state, cmd|
+            raise error_class, 'not allowed'
+          end
+        end
+
+        with_reactor(klass.new(id: 'a'))
+          .when(Testing::Start, name: 'Joe')
+          .then(error_class)
+      end
+
+      context 'with exception instance' do
+        it 'matches on class and message' do
+          error_class = Class.new(StandardError)
+
+          klass = Class.new do
+            extend Sourced::Consumer
+            def self.handled_messages = [Testing::Start]
+          end
+          klass.define_singleton_method(:handle) do |message, history:|
+            raise error_class, 'specific message'
+          end
+
+          with_reactor(klass, 'a')
+            .when(Testing::Start, name: 'Joe')
+            .then(error_class.new('specific message'))
+        end
+
+        it 'fails when message does not match' do
+          error_class = Class.new(StandardError)
+
+          klass = Class.new do
+            extend Sourced::Consumer
+            def self.handled_messages = [Testing::Start]
+          end
+          klass.define_singleton_method(:handle) do |message, history:|
+            raise error_class, 'actual message'
+          end
+
+          expect {
+            with_reactor(klass, 'a')
+              .when(Testing::Start, name: 'Joe')
+              .then(error_class.new('expected message'))
+          }.to raise_error(
+            RSpec::Expectations::ExpectationNotMetError,
+            /expected .* with message "expected message", but got "actual message"/
+          )
+        end
+      end
+    end
+
     specify 'it raises when adding events after assertion' do
       expect {
         with_reactor(Testing::Reactor, 'a')

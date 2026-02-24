@@ -1093,6 +1093,26 @@ with_reactor(PlacedOrders, 'order-123')
   end
 ```
 
+### Testing exceptions
+
+`#then` also accepts an exception class or instance, to assert that a command handler raises a specific error.
+
+```ruby
+# Match on exception class
+with_reactor(Order, 'order-123')
+  .given(Order::Placed)
+  .when(Order::Place)
+  .then(Order::AlreadyPlacedError)
+
+# Match on exception class and message
+with_reactor(Order, 'order-123')
+  .given(Order::Placed)
+  .when(Order::Place)
+  .then(Order::AlreadyPlacedError.new('order already placed'))
+```
+
+When given an exception class, the test passes if any error of that type is raised. When given an exception instance, it also checks that the error message matches.
+
 ### Multiple reactors (A.K.A "Sagas")
 
 Use `with_reactors` to test the collaboration of multiple reactors sending and picking up eachother's messages.

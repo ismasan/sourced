@@ -186,6 +186,12 @@ module Sourced
         def stream_id = @actor.id
 
         def run_then(sync, *expected, &block)
+          # If expecting an exception class or instance, assert that handle raises it
+          if expected.size == 1 && exception_expectation?(expected[0])
+            expect_exception(expected[0])
+            return self
+          end
+
           # Actor instances maintain their own state (#given above calls #evolve on them)
           # ReactorAdapter also keeps its own history via #evolve
           # So here we satisfy the expected :history arg, but don't provide historical messages
@@ -206,6 +212,37 @@ module Sourced
           end
 
           self
+        end
+
+        def exception_expectation?(arg)
+          case arg
+          when Class
+            arg < ::Exception
+          when ::Exception
+            true
+          else
+            false
+          end
+        end
+
+        def expect_exception(expected)
+          exception_class = expected.is_a?(Class) ? expected : expected.class
+
+          begin
+            @actor.handle(@when, history: [])
+          rescue exception_class => e
+            if expected.is_a?(::Exception)
+              if e.message != expected.message
+                ::RSpec::Expectations.fail_with(
+                  "expected #{exception_class} with message #{expected.message.inspect}, " \
+                  "but got #{e.message.inspect}"
+                )
+              end
+            end
+            return
+          end
+
+          ::RSpec::Expectations.fail_with("expected #{exception_class} to be raised, but nothing was raised")
         end
       end
 
