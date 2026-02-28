@@ -294,15 +294,19 @@ router.drain
 
 Each reactor class is a consumer group. The store tracks per-partition offsets so multiple reactors process the same events independently.
 
+The lifecycle methods (`stop_consumer_group`, `start_consumer_group`, `reset_consumer_group`, `consumer_group_active?`) accept either a String group ID or any object responding to `#group_id` (e.g. a reactor class).
+
 ```ruby
 store = Sourced::CCC.store
 
-# Manual consumer group management
-store.stop_consumer_group('CourseDecider')
-store.start_consumer_group('CourseDecider')
-store.reset_consumer_group('CourseDecider')  # reprocess from beginning
+# Pass reactor classes directly
+store.stop_consumer_group(CourseDecider)
+store.start_consumer_group(CourseDecider)
+store.reset_consumer_group(CourseDecider)  # reprocess from beginning
+store.consumer_group_active?(CourseDecider)  # => true/false
 
-store.consumer_group_active?('CourseDecider')  # => true/false
+# Or use plain strings
+store.stop_consumer_group('CourseApp::CourseDecider')
 ```
 
 ## Full example

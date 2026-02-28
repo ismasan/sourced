@@ -290,9 +290,10 @@ module Sourced
 
       # Whether the consumer group exists and is active.
       #
-      # @param group_id [String]
+      # @param group_id [String, #group_id] identifier or object responding to +#group_id+
       # @return [Boolean]
       def consumer_group_active?(group_id)
+        group_id = resolve_group_id(group_id)
         row = db[:ccc_consumer_groups].where(group_id: group_id).select(:status).first
         return false unless row
 
@@ -301,17 +302,19 @@ module Sourced
 
       # Stop a consumer group. Stopped groups are skipped by {#claim_next}.
       #
-      # @param group_id [String]
+      # @param group_id [String, #group_id] identifier or object responding to +#group_id+
       # @return [void]
       def stop_consumer_group(group_id)
+        group_id = resolve_group_id(group_id)
         db[:ccc_consumer_groups].where(group_id: group_id).update(status: STOPPED, updated_at: Time.now.iso8601)
       end
 
       # Re-activate a stopped consumer group, clearing retry state.
       #
-      # @param group_id [String]
+      # @param group_id [String, #group_id] identifier or object responding to +#group_id+
       # @return [void]
       def start_consumer_group(group_id)
+        group_id = resolve_group_id(group_id)
         db[:ccc_consumer_groups]
           .where(group_id: group_id)
           .update(status: ACTIVE, retry_at: nil, error_context: nil, updated_at: Time.now.iso8601)
@@ -343,9 +346,10 @@ module Sourced
 
       # Delete all offsets for a consumer group, resetting it to process from the beginning.
       #
-      # @param group_id [String]
+      # @param group_id [String, #group_id] identifier or object responding to +#group_id+
       # @return [void]
       def reset_consumer_group(group_id)
+        group_id = resolve_group_id(group_id)
         cg = db[:ccc_consumer_groups].where(group_id: group_id).first
         return unless cg
 
@@ -568,6 +572,15 @@ module Sourced
       end
 
       private
+
+      # Resolve a group_id argument that is either a String
+      # or an object responding to +#group_id+.
+      #
+      # @param group_id [String, #group_id]
+      # @return [String]
+      def resolve_group_id(group_id)
+        group_id.respond_to?(:group_id) ? group_id.group_id : group_id
+      end
 
       # Build canonical partition key string from attribute names and values.
       # Sorted by attribute name for deterministic uniqueness.

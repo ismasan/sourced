@@ -527,6 +527,12 @@ RSpec.describe Sourced::CCC::Store do
     it 'returns false for nonexistent group' do
       expect(store.consumer_group_active?('nope')).to be false
     end
+
+    it 'accepts an object responding to #group_id' do
+      store.register_consumer_group('my-group')
+      reactor = double('reactor', group_id: 'my-group')
+      expect(store.consumer_group_active?(reactor)).to be true
+    end
   end
 
   describe '#stop/start_consumer_group' do
@@ -536,6 +542,17 @@ RSpec.describe Sourced::CCC::Store do
       expect(store.consumer_group_active?('my-group')).to be false
 
       store.start_consumer_group('my-group')
+      expect(store.consumer_group_active?('my-group')).to be true
+    end
+
+    it 'accepts an object responding to #group_id' do
+      store.register_consumer_group('my-group')
+      reactor = double('reactor', group_id: 'my-group')
+
+      store.stop_consumer_group(reactor)
+      expect(store.consumer_group_active?('my-group')).to be false
+
+      store.start_consumer_group(reactor)
       expect(store.consumer_group_active?('my-group')).to be true
     end
 
@@ -629,6 +646,22 @@ RSpec.describe Sourced::CCC::Store do
 
       expect(db[:ccc_offsets].count).to be > 0
       store.reset_consumer_group('my-group')
+      expect(db[:ccc_offsets].count).to eq(0)
+    end
+
+    it 'accepts an object responding to #group_id' do
+      store.register_consumer_group('my-group')
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      store.claim_next('my-group',
+        partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'],
+        worker_id: 'w-1')
+
+      reactor = double('reactor', group_id: 'my-group')
+      expect(db[:ccc_offsets].count).to be > 0
+      store.reset_consumer_group(reactor)
       expect(db[:ccc_offsets].count).to eq(0)
     end
   end
