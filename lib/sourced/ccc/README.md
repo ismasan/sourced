@@ -316,8 +316,3 @@ See `examples/ccc_app/` for a complete Sinatra application with:
 - An event-sourced projector writing JSON files
 - Synchronous command handling via `CCC.handle!` in HTTP endpoints
 - Background worker processing via Falcon
-
-## Design reference
-
-- Design article: `plans/ccc/ccc.md`
-- TypeScript reference: [Boundless SQLite storage](https://github.com/SBortz/boundless)
