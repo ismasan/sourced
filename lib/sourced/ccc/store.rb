@@ -215,14 +215,14 @@ module Sourced
       def read(conditions, from_position: nil, limit: nil)
         conditions = Array(conditions)
         if conditions.empty?
-          guard = ConsistencyGuard.new(conditions: conditions, last_position: from_position || latest_position)
-          return ReadResult.new(messages: [], guard: guard)
+          guard = ConsistencyGuard.new(conditions:, last_position: from_position || latest_position)
+          return ReadResult.new(messages: [], guard:)
         end
 
-        messages = query_messages(conditions, from_position: from_position, limit: limit)
+        messages = query_messages(conditions, from_position:, limit:)
         last_pos = messages.any? ? messages.last.position : (from_position || latest_position)
-        guard = ConsistencyGuard.new(conditions: conditions, last_position: last_pos)
-        ReadResult.new(messages: messages, guard: guard)
+        guard = ConsistencyGuard.new(conditions:, last_position:)
+        ReadResult.new(messages:, guard:)
       end
 
       # Read messages for a specific partition using AND semantics.
@@ -242,8 +242,8 @@ module Sourced
 
         # If any key pair doesn't exist in the store, no messages can match
         if key_pair_ids.size < partition_attrs.size
-          guard = ConsistencyGuard.new(conditions: [], last_position: from_position)
-          return ReadResult.new(messages: [], guard: guard)
+          guard = ConsistencyGuard.new(conditions: [], last_position:)
+          return ReadResult.new(messages: [], guard:)
         end
 
         messages = fetch_partition_messages(key_pair_ids, from_position, handled_types)
