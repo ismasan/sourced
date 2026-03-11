@@ -242,6 +242,59 @@ Sourced::CCC.configure do |c|
 end
 ```
 
+## Failure handling and retries
+
+CCC already supports consumer-group retries on failure.
+
+- On reactor errors, `Router#handle_next_for` calls the reactor's `on_exception` hook.
+- By default, that hook uses `CCC.config.error_strategy`.
+- The default `Sourced::ErrorStrategy` stops the consumer group immediately.
+- If you configure a retrying error strategy, CCC stores the next retry time in the consumer group's `retry_at` column and skips claiming work for that group until that time has passed.
+
+So retries are built in already, but they are opt-in via the error strategy configuration.
+
+### Example: exponential backoff retries
+
+```ruby
+require 'sourced/ccc'
+
+Sourced::CCC.configure do |c|
+  c.store = Sequel.sqlite('my_app.db')
+
+  c.error_strategy = Sourced::ErrorStrategy.new do |s|
+    s.retry(
+      times: 5,
+      after: 2,
+      backoff: ->(retry_after, retry_count) { retry_after * (2**(retry_count - 1)) }
+    )
+
+    s.on_retry do |retry_count, exception, message, later|
+      LOGGER.warn(
+        "CCC retry ##{retry_count} for #{message.type} (#{message.id}) " \
+        "at #{later}: #{exception.class}: #{exception.message}"
+      )
+    end
+
+    s.on_stop do |exception, message|
+      LOGGER.error(
+        "CCC stopping consumer group after retries for #{message.type} (#{message.id}): " \
+        "#{exception.class}: #{exception.message}"
+      )
+    end
+  end
+end
+```
+
+With the configuration above, failures retry after:
+
+- retry 1: 2 seconds
+- retry 2: 4 seconds
+- retry 3: 8 seconds
+- retry 4: 16 seconds
+- retry 5: 32 seconds
+
+After the configured retries are exhausted, the consumer group is stopped.
+
 ## Registering reactors
 
 ```ruby
@@ -274,7 +327,8 @@ supervisor.start
 2. **Dispatcher** routes notifications to a `WorkQueue`, mapping message types to interested reactors
 3. **Workers** pop reactors from the queue, claim a partition via `Router#handle_next_for`, process messages, and ack
 4. **CatchUpPoller** periodically pushes all reactors as a safety net (handles missed notifications)
-5. **StaleClaimReaper** releases claims held by dead workers
+5. **ScheduledMessagePoller** promotes due delayed messages into the main CCC log
+6. **StaleClaimReaper** releases claims held by dead workers
 
 ### Router (direct usage)
 
@@ -308,6 +362,8 @@ store.consumer_group_active?(CourseDecider)  # => true/false
 # Or use plain strings
 store.stop_consumer_group('CourseApp::CourseDecider')
 ```
+
+When retries are configured via `CCC.config.error_strategy`, failed consumer groups remain active but paused until their `retry_at` time. Once that time passes, they become claimable again automatically.
 
 ## Full example
 
