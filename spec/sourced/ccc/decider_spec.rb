@@ -24,6 +24,10 @@ module CCCDeciderTestMessages
     attribute :device_id, String
   end
 
+  DelayedNotifyBound = Sourced::CCC::Message.define('decider_test.delayed_notify_bound') do
+    attribute :device_id, String
+  end
+
   SymbolicBound = Sourced::CCC::Message.define('decider_test.symbolic_bound') do
     attribute :device_id, String
     attribute :asset_id, String
@@ -63,6 +67,32 @@ class TestDeviceDecider < Sourced::CCC::Decider
 
   reaction CCCDeciderTestMessages::DeviceBound do |_state, evt|
     CCCDeciderTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
+  end
+end
+
+class TestDelayedReactionDecider < Sourced::CCC::Decider
+  partition_by :device_id
+  consumer_group 'device-delayed-decider-test'
+
+  state { |_| { exists: false, bound: false } }
+
+  evolve CCCDeciderTestMessages::DeviceRegistered do |state, _evt|
+    state[:exists] = true
+  end
+
+  evolve CCCDeciderTestMessages::DeviceBound do |state, _evt|
+    state[:bound] = true
+  end
+
+  command CCCDeciderTestMessages::BindDevice do |state, cmd|
+    raise 'Not found' unless state[:exists]
+    raise 'Already bound' if state[:bound]
+    event CCCDeciderTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
+  end
+
+  reaction CCCDeciderTestMessages::DeviceBound do |_state, evt|
+    dispatch(CCCDeciderTestMessages::DelayedNotifyBound, device_id: evt.payload.device_id)
+      .at(Time.now + 10)
   end
 end
 
@@ -181,6 +211,29 @@ RSpec.describe Sourced::CCC::Decider do
       actions, source_msg = pairs.first
       expect(actions).to eq(Sourced::CCC::Actions::OK)
       expect(source_msg).to eq(reg_positioned)
+    end
+
+    it 'returns schedule actions for delayed reaction dispatches' do
+      reg = CCCDeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      history_msgs = [Sourced::CCC::PositionedMessage.new(reg, 1)]
+      guard = Sourced::CCC::ConsistencyGuard.new(conditions: [], last_position: 1)
+      history = Sourced::CCC::ReadResult.new(messages: history_msgs, guard: guard)
+
+      cmd = CCCDeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      claim = Sourced::CCC::ClaimResult.new(
+        offset_id: 1, key_pair_ids: [], partition_key: 'device_id:d1',
+        partition_value: { 'device_id' => 'd1' },
+        messages: [Sourced::CCC::PositionedMessage.new(cmd, 2)],
+        replaying: false,
+        guard: guard
+      )
+
+      pairs = TestDelayedReactionDecider.handle_batch(claim, history: history)
+      actions = pairs.first.first
+      schedule_action = Array(actions).find { |action| action.is_a?(Sourced::CCC::Actions::Schedule) }
+
+      expect(schedule_action).not_to be_nil
+      expect(schedule_action.messages.first).to be_a(CCCDeciderTestMessages::DelayedNotifyBound)
     end
 
     it 'invariant violation propagates as error' do

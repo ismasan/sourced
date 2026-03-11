@@ -2,6 +2,7 @@
 
 module Sourced
   module CCC
+    # Reactor base class for CCC read-model projectors.
     class Projector
       include CCC::Evolve
       include CCC::React
@@ -10,6 +11,8 @@ module Sourced
 
       class << self
         # Projectors claim events they evolve from + events they react to.
+        #
+        # @return [Array<Class>] evolved and reacted-to message classes
         def handled_messages
           (handled_messages_for_evolve + handled_messages_for_react).uniq
         end
@@ -32,7 +35,8 @@ module Sourced
             each_with_partial_ack(claim.messages) do |msg|
               next unless instance.reacts_to?(msg)
               reaction_msgs = Array(instance.react(msg))
-              reaction_msgs.any? ? [Actions::Append.new(reaction_msgs), msg] : nil
+              actions = Actions.build_for(reaction_msgs)
+              actions.any? ? [actions, msg] : nil
             end
           end
 
@@ -42,13 +46,16 @@ module Sourced
 
       attr_reader :partition_values
 
+      # @param partition_values [Array<String, nil>] values for the projector's partition keys
       def initialize(partition_values = [])
         @partition_values = partition_values
       end
 
-      # StateStored: loads persisted state via `state` block, evolves only new messages.
+      # Projector variant that evolves only the claimed messages on top of stored state.
       class StateStored < self
         class << self
+          # @param claim [ClaimResult] claimed partition batch
+          # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
           def handle_batch(claim)
             instance = build_instance(claim)
             instance.evolve(claim.messages)
@@ -57,9 +64,12 @@ module Sourced
         end
       end
 
-      # EventSourced: rebuilds state from full history each time.
+      # Projector variant that rebuilds state from full history each time.
       class EventSourced < self
         class << self
+          # @param claim [ClaimResult] claimed partition batch
+          # @param history [ReadResult] full partition history
+          # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
           def handle_batch(claim, history:)
             instance = build_instance(claim)
             instance.evolve(history.messages)

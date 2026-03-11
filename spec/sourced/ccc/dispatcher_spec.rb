@@ -19,6 +19,10 @@ module CCCDispatcherTestMessages
     attribute :device_id, String
     attribute :asset_id, String
   end
+
+  DelayedNotify = Sourced::CCC::Message.define('dispatch_test.delayed_notify') do
+    attribute :device_id, String
+  end
 end
 
 class DispatchTestDecider < Sourced::CCC::Decider
@@ -39,6 +43,11 @@ class DispatchTestDecider < Sourced::CCC::Decider
     raise 'Not found' unless state[:exists]
     raise 'Already bound' if state[:bound]
     event CCCDispatcherTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
+  end
+
+  reaction CCCDispatcherTestMessages::DeviceBound do |_state, evt|
+    dispatch(CCCDispatcherTestMessages::DelayedNotify, device_id: evt.payload.device_id)
+      .at(Time.now + 2)
   end
 end
 
@@ -281,15 +290,15 @@ RSpec.describe Sourced::CCC::Dispatcher do
 
     it 'spawns via #spawn when task responds to spawn' do
       task = double('Task')
-      # 1 notifier + 1 catchup_poller + 1 stale_claim_reaper + 2 workers = 5 spawns
-      expect(task).to receive(:spawn).exactly(5).times
+      # 1 notifier + 1 catchup_poller + 1 scheduled_message_poller + 1 stale_claim_reaper + 2 workers = 6 spawns
+      expect(task).to receive(:spawn).exactly(6).times
       dispatcher.spawn_into(task)
     end
 
     it 'spawns via #async when task does not respond to spawn' do
       task = Object.new
       def task.async; end
-      expect(task).to receive(:async).exactly(5).times
+      expect(task).to receive(:async).exactly(6).times
       dispatcher.spawn_into(task)
     end
 
@@ -339,6 +348,28 @@ RSpec.describe Sourced::CCC::Dispatcher do
       expect(result).to be true
 
       dispatcher.stop
+    end
+  end
+
+  describe 'scheduled message promotion' do
+    it 'promotes delayed reactions into the main log when due' do
+      store.append(
+        CCCDispatcherTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+      store.append(
+        CCCDispatcherTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      )
+
+      expect(router.handle_next_for(DispatchTestDecider)).to be true
+      expect(db[:ccc_scheduled_messages].count).to eq(1)
+
+      Timecop.freeze(Time.now + 3) do
+        expect(store.update_schedule!).to eq(1)
+      end
+
+      conds = CCCDispatcherTestMessages::DelayedNotify.to_conditions(device_id: 'd1')
+      result = store.read(conds)
+      expect(result.messages.map(&:class)).to include(CCCDispatcherTestMessages::DelayedNotify)
     end
   end
 end

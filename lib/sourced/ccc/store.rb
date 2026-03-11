@@ -9,6 +9,8 @@ module Sourced
     class PositionedMessage < SimpleDelegator
       attr_reader :position
 
+      # @param message [CCC::Message] the wrapped message instance
+      # @param position [Integer] global log position
       def initialize(message, position)
         super(message)
         @position = position
@@ -65,6 +67,7 @@ module Sourced
         db.table_exists?(:ccc_messages) &&
           db.table_exists?(:ccc_key_pairs) &&
           db.table_exists?(:ccc_message_key_pairs) &&
+          db.table_exists?(:ccc_scheduled_messages) &&
           db.table_exists?(:ccc_consumer_groups) &&
           db.table_exists?(:ccc_offsets) &&
           db.table_exists?(:ccc_offset_key_pairs) &&
@@ -106,6 +109,16 @@ module Sourced
           )
         SQL
         db.run('CREATE INDEX IF NOT EXISTS idx_ccc_mkp_key ON ccc_message_key_pairs(key_pair_id, message_position)')
+
+        db.run(<<~SQL)
+          CREATE TABLE IF NOT EXISTS ccc_scheduled_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            available_at TEXT NOT NULL,
+            message TEXT NOT NULL
+          )
+        SQL
+        db.run('CREATE INDEX IF NOT EXISTS idx_ccc_scheduled_available_at ON ccc_scheduled_messages(available_at)')
 
         db.run(<<~SQL)
           CREATE TABLE IF NOT EXISTS ccc_consumer_groups (
@@ -203,6 +216,66 @@ module Sourced
         notifier.notify_new_messages(messages.map(&:type).uniq)
 
         last_position
+      end
+
+      # Persist messages for future promotion into the main CCC log.
+      #
+      # @param messages [CCC::Message, Array<CCC::Message>] one or more delayed messages
+      # @param at [Time] when the messages should become available
+      # @return [Boolean] false when no messages were provided, true otherwise
+      def schedule_messages(messages, at:)
+        messages = Array(messages)
+        return false if messages.empty?
+
+        now = Time.now
+        rows = messages.map do |message|
+          data = message.to_h
+          data[:metadata] = message.metadata.merge(scheduled_at: now)
+          {
+            created_at: now.iso8601,
+            available_at: at.iso8601,
+            message: JSON.dump(data)
+          }
+        end
+
+        db.transaction do
+          db[:ccc_scheduled_messages].multi_insert(rows)
+        end
+
+        true
+      end
+
+      # Promote due scheduled messages into the main CCC log.
+      #
+      # Appended messages are re-inserted through {#append} so they are indexed,
+      # assigned fresh positions, and announced through the store notifier.
+      #
+      # @return [Integer] number of scheduled messages promoted
+      def update_schedule!
+        now = Time.now
+
+        db.transaction do
+          rows = db[:ccc_scheduled_messages]
+            .where { available_at <= now.iso8601 }
+            .order(:id)
+            .limit(100)
+            .all
+
+          return 0 if rows.empty?
+
+          messages = rows.map do |row|
+            data = JSON.parse(row[:message], symbolize_names: true)
+            data[:created_at] = now
+            Message.from(data)
+          end
+
+          append(messages)
+
+          row_ids = rows.map { |row| row[:id] }
+          db[:ccc_scheduled_messages].where(id: row_ids).delete
+
+          rows.size
+        end
       end
 
       # Query messages by conditions. Each condition matches on
@@ -567,6 +640,7 @@ module Sourced
         db[:ccc_message_key_pairs].delete
         db[:ccc_key_pairs].delete
         db[:ccc_messages].delete
+        db[:ccc_scheduled_messages].delete
         db[:ccc_workers].delete
         db.run('DELETE FROM sqlite_sequence') if db.table_exists?(:sqlite_sequence)
       end

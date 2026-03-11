@@ -162,6 +162,54 @@ RSpec.describe Sourced::CCC::Store do
     end
   end
 
+  describe '#schedule_messages and #update_schedule!' do
+    it 'stores delayed messages outside the main log until due' do
+      now = Time.now
+      delayed = CCCStoreTestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' }
+      ).at(now + 60)
+
+      expect(store.schedule_messages([delayed], at: delayed.created_at)).to be true
+      expect(store.latest_position).to eq(0)
+      expect(db[:ccc_scheduled_messages].count).to eq(1)
+      expect(store.update_schedule!).to eq(0)
+    end
+
+    it 'promotes due messages into the flat log and preserves metadata' do
+      now = Time.now
+      due = CCCStoreTestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' },
+        metadata: { source: 'test' }
+      ).at(now + 2)
+
+      store.schedule_messages([due], at: due.created_at)
+
+      Timecop.freeze(now + 3) do
+        expect(store.update_schedule!).to eq(1)
+      end
+
+      expect(db[:ccc_scheduled_messages].count).to eq(0)
+      expect(store.latest_position).to eq(1)
+
+      cond = Sourced::CCC::QueryCondition.new(
+        message_type: due.type,
+        key_name: 'device_id',
+        key_value: 'dev-1'
+      )
+      result = store.read([cond])
+      msg = result.messages.first
+
+      expect(msg).to be_a(CCCStoreTestMessages::DeviceRegistered)
+      expect(msg.created_at).to be >= Time.at((now + 3).to_i)
+      expect(msg.metadata[:source]).to eq('test')
+      expect(Time.parse(msg.metadata[:scheduled_at])).to be_a(Time)
+    end
+
+    it 'returns false when asked to schedule no messages' do
+      expect(store.schedule_messages([], at: Time.now + 5)).to be false
+    end
+  end
+
   describe '#append with guard (conditional append)' do
     let(:cond) do
       Sourced::CCC::QueryCondition.new(

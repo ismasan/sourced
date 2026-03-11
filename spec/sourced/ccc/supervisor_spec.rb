@@ -96,10 +96,10 @@ RSpec.describe Sourced::CCC::Supervisor do
       custom_supervisor.start
     end
 
-    it 'spawns via executor (notifier + catchup + reaper + 2 workers = 5 spawns)' do
+    it 'spawns via executor (notifier + catchup + scheduler + reaper + 2 workers = 6 spawns)' do
       expect(executor).to receive(:start).and_yield(task)
-      # 1 notifier + 1 catchup_poller + 1 stale_claim_reaper + 2 workers = 5 spawns
-      expect(task).to receive(:spawn).exactly(5).times
+      # 1 notifier + 1 catchup_poller + 1 scheduled_message_poller + 1 stale_claim_reaper + 2 workers = 6 spawns
+      expect(task).to receive(:spawn).exactly(6).times
 
       supervisor.start
     end

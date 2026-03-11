@@ -17,6 +17,10 @@ module CCCProjectorTestMessages
   NotifyArchive = Sourced::CCC::Message.define('projector_test.notify_archive') do
     attribute :list_id, String
   end
+
+  DelayedNotifyArchive = Sourced::CCC::Message.define('projector_test.delayed_notify_archive') do
+    attribute :list_id, String
+  end
 end
 
 class TestItemProjector < Sourced::CCC::Projector::StateStored
@@ -68,6 +72,24 @@ class TestItemESProjector < Sourced::CCC::Projector::EventSourced
   sync do |state:, messages:, replaying:|
     state[:synced] = true
     state[:last_replaying] = replaying
+  end
+end
+
+class TestDelayedItemProjector < Sourced::CCC::Projector::StateStored
+  partition_by :list_id
+  consumer_group 'delayed-item-projector-test'
+
+  state do |(list_id)|
+    { list_id: list_id, items: [] }
+  end
+
+  evolve CCCProjectorTestMessages::ItemArchived do |state, msg|
+    state[:items].delete(msg.payload.name)
+  end
+
+  reaction CCCProjectorTestMessages::ItemArchived do |_state, msg|
+    dispatch(CCCProjectorTestMessages::DelayedNotifyArchive, list_id: msg.payload.list_id)
+      .at(Time.now + 10)
   end
 end
 
@@ -129,6 +151,23 @@ RSpec.describe Sourced::CCC::Projector do
 
       expect(append_actions.size).to eq(1)
       expect(append_actions.first.messages.first).to be_a(CCCProjectorTestMessages::NotifyArchive)
+    end
+
+    it 'returns schedule actions for delayed reactions' do
+      msgs = [
+        Sourced::CCC::PositionedMessage.new(
+          CCCProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        )
+      ]
+      claim = make_claim(msgs, replaying: false)
+
+      pairs = TestDelayedItemProjector.handle_batch(claim)
+
+      schedule_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |action| action.is_a?(Sourced::CCC::Actions::Schedule) }
+
+      expect(schedule_actions.size).to eq(1)
+      expect(schedule_actions.first.messages.first).to be_a(CCCProjectorTestMessages::DelayedNotifyArchive)
     end
 
     it 'skips reactions when replaying' do

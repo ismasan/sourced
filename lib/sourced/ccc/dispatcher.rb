@@ -3,6 +3,7 @@
 require 'sourced/work_queue'
 require 'sourced/catchup_poller'
 require 'sourced/ccc/worker'
+require 'sourced/ccc/scheduled_message_poller'
 require 'sourced/ccc/stale_claim_reaper'
 
 module Sourced
@@ -143,6 +144,12 @@ module Sourced
           logger: logger
         )
 
+        @scheduled_message_poller = ScheduledMessagePoller.new(
+          store: router.store,
+          interval: catchup_interval,
+          logger: logger
+        )
+
         @stale_claim_reaper = StaleClaimReaper.new(
           store: router.store,
           interval: housekeeping_interval,
@@ -168,6 +175,9 @@ module Sourced
         # CatchUp poller
         task.send(s) { @catchup_poller.run }
 
+        # Scheduled message poller
+        task.send(s) { @scheduled_message_poller.run }
+
         # Stale claim reaper
         task.send(s) { @stale_claim_reaper.run }
 
@@ -186,6 +196,7 @@ module Sourced
         @logger.info "CCC::Dispatcher: stopping #{@workers.size} workers"
         @store_notifier.stop
         @catchup_poller.stop
+        @scheduled_message_poller.stop
         @stale_claim_reaper.stop
         @workers.each(&:stop)
         @work_queue.close(@workers.size)

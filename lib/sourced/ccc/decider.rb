@@ -2,6 +2,7 @@
 
 module Sourced
   module CCC
+    # Reactor base class for command-handling workflows in CCC.
     class Decider
       include CCC::Evolve
       include CCC::React
@@ -9,23 +10,34 @@ module Sourced
       extend CCC::Consumer
 
       class << self
+        # @return [Array<Class>] command message classes handled by this decider
         def handled_commands
           @handled_commands ||= []
         end
 
         # Messages to claim: commands to decide on + events to react to.
         # Evolve types are NOT included — they are only for context_for().
+        #
+        # @return [Array<Class>] command and reaction message classes
         def handled_messages
           handled_commands + handled_messages_for_react
         end
 
         # Register a command handler.
+        #
+        # @param message_class [Class] CCC command class to handle
+        # @yield [state, message] command handler block
+        # @return [void]
         def command(message_class, &block)
           handled_commands << message_class
           define_method(Sourced.message_method_name('ccc_decide', message_class.to_s), &block)
         end
 
-        # Reactor interface — requests history: via signature.
+        # Build executable actions for a claimed batch.
+        #
+        # @param claim [ClaimResult] claimed partition batch
+        # @param history [ReadResult] event history for the partition
+        # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
         def handle_batch(claim, history:)
           values = partition_keys.map { |k| claim.partition_value[k.to_s] }
           instance = new(values)
@@ -36,12 +48,14 @@ module Sourced
               raw_events = instance.decide(msg)
               correlated_events = raw_events.map { |e| msg.correlate(e) }
               actions = []
-              actions << Actions::Append.new(correlated_events, guard: history.guard, correlated: true) if correlated_events.any?
+              actions.concat(
+                Actions.build_for(correlated_events, guard: history.guard, correlated: true)
+              )
 
               correlated_events.each do |evt|
                 next unless instance.reacts_to?(evt)
                 reaction_msgs = Array(instance.react(evt))
-                actions << Actions::Append.new(reaction_msgs, source: evt) if reaction_msgs.any?
+                actions.concat(Actions.build_for(reaction_msgs, source: evt))
               end
 
               actions += instance.sync_actions(
@@ -55,6 +69,10 @@ module Sourced
           end
         end
 
+        # Copy registered command handlers into subclasses.
+        #
+        # @param subclass [Class] subclass being created
+        # @return [void]
         def inherited(subclass)
           super
           handled_commands.each do |cmd_class|
@@ -65,11 +83,16 @@ module Sourced
 
       attr_reader :partition_values
 
+      # @param partition_values [Array<String, nil>] values for the decider's partition keys
       def initialize(partition_values = [])
         @partition_values = partition_values
         @uncommitted_events = []
       end
 
+      # Decide a command against the decider's current in-memory state.
+      #
+      # @param command [CCC::Message] command to handle
+      # @return [Array<CCC::Message>] newly produced events
       def decide(command)
         @uncommitted_events = []
         method_name = Sourced.message_method_name('ccc_decide', command.class.to_s)
