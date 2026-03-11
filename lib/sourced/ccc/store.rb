@@ -220,7 +220,7 @@ module Sourced
         end
 
         messages = query_messages(conditions, from_position:, limit:)
-        last_pos = messages.any? ? messages.last.position : (from_position || latest_position)
+        last_position = messages.any? ? messages.last.position : (from_position || latest_position)
         guard = ConsistencyGuard.new(conditions:, last_position:)
         ReadResult.new(messages:, guard:)
       end
@@ -242,7 +242,7 @@ module Sourced
 
         # If any key pair doesn't exist in the store, no messages can match
         if key_pair_ids.size < partition_attrs.size
-          guard = ConsistencyGuard.new(conditions: [], last_position:)
+          guard = ConsistencyGuard.new(conditions: [], last_position: from_position)
           return ReadResult.new(messages: [], guard:)
         end
 
