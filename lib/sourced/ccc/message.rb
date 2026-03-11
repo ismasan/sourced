@@ -143,6 +143,20 @@ module Sourced
         super(attrs)
       end
 
+      def with_metadata(meta = {})
+        return self if meta.empty?
+
+        with(metadata: metadata.merge(meta))
+      end
+
+      def at(datetime)
+        if datetime < created_at
+          raise Sourced::PastMessageDateError, "Message #{type} can't be delayed to a date in the past"
+        end
+
+        with(created_at: datetime)
+      end
+
       # Set causation and correlation IDs on another message, establishing
       # a causal link from this message to +message+. Merges metadata.
       #

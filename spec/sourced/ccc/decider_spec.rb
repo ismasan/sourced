@@ -23,6 +23,16 @@ module CCCDeciderTestMessages
   NotifyBound = Sourced::CCC::Message.define('decider_test.notify_bound') do
     attribute :device_id, String
   end
+
+  SymbolicBound = Sourced::CCC::Message.define('decider_test.symbolic_bound') do
+    attribute :device_id, String
+    attribute :asset_id, String
+  end
+
+  BindDeviceWithSymbol = Sourced::CCC::Message.define('decider_test.bind_device_with_symbol') do
+    attribute :device_id, String
+    attribute :asset_id, String
+  end
 end
 
 class TestDeviceDecider < Sourced::CCC::Decider
@@ -45,6 +55,12 @@ class TestDeviceDecider < Sourced::CCC::Decider
     event CCCDeciderTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
+  command CCCDeciderTestMessages::BindDeviceWithSymbol do |state, cmd|
+    raise 'Not found' unless state[:exists]
+    raise 'Already bound' if state[:bound]
+    event :decider_test_symbolic_bound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
+  end
+
   reaction CCCDeciderTestMessages::DeviceBound do |_state, evt|
     CCCDeciderTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
   end
@@ -54,6 +70,7 @@ RSpec.describe Sourced::CCC::Decider do
   describe '.command' do
     it 'registers handler and #decide runs it' do
       expect(TestDeviceDecider.handled_commands).to include(CCCDeciderTestMessages::BindDevice)
+      expect(TestDeviceDecider.handled_commands).to include(CCCDeciderTestMessages::BindDeviceWithSymbol)
 
       instance = TestDeviceDecider.new
       instance.instance_variable_set(:@state, { exists: true, bound: false })
@@ -78,6 +95,18 @@ RSpec.describe Sourced::CCC::Decider do
 
       expect(events.size).to eq(1)
       expect(instance.state[:bound]).to be true
+    end
+
+    it 'resolves event classes from symbols' do
+      instance = TestDeviceDecider.new
+      instance.instance_variable_set(:@state, { exists: true, bound: false })
+
+      events = instance.decide(
+        CCCDeciderTestMessages::BindDeviceWithSymbol.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      )
+
+      expect(events.size).to eq(1)
+      expect(events.first).to be_a(CCCDeciderTestMessages::SymbolicBound)
     end
   end
 
