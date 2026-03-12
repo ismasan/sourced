@@ -106,6 +106,65 @@ messages = store.read_all(from_position: messages.last.position, limit: 20)
 
 Returns an array of `PositionedMessage` instances ordered by position, or `[]` if the store is empty or there are no more messages after `from_position`.
 
+### Database setup
+
+`Store#install!` creates all required tables directly (useful for scripts, tests, and quick prototyping). For production apps using Sequel migrations, the store can export a migration file instead.
+
+#### Quick setup (e.g. scripts, tests)
+
+```ruby
+db = Sequel.sqlite('my_app.db')
+store = Sourced::CCC::Store.new(db)
+store.install!
+```
+
+#### Exporting a Sequel migration
+
+Use `Store#copy_migration_to` to generate a migration file compatible with `Sequel::Migrator`:
+
+```ruby
+db = Sequel.sqlite('my_app.db')
+store = Sourced::CCC::Store.new(db)
+
+# Option 1: pass a directory (uses a default filename)
+store.copy_migration_to('db/migrations')
+
+# Option 2: pass a block for full control over the path
+store.copy_migration_to do
+  "db/migrations/#{Time.now.strftime('%Y%m%d%H%M%S')}_create_ccc_tables.rb"
+end
+```
+
+Then run your migrations as usual:
+
+```bash
+sequel -m db/migrations sqlite://my_app.db
+```
+
+#### Custom table prefix
+
+By default, tables are prefixed with `sourced_` (e.g. `sourced_messages`, `sourced_consumer_groups`). Pass a `prefix:` to `Store.new` to customise this — for example when running multiple CCC stores in the same database:
+
+```ruby
+store = Sourced::CCC::Store.new(db, prefix: 'billing')
+store.install!
+# Creates: billing_messages, billing_key_pairs, billing_consumer_groups, ...
+```
+
+The prefix is carried through to exported migrations automatically.
+
+#### Using the Installer directly
+
+The installer is also available as a standalone object, which is useful for Rake tasks or setup scripts:
+
+```ruby
+installer = Sourced::CCC::Installer.new(db, logger: Logger.new($stdout), prefix: 'sourced')
+installer.install       # create tables
+installer.installed?    # check if tables exist
+installer.uninstall     # drop tables (test env only)
+installer.copy_migration_to('db/migrations')
+```
+
 ## Deciders
 
 Deciders handle commands, enforce invariants, and produce events. They rebuild state from event history before each decision.
