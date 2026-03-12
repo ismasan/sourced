@@ -140,7 +140,7 @@ RSpec.describe Sourced::CCC::Decider do
     end
   end
 
-  describe '.handle_batch' do
+  describe '.handle_claim' do
     let(:db) { Sequel.sqlite }
     let(:store) { Sourced::CCC::Store.new(db) }
 
@@ -166,7 +166,7 @@ RSpec.describe Sourced::CCC::Decider do
         messages: [cmd_positioned], replaying: false, guard: guard
       )
 
-      pairs = TestDeviceDecider.handle_batch(claim, history: history)
+      pairs = TestDeviceDecider.handle_claim(claim, history: history)
 
       # Should have action pairs from the command
       expect(pairs).to be_a(Array)
@@ -205,7 +205,7 @@ RSpec.describe Sourced::CCC::Decider do
         messages: [reg_positioned], replaying: false, guard: guard
       )
 
-      pairs = TestDeviceDecider.handle_batch(claim, history: history)
+      pairs = TestDeviceDecider.handle_claim(claim, history: history)
 
       expect(pairs.size).to eq(1)
       actions, source_msg = pairs.first
@@ -228,7 +228,7 @@ RSpec.describe Sourced::CCC::Decider do
         guard: guard
       )
 
-      pairs = TestDelayedReactionDecider.handle_batch(claim, history: history)
+      pairs = TestDelayedReactionDecider.handle_claim(claim, history: history)
       actions = pairs.first.first
       schedule_action = Array(actions).find { |action| action.is_a?(Sourced::CCC::Actions::Schedule) }
 
@@ -251,7 +251,7 @@ RSpec.describe Sourced::CCC::Decider do
 
       # No history → state[:exists] is false → raises 'Not found'
       expect {
-        TestDeviceDecider.handle_batch(claim, history: history)
+        TestDeviceDecider.handle_claim(claim, history: history)
       }.to raise_error(RuntimeError, 'Not found')
     end
   end

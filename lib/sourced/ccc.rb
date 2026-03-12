@@ -131,7 +131,7 @@ module Sourced
       end
 
       # Load history if the reactor needs it (Deciders always do)
-      needs_history = Injector.resolve_args(reactor_class, :handle_batch).include?(:history)
+      needs_history = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
       if needs_history
         instance, read_result = load(reactor_class, store: store, **partition_attrs)
       end

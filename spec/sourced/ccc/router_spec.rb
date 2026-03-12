@@ -83,7 +83,7 @@ class RouterTestProjector < Sourced::CCC::Projector::StateStored
   end
 end
 
-# Simple reactor: just extends Consumer, defines handled_messages, implements handle_batch.
+# Simple reactor: just extends Consumer, defines handled_messages, implements handle_claim.
 # Logs an audit trail message for every DeviceRegistered or DeviceBound it sees.
 class RouterTestAuditReactor
   extend Sourced::CCC::Consumer
@@ -95,7 +95,7 @@ class RouterTestAuditReactor
     [CCCRouterTestMessages::DeviceRegistered, CCCRouterTestMessages::DeviceBound]
   end
 
-  def self.handle_batch(claim)
+  def self.handle_claim(claim)
     each_with_partial_ack(claim.messages) do |msg|
       audit = CCCRouterTestMessages::DeviceAudited.new(
         payload: { device_id: msg.payload.device_id, event_type: msg.type }
@@ -115,7 +115,7 @@ RSpec.describe Sourced::CCC::Router do
   end
 
   describe '#register' do
-    it 'creates consumer group and introspects handle_batch signature' do
+    it 'creates consumer group and introspects handle_claim signature' do
       router.register(RouterTestDecider)
 
       expect(store.consumer_group_active?('router-test-decider')).to be true
@@ -143,7 +143,7 @@ RSpec.describe Sourced::CCC::Router do
       expect(result).to be false
     end
 
-    it 'claims, calls handle_batch, executes actions + acks in transaction' do
+    it 'claims, calls handle_claim, executes actions + acks in transaction' do
       # Set up: register device first (as history), then send bind command
       store.append(
         CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
@@ -212,8 +212,8 @@ RSpec.describe Sourced::CCC::Router do
         CCCRouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
       )
 
-      # Make handle_batch raise
-      allow(RouterTestDecider).to receive(:handle_batch).and_raise(RuntimeError, 'boom')
+      # Make handle_claim raise
+      allow(RouterTestDecider).to receive(:handle_claim).and_raise(RuntimeError, 'boom')
       allow(RouterTestDecider).to receive(:on_exception)
 
       result = router.handle_next_for(RouterTestDecider)
@@ -229,7 +229,7 @@ RSpec.describe Sourced::CCC::Router do
         CCCRouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
       )
 
-      allow(RouterTestDecider).to receive(:handle_batch).and_raise(RuntimeError, 'boom')
+      allow(RouterTestDecider).to receive(:handle_claim).and_raise(RuntimeError, 'boom')
 
       router.handle_next_for(RouterTestDecider)
       expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be false
@@ -245,7 +245,7 @@ RSpec.describe Sourced::CCC::Router do
         CCCRouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
       )
 
-      allow(RouterTestDecider).to receive(:handle_batch).and_raise(RuntimeError, 'boom')
+      allow(RouterTestDecider).to receive(:handle_claim).and_raise(RuntimeError, 'boom')
 
       router.handle_next_for(RouterTestDecider)
 
@@ -267,7 +267,7 @@ RSpec.describe Sourced::CCC::Router do
       end
       allow(Sourced::CCC).to receive_message_chain(:config, :error_strategy).and_return(retry_strategy)
 
-      allow(RouterTestDecider).to receive(:handle_batch).and_raise(RuntimeError, 'boom')
+      allow(RouterTestDecider).to receive(:handle_claim).and_raise(RuntimeError, 'boom')
 
       router.handle_next_for(RouterTestDecider)
 

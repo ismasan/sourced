@@ -56,7 +56,7 @@ module Sourced
         class << self
           # @param claim [ClaimResult] claimed partition batch
           # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
-          def handle_batch(claim)
+          def handle_claim(claim)
             instance = build_instance(claim)
             instance.evolve(claim.messages)
             build_action_pairs(instance, claim)
@@ -70,7 +70,7 @@ module Sourced
           # @param claim [ClaimResult] claimed partition batch
           # @param history [ReadResult] full partition history
           # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
-          def handle_batch(claim, history:)
+          def handle_claim(claim, history:)
             instance = build_instance(claim)
             instance.evolve(history.messages)
             build_action_pairs(instance, claim)

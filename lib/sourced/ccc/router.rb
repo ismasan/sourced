@@ -16,7 +16,7 @@ module Sourced
       def register(reactor_class)
         @reactors << reactor_class
         store.register_consumer_group(reactor_class.group_id)
-        @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_batch).include?(:history)
+        @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
       end
 
       def handle_next_for(reactor_class, worker_id: 'default', batch_size: nil)
@@ -39,7 +39,7 @@ module Sourced
             kwargs[:history] = store.read(conditions)
           end
 
-          action_pairs = reactor_class.handle_batch(claim, **kwargs)
+          action_pairs = reactor_class.handle_claim(claim, **kwargs)
 
           if action_pairs == Actions::RETRY
             store.release(reactor_class.group_id, offset_id: claim.offset_id)

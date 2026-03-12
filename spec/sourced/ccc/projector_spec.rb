@@ -102,7 +102,7 @@ RSpec.describe Sourced::CCC::Projector do
     end
   end
 
-  describe '.handle_batch' do
+  describe '.handle_claim' do
     let(:guard) { Sourced::CCC::ConsistencyGuard.new(conditions: [], last_position: 2) }
 
     def make_claim(messages, replaying: false)
@@ -124,7 +124,7 @@ RSpec.describe Sourced::CCC::Projector do
       ]
       claim = make_claim(msgs)
 
-      pairs = TestItemProjector.handle_batch(claim)
+      pairs = TestItemProjector.handle_claim(claim)
 
       # Last pair should contain sync actions
       sync_pair = pairs.last
@@ -143,7 +143,7 @@ RSpec.describe Sourced::CCC::Projector do
       ]
       claim = make_claim(msgs, replaying: false)
 
-      pairs = TestItemProjector.handle_batch(claim)
+      pairs = TestItemProjector.handle_claim(claim)
 
       # Should have reaction pair + sync pair
       append_actions = pairs.flat_map { |actions, _| Array(actions) }
@@ -161,7 +161,7 @@ RSpec.describe Sourced::CCC::Projector do
       ]
       claim = make_claim(msgs, replaying: false)
 
-      pairs = TestDelayedItemProjector.handle_batch(claim)
+      pairs = TestDelayedItemProjector.handle_claim(claim)
 
       schedule_actions = pairs.flat_map { |actions, _| Array(actions) }
         .select { |action| action.is_a?(Sourced::CCC::Actions::Schedule) }
@@ -178,7 +178,7 @@ RSpec.describe Sourced::CCC::Projector do
       ]
       claim = make_claim(msgs, replaying: true)
 
-      pairs = TestItemProjector.handle_batch(claim)
+      pairs = TestItemProjector.handle_claim(claim)
 
       append_actions = pairs.flat_map { |actions, _| Array(actions) }
         .select { |a| a.is_a?(Sourced::CCC::Actions::Append) }
@@ -194,7 +194,7 @@ RSpec.describe Sourced::CCC::Projector do
       ]
       claim = make_claim(msgs, replaying: true)
 
-      pairs = TestItemProjector.handle_batch(claim)
+      pairs = TestItemProjector.handle_claim(claim)
 
       # Execute the sync action to verify replaying is passed through
       sync_pair = pairs.last
@@ -238,7 +238,7 @@ RSpec.describe Sourced::CCC::Projector do
       claim = make_claim(claim_msgs)
       history = make_history(history_msgs)
 
-      pairs = TestItemESProjector.handle_batch(claim, history: history)
+      pairs = TestItemESProjector.handle_claim(claim, history: history)
 
       # Sync pair should be the last one, acked against claim's last message
       sync_pair = pairs.last
@@ -260,7 +260,7 @@ RSpec.describe Sourced::CCC::Projector do
       claim = make_claim(claim_msgs, replaying: false)
       history = make_history(history_msgs)
 
-      pairs = TestItemESProjector.handle_batch(claim, history: history)
+      pairs = TestItemESProjector.handle_claim(claim, history: history)
 
       append_actions = pairs.flat_map { |actions, _| Array(actions) }
         .select { |a| a.is_a?(Sourced::CCC::Actions::Append) }
@@ -279,7 +279,7 @@ RSpec.describe Sourced::CCC::Projector do
       claim = make_claim(history_msgs, replaying: true)
       history = make_history(history_msgs)
 
-      pairs = TestItemESProjector.handle_batch(claim, history: history)
+      pairs = TestItemESProjector.handle_claim(claim, history: history)
 
       append_actions = pairs.flat_map { |actions, _| Array(actions) }
         .select { |a| a.is_a?(Sourced::CCC::Actions::Append) }
@@ -288,12 +288,12 @@ RSpec.describe Sourced::CCC::Projector do
     end
 
     it 'is detected by Injector as needing history' do
-      needs = Sourced::Injector.resolve_args(TestItemESProjector, :handle_batch)
+      needs = Sourced::Injector.resolve_args(TestItemESProjector, :handle_claim)
       expect(needs).to include(:history)
     end
 
     it 'StateStored is not detected as needing history' do
-      needs = Sourced::Injector.resolve_args(TestItemProjector, :handle_batch)
+      needs = Sourced::Injector.resolve_args(TestItemProjector, :handle_claim)
       expect(needs).not_to include(:history)
     end
   end

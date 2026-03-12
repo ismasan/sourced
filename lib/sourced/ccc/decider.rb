@@ -38,7 +38,7 @@ module Sourced
         # @param claim [ClaimResult] claimed partition batch
         # @param history [ReadResult] event history for the partition
         # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
-        def handle_batch(claim, history:)
+        def handle_claim(claim, history:)
           values = partition_keys.map { |k| claim.partition_value[k.to_s] }
           instance = new(values)
           instance.evolve(history.messages)
