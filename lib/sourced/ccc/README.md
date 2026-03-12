@@ -246,6 +246,10 @@ Sourced::CCC.configure do |c|
   # Pass a Sequel SQLite connection or a CCC::Store instance
   c.store = Sequel.sqlite('my_app.db')
 
+  # Register reactors (recommended when using Falcon — see below)
+  c.register(CourseDecider)
+  c.register(CourseCatalogProjector)
+
   # Optional settings
   c.worker_count = 4           # background worker fibers (default: 2)
   c.batch_size = 50            # messages per claim (default: 50)
@@ -255,6 +259,17 @@ Sourced::CCC.configure do |c|
   c.housekeeping_interval = 30 # heartbeat/reap cycle (default: 30)
 end
 ```
+
+### `CCC.setup!`
+
+`CCC.configure` stores its block and runs it immediately. You can re-run it later with `CCC.setup!` to create a fresh `Configuration` with new database connections. This is useful after process forks (e.g. Falcon), where SQLite connections become invalid.
+
+```ruby
+# Re-run the configure block (creates fresh store, router, and registrations)
+Sourced::CCC.setup!
+```
+
+`CCC::Falcon::Service` calls `setup!` automatically — you don't need to call it yourself when using the Falcon integration.
 
 ## Failure handling and retries
 
@@ -311,7 +326,18 @@ After the configured retries are exhausted, the consumer group is marked as fail
 
 ## Registering reactors
 
+Reactors can be registered inside the `configure` block or separately via `CCC.register`.
+
 ```ruby
+# Inside the configure block (recommended for Falcon — survives fork replay)
+Sourced::CCC.configure do |c|
+  c.store = Sequel.sqlite('my_app.db')
+  c.register(CourseDecider)
+  c.register(EnrolmentDecider)
+  c.register(CourseCatalogProjector)
+end
+
+# Or separately (fine for scripts and single-process apps)
 Sourced::CCC.register(CourseDecider)
 Sourced::CCC.register(EnrolmentDecider)
 Sourced::CCC.register(CourseCatalogProjector)
@@ -321,7 +347,45 @@ This registers the reactor's consumer group with the store and adds it to the gl
 
 ## Background processing
 
-The supervisor starts workers that claim partitions, process messages, and ack offsets.
+### Falcon (recommended)
+
+`CCC::Falcon` provides a ready-made Falcon service that runs both the web server and CCC background workers as sibling fibers. No separate worker process needed.
+
+```ruby
+# falcon.rb
+#!/usr/bin/env falcon-host
+require_relative 'domain'
+require_relative 'app'
+require 'sourced/ccc/falcon'
+
+service "my-app" do
+  include Sourced::CCC::Falcon::Environment
+  include Falcon::Environment::Rackup
+
+  url "http://localhost:9292"
+  count 1
+end
+```
+
+Start with:
+
+```bash
+bundle exec falcon host
+```
+
+The service automatically calls `CCC.setup!` in each forked process, which replays the `CCC.configure` block to create fresh database connections. This is necessary because SQLite connections are not fork-safe — unlike Postgres, where Sequel reconnects lazily after fork.
+
+This is why registering reactors inside the `configure` block is recommended when using Falcon: registrations made via `CCC.register` outside the block won't be replayed after fork.
+
+#### How it works
+
+- `CCC::Falcon::Environment` — mixin that sets the `service_class` to `CCC::Falcon::Service`. Include it in your Falcon service definition alongside `Falcon::Environment::Rackup`.
+- `CCC::Falcon::Service` — extends `Falcon::Service::Server`. On `run`, it calls `CCC.setup!`, starts the web server, and spawns a `CCC::Dispatcher` with all settings from `CCC.config`. On `stop`, it shuts down the dispatcher before the server.
+- No separate HouseKeeper fibers are needed — the `StaleClaimReaper` is embedded in the CCC Dispatcher.
+
+### Supervisor (standalone)
+
+For running workers without a web server, the supervisor starts workers that claim partitions, process messages, and ack offsets.
 
 ```ruby
 # Start blocking (handles INT/TERM signals for graceful shutdown)
