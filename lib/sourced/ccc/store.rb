@@ -307,6 +307,40 @@ module Sourced
       # matches the given value. Messages that don't declare a partition
       # attribute pass through (same logic as {#claim_next}).
       #
+      # @example Single partition attribute
+      #   result = store.read_partition(
+      #     { device_id: 'dev-1' },
+      #     handled_types: ['device.registered', 'device.bound']
+      #   )
+      #   result.messages  # => [#<PositionedMessage ...>, ...]
+      #   result.guard     # => #<ConsistencyGuard ...>
+      #
+      # @example Composite partition (AND semantics — messages must match all attributes they declare)
+      #   result = store.read_partition(
+      #     { course_name: 'Algebra', user_id: 'joe' },
+      #     handled_types: ['course.created', 'user.joined_course']
+      #   )
+      #   # Returns CourseCreated(course_name: 'Algebra') — matches on its only attribute
+      #   # Returns UserJoinedCourse(course_name: 'Algebra', user_id: 'joe') — matches both
+      #   # Excludes UserJoinedCourse(course_name: 'Algebra', user_id: 'jane') — user_id mismatch
+      #
+      # @example Resuming from a position (e.g. after processing a batch)
+      #   result = store.read_partition(
+      #     { device_id: 'dev-1' },
+      #     handled_types: ['device.registered'],
+      #     from_position: 42
+      #   )
+      #   # Only returns messages with position > 42
+      #
+      # @example Using the guard for optimistic concurrency on append
+      #   result = store.read_partition(
+      #     { device_id: 'dev-1' },
+      #     handled_types: ['device.registered', 'device.bound']
+      #   )
+      #   # ... build new events from result.messages ...
+      #   store.append(new_events, guard: result.guard)
+      #   # Raises Sourced::ConcurrentAppendError if conflicting writes occurred
+      #
       # @param partition_attrs [Hash{Symbol|String => String}] partition attribute values
       # @param handled_types [Array<String>] message type strings to include
       # @param from_position [Integer] fetch messages after this position (default 0)
