@@ -9,12 +9,22 @@ module Sourced
       @config ||= Configuration.new
     end
 
-    # Configure the CCC module. Calls setup! after yielding.
+    # Configure the CCC module. Stores the block for re-running after fork
+    # (see {.setup!}), then runs it immediately.
     # @yieldparam config [Configuration]
-    def self.configure(&)
-      yield config if block_given?
-      config.setup!
-      config.freeze
+    def self.configure(&block)
+      @configure_block = block
+      setup!
+    end
+
+    # Run (or re-run) the configure block on a fresh Configuration.
+    # Safe to call after a process fork to re-establish database connections.
+    # @return [void]
+    def self.setup!
+      @config = Configuration.new
+      @configure_block&.call(@config)
+      @config.setup!
+      @config.freeze
     end
 
     # Register a reactor class with the global router.
@@ -40,6 +50,42 @@ module Sourced
     # Reset the global configuration. For test teardown.
     def self.reset!
       @config = nil
+      @configure_block = nil
+      @topology = nil
+    end
+
+    # Build and cache the topology graph from all reactors registered with
+    # the global {.router}. The result is memoized; call {.reset_topology}
+    # to force a rebuild after registering new reactors.
+    #
+    # @return [Array<Sourced::Topology::CommandNode, Sourced::Topology::EventNode,
+    #   Sourced::Topology::AutomationNode, Sourced::Topology::ReadModelNode>]
+    #   flat array of topology node structs
+    #
+    # @example Inspect the global topology
+    #   Sourced::CCC.register(MyDecider)
+    #   Sourced::CCC.register(MyProjector)
+    #
+    #   Sourced::CCC.topology.each do |node|
+    #     puts "#{node.type}: #{node.name} (#{node.id})"
+    #   end
+    #
+    # @see CCC::Topology.build
+    def self.topology
+      @topology ||= CCC::Topology.build(router.reactors)
+    end
+
+    # Clear the cached topology so it is rebuilt on next access to {.topology}.
+    # Useful after registering additional reactors at runtime.
+    #
+    # @return [nil]
+    #
+    # @example
+    #   Sourced::CCC.register(LateAddedDecider)
+    #   Sourced::CCC.reset_topology
+    #   Sourced::CCC.topology # now includes LateAddedDecider
+    def self.reset_topology
+      @topology = nil
     end
 
     # Returned by {.handle!} with command, reactor instance, and new events.
@@ -189,4 +235,5 @@ require 'sourced/ccc/router'
 require 'sourced/ccc/worker'
 require 'sourced/ccc/stale_claim_reaper'
 require 'sourced/ccc/dispatcher'
+require 'sourced/ccc/topology'
 require 'sourced/ccc/supervisor'

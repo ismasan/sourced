@@ -35,6 +35,7 @@ module Sourced
         @store = nil
         @router = nil
         @error_strategy = nil
+        @reactors = []
         @setup = false
       end
 
@@ -60,12 +61,19 @@ module Sourced
         @error_strategy || Sourced.config.error_strategy
       end
 
+      # Buffer a reactor class for registration during {#setup!}.
+      # @param reactor [Class] a CCC reactor class
+      def register(reactor)
+        @reactors << reactor
+      end
+
       def setup!
         return if @setup
 
         @store ||= Store.new(Sequel.sqlite)
         @store.install!
         @router ||= Router.new(store: @store)
+        @reactors.each { |r| @router.register(r) }
         @setup = true
       end
     end

@@ -80,11 +80,83 @@ RSpec.describe Sourced::CCC::Configuration do
     end
   end
 
+  describe 'CCC.setup!' do
+    let(:reactor_class) do
+      Class.new(Sourced::CCC::Projector::StateStored) do
+        def self.name = 'SetupTestReactor'
+
+        consumer_group 'setup-test-reactor'
+        partition_by :thing_id
+
+        state { |_| {} }
+      end
+    end
+
+    it 'replays the configure block on a fresh Configuration' do
+      call_count = 0
+      Sourced::CCC.configure do |c|
+        call_count += 1
+        c.worker_count = 8
+      end
+
+      expect(call_count).to eq(1)
+      original_config = Sourced::CCC.config
+
+      Sourced::CCC.setup!
+
+      expect(call_count).to eq(2)
+      expect(Sourced::CCC.config).not_to be(original_config)
+      expect(Sourced::CCC.config.worker_count).to eq(8)
+      expect(Sourced::CCC.config).to be_frozen
+    end
+
+    it 'creates a new store connection on each call' do
+      Sourced::CCC.configure {}
+      store1 = Sourced::CCC.config.store
+
+      Sourced::CCC.setup!
+      store2 = Sourced::CCC.config.store
+
+      expect(store2).not_to be(store1)
+    end
+
+    it 'replays registrations from the configure block' do
+      Sourced::CCC.configure do |c|
+        c.register(reactor_class)
+      end
+
+      expect(Sourced::CCC.router.reactors).to include(reactor_class)
+
+      Sourced::CCC.setup!
+
+      expect(Sourced::CCC.router.reactors).to include(reactor_class)
+    end
+
+    it 'works without a configure block' do
+      Sourced::CCC.setup!
+
+      expect(Sourced::CCC.config.store).to be_a(Sourced::CCC::Store)
+      expect(Sourced::CCC.config.router).to be_a(Sourced::CCC::Router)
+      expect(Sourced::CCC.config).to be_frozen
+    end
+  end
+
   describe 'CCC.reset!' do
     it 'clears the singleton config' do
       original = Sourced::CCC.config
       Sourced::CCC.reset!
       expect(Sourced::CCC.config).not_to be(original)
+    end
+
+    it 'clears the stored configure block' do
+      Sourced::CCC.configure do |c|
+        c.worker_count = 8
+      end
+
+      Sourced::CCC.reset!
+      Sourced::CCC.setup!
+
+      expect(Sourced::CCC.config.worker_count).to eq(2)
     end
   end
 
@@ -142,6 +214,34 @@ RSpec.describe Sourced::CCC::Configuration do
     it 'raises if assigned a non-callable' do
       config = described_class.new
       expect { config.error_strategy = 'not callable' }.to raise_error(ArgumentError)
+    end
+  end
+
+  describe '#register' do
+    let(:reactor_class) do
+      Class.new(Sourced::CCC::Projector::StateStored) do
+        def self.name = 'ConfigRegisterReactor'
+
+        consumer_group 'config-register-reactor'
+        partition_by :thing_id
+
+        state { |_| {} }
+      end
+    end
+
+    it 'buffers reactors and registers them during setup!' do
+      config = described_class.new
+      config.register(reactor_class)
+      config.setup!
+
+      expect(config.router.reactors).to include(reactor_class)
+    end
+
+    it 'does not register before setup! is called' do
+      config = described_class.new
+      config.register(reactor_class)
+
+      expect(config.router).to be_nil
     end
   end
 
