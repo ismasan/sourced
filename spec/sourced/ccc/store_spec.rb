@@ -669,15 +669,31 @@ RSpec.describe Sourced::CCC::Store do
         group.retry(Time.now + 30, retry_count: 1)
       end
 
-      err = RuntimeError.new('test error')
-      msg = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       store.updating_consumer_group('my-group') do |group|
-        group.stop(exception: err, message: msg)
+        group.stop(message: 'operator requested shutdown')
       end
 
       row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
       expect(row[:status]).to eq('stopped')
       expect(row[:retry_at]).to be_nil
+    end
+
+    it 'fail sets status to FAILED and clears retry_at' do
+      store.updating_consumer_group('my-group') do |group|
+        group.retry(Time.now + 30, retry_count: 1)
+      end
+
+      err = RuntimeError.new('test error')
+      store.updating_consumer_group('my-group') do |group|
+        group.fail(exception: err)
+      end
+
+      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      expect(row[:status]).to eq('failed')
+      expect(row[:retry_at]).to be_nil
+      ctx = JSON.parse(row[:error_context], symbolize_names: true)
+      expect(ctx[:exception_class]).to eq('RuntimeError')
+      expect(ctx[:exception_message]).to eq('test error')
     end
   end
 

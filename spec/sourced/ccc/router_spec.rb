@@ -221,7 +221,7 @@ RSpec.describe Sourced::CCC::Router do
       expect(RouterTestDecider).to have_received(:on_exception)
     end
 
-    it 'on_exception stops consumer group when default strategy' do
+    it 'on_exception fails consumer group when default strategy' do
       store.append(
         CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       )
@@ -233,6 +233,8 @@ RSpec.describe Sourced::CCC::Router do
 
       router.handle_next_for(RouterTestDecider)
       expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be false
+      row = db[:ccc_consumer_groups].where(group_id: RouterTestDecider.group_id).first
+      expect(row[:status]).to eq('failed')
     end
 
     it 'on_exception persists error_context in the database' do
@@ -249,7 +251,7 @@ RSpec.describe Sourced::CCC::Router do
 
       row = db[:ccc_consumer_groups].where(group_id: RouterTestDecider.group_id).first
       expect(row[:error_context]).not_to be_nil
-      expect(row[:status]).to eq('stopped')
+      expect(row[:status]).to eq('failed')
     end
 
     it 'on_exception with retry strategy sets retry_at on consumer group' do

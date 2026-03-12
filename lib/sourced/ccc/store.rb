@@ -39,6 +39,7 @@ module Sourced
     class Store
       ACTIVE = 'active'
       STOPPED = 'stopped'
+      FAILED = 'failed'
 
       # @return [Sequel::SQLite::Database]
       attr_reader :db
@@ -373,16 +374,19 @@ module Sourced
         row[:status] == ACTIVE
       end
 
-      # Stop a consumer group. Stopped groups are skipped by {#claim_next}.
+      # Stop a consumer group intentionally. Stopped groups are skipped by {#claim_next}.
       #
       # @param group_id [String, #group_id] identifier or object responding to +#group_id+
+      # @param message [String, nil] optional operator-supplied reason
       # @return [void]
-      def stop_consumer_group(group_id)
+      def stop_consumer_group(group_id, message = nil)
         group_id = resolve_group_id(group_id)
-        db[:ccc_consumer_groups].where(group_id: group_id).update(status: STOPPED, updated_at: Time.now.iso8601)
+        updating_consumer_group(group_id) do |group|
+          group.stop(message:)
+        end
       end
 
-      # Re-activate a stopped consumer group, clearing retry state.
+      # Re-activate a stopped or failed consumer group, clearing retry state.
       #
       # @param group_id [String, #group_id] identifier or object responding to +#group_id+
       # @return [void]

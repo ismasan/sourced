@@ -248,7 +248,7 @@ CCC already supports consumer-group retries on failure.
 
 - On reactor errors, `Router#handle_next_for` calls the reactor's `on_exception` hook.
 - By default, that hook uses `CCC.config.error_strategy`.
-- The default `Sourced::ErrorStrategy` stops the consumer group immediately.
+- The default `Sourced::ErrorStrategy` marks the consumer group as failed immediately.
 - If you configure a retrying error strategy, CCC stores the next retry time in the consumer group's `retry_at` column and skips claiming work for that group until that time has passed.
 
 So retries are built in already, but they are opt-in via the error strategy configuration.
@@ -275,9 +275,9 @@ Sourced::CCC.configure do |c|
       )
     end
 
-    s.on_stop do |exception, message|
+    s.on_fail do |exception, message|
       LOGGER.error(
-        "CCC stopping consumer group after retries for #{message.type} (#{message.id}): " \
+        "CCC failing consumer group after retries for #{message.type} (#{message.id}): " \
         "#{exception.class}: #{exception.message}"
       )
     end
@@ -293,7 +293,7 @@ With the configuration above, failures retry after:
 - retry 4: 16 seconds
 - retry 5: 32 seconds
 
-After the configured retries are exhausted, the consumer group is stopped.
+After the configured retries are exhausted, the consumer group is marked as failed.
 
 ## Registering reactors
 

@@ -15,11 +15,23 @@ module Sourced
         @updates = { error_context: @error_context.dup }
       end
 
-      def stop(exception:, message:)
-        @logger.error "CCC: stopping consumer group #{group_id} message: '#{message&.type}' (#{message&.id}). #{exception&.class}: #{exception&.message}"
+      def stop(message: nil)
+        @logger.error "CCC: stopping consumer group #{group_id}"
         @updates[:status] = Store::STOPPED
         @updates[:retry_at] = nil
         @updates[:updated_at] = Time.now.iso8601
+        @updates[:error_context][:message] = message if message
+      end
+
+      def fail(exception: nil)
+        @logger.error "CCC: failing consumer group #{group_id}. #{exception&.class}: #{exception&.message}"
+        @updates[:status] = Store::FAILED
+        @updates[:retry_at] = nil
+        @updates[:updated_at] = Time.now.iso8601
+        if exception
+          @updates[:error_context][:exception_class] = exception.class.to_s
+          @updates[:error_context][:exception_message] = exception.message
+        end
       end
 
       def retry(time, **ctx)
