@@ -2,6 +2,7 @@
 
 require 'spec_helper'
 require 'sourced/ccc'
+require 'sourced/ccc/store'
 require 'sequel'
 
 # Define test messages for store specs (namespaced to avoid collisions)

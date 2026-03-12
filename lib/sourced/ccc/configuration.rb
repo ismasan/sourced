@@ -43,9 +43,10 @@ module Sourced
       # Accepts a CCC::Store, a Sequel::SQLite::Database (auto-wrapped),
       # or any object implementing StoreInterface.
       def store=(s)
-        @store = case s
-        when Store then s
-        when ->(v) { v.class.name == 'Sequel::SQLite::Database' } then Store.new(s)
+        @store = case s.class.name
+        when 'Sequel::SQLite::Database'
+          require 'sourced/ccc/store'
+          Store.new(s)
         else StoreInterface.parse(s)
         end
       end
@@ -63,7 +64,10 @@ module Sourced
       def setup!
         return if @setup
 
-        @store ||= Store.new(Sequel.sqlite)
+        unless @store
+          require 'sourced/ccc/store'
+          @store = Store.new(Sequel.sqlite)
+        end
         @store.install!
         @router ||= Router.new(store: @store)
         @setup = true

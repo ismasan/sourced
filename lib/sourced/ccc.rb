@@ -223,8 +223,6 @@ end
 
 require 'sourced/ccc/configuration'
 require 'sourced/ccc/message'
-require 'sourced/ccc/installer'
-require 'sourced/ccc/store'
 require 'sourced/ccc/actions'
 require 'sourced/ccc/consumer'
 require 'sourced/ccc/evolve'
