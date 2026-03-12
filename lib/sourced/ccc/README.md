@@ -518,6 +518,144 @@ stats.groups.each do |g|
 end
 ```
 
+## Testing
+
+CCC ships with RSpec helpers for Given-When-Then testing of deciders and projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
+
+```ruby
+require 'sourced/ccc/testing/rspec'
+
+RSpec.configure do |config|
+  config.include Sourced::CCC::Testing::RSpec
+end
+```
+
+### Testing deciders
+
+`with_reactor` takes a decider class and partition attributes, then chains `.given` (history), `.when` (command), and `.then` (expected outcomes).
+
+```ruby
+RSpec.describe CourseDecider do
+  include Sourced::CCC::Testing::RSpec
+
+  it 'creates a course' do
+    with_reactor(CourseDecider, course_name: 'Algebra')
+      .when(CreateCourse, course_id: 'c1', course_name: 'Algebra')
+      .then(CourseCreated, course_id: 'c1', course_name: 'Algebra')
+  end
+
+  it 'rejects duplicate course names' do
+    with_reactor(CourseDecider, course_name: 'Algebra')
+      .given(CourseCreated, course_id: 'c1', course_name: 'Algebra')
+      .when(CreateCourse, course_id: 'c2', course_name: 'Algebra')
+      .then(RuntimeError, "Course 'Algebra' already exists")
+  end
+
+  it 'produces no events for a no-op command' do
+    with_reactor(CourseDecider, course_name: 'Algebra')
+      .when(SomeNoopCommand, course_name: 'Algebra')
+      .then([])
+  end
+end
+```
+
+#### Multiple expected messages
+
+When a decider produces events and reactions, pass all expected messages as instances:
+
+```ruby
+it 'produces event and reaction' do
+  with_reactor(EnrolmentDecider, course_id: 'c1')
+    .given(CourseCreated, course_id: 'c1', course_name: 'Algebra')
+    .when(EnrolStudent, course_id: 'c1', student_id: 's1')
+    .then(
+      StudentEnrolled.new(payload: { course_id: 'c1', student_id: 's1' }),
+      NotifyStudent.new(payload: { student_id: 's1' })
+    )
+end
+```
+
+#### Block form
+
+Pass a block to `.then` to receive the raw action pairs for custom assertions:
+
+```ruby
+it 'inspects action pairs' do
+  with_reactor(CourseDecider, course_name: 'Algebra')
+    .when(CreateCourse, course_id: 'c1', course_name: 'Algebra')
+    .then { |pairs|
+      actions, source_msg = pairs.first
+      append = Array(actions).find { |a| a.is_a?(Sourced::CCC::Actions::Append) }
+      expect(append.messages.first).to be_a(CourseCreated)
+    }
+end
+```
+
+#### `.then!` — run sync actions
+
+Use `.then!` instead of `.then` to execute sync actions before assertions:
+
+```ruby
+it 'runs sync block' do
+  with_reactor(CourseDecider, course_name: 'Algebra')
+    .when(CreateCourse, course_id: 'c1', course_name: 'Algebra')
+    .then! { |pairs| ... }
+end
+```
+
+### Testing projectors
+
+Projectors use `.given` (events to evolve) and `.then` with a block that receives the projected state. `.when` is not supported — projectors don't handle commands.
+
+#### StateStored
+
+```ruby
+RSpec.describe ItemProjector do
+  include Sourced::CCC::Testing::RSpec
+
+  it 'builds state from events' do
+    with_reactor(ItemProjector, list_id: 'L1')
+      .given(ItemAdded, list_id: 'L1', name: 'Apple')
+      .given(ItemAdded, list_id: 'L1', name: 'Banana')
+      .then { |state| expect(state[:items]).to eq(['Apple', 'Banana']) }
+  end
+
+  it 'handles removal' do
+    with_reactor(ItemProjector, list_id: 'L1')
+      .given(ItemAdded, list_id: 'L1', name: 'Apple')
+      .and(ItemArchived, list_id: 'L1', name: 'Apple')
+      .then { |state| expect(state[:items]).to eq([]) }
+  end
+
+  it 'runs sync actions with then!' do
+    with_reactor(ItemProjector, list_id: 'L1')
+      .given(ItemAdded, list_id: 'L1', name: 'Apple')
+      .then! { |state| expect(state[:synced]).to be true }
+  end
+end
+```
+
+#### EventSourced
+
+Same API — the helper creates an instance, evolves from all given messages, and yields state:
+
+```ruby
+RSpec.describe CatalogProjector do
+  include Sourced::CCC::Testing::RSpec
+
+  it 'rebuilds state from full history' do
+    with_reactor(CatalogProjector, course_id: 'c1')
+      .given(CourseCreated, course_id: 'c1', course_name: 'Algebra')
+      .given(StudentEnrolled, course_id: 'c1', student_id: 's1')
+      .then { |state| expect(state[:students]).to eq(['s1']) }
+  end
+end
+```
+
+### Message matching
+
+`.then` compares messages by **class** and **payload** only. Fields like `id`, `created_at`, `causation_id`, `correlation_id`, and `metadata` are ignored, so tests don't need to match auto-generated values.
+
 ## Full example
 
 See `examples/ccc_app/` for a complete Sinatra application with:
