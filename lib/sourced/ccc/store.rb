@@ -93,6 +93,7 @@ module Sourced
           )
         SQL
         db.run('CREATE INDEX IF NOT EXISTS idx_ccc_message_type ON ccc_messages(message_type)')
+        db.run('CREATE INDEX IF NOT EXISTS idx_ccc_correlation_id ON ccc_messages(correlation_id)')
 
         db.run(<<~SQL)
           CREATE TABLE IF NOT EXISTS ccc_key_pairs (
@@ -679,6 +680,23 @@ module Sourced
         end
 
         Stats.new(max_position: latest_position, groups: groups)
+      end
+
+      # Fetch all messages sharing the same correlation_id as the given message.
+      # Useful for tracing causal chains (command -> events -> reactions).
+      #
+      # @param message_id [String] UUID of any message in the correlation chain
+      # @return [Array<PositionedMessage>] correlated messages ordered by position, or [] if not found
+      def read_correlation_batch(message_id)
+        correlation_id = db[:ccc_messages]
+          .where(message_id: message_id)
+          .get(:correlation_id)
+        return [] unless correlation_id
+
+        db[:ccc_messages]
+          .where(correlation_id: correlation_id)
+          .order(:position)
+          .map { |row| deserialize(row) }
       end
 
       # Current max position in the message log.

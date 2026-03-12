@@ -1472,6 +1472,55 @@ RSpec.describe Sourced::CCC::Store do
     end
   end
 
+  describe '#read_correlation_batch' do
+    it 'returns all messages sharing the same correlation_id, ordered by position' do
+      # Create a command (source of the correlation chain)
+      cmd = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor' })
+
+      # Create correlated events
+      evt1 = cmd.correlate(CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'a-1' }))
+      evt2 = cmd.correlate(CCCStoreTestMessages::AssetRegistered.new(payload: { asset_id: 'a-1', label: 'Asset A' }))
+
+      store.append([cmd, evt1, evt2])
+
+      results = store.read_correlation_batch(cmd.id)
+      expect(results.size).to eq(3)
+      expect(results.map(&:id)).to eq([cmd.id, evt1.id, evt2.id])
+      expect(results.map(&:position)).to eq(results.map(&:position).sort)
+    end
+
+    it 'returns [] for an unknown message_id' do
+      expect(store.read_correlation_batch(SecureRandom.uuid)).to eq([])
+    end
+
+    it 'excludes messages with a different correlation_id' do
+      cmd1 = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      evt1 = cmd1.correlate(CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'a-1' }))
+
+      # Unrelated chain
+      cmd2 = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
+      evt2 = cmd2.correlate(CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-2', asset_id: 'a-2' }))
+
+      store.append([cmd1, evt1, cmd2, evt2])
+
+      results = store.read_correlation_batch(cmd1.id)
+      expect(results.size).to eq(2)
+      expect(results.map(&:id)).to eq([cmd1.id, evt1.id])
+    end
+
+    it 'can be queried from any message in the chain' do
+      cmd = CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      evt = cmd.correlate(CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'a-1' }))
+
+      store.append([cmd, evt])
+
+      # Query from the event, not the command
+      results = store.read_correlation_batch(evt.id)
+      expect(results.size).to eq(2)
+      expect(results.map(&:id)).to eq([cmd.id, evt.id])
+    end
+  end
+
   describe '#release' do
     let(:group_id) { 'release-test' }
 
