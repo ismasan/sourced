@@ -1392,6 +1392,80 @@ RSpec.describe Sourced::CCC::Store do
     end
   end
 
+  describe '#stats' do
+    it 'returns zeroes for an empty store' do
+      result = store.stats
+      expect(result).to be_a(Sourced::CCC::Stats)
+      expect(result.max_position).to eq(0)
+      expect(result.groups).to eq([])
+    end
+
+    it 'returns groups with zeroed stats when no messages processed' do
+      store.register_consumer_group('group-a')
+      store.register_consumer_group('group-b')
+
+      result = store.stats
+      expect(result.max_position).to eq(0)
+      expect(result.groups.size).to eq(2)
+
+      group_a = result.groups.find { |g| g[:group_id] == 'group-a' }
+      expect(group_a[:status]).to eq('active')
+      expect(group_a[:retry_at]).to be_nil
+      expect(group_a[:oldest_processed]).to eq(0)
+      expect(group_a[:newest_processed]).to eq(0)
+      expect(group_a[:partition_count]).to eq(0)
+    end
+
+    it 'reflects processing state after claim and ack' do
+      group_id = 'stats-test'
+      store.register_consumer_group(group_id)
+
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
+      ])
+
+      # Claim and ack first partition
+      r1 = store.claim_next(group_id, partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+
+      result = store.stats
+      expect(result.max_position).to eq(2)
+
+      group = result.groups.first
+      expect(group[:group_id]).to eq(group_id)
+      expect(group[:partition_count]).to eq(2) # both partitions bootstrapped
+      expect(group[:oldest_processed]).to be > 0
+      expect(group[:newest_processed]).to be > 0
+    end
+
+    it 'reports stopped and failed group statuses' do
+      store.register_consumer_group('active-group')
+      store.register_consumer_group('stopped-group')
+      store.register_consumer_group('failed-group')
+
+      store.stop_consumer_group('stopped-group')
+      store.updating_consumer_group('failed-group') { |g| g.fail(exception: RuntimeError.new('boom')) }
+
+      result = store.stats
+      statuses = result.groups.map { |g| [g[:group_id], g[:status]] }.to_h
+
+      expect(statuses['active-group']).to eq('active')
+      expect(statuses['stopped-group']).to eq('stopped')
+      expect(statuses['failed-group']).to eq('failed')
+    end
+
+    it 'groups are ordered by group_id' do
+      store.register_consumer_group('zebra')
+      store.register_consumer_group('alpha')
+      store.register_consumer_group('middle')
+
+      result = store.stats
+      expect(result.groups.map { |g| g[:group_id] }).to eq(%w[alpha middle zebra])
+    end
+  end
+
   describe '#release' do
     let(:group_id) { 'release-test' }
 

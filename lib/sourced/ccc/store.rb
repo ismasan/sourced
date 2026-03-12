@@ -32,6 +32,8 @@ module Sourced
       def to_ary = [messages, guard]
     end
 
+    Stats = Data.define(:max_position, :groups)
+
     # SQLite-backed store for CCC's flat, globally-ordered message log.
     # Provides message storage with automatic key-pair indexing,
     # consumer group management, and partition-based offset tracking
@@ -625,6 +627,31 @@ module Sourced
             updated_at: Time.now.iso8601
           )
         end
+      end
+
+      # System-wide diagnostics for monitoring and debugging.
+      #
+      # @return [CCC::Stats] max_position and per-group processing state
+      def stats
+        groups = db.fetch(<<~SQL).all
+          SELECT
+            cg.group_id,
+            cg.status,
+            cg.retry_at,
+            COALESCE(MIN(CASE WHEN o.last_position > 0 THEN o.last_position END), 0) AS oldest_processed,
+            COALESCE(MAX(o.last_position), 0) AS newest_processed,
+            COUNT(o.id) AS partition_count
+          FROM ccc_consumer_groups cg
+          LEFT JOIN ccc_offsets o ON o.consumer_group_id = cg.id
+          GROUP BY cg.id, cg.group_id, cg.status, cg.retry_at
+          ORDER BY cg.group_id
+        SQL
+
+        groups.each do |g|
+          g[:retry_at] = Time.parse(g[:retry_at]) if g[:retry_at]
+        end
+
+        Stats.new(max_position: latest_position, groups: groups)
       end
 
       # Current max position in the message log.
