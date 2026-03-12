@@ -19,20 +19,15 @@ module Sourced
 
         private
 
-        def build_instance(claim)
-          values = partition_keys.map { |k| claim.partition_value[k.to_s] }
-          new(values)
-        end
-
-        def build_action_pairs(instance, claim)
+        def build_action_pairs(instance, messages, replaying:)
           sync_actions = instance.sync_actions(
-            state: instance.state, messages: claim.messages, replaying: claim.replaying
+            state: instance.state, messages: messages, replaying: replaying
           )
 
-          reaction_pairs = if claim.replaying
+          reaction_pairs = if replaying
             []
           else
-            each_with_partial_ack(claim.messages) do |msg|
+            each_with_partial_ack(messages) do |msg|
               next unless instance.reacts_to?(msg)
               reaction_msgs = Array(instance.react(msg))
               actions = Actions.build_for(reaction_msgs)
@@ -40,7 +35,7 @@ module Sourced
             end
           end
 
-          reaction_pairs + [[sync_actions, claim.messages.last]]
+          reaction_pairs + [[sync_actions, messages.last]]
         end
       end
 
@@ -54,12 +49,17 @@ module Sourced
       # Projector variant that evolves only the claimed messages on top of stored state.
       class StateStored < self
         class << self
+          def handle_batch(partition_values, new_messages, replaying: false)
+            instance = new(partition_values)
+            instance.evolve(new_messages)
+            build_action_pairs(instance, new_messages, replaying: replaying)
+          end
+
           # @param claim [ClaimResult] claimed partition batch
           # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
           def handle_claim(claim)
-            instance = build_instance(claim)
-            instance.evolve(claim.messages)
-            build_action_pairs(instance, claim)
+            values = partition_keys.map { |k| claim.partition_value[k.to_s] }
+            handle_batch(values, claim.messages, replaying: claim.replaying)
           end
         end
       end
@@ -67,13 +67,18 @@ module Sourced
       # Projector variant that rebuilds state from full history each time.
       class EventSourced < self
         class << self
+          def handle_batch(partition_values, new_messages, history:, replaying: false)
+            instance = new(partition_values)
+            instance.evolve(history.messages)
+            build_action_pairs(instance, new_messages, replaying: replaying)
+          end
+
           # @param claim [ClaimResult] claimed partition batch
           # @param history [ReadResult] full partition history
           # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
           def handle_claim(claim, history:)
-            instance = build_instance(claim)
-            instance.evolve(history.messages)
-            build_action_pairs(instance, claim)
+            values = partition_keys.map { |k| claim.partition_value[k.to_s] }
+            handle_batch(values, claim.messages, history: history, replaying: claim.replaying)
           end
         end
       end

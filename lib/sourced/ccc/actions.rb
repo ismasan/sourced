@@ -22,9 +22,9 @@ module Sourced
         now = Time.now
         to_schedule, to_append = messages.partition { |message| message.created_at > now }
 
-        actions << Append.new(to_append, guard: guard, source: source, correlated: correlated) if to_append.any?
+        actions << Append.new(to_append, guard:, source:, correlated:) if to_append.any?
         to_schedule.group_by(&:created_at).each do |at, scheduled_messages|
-          actions << Schedule.new(scheduled_messages, at:, source: source, correlated: correlated)
+          actions << Schedule.new(scheduled_messages, at:, source:, correlated:)
         end
 
         actions

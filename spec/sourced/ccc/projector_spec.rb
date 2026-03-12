@@ -102,6 +102,125 @@ RSpec.describe Sourced::CCC::Projector do
     end
   end
 
+  describe '.handle_batch (StateStored)' do
+    it 'evolves from new_messages and includes sync actions' do
+      msgs = [
+        Sourced::CCC::PositionedMessage.new(
+          CCCProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        ),
+        Sourced::CCC::PositionedMessage.new(
+          CCCProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Banana' }), 2
+        )
+      ]
+
+      pairs = TestItemProjector.handle_batch(['L1'], msgs)
+
+      sync_pair = pairs.last
+      sync_actions, source_msg = sync_pair
+      expect(source_msg).to eq(msgs.last)
+
+      sync_action = Array(sync_actions).find { |a| a.is_a?(Sourced::CCC::Actions::Sync) }
+      expect(sync_action).not_to be_nil
+    end
+
+    it 'runs reactions when not replaying' do
+      msgs = [
+        Sourced::CCC::PositionedMessage.new(
+          CCCProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        )
+      ]
+
+      pairs = TestItemProjector.handle_batch(['L1'], msgs)
+
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::CCC::Actions::Append) }
+
+      expect(append_actions.size).to eq(1)
+      expect(append_actions.first.messages.first).to be_a(CCCProjectorTestMessages::NotifyArchive)
+    end
+
+    it 'skips reactions when replaying' do
+      msgs = [
+        Sourced::CCC::PositionedMessage.new(
+          CCCProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        )
+      ]
+
+      pairs = TestItemProjector.handle_batch(['L1'], msgs, replaying: true)
+
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::CCC::Actions::Append) }
+
+      expect(append_actions).to be_empty
+    end
+  end
+
+  describe '.handle_batch (EventSourced)' do
+    let(:guard) { Sourced::CCC::ConsistencyGuard.new(conditions: [], last_position: 5) }
+
+    def make_history(messages)
+      Sourced::CCC::ReadResult.new(messages: messages, guard: guard)
+    end
+
+    it 'evolves from full history, not just new messages' do
+      history_msgs = [
+        Sourced::CCC::PositionedMessage.new(
+          CCCProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        ),
+        Sourced::CCC::PositionedMessage.new(
+          CCCProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Banana' }), 2
+        ),
+        Sourced::CCC::PositionedMessage.new(
+          CCCProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 3
+        )
+      ]
+      new_msgs = [history_msgs.last]
+      history = make_history(history_msgs)
+
+      pairs = TestItemESProjector.handle_batch(['L1'], new_msgs, history: history)
+
+      sync_pair = pairs.last
+      _sync_actions, source_msg = sync_pair
+      expect(source_msg).to eq(new_msgs.last)
+    end
+
+    it 'runs reactions only on new messages, not full history' do
+      history_msgs = [
+        Sourced::CCC::PositionedMessage.new(
+          CCCProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Old' }), 1
+        ),
+        Sourced::CCC::PositionedMessage.new(
+          CCCProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'New' }), 2
+        )
+      ]
+      new_msgs = [history_msgs.last]
+      history = make_history(history_msgs)
+
+      pairs = TestItemESProjector.handle_batch(['L1'], new_msgs, history: history)
+
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::CCC::Actions::Append) }
+
+      expect(append_actions.size).to eq(1)
+    end
+
+    it 'skips reactions when replaying' do
+      history_msgs = [
+        Sourced::CCC::PositionedMessage.new(
+          CCCProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        )
+      ]
+      history = make_history(history_msgs)
+
+      pairs = TestItemESProjector.handle_batch(['L1'], history_msgs, history: history, replaying: true)
+
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::CCC::Actions::Append) }
+
+      expect(append_actions).to be_empty
+    end
+  end
+
   describe '.handle_claim' do
     let(:guard) { Sourced::CCC::ConsistencyGuard.new(conditions: [], last_position: 2) }
 

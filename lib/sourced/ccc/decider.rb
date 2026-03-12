@@ -33,17 +33,11 @@ module Sourced
           define_method(Sourced.message_method_name('ccc_decide', message_class.to_s), &block)
         end
 
-        # Build executable actions for a claimed batch.
-        #
-        # @param claim [ClaimResult] claimed partition batch
-        # @param history [ReadResult] event history for the partition
-        # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
-        def handle_claim(claim, history:)
-          values = partition_keys.map { |k| claim.partition_value[k.to_s] }
-          instance = new(values)
+        def handle_batch(partition_values, new_messages, history:)
+          instance = new(partition_values)
           instance.evolve(history.messages)
 
-          each_with_partial_ack(claim.messages) do |msg|
+          each_with_partial_ack(new_messages) do |msg|
             if handled_commands.include?(msg.class)
               raw_events = instance.decide(msg)
               correlated_events = raw_events.map { |e| msg.correlate(e) }
@@ -67,6 +61,16 @@ module Sourced
               [Actions::OK, msg]
             end
           end
+        end
+
+        # Build executable actions for a claimed batch.
+        #
+        # @param claim [ClaimResult] claimed partition batch
+        # @param history [ReadResult] event history for the partition
+        # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
+        def handle_claim(claim, history:)
+          values = partition_keys.map { |k| claim.partition_value[k.to_s] }
+          handle_batch(values, claim.messages, history:)
         end
 
         # Copy registered command handlers into subclasses.
