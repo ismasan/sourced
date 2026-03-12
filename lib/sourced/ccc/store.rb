@@ -282,6 +282,25 @@ module Sourced
         end
       end
 
+      # Paginate the global event log in position order.
+      #
+      # @example First page
+      #   messages = store.read_all(limit: 20)
+      #
+      # @example Next page (using the last position from the previous page)
+      #   messages = store.read_all(from_position: 20, limit: 20)
+      #
+      # @param from_position [Integer] return messages after this position (default 0)
+      # @param limit [Integer] max number of messages to return (default 50)
+      # @return [Array<PositionedMessage>] messages ordered by position
+      def read_all(from_position: 0, limit: 50)
+        db[:ccc_messages]
+          .where { position > from_position }
+          .order(:position)
+          .limit(limit)
+          .map { |row| deserialize(row) }
+      end
+
       # Query messages by conditions. Each condition matches on
       # (message_type AND key_name AND key_value). Multiple conditions are OR'd.
       #

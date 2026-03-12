@@ -289,6 +289,47 @@ RSpec.describe Sourced::CCC::Store do
     end
   end
 
+  describe '#read_all' do
+    it 'returns messages in position order' do
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::AssetRegistered.new(payload: { asset_id: 'a-1', label: 'X' }),
+        CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'a-1' })
+      ])
+
+      messages = store.read_all
+      expect(messages.size).to eq(3)
+      expect(messages.map(&:position)).to eq([1, 2, 3])
+    end
+
+    it 'paginates with from_position and limit' do
+      5.times do |i|
+        store.append(CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: "dev-#{i}", name: "D#{i}" }))
+      end
+
+      page1 = store.read_all(limit: 2)
+      expect(page1.map(&:position)).to eq([1, 2])
+
+      page2 = store.read_all(from_position: page1.last.position, limit: 2)
+      expect(page2.map(&:position)).to eq([3, 4])
+
+      page3 = store.read_all(from_position: page2.last.position, limit: 2)
+      expect(page3.map(&:position)).to eq([5])
+    end
+
+    it 'returns [] for an empty store' do
+      expect(store.read_all).to eq([])
+    end
+
+    it 'returns PositionedMessage instances' do
+      store.append(CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+
+      messages = store.read_all
+      expect(messages.first).to be_a(Sourced::CCC::PositionedMessage)
+      expect(messages.first).to be_a(CCCStoreTestMessages::DeviceRegistered)
+    end
+  end
+
   describe '#read' do
     before do
       store.append([

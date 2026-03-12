@@ -92,6 +92,20 @@ result = store.read_partition(
 )
 ```
 
+### Browsing the global log
+
+`read_all` paginates the entire message log in position order, without requiring query conditions or partition attributes.
+
+```ruby
+# First page (default limit: 50)
+messages = store.read_all(limit: 20)
+
+# Next page — pass the last position from the previous page
+messages = store.read_all(from_position: messages.last.position, limit: 20)
+```
+
+Returns an array of `PositionedMessage` instances ordered by position, or `[]` if the store is empty or there are no more messages after `from_position`.
+
 ## Deciders
 
 Deciders handle commands, enforce invariants, and produce events. They rebuild state from event history before each decision.
