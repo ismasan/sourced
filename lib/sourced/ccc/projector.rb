@@ -78,7 +78,7 @@ module Sourced
           # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
           def handle_claim(claim, history:)
             values = partition_keys.map { |k| claim.partition_value[k.to_s] }
-            handle_batch(values, claim.messages, history: history, replaying: claim.replaying)
+            handle_batch(values, claim.messages, history:, replaying: claim.replaying)
           end
         end
       end
