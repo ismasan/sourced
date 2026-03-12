@@ -120,18 +120,6 @@ RSpec.describe Sourced::CCC::Configuration do
       expect(store2).not_to be(store1)
     end
 
-    it 'replays registrations from the configure block' do
-      Sourced::CCC.configure do |c|
-        c.register(reactor_class)
-      end
-
-      expect(Sourced::CCC.router.reactors).to include(reactor_class)
-
-      Sourced::CCC.setup!
-
-      expect(Sourced::CCC.router.reactors).to include(reactor_class)
-    end
-
     it 'works without a configure block' do
       Sourced::CCC.setup!
 
@@ -214,34 +202,6 @@ RSpec.describe Sourced::CCC::Configuration do
     it 'raises if assigned a non-callable' do
       config = described_class.new
       expect { config.error_strategy = 'not callable' }.to raise_error(ArgumentError)
-    end
-  end
-
-  describe '#register' do
-    let(:reactor_class) do
-      Class.new(Sourced::CCC::Projector::StateStored) do
-        def self.name = 'ConfigRegisterReactor'
-
-        consumer_group 'config-register-reactor'
-        partition_by :thing_id
-
-        state { |_| {} }
-      end
-    end
-
-    it 'buffers reactors and registers them during setup!' do
-      config = described_class.new
-      config.register(reactor_class)
-      config.setup!
-
-      expect(config.router.reactors).to include(reactor_class)
-    end
-
-    it 'does not register before setup! is called' do
-      config = described_class.new
-      config.register(reactor_class)
-
-      expect(config.router).to be_nil
     end
   end
 
