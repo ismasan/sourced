@@ -365,6 +365,50 @@ store.stop_consumer_group('CourseApp::CourseDecider')
 
 When retries are configured via `CCC.config.error_strategy`, failed consumer groups remain active but paused until their `retry_at` time. Once that time passes, they become claimable again automatically.
 
+## Monitoring
+
+`Store#stats` returns system-wide diagnostics for monitoring and debugging CCC deployments.
+
+```ruby
+stats = store.stats
+stats.max_position  # => 42 (latest position in the message log)
+stats.groups        # => array of per-consumer-group hashes
+```
+
+Each group hash contains:
+
+| Key                  | Description                                                    |
+|----------------------|----------------------------------------------------------------|
+| `group_id`           | Consumer group identifier (e.g. `"CourseDecider"`)             |
+| `status`             | `"active"`, `"stopped"`, or `"failed"`                         |
+| `retry_at`           | `Time` of next retry, or `nil`                                 |
+| `error_context`      | Hash with error details (`{}` when healthy, see below)         |
+| `oldest_processed`   | `MIN(last_position)` across partitions where processing started |
+| `newest_processed`   | `MAX(last_position)` across partitions                          |
+| `partition_count`    | Number of offset rows (partitions) for this group              |
+
+### `error_context`
+
+The `error_context` hash is empty (`{}`) for healthy groups. When a group is stopped or has failed, it may contain:
+
+| Key                  | Present when | Description                          |
+|----------------------|--------------|--------------------------------------|
+| `:message`           | Stopped      | Operator-supplied reason for stopping |
+| `:exception_class`   | Failed       | Exception class name (e.g. `"RuntimeError"`) |
+| `:exception_message` | Failed       | Exception message string             |
+
+When retries are configured, `error_context` also accumulates retry state set by `GroupUpdater#retry_later`.
+
+```ruby
+stats = store.stats
+stats.groups.each do |g|
+  puts "#{g[:group_id]}: #{g[:status]} (#{g[:partition_count]} partitions, up to position #{g[:newest_processed]})"
+  if g[:status] == 'failed'
+    puts "  error: #{g[:error_context][:exception_class]}: #{g[:error_context][:exception_message]}"
+  end
+end
+```
+
 ## Full example
 
 See `examples/ccc_app/` for a complete Sinatra application with:

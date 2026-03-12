@@ -1440,20 +1440,26 @@ RSpec.describe Sourced::CCC::Store do
       expect(group[:newest_processed]).to be > 0
     end
 
-    it 'reports stopped and failed group statuses' do
+    it 'reports stopped and failed group statuses with error context' do
       store.register_consumer_group('active-group')
       store.register_consumer_group('stopped-group')
       store.register_consumer_group('failed-group')
 
-      store.stop_consumer_group('stopped-group')
+      store.stop_consumer_group('stopped-group', 'maintenance')
       store.updating_consumer_group('failed-group') { |g| g.fail(exception: RuntimeError.new('boom')) }
 
       result = store.stats
-      statuses = result.groups.map { |g| [g[:group_id], g[:status]] }.to_h
+      by_id = result.groups.map { |g| [g[:group_id], g] }.to_h
 
-      expect(statuses['active-group']).to eq('active')
-      expect(statuses['stopped-group']).to eq('stopped')
-      expect(statuses['failed-group']).to eq('failed')
+      expect(by_id['active-group'][:status]).to eq('active')
+      expect(by_id['active-group'][:error_context]).to eq({})
+
+      expect(by_id['stopped-group'][:status]).to eq('stopped')
+      expect(by_id['stopped-group'][:error_context][:message]).to eq('maintenance')
+
+      expect(by_id['failed-group'][:status]).to eq('failed')
+      expect(by_id['failed-group'][:error_context][:exception_class]).to eq('RuntimeError')
+      expect(by_id['failed-group'][:error_context][:exception_message]).to eq('boom')
     end
 
     it 'groups are ordered by group_id' do

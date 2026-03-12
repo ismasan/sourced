@@ -631,6 +631,31 @@ module Sourced
 
       # System-wide diagnostics for monitoring and debugging.
       #
+      # @example
+      #   stats = store.stats
+      #   stats.max_position  # => 42
+      #   stats.groups
+      #   # => [
+      #   #   {
+      #   #     group_id: "my_decider",
+      #   #     status: "active",
+      #   #     retry_at: nil,
+      #   #     error_context: {},
+      #   #     oldest_processed: 10,
+      #   #     newest_processed: 42,
+      #   #     partition_count: 3
+      #   #   },
+      #   #   {
+      #   #     group_id: "failing_decider",
+      #   #     status: "failed",
+      #   #     retry_at: nil,
+      #   #     error_context: { exception_class: "RuntimeError", exception_message: "boom" },
+      #   #     oldest_processed: 5,
+      #   #     newest_processed: 30,
+      #   #     partition_count: 2
+      #   #   }
+      #   # ]
+      #
       # @return [CCC::Stats] max_position and per-group processing state
       def stats
         groups = db.fetch(<<~SQL).all
@@ -638,17 +663,19 @@ module Sourced
             cg.group_id,
             cg.status,
             cg.retry_at,
+            cg.error_context,
             COALESCE(MIN(CASE WHEN o.last_position > 0 THEN o.last_position END), 0) AS oldest_processed,
             COALESCE(MAX(o.last_position), 0) AS newest_processed,
             COUNT(o.id) AS partition_count
           FROM ccc_consumer_groups cg
           LEFT JOIN ccc_offsets o ON o.consumer_group_id = cg.id
-          GROUP BY cg.id, cg.group_id, cg.status, cg.retry_at
+          GROUP BY cg.id, cg.group_id, cg.status, cg.retry_at, cg.error_context
           ORDER BY cg.group_id
         SQL
 
         groups.each do |g|
           g[:retry_at] = Time.parse(g[:retry_at]) if g[:retry_at]
+          g[:error_context] = g[:error_context] ? JSON.parse(g[:error_context], symbolize_names: true) : {}
         end
 
         Stats.new(max_position: latest_position, groups: groups)
