@@ -759,31 +759,36 @@ module Sourced
           GROUP BY #{group_by}
         SQL
 
-        db.fetch(sql).each do |row|
-          # Build the values hash and collect key_pair_ids
-          values = {}
-          kp_ids = []
-          partition_by.each_with_index do |attr, i|
-            values[attr] = row[:"val_#{i}"]
-            kp_ids << row[:"kp_id_#{i}"]
-          end
+        rows = db.fetch(sql).all
+        return if rows.empty?
 
-          partition_key = build_partition_key(partition_by, values)
+        db.transaction do
+          rows.each do |row|
+            # Build the values hash and collect key_pair_ids
+            values = {}
+            kp_ids = []
+            partition_by.each_with_index do |attr, i|
+              values[attr] = row[:"val_#{i}"]
+              kp_ids << row[:"kp_id_#{i}"]
+            end
 
-          # INSERT OR IGNORE the offset row
-          db.run(<<~SQL)
-            INSERT OR IGNORE INTO #{@offsets_table} (consumer_group_id, partition_key, last_position, claimed)
-            VALUES (#{db.literal(cg_id)}, #{db.literal(partition_key)}, 0, 0)
-          SQL
+            partition_key = build_partition_key(partition_by, values)
 
-          offset_id = db[@offsets_table].where(consumer_group_id: cg_id, partition_key: partition_key).get(:id)
-
-          # INSERT OR IGNORE the offset_key_pairs join rows
-          kp_ids.each do |kp_id|
+            # INSERT OR IGNORE the offset row
             db.run(<<~SQL)
-              INSERT OR IGNORE INTO #{@offset_key_pairs_table} (offset_id, key_pair_id)
-              VALUES (#{db.literal(offset_id)}, #{db.literal(kp_id)})
+              INSERT OR IGNORE INTO #{@offsets_table} (consumer_group_id, partition_key, last_position, claimed)
+              VALUES (#{db.literal(cg_id)}, #{db.literal(partition_key)}, 0, 0)
             SQL
+
+            offset_id = db[@offsets_table].where(consumer_group_id: cg_id, partition_key: partition_key).get(:id)
+
+            # INSERT OR IGNORE the offset_key_pairs join rows
+            kp_ids.each do |kp_id|
+              db.run(<<~SQL)
+                INSERT OR IGNORE INTO #{@offset_key_pairs_table} (offset_id, key_pair_id)
+                VALUES (#{db.literal(offset_id)}, #{db.literal(kp_id)})
+              SQL
+            end
           end
         end
       end
