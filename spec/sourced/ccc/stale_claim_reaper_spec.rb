@@ -33,7 +33,7 @@ RSpec.describe 'Store worker heartbeat and stale claim release' do
       count = store.worker_heartbeat(['w1', 'w2'])
       expect(count).to eq(2)
 
-      rows = db[:ccc_workers].all
+      rows = db[:sourced_workers].all
       expect(rows.size).to eq(2)
       expect(rows.map { |r| r[:id] }).to contain_exactly('w1', 'w2')
       rows.each { |r| expect(r[:last_seen]).not_to be_nil }
@@ -46,14 +46,14 @@ RSpec.describe 'Store worker heartbeat and stale claim release' do
       later = Time.now
       store.worker_heartbeat(['w1'], at: later)
 
-      row = db[:ccc_workers].where(id: 'w1').first
+      row = db[:sourced_workers].where(id: 'w1').first
       expect(row[:last_seen]).to eq(later.iso8601)
     end
 
     it 'deduplicates worker IDs' do
       count = store.worker_heartbeat(['w1', 'w1', 'w1'])
       expect(count).to eq(1)
-      expect(db[:ccc_workers].count).to eq(1)
+      expect(db[:sourced_workers].count).to eq(1)
     end
 
     it 'returns 0 for empty array' do
@@ -88,7 +88,7 @@ RSpec.describe 'Store worker heartbeat and stale claim release' do
       expect(released).to eq(1)
 
       # Verify the offset is unclaimed
-      offset = db[:ccc_offsets].where(id: @claim.offset_id).first
+      offset = db[:sourced_offsets].where(id: @claim.offset_id).first
       expect(offset[:claimed]).to eq(0)
       expect(offset[:claimed_at]).to be_nil
       expect(offset[:claimed_by]).to be_nil
@@ -102,7 +102,7 @@ RSpec.describe 'Store worker heartbeat and stale claim release' do
       expect(released).to eq(0)
 
       # Verify the offset is still claimed
-      offset = db[:ccc_offsets].where(id: @claim.offset_id).first
+      offset = db[:sourced_offsets].where(id: @claim.offset_id).first
       expect(offset[:claimed]).to eq(1)
       expect(offset[:claimed_by]).to eq('w1')
     end
@@ -146,11 +146,11 @@ RSpec.describe 'Store worker heartbeat and stale claim release' do
       # Only w1's claims should be released
       if claim1
         expect(released).to eq(1)
-        offset1 = db[:ccc_offsets].where(id: claim1.offset_id).first
+        offset1 = db[:sourced_offsets].where(id: claim1.offset_id).first
         expect(offset1[:claimed]).to eq(0)
       end
 
-      offset2 = db[:ccc_offsets].where(id: claim2.offset_id).first
+      offset2 = db[:sourced_offsets].where(id: claim2.offset_id).first
       expect(offset2[:claimed]).to eq(1)
       expect(offset2[:claimed_by]).to eq('w2')
     end
@@ -176,7 +176,7 @@ RSpec.describe Sourced::CCC::StaleClaimReaper do
 
       reaper.send(:heartbeat)
 
-      rows = db[:ccc_workers].all
+      rows = db[:sourced_workers].all
       expect(rows.size).to eq(2)
       expect(rows.map { |r| r[:id] }).to contain_exactly('w-0', 'w-1')
     end

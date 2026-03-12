@@ -62,10 +62,15 @@ RSpec.describe Sourced::CCC::Store do
   end
 
   describe '#install!' do
-    it 'creates the three tables' do
-      expect(db.table_exists?(:ccc_messages)).to be true
-      expect(db.table_exists?(:ccc_key_pairs)).to be true
-      expect(db.table_exists?(:ccc_message_key_pairs)).to be true
+    it 'creates the tables' do
+      expect(db.table_exists?(:sourced_messages)).to be true
+      expect(db.table_exists?(:sourced_key_pairs)).to be true
+      expect(db.table_exists?(:sourced_message_key_pairs)).to be true
+      expect(db.table_exists?(:sourced_scheduled_messages)).to be true
+      expect(db.table_exists?(:sourced_consumer_groups)).to be true
+      expect(db.table_exists?(:sourced_offsets)).to be true
+      expect(db.table_exists?(:sourced_offset_key_pairs)).to be true
+      expect(db.table_exists?(:sourced_workers)).to be true
     end
 
     it 'is idempotent' do
@@ -97,13 +102,13 @@ RSpec.describe Sourced::CCC::Store do
       )
       store.append(msg)
 
-      key_pairs = db[:ccc_key_pairs].all
+      key_pairs = db[:sourced_key_pairs].all
       expect(key_pairs.map { |r| [r[:name], r[:value]] }).to contain_exactly(
         ['device_id', 'dev-1'],
         ['name', 'Sensor A']
       )
 
-      join_rows = db[:ccc_message_key_pairs].all
+      join_rows = db[:sourced_message_key_pairs].all
       expect(join_rows.size).to eq(2)
     end
 
@@ -113,12 +118,12 @@ RSpec.describe Sourced::CCC::Store do
       store.append([msg1, msg2])
 
       # 'device_id'/'dev-1' should exist once in key_pairs
-      count = db[:ccc_key_pairs].where(name: 'device_id', value: 'dev-1').count
+      count = db[:sourced_key_pairs].where(name: 'device_id', value: 'dev-1').count
       expect(count).to eq(1)
 
       # But both messages reference it via the join table
-      kp_id = db[:ccc_key_pairs].where(name: 'device_id', value: 'dev-1').get(:id)
-      join_count = db[:ccc_message_key_pairs].where(key_pair_id: kp_id).count
+      kp_id = db[:sourced_key_pairs].where(name: 'device_id', value: 'dev-1').get(:id)
+      join_count = db[:sourced_message_key_pairs].where(key_pair_id: kp_id).count
       expect(join_count).to eq(2)
     end
 
@@ -129,7 +134,7 @@ RSpec.describe Sourced::CCC::Store do
       )
       store.append(msg)
 
-      row = db[:ccc_messages].first
+      row = db[:sourced_messages].first
       meta = JSON.parse(row[:metadata], symbolize_names: true)
       expect(meta[:user_id]).to eq(42)
     end
@@ -171,7 +176,7 @@ RSpec.describe Sourced::CCC::Store do
 
       expect(store.schedule_messages([delayed], at: delayed.created_at)).to be true
       expect(store.latest_position).to eq(0)
-      expect(db[:ccc_scheduled_messages].count).to eq(1)
+      expect(db[:sourced_scheduled_messages].count).to eq(1)
       expect(store.update_schedule!).to eq(0)
     end
 
@@ -188,7 +193,7 @@ RSpec.describe Sourced::CCC::Store do
         expect(store.update_schedule!).to eq(1)
       end
 
-      expect(db[:ccc_scheduled_messages].count).to eq(0)
+      expect(db[:sourced_scheduled_messages].count).to eq(0)
       expect(store.latest_position).to eq(1)
 
       cond = Sourced::CCC::QueryCondition.new(
@@ -257,7 +262,7 @@ RSpec.describe Sourced::CCC::Store do
       store.append(conflicting)
 
       position_before = store.latest_position
-      count_before = db[:ccc_messages].count
+      count_before = db[:sourced_messages].count
 
       new_msg = CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
       expect {
@@ -265,7 +270,7 @@ RSpec.describe Sourced::CCC::Store do
       }.to raise_error(Sourced::ConcurrentAppendError)
 
       expect(store.latest_position).to eq(position_before)
-      expect(db[:ccc_messages].count).to eq(count_before)
+      expect(db[:sourced_messages].count).to eq(count_before)
     end
 
     it 'works with a manually constructed guard' do
@@ -549,9 +554,9 @@ RSpec.describe Sourced::CCC::Store do
       store.clear!
 
       expect(store.latest_position).to eq(0)
-      expect(db[:ccc_messages].count).to eq(0)
-      expect(db[:ccc_key_pairs].count).to eq(0)
-      expect(db[:ccc_message_key_pairs].count).to eq(0)
+      expect(db[:sourced_messages].count).to eq(0)
+      expect(db[:sourced_key_pairs].count).to eq(0)
+      expect(db[:sourced_message_key_pairs].count).to eq(0)
     end
 
     it 'resets autoincrement so next position starts from 1' do
@@ -578,16 +583,16 @@ RSpec.describe Sourced::CCC::Store do
 
       store.clear!
 
-      expect(db[:ccc_consumer_groups].count).to eq(0)
-      expect(db[:ccc_offsets].count).to eq(0)
-      expect(db[:ccc_offset_key_pairs].count).to eq(0)
+      expect(db[:sourced_consumer_groups].count).to eq(0)
+      expect(db[:sourced_offsets].count).to eq(0)
+      expect(db[:sourced_offset_key_pairs].count).to eq(0)
     end
   end
 
   describe '#register_consumer_group' do
     it 'creates row with active status' do
       store.register_consumer_group('my-group')
-      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
       expect(row).not_to be_nil
       expect(row[:status]).to eq('active')
       expect(row[:created_at]).not_to be_nil
@@ -597,7 +602,7 @@ RSpec.describe Sourced::CCC::Store do
     it 'is idempotent' do
       store.register_consumer_group('my-group')
       expect { store.register_consumer_group('my-group') }.not_to raise_error
-      expect(db[:ccc_consumer_groups].where(group_id: 'my-group').count).to eq(1)
+      expect(db[:sourced_consumer_groups].where(group_id: 'my-group').count).to eq(1)
     end
   end
 
@@ -653,13 +658,13 @@ RSpec.describe Sourced::CCC::Store do
         group.retry(Time.now + 60, retry_count: 1)
       end
 
-      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
       expect(row[:retry_at]).not_to be_nil
       expect(row[:error_context]).not_to be_nil
 
       store.start_consumer_group('my-group')
 
-      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
       expect(row[:retry_at]).to be_nil
       expect(row[:error_context]).to be_nil
       expect(row[:status]).to eq('active')
@@ -677,7 +682,7 @@ RSpec.describe Sourced::CCC::Store do
         group.retry(Time.now + 30, retry_count: 1)
       end
 
-      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
       ctx = JSON.parse(row[:error_context], symbolize_names: true)
       expect(ctx[:retry_count]).to eq(1)
       expect(row[:retry_at]).not_to be_nil
@@ -693,7 +698,7 @@ RSpec.describe Sourced::CCC::Store do
         group.retry(Time.now + 60, retry_count: 2)
       end
 
-      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
       ctx = JSON.parse(row[:error_context], symbolize_names: true)
       expect(ctx[:retry_count]).to eq(2)
     end
@@ -714,7 +719,7 @@ RSpec.describe Sourced::CCC::Store do
         group.stop(message: 'operator requested shutdown')
       end
 
-      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
       expect(row[:status]).to eq('stopped')
       expect(row[:retry_at]).to be_nil
     end
@@ -729,7 +734,7 @@ RSpec.describe Sourced::CCC::Store do
         group.fail(exception: err)
       end
 
-      row = db[:ccc_consumer_groups].where(group_id: 'my-group').first
+      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
       expect(row[:status]).to eq('failed')
       expect(row[:retry_at]).to be_nil
       ctx = JSON.parse(row[:error_context], symbolize_names: true)
@@ -749,9 +754,9 @@ RSpec.describe Sourced::CCC::Store do
         handled_types: ['store_test.device.registered'],
         worker_id: 'w-1')
 
-      expect(db[:ccc_offsets].count).to be > 0
+      expect(db[:sourced_offsets].count).to be > 0
       store.reset_consumer_group('my-group')
-      expect(db[:ccc_offsets].count).to eq(0)
+      expect(db[:sourced_offsets].count).to eq(0)
     end
 
     it 'accepts an object responding to #group_id' do
@@ -765,9 +770,9 @@ RSpec.describe Sourced::CCC::Store do
         worker_id: 'w-1')
 
       reactor = double('reactor', group_id: 'my-group')
-      expect(db[:ccc_offsets].count).to be > 0
+      expect(db[:sourced_offsets].count).to be > 0
       store.reset_consumer_group(reactor)
-      expect(db[:ccc_offsets].count).to eq(0)
+      expect(db[:sourced_offsets].count).to eq(0)
     end
   end
 
@@ -785,7 +790,7 @@ RSpec.describe Sourced::CCC::Store do
       )
 
       store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      expect(db[:ccc_offsets].count).to be >= 1
+      expect(db[:sourced_offsets].count).to be >= 1
     end
 
     it 'returns nil when no pending messages' do
@@ -1244,7 +1249,7 @@ RSpec.describe Sourced::CCC::Store do
 
       store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
 
-      offset = db[:ccc_offsets].where(id: result.offset_id).first
+      offset = db[:sourced_offsets].where(id: result.offset_id).first
       expect(offset[:last_position]).to eq(result.messages.last.position)
       expect(offset[:claimed]).to eq(0)
       expect(offset[:claimed_at]).to be_nil
@@ -1286,8 +1291,8 @@ RSpec.describe Sourced::CCC::Store do
         position: 1
       )
 
-      offset = db[:ccc_offsets].join(:ccc_consumer_groups, id: :consumer_group_id)
-        .where(Sequel[:ccc_consumer_groups][:group_id] => group_id)
+      offset = db[:sourced_offsets].join(:sourced_consumer_groups, id: :consumer_group_id)
+        .where(Sequel[:sourced_consumer_groups][:group_id] => group_id)
         .first
       expect(offset[:last_position]).to eq(1)
     end
@@ -1302,7 +1307,7 @@ RSpec.describe Sourced::CCC::Store do
         position: 1
       )
 
-      cg = db[:ccc_consumer_groups].where(group_id: group_id).first
+      cg = db[:sourced_consumer_groups].where(group_id: group_id).first
       expect(cg[:highest_position]).to eq(1)
     end
 
@@ -1323,8 +1328,8 @@ RSpec.describe Sourced::CCC::Store do
         position: 1
       )
 
-      offset = db[:ccc_offsets].join(:ccc_consumer_groups, id: :consumer_group_id)
-        .where(Sequel[:ccc_consumer_groups][:group_id] => group_id)
+      offset = db[:sourced_offsets].join(:sourced_consumer_groups, id: :consumer_group_id)
+        .where(Sequel[:sourced_consumer_groups][:group_id] => group_id)
         .first
       expect(offset[:last_position]).to eq(2)
     end
@@ -1345,7 +1350,7 @@ RSpec.describe Sourced::CCC::Store do
         position: 1
       )
 
-      cg = db[:ccc_consumer_groups].where(group_id: group_id).first
+      cg = db[:sourced_consumer_groups].where(group_id: group_id).first
       expect(cg[:highest_position]).to eq(2)
     end
 
@@ -1401,7 +1406,7 @@ RSpec.describe Sourced::CCC::Store do
         )
       }.not_to raise_error
 
-      expect(db[:ccc_offsets].count).to eq(0)
+      expect(db[:sourced_offsets].count).to eq(0)
     end
 
     it 'is a no-op when partition has no messages in the store' do
@@ -1412,7 +1417,7 @@ RSpec.describe Sourced::CCC::Store do
         )
       }.not_to raise_error
 
-      expect(db[:ccc_offsets].count).to eq(0)
+      expect(db[:sourced_offsets].count).to eq(0)
     end
 
     it 'works with composite partitions' do
@@ -1425,8 +1430,8 @@ RSpec.describe Sourced::CCC::Store do
         position: 1
       )
 
-      offset = db[:ccc_offsets].join(:ccc_consumer_groups, id: :consumer_group_id)
-        .where(Sequel[:ccc_consumer_groups][:group_id] => group_id)
+      offset = db[:sourced_offsets].join(:sourced_consumer_groups, id: :consumer_group_id)
+        .where(Sequel[:sourced_consumer_groups][:group_id] => group_id)
         .first
       expect(offset[:last_position]).to eq(1)
       expect(offset[:partition_key]).to eq('course_name:Algebra|user_id:joe')
@@ -1579,7 +1584,7 @@ RSpec.describe Sourced::CCC::Store do
 
       store.release(group_id, offset_id: result.offset_id)
 
-      offset = db[:ccc_offsets].where(id: result.offset_id).first
+      offset = db[:sourced_offsets].where(id: result.offset_id).first
       expect(offset[:last_position]).to eq(0) # not advanced
       expect(offset[:claimed]).to eq(0)
     end

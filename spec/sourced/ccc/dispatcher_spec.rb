@@ -361,7 +361,7 @@ RSpec.describe Sourced::CCC::Dispatcher do
       )
 
       expect(router.handle_next_for(DispatchTestDecider)).to be true
-      expect(db[:ccc_scheduled_messages].count).to eq(1)
+      expect(db[:sourced_scheduled_messages].count).to eq(1)
 
       Timecop.freeze(Time.now + 3) do
         expect(store.update_schedule!).to eq(1)

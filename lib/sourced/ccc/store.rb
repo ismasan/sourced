@@ -2,6 +2,7 @@
 
 require 'json'
 require 'sourced/inline_notifier'
+require 'sourced/ccc/installer'
 
 module Sourced
   module CCC
@@ -52,118 +53,56 @@ module Sourced
       # @return [Logger]
       attr_reader :logger
 
+      # @return [CCC::Installer]
+      attr_reader :installer
+
       # @param db [Sequel::SQLite::Database] a Sequel SQLite connection
       # @param notifier [#notify_new_messages, #notify_reactor_resumed, nil] optional notifier for dispatch signals
       # @param logger [Logger, nil] optional logger (defaults to Sourced.config.logger)
-      def initialize(db, notifier: nil, logger: nil)
+      # @param prefix [String] table name prefix (default 'sourced')
+      def initialize(db, notifier: nil, logger: nil, prefix: 'sourced')
         @db = db
         @notifier = notifier || Sourced::InlineNotifier.new
         @logger = logger || Sourced.config.logger
         @db.run('PRAGMA foreign_keys = ON')
         @db.run('PRAGMA journal_mode = WAL')
         @db.run('PRAGMA busy_timeout = 5000')
+
+        @installer = Installer.new(db, logger: @logger, prefix: prefix)
+
+        # Source table name symbols from the installer
+        @messages_table          = @installer.messages_table
+        @key_pairs_table         = @installer.key_pairs_table
+        @message_key_pairs_table = @installer.message_key_pairs_table
+        @scheduled_messages_table = @installer.scheduled_messages_table
+        @consumer_groups_table   = @installer.consumer_groups_table
+        @offsets_table           = @installer.offsets_table
+        @offset_key_pairs_table  = @installer.offset_key_pairs_table
+        @workers_table           = @installer.workers_table
       end
 
       # Whether all required tables exist.
       # @return [Boolean]
       def installed?
-        db.table_exists?(:ccc_messages) &&
-          db.table_exists?(:ccc_key_pairs) &&
-          db.table_exists?(:ccc_message_key_pairs) &&
-          db.table_exists?(:ccc_scheduled_messages) &&
-          db.table_exists?(:ccc_consumer_groups) &&
-          db.table_exists?(:ccc_offsets) &&
-          db.table_exists?(:ccc_offset_key_pairs) &&
-          db.table_exists?(:ccc_workers)
+        installer.installed?
       end
 
       # Create all required tables and indexes. Idempotent.
       # @return [void]
       def install!
-        db.run(<<~SQL)
-          CREATE TABLE IF NOT EXISTS ccc_messages (
-            position INTEGER PRIMARY KEY AUTOINCREMENT,
-            message_id TEXT NOT NULL UNIQUE,
-            message_type TEXT NOT NULL,
-            causation_id TEXT,
-            correlation_id TEXT,
-            payload TEXT NOT NULL,
-            metadata TEXT,
-            created_at TEXT NOT NULL
-          )
-        SQL
-        db.run('CREATE INDEX IF NOT EXISTS idx_ccc_message_type ON ccc_messages(message_type)')
-        db.run('CREATE INDEX IF NOT EXISTS idx_ccc_correlation_id ON ccc_messages(correlation_id)')
+        installer.install
+      end
 
-        db.run(<<~SQL)
-          CREATE TABLE IF NOT EXISTS ccc_key_pairs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            value TEXT NOT NULL,
-            UNIQUE(name, value)
-          )
-        SQL
-        db.run('CREATE INDEX IF NOT EXISTS idx_ccc_key_pair_nv ON ccc_key_pairs(name, value)')
+      # Drop all tables. Test-only guard.
+      # @return [void]
+      def uninstall
+        installer.uninstall
+      end
 
-        db.run(<<~SQL)
-          CREATE TABLE IF NOT EXISTS ccc_message_key_pairs (
-            message_position INTEGER NOT NULL REFERENCES ccc_messages(position),
-            key_pair_id INTEGER NOT NULL REFERENCES ccc_key_pairs(id),
-            PRIMARY KEY (message_position, key_pair_id)
-          )
-        SQL
-        db.run('CREATE INDEX IF NOT EXISTS idx_ccc_mkp_key ON ccc_message_key_pairs(key_pair_id, message_position)')
-
-        db.run(<<~SQL)
-          CREATE TABLE IF NOT EXISTS ccc_scheduled_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            available_at TEXT NOT NULL,
-            message TEXT NOT NULL
-          )
-        SQL
-        db.run('CREATE INDEX IF NOT EXISTS idx_ccc_scheduled_available_at ON ccc_scheduled_messages(available_at)')
-
-        db.run(<<~SQL)
-          CREATE TABLE IF NOT EXISTS ccc_consumer_groups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            group_id TEXT NOT NULL UNIQUE,
-            status TEXT NOT NULL DEFAULT '#{ACTIVE}',
-            highest_position INTEGER NOT NULL DEFAULT 0,
-            error_context TEXT,
-            retry_at TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-          )
-        SQL
-
-        db.run(<<~SQL)
-          CREATE TABLE IF NOT EXISTS ccc_offsets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            consumer_group_id INTEGER NOT NULL REFERENCES ccc_consumer_groups(id) ON DELETE CASCADE,
-            partition_key TEXT NOT NULL,
-            last_position INTEGER NOT NULL DEFAULT 0,
-            claimed INTEGER NOT NULL DEFAULT 0,
-            claimed_at TEXT,
-            claimed_by TEXT,
-            UNIQUE(consumer_group_id, partition_key)
-          )
-        SQL
-
-        db.run(<<~SQL)
-          CREATE TABLE IF NOT EXISTS ccc_offset_key_pairs (
-            offset_id INTEGER NOT NULL REFERENCES ccc_offsets(id) ON DELETE CASCADE,
-            key_pair_id INTEGER NOT NULL REFERENCES ccc_key_pairs(id),
-            PRIMARY KEY (offset_id, key_pair_id)
-          )
-        SQL
-
-        db.run(<<~SQL)
-          CREATE TABLE IF NOT EXISTS ccc_workers (
-            id TEXT PRIMARY KEY,
-            last_seen TEXT NOT NULL
-          )
-        SQL
+      # Render the migration to a file for use with the host app's Sequel::Migrator.
+      # @see Installer#copy_migration_to
+      def copy_migration_to(dir = nil, &block)
+        installer.copy_migration_to(dir, &block)
       end
 
       # Append messages to the store. Extracts and indexes key-value pairs
@@ -192,7 +131,7 @@ module Sourced
             payload_json = msg.payload ? JSON.dump(msg.payload.to_h) : '{}'
             metadata_json = msg.metadata.empty? ? nil : JSON.dump(msg.metadata)
 
-            db[:ccc_messages].insert(
+            db[@messages_table].insert(
               message_id: msg.id,
               message_type: msg.type,
               causation_id: msg.causation_id,
@@ -202,14 +141,14 @@ module Sourced
               created_at: msg.created_at.iso8601
             )
 
-            last_position = db[:ccc_messages].where(message_id: msg.id).get(:position)
+            last_position = db[@messages_table].where(message_id: msg.id).get(:position)
 
             # Extract and index key pairs
             msg.extracted_keys.each do |name, value|
-              db.run("INSERT OR IGNORE INTO ccc_key_pairs (name, value) VALUES (#{db.literal(name)}, #{db.literal(value)})")
-              key_pair_id = db[:ccc_key_pairs].where(name: name, value: value).get(:id)
+              db.run("INSERT OR IGNORE INTO #{@key_pairs_table} (name, value) VALUES (#{db.literal(name)}, #{db.literal(value)})")
+              key_pair_id = db[@key_pairs_table].where(name: name, value: value).get(:id)
 
-              db[:ccc_message_key_pairs].insert(
+              db[@message_key_pairs_table].insert(
                 message_position: last_position,
                 key_pair_id: key_pair_id
               )
@@ -243,7 +182,7 @@ module Sourced
         end
 
         db.transaction do
-          db[:ccc_scheduled_messages].multi_insert(rows)
+          db[@scheduled_messages_table].multi_insert(rows)
         end
 
         true
@@ -259,7 +198,7 @@ module Sourced
         now = Time.now
 
         db.transaction do
-          rows = db[:ccc_scheduled_messages]
+          rows = db[@scheduled_messages_table]
             .where { available_at <= now.iso8601 }
             .order(:id)
             .limit(100)
@@ -276,7 +215,7 @@ module Sourced
           append(messages)
 
           row_ids = rows.map { |row| row[:id] }
-          db[:ccc_scheduled_messages].where(id: row_ids).delete
+          db[@scheduled_messages_table].where(id: row_ids).delete
 
           rows.size
         end
@@ -294,7 +233,7 @@ module Sourced
       # @param limit [Integer] max number of messages to return (default 50)
       # @return [Array<PositionedMessage>] messages ordered by position
       def read_all(from_position: 0, limit: 50)
-        db[:ccc_messages]
+        db[@messages_table]
           .where { position > from_position }
           .order(:position)
           .limit(limit)
@@ -367,7 +306,7 @@ module Sourced
       def read_partition(partition_attrs, handled_types:, from_position: 0)
         # Resolve key_pair_ids for each partition attribute
         key_pair_ids = partition_attrs.filter_map do |name, value|
-          db[:ccc_key_pairs].where(name: name.to_s, value: value.to_s).get(:id)
+          db[@key_pairs_table].where(name: name.to_s, value: value.to_s).get(:id)
         end
 
         # If any key pair doesn't exist in the store, no messages can match
@@ -413,7 +352,7 @@ module Sourced
       def register_consumer_group(group_id)
         now = Time.now.iso8601
         db.run(<<~SQL)
-          INSERT OR IGNORE INTO ccc_consumer_groups (group_id, status, highest_position, created_at, updated_at)
+          INSERT OR IGNORE INTO #{@consumer_groups_table} (group_id, status, highest_position, created_at, updated_at)
           VALUES (#{db.literal(group_id)}, '#{ACTIVE}', 0, #{db.literal(now)}, #{db.literal(now)})
         SQL
       end
@@ -424,7 +363,7 @@ module Sourced
       # @return [Boolean]
       def consumer_group_active?(group_id)
         group_id = resolve_group_id(group_id)
-        row = db[:ccc_consumer_groups].where(group_id: group_id).select(:status).first
+        row = db[@consumer_groups_table].where(group_id: group_id).select(:status).first
         return false unless row
 
         row[:status] == ACTIVE
@@ -448,7 +387,7 @@ module Sourced
       # @return [void]
       def start_consumer_group(group_id)
         group_id = resolve_group_id(group_id)
-        db[:ccc_consumer_groups]
+        db[@consumer_groups_table]
           .where(group_id: group_id)
           .update(status: ACTIVE, retry_at: nil, error_context: nil, updated_at: Time.now.iso8601)
         notifier.notify_reactor_resumed(group_id)
@@ -462,7 +401,7 @@ module Sourced
       # @yieldparam group [CCC::GroupUpdater]
       # @return [void]
       def updating_consumer_group(group_id)
-        dataset = db[:ccc_consumer_groups].where(group_id: group_id)
+        dataset = db[@consumer_groups_table].where(group_id: group_id)
         row = dataset.first
         raise ArgumentError, "Consumer group #{group_id} not found" unless row
 
@@ -483,10 +422,10 @@ module Sourced
       # @return [void]
       def reset_consumer_group(group_id)
         group_id = resolve_group_id(group_id)
-        cg = db[:ccc_consumer_groups].where(group_id: group_id).first
+        cg = db[@consumer_groups_table].where(group_id: group_id).first
         return unless cg
 
-        db[:ccc_offsets].where(consumer_group_id: cg[:id]).delete
+        db[@offsets_table].where(consumer_group_id: cg[:id]).delete
       end
 
       # Claim the next available partition for processing.
@@ -513,7 +452,7 @@ module Sourced
       def claim_next(group_id, partition_by:, handled_types:, worker_id:, batch_size: nil)
         partition_by = Array(partition_by).sort
         now = Time.now.iso8601
-        cg = db[:ccc_consumer_groups]
+        cg = db[@consumer_groups_table]
           .where(group_id: group_id, status: ACTIVE)
           .where { Sequel.|({retry_at: nil}, Sequel.lit('retry_at <= ?', now)) }
           .first
@@ -524,7 +463,7 @@ module Sourced
         claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
         return nil unless claimed
 
-        key_pair_ids = db[:ccc_offset_key_pairs]
+        key_pair_ids = db[@offset_key_pairs_table]
           .where(offset_id: claimed[:offset_id])
           .select_map(:key_pair_id)
 
@@ -538,7 +477,7 @@ module Sourced
 
         # Build partition_value hash from key_pairs
         partition_value = {}
-        db[:ccc_key_pairs].where(id: key_pair_ids).each do |kp|
+        db[@key_pairs_table].where(id: key_pair_ids).each do |kp|
           partition_value[kp[:name]] = kp[:value]
         end
 
@@ -579,10 +518,10 @@ module Sourced
       # @param position [Integer] position of the last processed message
       # @return [void]
       def ack(group_id, offset_id:, position:)
-        cg = db[:ccc_consumer_groups].where(group_id: group_id).first
+        cg = db[@consumer_groups_table].where(group_id: group_id).first
         return unless cg
 
-        db[:ccc_offsets].where(id: offset_id, consumer_group_id: cg[:id]).update(
+        db[@offsets_table].where(id: offset_id, consumer_group_id: cg[:id]).update(
           last_position: position,
           claimed: 0,
           claimed_at: nil,
@@ -591,7 +530,7 @@ module Sourced
 
         # Advance the high watermark (never decrease)
         if position > cg[:highest_position]
-          db[:ccc_consumer_groups].where(id: cg[:id]).update(
+          db[@consumer_groups_table].where(id: cg[:id]).update(
             highest_position: position,
             updated_at: Time.now.iso8601
           )
@@ -605,10 +544,10 @@ module Sourced
       # @param offset_id [Integer] offset ID from the claim result
       # @return [void]
       def release(group_id, offset_id:)
-        cg = db[:ccc_consumer_groups].where(group_id: group_id).first
+        cg = db[@consumer_groups_table].where(group_id: group_id).first
         return unless cg
 
-        db[:ccc_offsets].where(id: offset_id, consumer_group_id: cg[:id]).update(
+        db[@offsets_table].where(id: offset_id, consumer_group_id: cg[:id]).update(
           claimed: 0,
           claimed_at: nil,
           claimed_by: nil
@@ -627,7 +566,7 @@ module Sourced
         now = at.iso8601
         ids.each do |id|
           db.run(<<~SQL)
-            INSERT INTO ccc_workers (id, last_seen) VALUES (#{db.literal(id)}, #{db.literal(now)})
+            INSERT INTO #{@workers_table} (id, last_seen) VALUES (#{db.literal(id)}, #{db.literal(now)})
             ON CONFLICT(id) DO UPDATE SET last_seen = #{db.literal(now)}
           SQL
         end
@@ -641,13 +580,13 @@ module Sourced
       def release_stale_claims(ttl_seconds: 120)
         cutoff = (Time.now - ttl_seconds).iso8601
 
-        stale_worker_ids = db[:ccc_workers]
+        stale_worker_ids = db[@workers_table]
           .where(Sequel.lit('last_seen <= ?', cutoff))
           .select_map(:id)
 
         return 0 if stale_worker_ids.empty?
 
-        db[:ccc_offsets]
+        db[@offsets_table]
           .where(claimed: 1)
           .where(claimed_by: stale_worker_ids)
           .update(claimed: 0, claimed_at: nil, claimed_by: nil)
@@ -662,21 +601,21 @@ module Sourced
       # @param position [Integer] advance offset to at least this position
       # @return [void]
       def advance_offset(group_id, partition:, position:)
-        cg = db[:ccc_consumer_groups].where(group_id: group_id).first
+        cg = db[@consumer_groups_table].where(group_id: group_id).first
         return unless cg
 
         partition_by = partition.keys.sort
         bootstrap_offsets(cg[:id], partition_by)
 
         partition_key = build_partition_key(partition_by, partition)
-        offset = db[:ccc_offsets].where(consumer_group_id: cg[:id], partition_key: partition_key).first
+        offset = db[@offsets_table].where(consumer_group_id: cg[:id], partition_key: partition_key).first
         return unless offset
         return if offset[:last_position] >= position
 
-        db[:ccc_offsets].where(id: offset[:id]).update(last_position: position)
+        db[@offsets_table].where(id: offset[:id]).update(last_position: position)
 
         if position > cg[:highest_position]
-          db[:ccc_consumer_groups].where(id: cg[:id]).update(
+          db[@consumer_groups_table].where(id: cg[:id]).update(
             highest_position: position,
             updated_at: Time.now.iso8601
           )
@@ -721,8 +660,8 @@ module Sourced
             COALESCE(MIN(CASE WHEN o.last_position > 0 THEN o.last_position END), 0) AS oldest_processed,
             COALESCE(MAX(o.last_position), 0) AS newest_processed,
             COUNT(o.id) AS partition_count
-          FROM ccc_consumer_groups cg
-          LEFT JOIN ccc_offsets o ON o.consumer_group_id = cg.id
+          FROM #{@consumer_groups_table} cg
+          LEFT JOIN #{@offsets_table} o ON o.consumer_group_id = cg.id
           GROUP BY cg.id, cg.group_id, cg.status, cg.retry_at, cg.error_context
           ORDER BY cg.group_id
         SQL
@@ -741,12 +680,12 @@ module Sourced
       # @param message_id [String] UUID of any message in the correlation chain
       # @return [Array<PositionedMessage>] correlated messages ordered by position, or [] if not found
       def read_correlation_batch(message_id)
-        correlation_id = db[:ccc_messages]
+        correlation_id = db[@messages_table]
           .where(message_id: message_id)
           .get(:correlation_id)
         return [] unless correlation_id
 
-        db[:ccc_messages]
+        db[@messages_table]
           .where(correlation_id: correlation_id)
           .order(:position)
           .map { |row| deserialize(row) }
@@ -756,21 +695,21 @@ module Sourced
       #
       # @return [Integer] max position, or 0 if the store is empty
       def latest_position
-        db[:ccc_messages].max(:position) || 0
+        db[@messages_table].max(:position) || 0
       end
 
       # Delete all data from all tables and reset autoincrement. For testing only.
       #
       # @return [void]
       def clear!
-        db[:ccc_offset_key_pairs].delete
-        db[:ccc_offsets].delete
-        db[:ccc_consumer_groups].delete
-        db[:ccc_message_key_pairs].delete
-        db[:ccc_key_pairs].delete
-        db[:ccc_messages].delete
-        db[:ccc_scheduled_messages].delete
-        db[:ccc_workers].delete
+        db[@offset_key_pairs_table].delete
+        db[@offsets_table].delete
+        db[@consumer_groups_table].delete
+        db[@message_key_pairs_table].delete
+        db[@key_pairs_table].delete
+        db[@messages_table].delete
+        db[@scheduled_messages_table].delete
+        db[@workers_table].delete
         db.run('DELETE FROM sqlite_sequence') if db.table_exists?(:sqlite_sequence)
       end
 
@@ -806,8 +745,8 @@ module Sourced
         joins = []
         selects = []
         partition_by.each_with_index do |attr, i|
-          joins << "JOIN ccc_message_key_pairs mkp#{i} ON m.position = mkp#{i}.message_position"
-          joins << "JOIN ccc_key_pairs kp#{i} ON mkp#{i}.key_pair_id = kp#{i}.id AND kp#{i}.name = #{db.literal(attr)}"
+          joins << "JOIN #{@message_key_pairs_table} mkp#{i} ON m.position = mkp#{i}.message_position"
+          joins << "JOIN #{@key_pairs_table} kp#{i} ON mkp#{i}.key_pair_id = kp#{i}.id AND kp#{i}.name = #{db.literal(attr)}"
           selects << "kp#{i}.id AS kp_id_#{i}, kp#{i}.value AS val_#{i}"
         end
 
@@ -815,7 +754,7 @@ module Sourced
 
         sql = <<~SQL
           SELECT #{selects.join(', ')}
-          FROM ccc_messages m
+          FROM #{@messages_table} m
           #{joins.join("\n")}
           GROUP BY #{group_by}
         SQL
@@ -833,16 +772,16 @@ module Sourced
 
           # INSERT OR IGNORE the offset row
           db.run(<<~SQL)
-            INSERT OR IGNORE INTO ccc_offsets (consumer_group_id, partition_key, last_position, claimed)
+            INSERT OR IGNORE INTO #{@offsets_table} (consumer_group_id, partition_key, last_position, claimed)
             VALUES (#{db.literal(cg_id)}, #{db.literal(partition_key)}, 0, 0)
           SQL
 
-          offset_id = db[:ccc_offsets].where(consumer_group_id: cg_id, partition_key: partition_key).get(:id)
+          offset_id = db[@offsets_table].where(consumer_group_id: cg_id, partition_key: partition_key).get(:id)
 
           # INSERT OR IGNORE the offset_key_pairs join rows
           kp_ids.each do |kp_id|
             db.run(<<~SQL)
-              INSERT OR IGNORE INTO ccc_offset_key_pairs (offset_id, key_pair_id)
+              INSERT OR IGNORE INTO #{@offset_key_pairs_table} (offset_id, key_pair_id)
               VALUES (#{db.literal(offset_id)}, #{db.literal(kp_id)})
             SQL
           end
@@ -863,10 +802,10 @@ module Sourced
         sql = <<~SQL
           SELECT o.id AS offset_id, o.partition_key, o.last_position,
                  MIN(m.position) AS next_position
-          FROM ccc_offsets o
-          JOIN ccc_offset_key_pairs okp ON o.id = okp.offset_id
-          JOIN ccc_message_key_pairs mkp ON okp.key_pair_id = mkp.key_pair_id
-          JOIN ccc_messages m ON mkp.message_position = m.position
+          FROM #{@offsets_table} o
+          JOIN #{@offset_key_pairs_table} okp ON o.id = okp.offset_id
+          JOIN #{@message_key_pairs_table} mkp ON okp.key_pair_id = mkp.key_pair_id
+          JOIN #{@messages_table} m ON mkp.message_position = m.position
           WHERE o.consumer_group_id = #{db.literal(cg_id)}
             AND o.claimed = 0
             AND m.position > o.last_position
@@ -880,7 +819,7 @@ module Sourced
         return nil unless row
 
         now = Time.now.iso8601
-        updated = db[:ccc_offsets]
+        updated = db[@offsets_table]
           .where(id: row[:offset_id], claimed: 0)
           .update(claimed: 1, claimed_at: now, claimed_by: worker_id)
 
@@ -907,23 +846,23 @@ module Sourced
 
         sql = <<~SQL
           SELECT DISTINCT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.created_at
-          FROM ccc_messages m
+          FROM #{@messages_table} m
           WHERE m.position > #{db.literal(last_position)}
             AND m.message_type IN (#{types_list})
             AND EXISTS (
-              SELECT 1 FROM ccc_message_key_pairs mkp
+              SELECT 1 FROM #{@message_key_pairs_table} mkp
               WHERE mkp.message_position = m.position
                 AND mkp.key_pair_id IN (#{kp_ids_list})
             )
             AND (
-              SELECT COUNT(*) FROM ccc_message_key_pairs mkp
+              SELECT COUNT(*) FROM #{@message_key_pairs_table} mkp
               WHERE mkp.message_position = m.position
                 AND mkp.key_pair_id IN (#{kp_ids_list})
             ) = (
               SELECT COUNT(DISTINCT kp_part.name)
-              FROM ccc_message_key_pairs mkp2
-              JOIN ccc_key_pairs kp_msg ON mkp2.key_pair_id = kp_msg.id
-              JOIN ccc_key_pairs kp_part ON kp_part.id IN (#{kp_ids_list})
+              FROM #{@message_key_pairs_table} mkp2
+              JOIN #{@key_pairs_table} kp_msg ON mkp2.key_pair_id = kp_msg.id
+              JOIN #{@key_pairs_table} kp_part ON kp_part.id IN (#{kp_ids_list})
                 AND kp_part.name = kp_msg.name
               WHERE mkp2.message_position = m.position
             )
@@ -945,7 +884,7 @@ module Sourced
         # Step 1: resolve key_pair IDs
         key_lookups = conditions.map { |c| [c.key_name, c.key_value] }.uniq
         or_clauses = key_lookups.map { |n, v| "(name = #{db.literal(n)} AND value = #{db.literal(v)})" }
-        key_rows = db.fetch("SELECT id, name, value FROM ccc_key_pairs WHERE #{or_clauses.join(' OR ')}").all
+        key_rows = db.fetch("SELECT id, name, value FROM #{@key_pairs_table} WHERE #{or_clauses.join(' OR ')}").all
 
         key_pair_index = {}
         key_rows.each { |r| key_pair_index[[r[:name], r[:value]]] = r[:id] }
@@ -962,8 +901,8 @@ module Sourced
 
         sql = <<~SQL
           SELECT DISTINCT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.created_at
-          FROM ccc_messages m
-          JOIN ccc_message_key_pairs mkp ON m.position = mkp.message_position
+          FROM #{@messages_table} m
+          JOIN #{@message_key_pairs_table} mkp ON m.position = mkp.message_position
           WHERE (#{where_parts.join(' OR ')})
         SQL
 
@@ -996,7 +935,7 @@ module Sourced
 
         key_lookups = conditions.map { |c| [c.key_name, c.key_value] }.uniq
         or_clauses = key_lookups.map { |n, v| "(name = #{db.literal(n)} AND value = #{db.literal(v)})" }
-        key_rows = db.fetch("SELECT id, name, value FROM ccc_key_pairs WHERE #{or_clauses.join(' OR ')}").all
+        key_rows = db.fetch("SELECT id, name, value FROM #{@key_pairs_table} WHERE #{or_clauses.join(' OR ')}").all
 
         key_pair_index = {}
         key_rows.each { |r| key_pair_index[[r[:name], r[:value]]] = r[:id] }
@@ -1011,8 +950,8 @@ module Sourced
 
         sql = <<~SQL
           SELECT MAX(m.position) AS max_pos
-          FROM ccc_messages m
-          JOIN ccc_message_key_pairs mkp ON m.position = mkp.message_position
+          FROM #{@messages_table} m
+          JOIN #{@message_key_pairs_table} mkp ON m.position = mkp.message_position
           WHERE (#{where_parts.join(' OR ')})
         SQL
         sql += " AND m.position > #{db.literal(from_position)}" if from_position

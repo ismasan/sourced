@@ -233,7 +233,7 @@ RSpec.describe Sourced::CCC::Router do
 
       router.handle_next_for(RouterTestDecider)
       expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be false
-      row = db[:ccc_consumer_groups].where(group_id: RouterTestDecider.group_id).first
+      row = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).first
       expect(row[:status]).to eq('failed')
     end
 
@@ -249,7 +249,7 @@ RSpec.describe Sourced::CCC::Router do
 
       router.handle_next_for(RouterTestDecider)
 
-      row = db[:ccc_consumer_groups].where(group_id: RouterTestDecider.group_id).first
+      row = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).first
       expect(row[:error_context]).not_to be_nil
       expect(row[:status]).to eq('failed')
     end
@@ -271,7 +271,7 @@ RSpec.describe Sourced::CCC::Router do
 
       router.handle_next_for(RouterTestDecider)
 
-      row = db[:ccc_consumer_groups].where(group_id: RouterTestDecider.group_id).first
+      row = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).first
       expect(row[:retry_at]).not_to be_nil
       expect(row[:status]).to eq('active')
 

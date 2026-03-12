@@ -101,7 +101,7 @@ RSpec.describe 'Sourced::CCC.handle!' do
       _cmd, _reactor, events = Sourced::CCC.handle!(HandleTestDecider, cmd, store: store)
 
       # Both command and event should be in the store
-      all = store.db[:ccc_messages].order(:position).all
+      all = store.db[:sourced_messages].order(:position).all
       expect(all.size).to eq(2)
       expect(all[0][:message_type]).to eq('handle_test.create_device')
       expect(all[1][:message_type]).to eq('handle_test.device_created')
@@ -156,7 +156,7 @@ RSpec.describe 'Sourced::CCC.handle!' do
       expect(events).to eq([])
 
       # Nothing appended
-      expect(store.db[:ccc_messages].count).to eq(0)
+      expect(store.db[:sourced_messages].count).to eq(0)
     end
   end
 
