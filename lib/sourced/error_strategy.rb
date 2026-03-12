@@ -3,9 +3,9 @@
 module Sourced
   # Built-in configurable error strategy
   # for handling exceptions raised during processing messages (commands or events)
-  # By default it stops the consumer group immediately.
+  # By default it marks the consumer group as failed immediately.
   # It can be configured to retry a number of times with a delay between retries.
-  # It can also register callbacks to be called on retry and on stop.
+  # It can also register callbacks to be called on retry and on failure.
   #
   # @example retry with exponential back off and callbacks
   #   strategy = Sourced::ErrorStrategy.new do |s|
@@ -15,7 +15,7 @@ module Sourced
   #       LOGGER.info("Retrying #{n} times")
   #     end
   #
-  #     s.on_stop do |exception, message|
+  #     s.on_fail do |exception, _message|
   #       Sentry.capture_exception(exception)
   #     end
   #   end
@@ -32,7 +32,7 @@ module Sourced
       @retry_after = RETRY_AFTER
       @backoff = BACKOFF
       @on_retry = NOOP_CALLBACK
-      @on_stop = NOOP_CALLBACK
+      @on_fail = NOOP_CALLBACK
 
       yield(self) if block_given?
       freeze
@@ -53,15 +53,15 @@ module Sourced
       @on_retry = callable || blk
     end
 
-    def on_stop(callable = nil, &blk)
-      @on_stop = callable || blk
+    def on_fail(callable = nil, &blk)
+      @on_fail = callable || blk
     end
 
     # The Error Strategy interface
     #
     # @param exception [Exception]
     # @param message [Sourced::Message]
-    # @param group [#retry, #stop]
+    # @param group [#retry, #fail]
     def call(exception, message, group)
       retry_count = group.error_context[:retry_count] || 1
       if retry_count <= max_retries
@@ -71,8 +71,8 @@ module Sourced
         retry_count += 1
         group.retry(later, retry_count:)
       else
-        @on_stop.call(exception, message)
-        group.stop(exception:, message:)
+        @on_fail.call(exception, message)
+        group.fail(exception:)
       end
     end
 

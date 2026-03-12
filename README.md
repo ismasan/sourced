@@ -1381,9 +1381,9 @@ Sourced workflows are eventually-consistent by default. This means that commands
 
 Most "domain errors" in command handlers should be handled by the developer and recorded as domain events, so that the domain can react and/or compensate for them.
 
-To handle true _exceptions_ (code or data bugs, network or IO exceptions) Sourced provides a default error strategy that will "stop" the affected consumer group (the Postgres backend will log the exception and offending message in the `consumer_groups` table).
+To handle true _exceptions_ (code or data bugs, network or IO exceptions) Sourced provides a default error strategy that will mark the affected consumer group as failed (the Postgres backend will log the exception in the `consumer_groups` table).
 
-You can configure the error strategy with retries and exponential backoff, as well as `on_retry` and `on_stop` callbacks.
+You can configure the error strategy with retries and exponential backoff, as well as `on_retry` and `on_fail` callbacks.
 
 ```ruby
 Sourced.configure do |config|
@@ -1394,7 +1394,7 @@ Sourced.configure do |config|
       times: 3,
       # Wait 5 seconds before retrying
       after: 5, 
-      # Custom backoff: given after=5, retries in 5, 10 and 15 seconds before stopping
+      # Custom backoff: given after=5, retries in 5, 10 and 15 seconds before failing
       backoff: ->(retry_after, retry_count) { retry_after * retry_count }
     )
     
@@ -1404,8 +1404,8 @@ Sourced.configure do |config|
     end
 
     # Finally, trigger this callback
-    # after all retries have failed and the consumer group is stopped.
-    s.on_stop do |exception, message|
+    # after all retries have failed and the consumer group is failed.
+    s.on_fail do |exception, message|
       Sentry.capture_exception(exception)
     end
   end

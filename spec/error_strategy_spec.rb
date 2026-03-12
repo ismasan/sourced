@@ -11,9 +11,18 @@ RSpec.describe Sourced::ErrorStrategy do
         self
       end
 
-      def stop(reason = {})
+      def stop(message: nil)
         self.status = :stopped
-        self.error_context.merge!(reason:)
+        self.error_context[:message] = message if message
+        self
+      end
+
+      def fail(exception: nil)
+        self.status = :failed
+        if exception
+          self.error_context[:exception_class] = exception.class.to_s
+          self.error_context[:exception_message] = exception.message
+        end
         self
       end
     end
@@ -25,19 +34,20 @@ RSpec.describe Sourced::ErrorStrategy do
   before do
     allow(group).to receive(:retry).and_call_original
     allow(group).to receive(:stop).and_call_original
+    allow(group).to receive(:fail).and_call_original
   end
 
-  it 'stops the group immediatly by default' do
+  it 'fails the group immediatly by default' do
     strategy = described_class.new
     strategy.call(exception, message, group)
-    expect(group).to have_received(:stop).with(exception:, message:)
+    expect(group).to have_received(:fail).with(exception:)
   end
 
   it 'can be configured with retries' do
     now = Time.new(2020, 1, 1).utc
 
     retries = []
-    stop_call = nil
+    fail_call = nil
 
     strategy = described_class.new do |s|
       s.retry(times: 3, after: 5, backoff: ->(retry_after, retry_count) { retry_after * retry_count })
@@ -46,8 +56,8 @@ RSpec.describe Sourced::ErrorStrategy do
         retries << [n, exception, message, later]
       end
 
-      s.on_stop do |exception, message|
-        stop_call = [exception, message]
+      s.on_fail do |exception, message|
+        fail_call = [exception, message]
       end
     end
 
@@ -56,7 +66,7 @@ RSpec.describe Sourced::ErrorStrategy do
       strategy.call(exception, message, group)
       strategy.call(exception, message, group)
 
-      expect(stop_call).to be(nil)
+      expect(fail_call).to be(nil)
 
       strategy.call(exception, message, group)
 
@@ -66,12 +76,11 @@ RSpec.describe Sourced::ErrorStrategy do
         [3, exception, message, now + 15]
       ])
 
-      expect(stop_call).to eq([exception, message])
+      expect(fail_call).to eq([exception, message])
 
-      expect(group).to have_received(:retry).with(now + 5, retry_count: 2).exactly(1).times
-      expect(group).to have_received(:retry).with(now + 10, retry_count: 3).exactly(1).times
-      expect(group).to have_received(:retry).with(now + 15, retry_count: 4).exactly(1).times
-      expect(group).to have_received(:stop).exactly(1).times
+      expect(group.retry_at).to eq(now + 15)
+      expect(group.status).to eq(:failed)
+      expect(group.error_context[:retry_count]).to eq(4)
     end
   end
 end

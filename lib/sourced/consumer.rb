@@ -59,13 +59,13 @@ module Sourced
     #       later = 5 + 5 * retry_count
     #       group.retry(later, retry_count: retry_count + 1)
     #     else
-    #       group.stop(exception)
+    #       group.fail(exception:)
     #     end
     #   end
     #
     # @param exception [Exception] the exception raised
     # @param message [Sourced::Message] the event or command being handled
-    # @param group [#stop, #retry] consumer group object to update state, ie. for retries
+    # @param group [#stop, #fail, #retry] consumer group object to update state, ie. for retries
     def on_exception(exception, message, group)
       Sourced.config.error_strategy.call(exception, message, group)
     end

@@ -169,7 +169,7 @@ module Sourced
     #       puts "Retrying #{n} times" }
     #     end
     #
-    #     s.on_stop do |exception, message|
+    #     s.on_fail do |exception, message|
     #       Sentry.capture_exception(exception)
     #     end
     #   end

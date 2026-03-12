@@ -1258,15 +1258,31 @@ module BackendExamples
         expect(counts).to eq([nil, 1])
       end
 
-      specify '#stop(error)' do
+      specify '#stop(message:)' do
         backend.register_consumer_group('group1')
         backend.updating_consumer_group('group1') do |group|
-          group.stop(StandardError.new('boom'))
+          group.stop(message: 'operator requested shutdown')
         end
 
         gr = backend.stats.groups.first
         expect(gr[:group_id]).to eq('group1')
         expect(gr[:status]).to eq('stopped')
+
+        backend.start_consumer_group('group1')
+        gr = backend.stats.groups.first
+        expect(gr[:group_id]).to eq('group1')
+        expect(gr[:status]).to eq('active')
+      end
+
+      specify '#fail(exception:)' do
+        backend.register_consumer_group('group1')
+        backend.updating_consumer_group('group1') do |group|
+          group.fail(exception: StandardError.new('boom'))
+        end
+
+        gr = backend.stats.groups.first
+        expect(gr[:group_id]).to eq('group1')
+        expect(gr[:status]).to eq('failed')
 
         backend.start_consumer_group('group1')
         gr = backend.stats.groups.first

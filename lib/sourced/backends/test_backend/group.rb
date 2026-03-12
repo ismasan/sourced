@@ -21,9 +21,17 @@ module Sourced
 
         def active? = @status == :active
 
-        def stop(reason = nil)
-          @error_context[:reason] = reason if reason
+        def stop(message: nil)
+          @error_context[:message] = message if message
           @status = :stopped
+        end
+
+        def fail(exception: nil)
+          if exception
+            @error_context[:exception_class] = exception.class.to_s
+            @error_context[:exception_message] = exception.message
+          end
+          @status = :failed
         end
 
         def reset!

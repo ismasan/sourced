@@ -8,6 +8,7 @@ module Sourced
     class TestBackend
       ACTIVE = 'active'
       STOPPED = 'stopped'
+      FAILED = 'failed'
 
       def initialize
         clear!
@@ -98,7 +99,7 @@ module Sourced
         end
       end
 
-      # Start a consumer group that has been stopped.
+      # Start a consumer group that has been stopped or failed.
       # Signals the notifier so workers pick up the reactor immediately.
       #
       # @param group_id [String]
@@ -113,11 +114,11 @@ module Sourced
         notifier.notify_reactor_resumed(group_id)
       end
 
-      def stop_consumer_group(group_id, error = nil)
+      def stop_consumer_group(group_id, message = nil)
         group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         transaction do
           group = @state.groups[group_id]
-          group.stop(error)
+          group.stop(message:)
         end
       end
 

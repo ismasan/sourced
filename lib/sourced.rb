@@ -102,7 +102,7 @@ module Sourced
   #     config.backend = Sequel.connect(ENV['DATABASE_URL'])
   #     config.error_strategy do |s|
   #       s.retry(times: 3, after: 5)
-  #       s.on_stop { |e, msg| Sentry.capture_exception(e) }
+  #       s.on_fail { |e, msg| Sentry.capture_exception(e) }
   #     end
   #   end
   def self.configure(&)

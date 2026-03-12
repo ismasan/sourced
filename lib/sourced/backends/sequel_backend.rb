@@ -34,6 +34,8 @@ module Sourced
       ACTIVE = 'active'
       # Consumer group status indicating stopped processing
       STOPPED = 'stopped'
+      # Consumer group status indicating failed processing
+      FAILED = 'failed'
       # Pre-allocated return for empty/failed batch claims
       NO_BATCH = [nil, nil].freeze
 
@@ -573,7 +575,7 @@ module Sourced
         dataset.update(updates)
       end
 
-      # Start a consumer group that has been stopped.
+      # Start a consumer group that has been stopped or failed.
       # Signals the notifier so workers pick up the reactor immediately.
       #
       # @param group_id [String]
@@ -585,11 +587,11 @@ module Sourced
       end
 
       # @param group_id [String]
-      # @param reason [#inspect, NilClass]
-      def stop_consumer_group(group_id, reason = nil)
+      # @param message [#to_s, NilClass]
+      def stop_consumer_group(group_id, message = nil)
         group_id = group_id.consumer_info.group_id if group_id.respond_to?(:consumer_info)
         updating_consumer_group(group_id) do |group|
-          group.stop(reason)
+          group.stop(message:)
         end
       end
 
