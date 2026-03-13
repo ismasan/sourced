@@ -212,6 +212,44 @@ end
 
 Raises `Sourced::ConcurrentAppendError` on conflicts, or `RuntimeError` on domain invariant violations (e.g. "Course already exists").
 
+### CommandContext
+
+`CCC::CommandContext` is a factory for building CCC commands from raw Hash attributes (e.g. HTTP params), injecting defaults like `metadata`. It mirrors `Sourced::CommandContext` but without `stream_id`, since CCC messages are stream-less.
+
+```ruby
+# In a web controller, build a context with shared metadata
+ctx = Sourced::CCC::CommandContext.new(
+  metadata: { user_id: session[:user_id] }
+)
+
+# Build from a type string + payload hash (e.g. from JSON params)
+cmd = ctx.build(type: 'courses.create', payload: { course_id: 'c1', course_name: 'Algebra' })
+cmd.metadata[:user_id] # => session[:user_id]
+
+# Or pass an explicit command class
+cmd = ctx.build(CreateCourse, payload: { course_id: 'c1', course_name: 'Algebra' })
+```
+
+String keys are automatically symbolized, so `ctx.build('type' => '...', 'payload' => { ... })` works too.
+
+#### Scoping to a command subset
+
+By default, `CommandContext` looks up types in `CCC::Command.registry`. Pass a `scope:` to restrict lookups to a specific command subclass — attempts to build commands outside the scope raise `Sourced::UnknownMessageError`.
+
+```ruby
+class PublicCommand < Sourced::CCC::Command; end
+
+CreateCourse = PublicCommand.define('courses.create') do
+  attribute :course_id, String
+  attribute :course_name, String
+end
+
+# Only PublicCommand subclasses are allowed
+ctx = Sourced::CCC::CommandContext.new(scope: PublicCommand)
+ctx.build(type: 'courses.create', payload: { ... })  # OK
+ctx.build(type: 'admin.delete_all', payload: {})      # raises UnknownMessageError
+```
+
 ### Loading a decider's state
 
 ```ruby
