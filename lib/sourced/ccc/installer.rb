@@ -29,7 +29,7 @@ module Sourced
       # Eval the rendered migration and apply :up directly.
       def install
         migration.apply(db, :up)
-        logger.info("CCC tables installed (prefix: #{prefix})")
+        logger.info("Sourced tables installed (prefix: #{prefix})")
       end
 
       # Check that all expected tables exist.
