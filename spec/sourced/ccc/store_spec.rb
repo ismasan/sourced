@@ -149,8 +149,8 @@ RSpec.describe Sourced::CCC::Store do
       )
       store.append([source, caused])
 
-      cond1 = Sourced::CCC::QueryCondition.new(message_type: 'store_test.device.registered', key_name: 'device_id', key_value: 'dev-1')
-      cond2 = Sourced::CCC::QueryCondition.new(message_type: 'store_test.asset.registered', key_name: 'asset_id', key_value: 'asset-1')
+      cond1 = Sourced::CCC::QueryCondition.new(message_type: 'store_test.device.registered', attrs: { device_id: 'dev-1' })
+      cond2 = Sourced::CCC::QueryCondition.new(message_type: 'store_test.asset.registered', attrs: { asset_id: 'asset-1' })
       messages, = store.read([cond1, cond2])
 
       src = messages.find { |m| m.type == 'store_test.device.registered' }
@@ -199,8 +199,7 @@ RSpec.describe Sourced::CCC::Store do
 
       cond = Sourced::CCC::QueryCondition.new(
         message_type: due.type,
-        key_name: 'device_id',
-        key_value: 'dev-1'
+        attrs: { device_id: 'dev-1' }
       )
       result = store.read([cond])
       msg = result.messages.first
@@ -220,8 +219,7 @@ RSpec.describe Sourced::CCC::Store do
     let(:cond) do
       Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
-        key_name: 'device_id',
-        key_value: 'dev-1'
+        attrs: { device_id: 'dev-1' }
       )
     end
 
@@ -453,8 +451,7 @@ RSpec.describe Sourced::CCC::Store do
     it 'queries by message_type and key condition' do
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
-        key_name: 'device_id',
-        key_value: 'dev-1'
+        attrs: { device_id: 'dev-1' }
       )
       results, guard = store.read([cond])
       expect(results.size).to eq(1)
@@ -465,8 +462,7 @@ RSpec.describe Sourced::CCC::Store do
     it 'returns messages with position' do
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
-        key_name: 'device_id',
-        key_value: 'dev-1'
+        attrs: { device_id: 'dev-1' }
       )
       results, _guard = store.read([cond])
       expect(results.first.position).to eq(1)
@@ -476,13 +472,11 @@ RSpec.describe Sourced::CCC::Store do
       conditions = [
         Sourced::CCC::QueryCondition.new(
           message_type: 'store_test.device.registered',
-          key_name: 'device_id',
-          key_value: 'dev-1'
+          attrs: { device_id: 'dev-1' }
         ),
         Sourced::CCC::QueryCondition.new(
           message_type: 'store_test.device.bound',
-          key_name: 'device_id',
-          key_value: 'dev-1'
+          attrs: { device_id: 'dev-1' }
         )
       ]
       results, _guard = store.read(conditions)
@@ -496,8 +490,7 @@ RSpec.describe Sourced::CCC::Store do
     it 'filters with from_position' do
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
-        key_name: 'device_id',
-        key_value: 'dev-1'
+        attrs: { device_id: 'dev-1' }
       )
       # dev-1 registered is at position 1, so from_position: 1 should return nothing
       results, _guard = store.read([cond], from_position: 1)
@@ -512,13 +505,11 @@ RSpec.describe Sourced::CCC::Store do
       conditions = [
         Sourced::CCC::QueryCondition.new(
           message_type: 'store_test.device.registered',
-          key_name: 'device_id',
-          key_value: 'dev-1'
+          attrs: { device_id: 'dev-1' }
         ),
         Sourced::CCC::QueryCondition.new(
           message_type: 'store_test.device.bound',
-          key_name: 'device_id',
-          key_value: 'dev-1'
+          attrs: { device_id: 'dev-1' }
         )
       ]
       results, _guard = store.read(conditions, limit: 1)
@@ -529,8 +520,7 @@ RSpec.describe Sourced::CCC::Store do
     it 'returns empty for non-matching conditions' do
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
-        key_name: 'device_id',
-        key_value: 'nonexistent'
+        attrs: { device_id: 'nonexistent' }
       )
       results, _guard = store.read([cond])
       expect(results).to be_empty
@@ -544,8 +534,7 @@ RSpec.describe Sourced::CCC::Store do
     it 'deserializes into correct message subclasses' do
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
-        key_name: 'device_id',
-        key_value: 'dev-1'
+        attrs: { device_id: 'dev-1' }
       )
       results, _guard = store.read([cond])
       msg = results.first
@@ -557,8 +546,7 @@ RSpec.describe Sourced::CCC::Store do
     it 'returns a ConsistencyGuard with correct conditions' do
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
-        key_name: 'device_id',
-        key_value: 'dev-1'
+        attrs: { device_id: 'dev-1' }
       )
       _results, guard = store.read([cond])
       expect(guard).to be_a(Sourced::CCC::ConsistencyGuard)
@@ -568,8 +556,7 @@ RSpec.describe Sourced::CCC::Store do
     it 'guard last_position reflects the last result position' do
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
-        key_name: 'device_id',
-        key_value: 'dev-2'
+        attrs: { device_id: 'dev-2' }
       )
       results, guard = store.read([cond])
       # dev-2 is at position 4
@@ -580,8 +567,7 @@ RSpec.describe Sourced::CCC::Store do
     it 'guard last_position falls back to latest_position when no results' do
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
-        key_name: 'device_id',
-        key_value: 'nonexistent'
+        attrs: { device_id: 'nonexistent' }
       )
       _results, guard = store.read([cond])
       expect(guard.last_position).to eq(store.latest_position)
@@ -590,11 +576,110 @@ RSpec.describe Sourced::CCC::Store do
     it 'guard last_position falls back to from_position when no results and from_position given' do
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
-        key_name: 'device_id',
-        key_value: 'nonexistent'
+        attrs: { device_id: 'nonexistent' }
       )
       _results, guard = store.read([cond], from_position: 2)
       expect(guard.last_position).to eq(2)
+    end
+  end
+
+  describe '#read with compound conditions (AND within, OR across)' do
+    before do
+      store.append([
+        # Two DeviceBound events with different (device_id, asset_id) combinations
+        CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }),
+        CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-2' }),
+        CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-2', asset_id: 'asset-1' }),
+        # A single-attr message sharing device_id
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' }),
+      ])
+    end
+
+    it 'compound condition ANDs attrs — only matches messages with all specified key pairs' do
+      cond = Sourced::CCC::QueryCondition.new(
+        message_type: 'store_test.device.bound',
+        attrs: { device_id: 'dev-1', asset_id: 'asset-1' }
+      )
+      results, _guard = store.read([cond])
+      expect(results.size).to eq(1)
+      expect(results.first.payload.device_id).to eq('dev-1')
+      expect(results.first.payload.asset_id).to eq('asset-1')
+    end
+
+    it 'excludes messages that match only one attr of a compound condition' do
+      # dev-1/asset-2 shares device_id but not asset_id
+      # dev-2/asset-1 shares asset_id but not device_id
+      cond = Sourced::CCC::QueryCondition.new(
+        message_type: 'store_test.device.bound',
+        attrs: { device_id: 'dev-1', asset_id: 'asset-1' }
+      )
+      results, _guard = store.read([cond])
+      expect(results.size).to eq(1)
+      pairs = results.map { |m| [m.payload.device_id, m.payload.asset_id] }
+      expect(pairs).to eq([['dev-1', 'asset-1']])
+    end
+
+    it 'ORs across separate conditions — compound and single-attr mixed' do
+      conditions = [
+        # Compound: only dev-1/asset-1
+        Sourced::CCC::QueryCondition.new(
+          message_type: 'store_test.device.bound',
+          attrs: { device_id: 'dev-1', asset_id: 'asset-1' }
+        ),
+        # Single-attr: dev-1 registered
+        Sourced::CCC::QueryCondition.new(
+          message_type: 'store_test.device.registered',
+          attrs: { device_id: 'dev-1' }
+        )
+      ]
+      results, _guard = store.read(conditions)
+      expect(results.size).to eq(2)
+      expect(results.map(&:type)).to contain_exactly(
+        'store_test.device.bound',
+        'store_test.device.registered'
+      )
+    end
+
+    it 'guard with compound condition detects conflicts correctly' do
+      cond = Sourced::CCC::QueryCondition.new(
+        message_type: 'store_test.device.bound',
+        attrs: { device_id: 'dev-1', asset_id: 'asset-1' }
+      )
+      _results, guard = store.read([cond])
+
+      # Concurrent write: same device_id + asset_id combination
+      conflicting = CCCStoreTestMessages::DeviceBound.new(
+        payload: { device_id: 'dev-1', asset_id: 'asset-1' }
+      )
+      store.append(conflicting)
+
+      new_msg = CCCStoreTestMessages::DeviceBound.new(
+        payload: { device_id: 'dev-1', asset_id: 'asset-1' }
+      )
+      expect {
+        store.append(new_msg, guard: guard)
+      }.to raise_error(Sourced::ConcurrentAppendError)
+    end
+
+    it 'guard with compound condition does NOT flag writes to a different partition as conflicts' do
+      cond = Sourced::CCC::QueryCondition.new(
+        message_type: 'store_test.device.bound',
+        attrs: { device_id: 'dev-1', asset_id: 'asset-1' }
+      )
+      _results, guard = store.read([cond])
+
+      # Write to a DIFFERENT partition (dev-1/asset-2) — should NOT conflict
+      other_partition = CCCStoreTestMessages::DeviceBound.new(
+        payload: { device_id: 'dev-1', asset_id: 'asset-2' }
+      )
+      store.append(other_partition)
+
+      new_msg = CCCStoreTestMessages::DeviceBound.new(
+        payload: { device_id: 'dev-1', asset_id: 'asset-1' }
+      )
+      expect {
+        store.append(new_msg, guard: guard)
+      }.not_to raise_error
     end
   end
 
@@ -609,8 +694,7 @@ RSpec.describe Sourced::CCC::Store do
 
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
-        key_name: 'device_id',
-        key_value: 'dev-1'
+        attrs: { device_id: 'dev-1' }
       )
 
       conflicts, guard = store.messages_since([cond], pos)
@@ -626,8 +710,7 @@ RSpec.describe Sourced::CCC::Store do
 
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
-        key_name: 'device_id',
-        key_value: 'dev-1'
+        attrs: { device_id: 'dev-1' }
       )
 
       conflicts, _guard = store.messages_since([cond], pos)
@@ -1050,7 +1133,7 @@ RSpec.describe Sourced::CCC::Store do
       expect(r2.partition_value).to eq({ 'device_id' => 'dev-3' })
     end
 
-    it 'returns a guard with conditions only for key_names each type actually has' do
+    it 'returns a guard with conditions only for attrs each type actually has' do
       store.append(
         CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
@@ -1061,12 +1144,11 @@ RSpec.describe Sourced::CCC::Store do
       expect(guard).to be_a(Sourced::CCC::ConsistencyGuard)
       expect(guard.last_position).to eq(result.messages.last.position)
 
-      # 1 key_pair (device_id=dev-1) × 1 handled_type = 1 condition
+      # 1 handled_type with device_id attr = 1 condition
       expect(guard.conditions.size).to eq(1)
       cond = guard.conditions.first
       expect(cond.message_type).to eq('store_test.device.registered')
-      expect(cond.key_name).to eq('device_id')
-      expect(cond.key_value).to eq('dev-1')
+      expect(cond.attrs).to eq({ device_id: 'dev-1' })
     end
 
     it 'guard can be used for optimistic concurrency on append' do
@@ -1282,7 +1364,7 @@ RSpec.describe Sourced::CCC::Store do
       expect(courses.uniq.size).to eq(1)
     end
 
-    it 'returns guard with conditions only for key_names each message type actually has' do
+    it 'returns guard with one condition per message type containing only matching attrs' do
       store.append([
         CCCStoreTestMessages::CourseCreated.new(payload: { course_name: 'Algebra' }),
         CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
@@ -1293,28 +1375,25 @@ RSpec.describe Sourced::CCC::Store do
 
       expect(guard.last_position).to eq(result.messages.last.position)
 
-      # Expected conditions (derived from message class definitions, not store data):
-      #   CourseCreated     has course_name only     → 1 condition
-      #   UserRegistered    has user_id (+ name, not a partition attr) → 1 condition
-      #   CourseClosed      has course_name only     → 1 condition
-      #   UserJoinedCourse  has course_name + user_id → 2 conditions
-      # Total: 5 conditions
-      expect(guard.conditions.size).to eq(5)
+      # Expected conditions (one per message type, compound attrs):
+      #   CourseCreated     has course_name only                       → 1 condition with { course_name: 'Algebra' }
+      #   UserRegistered    has user_id (+ name, not a partition attr) → 1 condition with { user_id: 'joe' }
+      #   CourseClosed      has course_name only                       → 1 condition with { course_name: 'Algebra' }
+      #   UserJoinedCourse  has course_name + user_id                  → 1 condition with { course_name: 'Algebra', user_id: 'joe' }
+      # Total: 4 conditions
+      expect(guard.conditions.size).to eq(4)
 
-      # CourseCreated should NOT have a user_id condition
-      course_created_conditions = guard.conditions.select { |c| c.message_type == 'store_test.course.created' }
-      expect(course_created_conditions.size).to eq(1)
-      expect(course_created_conditions.first.key_name).to eq('course_name')
+      # CourseCreated has only course_name
+      course_created_cond = guard.conditions.find { |c| c.message_type == 'store_test.course.created' }
+      expect(course_created_cond.attrs).to eq({ course_name: 'Algebra' })
 
-      # UserRegistered should NOT have a course_name condition
-      user_registered_conditions = guard.conditions.select { |c| c.message_type == 'store_test.user.registered' }
-      expect(user_registered_conditions.size).to eq(1)
-      expect(user_registered_conditions.first.key_name).to eq('user_id')
+      # UserRegistered has only user_id
+      user_registered_cond = guard.conditions.find { |c| c.message_type == 'store_test.user.registered' }
+      expect(user_registered_cond.attrs).to eq({ user_id: 'joe' })
 
-      # UserJoinedCourse has both
-      joined_conditions = guard.conditions.select { |c| c.message_type == 'store_test.user.joined_course' }
-      expect(joined_conditions.size).to eq(2)
-      expect(joined_conditions.map(&:key_name).sort).to eq(['course_name', 'user_id'])
+      # UserJoinedCourse has both attrs in a single condition
+      joined_cond = guard.conditions.find { |c| c.message_type == 'store_test.user.joined_course' }
+      expect(joined_cond.attrs).to eq({ course_name: 'Algebra', user_id: 'joe' })
     end
 
     it 'guard detects concurrent writes in composite partition' do

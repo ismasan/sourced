@@ -273,7 +273,7 @@ RSpec.describe Sourced::CCC::Decider do
       types = conditions.map(&:message_type).uniq.sort
       expect(types).to include('decider_test.device.registered')
       expect(types).to include('decider_test.device.bound')
-      expect(conditions.all? { |c| c.key_name == 'device_id' && c.key_value == 'd1' }).to be true
+      expect(conditions.all? { |c| c.attrs[:device_id] == 'd1' }).to be true
     end
   end
 

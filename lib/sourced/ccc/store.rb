@@ -910,36 +910,51 @@ module Sourced
       end
 
       # Core query logic shared by {#read} and {#check_conflicts}.
-      # Resolves key_pair IDs from conditions, then queries messages via OR'd clauses.
+      # Resolves key_pair IDs from conditions, then queries messages.
+      # Attributes within each condition are AND'd; conditions are OR'd.
       #
       # @param conditions [Array<QueryCondition>]
       # @param from_position [Integer, nil]
       # @param limit [Integer, nil]
       # @return [Array<PositionedMessage>]
       def query_messages(conditions, from_position: nil, limit: nil)
-        # Step 1: resolve key_pair IDs
-        key_lookups = conditions.map { |c| [c.key_name, c.key_value] }.uniq
-        or_clauses = key_lookups.map { |n, v| "(name = #{db.literal(n)} AND value = #{db.literal(v)})" }
+        # Step 1: resolve all key_pair IDs across all conditions
+        all_lookups = conditions.flat_map { |c| c.attrs.map { |k, v| [k.to_s, v.to_s] } }.uniq
+        return [] if all_lookups.empty?
+
+        or_clauses = all_lookups.map { |n, v| "(name = #{db.literal(n)} AND value = #{db.literal(v)})" }
         key_rows = db.fetch("SELECT id, name, value FROM #{@key_pairs_table} WHERE #{or_clauses.join(' OR ')}").all
 
         key_pair_index = {}
         key_rows.each { |r| key_pair_index[[r[:name], r[:value]]] = r[:id] }
 
-        # Build condition clauses using resolved key_pair IDs
-        where_parts = conditions.filter_map do |c|
-          kp_id = key_pair_index[[c.key_name, c.key_value]]
-          next unless kp_id # key pair not in DB means no matches for this condition
+        # Step 2: build per-condition subqueries (AND within, OR across)
+        subqueries = conditions.filter_map do |c|
+          kp_ids = c.attrs.filter_map { |k, v| key_pair_index[[k.to_s, v.to_s]] }
+          # If any attr's key pair is missing from DB, this condition can't match
+          next if kp_ids.size < c.attrs.size
 
-          "(m.message_type = #{db.literal(c.message_type)} AND mkp.key_pair_id = #{db.literal(kp_id)})"
+          kp_ids_list = kp_ids.map { |id| db.literal(id) }.join(', ')
+
+          <<~SQL
+            SELECT DISTINCT m.position
+            FROM #{@messages_table} m
+            JOIN #{@message_key_pairs_table} mkp ON m.position = mkp.message_position
+            WHERE m.message_type = #{db.literal(c.message_type)}
+              AND mkp.key_pair_id IN (#{kp_ids_list})
+            GROUP BY m.position
+            HAVING COUNT(DISTINCT mkp.key_pair_id) = #{kp_ids.size}
+          SQL
         end
 
-        return [] if where_parts.empty?
+        return [] if subqueries.empty?
+
+        union = subqueries.join(" UNION ")
 
         sql = <<~SQL
-          SELECT DISTINCT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.created_at
+          SELECT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.created_at
           FROM #{@messages_table} m
-          JOIN #{@message_key_pairs_table} mkp ON m.position = mkp.message_position
-          WHERE (#{where_parts.join(' OR ')})
+          WHERE m.position IN (#{union})
         SQL
 
         sql += " AND m.position > #{db.literal(from_position)}" if from_position
@@ -960,7 +975,8 @@ module Sourced
         query_messages(conditions, from_position: after_position)
       end
 
-      # Max position among messages matching the given conditions (OR semantics).
+      # Max position among messages matching the given conditions.
+      # Attributes within each condition are AND'd; conditions are OR'd.
       # Returns from_position (or latest_position) if no matches.
       #
       # @param conditions [Array<QueryCondition>]
@@ -969,28 +985,38 @@ module Sourced
       def max_position_for(conditions, from_position: nil)
         return from_position || latest_position if conditions.empty?
 
-        key_lookups = conditions.map { |c| [c.key_name, c.key_value] }.uniq
-        or_clauses = key_lookups.map { |n, v| "(name = #{db.literal(n)} AND value = #{db.literal(v)})" }
+        all_lookups = conditions.flat_map { |c| c.attrs.map { |k, v| [k.to_s, v.to_s] } }.uniq
+        return from_position || latest_position if all_lookups.empty?
+
+        or_clauses = all_lookups.map { |n, v| "(name = #{db.literal(n)} AND value = #{db.literal(v)})" }
         key_rows = db.fetch("SELECT id, name, value FROM #{@key_pairs_table} WHERE #{or_clauses.join(' OR ')}").all
 
         key_pair_index = {}
         key_rows.each { |r| key_pair_index[[r[:name], r[:value]]] = r[:id] }
 
-        where_parts = conditions.filter_map do |c|
-          kp_id = key_pair_index[[c.key_name, c.key_value]]
-          next unless kp_id
-          "(m.message_type = #{db.literal(c.message_type)} AND mkp.key_pair_id = #{db.literal(kp_id)})"
+        subqueries = conditions.filter_map do |c|
+          kp_ids = c.attrs.filter_map { |k, v| key_pair_index[[k.to_s, v.to_s]] }
+          next if kp_ids.size < c.attrs.size
+
+          kp_ids_list = kp_ids.map { |id| db.literal(id) }.join(', ')
+
+          <<~SQL
+            SELECT m.position
+            FROM #{@messages_table} m
+            JOIN #{@message_key_pairs_table} mkp ON m.position = mkp.message_position
+            WHERE m.message_type = #{db.literal(c.message_type)}
+              AND mkp.key_pair_id IN (#{kp_ids_list})
+            GROUP BY m.position
+            HAVING COUNT(DISTINCT mkp.key_pair_id) = #{kp_ids.size}
+          SQL
         end
 
-        return from_position || latest_position if where_parts.empty?
+        return from_position || latest_position if subqueries.empty?
 
-        sql = <<~SQL
-          SELECT MAX(m.position) AS max_pos
-          FROM #{@messages_table} m
-          JOIN #{@message_key_pairs_table} mkp ON m.position = mkp.message_position
-          WHERE (#{where_parts.join(' OR ')})
-        SQL
-        sql += " AND m.position > #{db.literal(from_position)}" if from_position
+        union = subqueries.join(" UNION ")
+
+        sql = "SELECT MAX(position) AS max_pos FROM (#{union})"
+        sql += " WHERE position > #{db.literal(from_position)}" if from_position
 
         row = db.fetch(sql).first
         row[:max_pos] || from_position || latest_position

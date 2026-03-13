@@ -150,18 +150,17 @@ RSpec.describe Sourced::CCC::Message do
   end
 
   describe '.to_conditions' do
-    it 'returns conditions only for attributes the message class has' do
+    it 'returns one condition with only attributes the message class has' do
       conditions = CCCTestMessages::DeviceRegistered.to_conditions(device_id: 'dev-1', asset_id: 'asset-1')
       expect(conditions.size).to eq(1)
       expect(conditions.first.message_type).to eq('device.registered')
-      expect(conditions.first.key_name).to eq('device_id')
-      expect(conditions.first.key_value).to eq('dev-1')
+      expect(conditions.first.attrs).to eq({ device_id: 'dev-1' })
     end
 
-    it 'returns conditions for all matching attributes' do
+    it 'includes all matching attributes in one condition' do
       conditions = CCCTestMessages::DeviceRegistered.to_conditions(device_id: 'dev-1', name: 'Sensor A')
-      expect(conditions.size).to eq(2)
-      expect(conditions.map(&:key_name).sort).to eq(['device_id', 'name'])
+      expect(conditions.size).to eq(1)
+      expect(conditions.first.attrs).to eq({ device_id: 'dev-1', name: 'Sensor A' })
     end
 
     it 'returns empty array when no attributes match' do
@@ -222,15 +221,21 @@ RSpec.describe Sourced::CCC::Message do
   end
 
   describe Sourced::CCC::QueryCondition do
-    it 'is a Data struct with message_type, key_name, key_value' do
+    it 'is a Data struct with message_type and attrs hash' do
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'device.registered',
-        key_name: 'device_id',
-        key_value: 'dev-1'
+        attrs: { device_id: 'dev-1' }
       )
       expect(cond.message_type).to eq('device.registered')
-      expect(cond.key_name).to eq('device_id')
-      expect(cond.key_value).to eq('dev-1')
+      expect(cond.attrs).to eq({ device_id: 'dev-1' })
+    end
+
+    it 'supports multiple attrs for compound conditions' do
+      cond = Sourced::CCC::QueryCondition.new(
+        message_type: 'seat.selected',
+        attrs: { showing_id: 'show-1', seat_id: 'C7' }
+      )
+      expect(cond.attrs).to eq({ showing_id: 'show-1', seat_id: 'C7' })
     end
   end
 end

@@ -5,9 +5,9 @@ require 'sourced/types'
 module Sourced
   module CCC
     # A query condition for reading messages from the store.
-    # Matches on (message_type AND key_name AND key_value).
+    # Matches on (message_type AND all attrs key-value pairs).
     # Multiple conditions are OR'd when passed to {Store#read}.
-    QueryCondition = Data.define(:message_type, :key_name, :key_value)
+    QueryCondition = Data.define(:message_type, :attrs)
 
     # Returned by {Store#read} and {Store#claim_next} for optimistic concurrency.
     # Pass to {Store#append} via +guard:+ to detect conflicting writes.
@@ -182,28 +182,25 @@ module Sourced
       # @return [Array<Symbol>] attribute names (e.g. +[:course_name, :user_id]+)
       def self.payload_attribute_names = EMPTY_ARRAY
 
-      # Build {QueryCondition}s for the intersection of this message's declared
+      # Build a {QueryCondition} for the intersection of this message's declared
       # attributes and the given key-value pairs. Attributes not declared on this
-      # message class are silently ignored.
+      # message class are silently ignored. Returns an array with a single condition
+      # containing all matching attrs, or an empty array if none match.
       #
       # @param attrs [Hash{Symbol => String}] partition attribute values
       # @return [Array<QueryCondition>]
       #
       # @example
       #   CourseCreated.to_conditions(course_name: 'Algebra', user_id: 'joe')
-      #   # => [QueryCondition('course.created', 'course_name', 'Algebra')]
+      #   # => [QueryCondition('course.created', { course_name: 'Algebra' })]
       #   # user_id ignored — CourseCreated doesn't declare it
       def self.to_conditions(**attrs)
         supported = payload_attribute_names
-        attrs.filter_map do |key, value|
-          next unless supported.include?(key)
+        matched = attrs.select { |key, _| supported.include?(key) }
+                       .transform_values(&:to_s)
+        return [] if matched.empty?
 
-          QueryCondition.new(
-            message_type: type,
-            key_name: key.to_s,
-            key_value: value.to_s
-          )
-        end
+        [QueryCondition.new(message_type: type, attrs: matched)]
       end
 
       # Auto-extract key-value pairs from all top-level payload attributes.
