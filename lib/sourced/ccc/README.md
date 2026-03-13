@@ -62,7 +62,7 @@ position = store.append(cmd)  # returns the assigned position
 ```ruby
 # Build conditions for a specific course
 conditions = CourseCreated.to_conditions(course_id: 'c1')
-# => [QueryCondition('courses.created', 'course_id', 'c1')]
+# => [QueryCondition('courses.created', attrs: { course_id: 'c1' })]
 
 # Read matching messages
 result = store.read(conditions)
@@ -208,7 +208,7 @@ class CourseDecider < Sourced::CCC::Decider
   # Defines the consistency boundary
   partition_by :course_name
 
-  # Initial state factory (receives partition values array)
+  # Initial state factory (receives partition values hash)
   state do |_partition_values|
     { name_taken: false }
   end
@@ -335,7 +335,7 @@ class MyProjector < Sourced::CCC::Projector::StateStored
 
   state do |partition_values|
     # Load existing state from your storage
-    existing = MyDB.find(partition_values.first)
+    existing = MyDB.find(partition_values[:course_id])
     existing || { course_id: nil, students: [] }
   end
 

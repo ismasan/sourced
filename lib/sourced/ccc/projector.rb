@@ -41,8 +41,8 @@ module Sourced
 
       attr_reader :partition_values
 
-      # @param partition_values [Array<String, nil>] values for the projector's partition keys
-      def initialize(partition_values = [])
+      # @param partition_values [Hash{Symbol => String}] partition key-value pairs
+      def initialize(partition_values = {})
         @partition_values = partition_values
       end
 
@@ -58,7 +58,7 @@ module Sourced
           # @param claim [ClaimResult] claimed partition batch
           # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
           def handle_claim(claim)
-            values = partition_keys.map { |k| claim.partition_value[k.to_s] }
+            values = partition_keys.to_h { |k| [k, claim.partition_value[k.to_s]] }
             handle_batch(values, claim.messages, replaying: claim.replaying)
           end
         end
@@ -77,7 +77,7 @@ module Sourced
           # @param history [ReadResult] full partition history
           # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
           def handle_claim(claim, history:)
-            values = partition_keys.map { |k| claim.partition_value[k.to_s] }
+            values = partition_keys.to_h { |k| [k, claim.partition_value[k.to_s]] }
             handle_batch(values, claim.messages, history:, replaying: claim.replaying)
           end
         end

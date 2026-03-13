@@ -70,7 +70,7 @@ module Sourced
           def initialize(reactor_class, **partition_attrs)
             @reactor_class = reactor_class
             @partition_attrs = partition_attrs
-            @partition_values = reactor_class.partition_keys.map { |k| partition_attrs[k]&.to_s }
+            @partition_values = partition_attrs
             @given_messages = []
             @when_message = nil
             @asserted = false

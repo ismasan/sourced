@@ -163,20 +163,20 @@ module Sourced
     # @param reactor_class [Class] a CCC reactor class (Decider, Projector, or any class
     #   extending CCC::Consumer that includes CCC::Evolve)
     # @param store [CCC::Store, nil] the store to read from (defaults to CCC.store)
-    # @param partition_attrs [Hash{Symbol => String}] partition attribute values
+    # @param values [Hash{Symbol => String}] partition attribute values
     # @return [Array(reactor_instance, ReadResult)]
     #
     # @example
     #   decider, read_result = Sourced::CCC.load(MyDecider, course_id: 'Algebra', student_id: 'joe')
     #   decider.state       # evolved state
     #   read_result.guard   # ConsistencyGuard for subsequent appends
-    def self.load(reactor_class, store: nil, **partition_attrs)
+    def self.load(reactor_class, store: nil, **values)
       store ||= self.store
+      partition_attrs = reactor_class.partition_keys.to_h { |k| [k, values[k]] }
       handled_types = reactor_class.handled_messages_for_evolve.map(&:type).uniq
-      read_result = store.read_partition(partition_attrs, handled_types: handled_types)
-
-      values = reactor_class.partition_keys.map { |k| partition_attrs[k]&.to_s }
+      read_result = store.read_partition(partition_attrs, handled_types:)
       instance = reactor_class.new(values)
+
       instance.evolve(read_result.messages)
 
       [instance, read_result]

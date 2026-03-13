@@ -41,8 +41,8 @@ class LoadTestProjector < Sourced::CCC::Projector::StateStored
   partition_by :course_id
   consumer_group 'load-test-projector'
 
-  state do |(course_id)|
-    { course_id: course_id, title: nil, student_count: 0 }
+  state do |partition_values|
+    { course_id: partition_values[:course_id], title: nil, student_count: 0 }
   end
 
   evolve CCCLoadTestMessages::CourseCreated do |state, evt|
@@ -105,7 +105,7 @@ RSpec.describe 'Sourced::CCC.load' do
         course_id: 'algebra', student_id: 'joe'
       )
 
-      expect(instance.partition_values).to eq(%w[algebra joe])
+      expect(instance.partition_values).to eq({ course_id: 'algebra', student_id: 'joe' })
     end
 
     it 'read_result contains the messages used for evolution' do

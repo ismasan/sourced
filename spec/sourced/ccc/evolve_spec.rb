@@ -23,6 +23,10 @@ RSpec.describe Sourced::CCC::Evolve do
     Class.new do
       include Sourced::CCC::Evolve
 
+      def initialize(partition_values = {})
+        @partition_values = partition_values
+      end
+
       state do |partition_values|
         { items: [], partition_values: partition_values }
       end
@@ -38,10 +42,9 @@ RSpec.describe Sourced::CCC::Evolve do
   end
 
   describe '.state' do
-    it 'initializes state with partition values array' do
-      instance = evolver_class.new
-      instance.instance_variable_set(:@partition_values, ['val1', 'val2'])
-      expect(instance.state[:partition_values]).to eq(['val1', 'val2'])
+    it 'initializes state with partition values hash' do
+      instance = evolver_class.new(key1: 'val1', key2: 'val2')
+      expect(instance.state[:partition_values]).to eq({ key1: 'val1', key2: 'val2' })
     end
   end
 

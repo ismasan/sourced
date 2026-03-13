@@ -4,7 +4,7 @@ module Sourced
   module CCC
     # Evolve mixin for CCC reactors.
     # Adapted from Sourced::Evolve for CCC::Message (no stream_id/seq).
-    # State block receives partition values array instead of stream id.
+    # State block receives partition values hash instead of stream id.
     module Evolve
       PREFIX = 'ccc_evolution'
 
@@ -22,7 +22,7 @@ module Sourced
       end
 
       def partition_values
-        @partition_values ||= []
+        @partition_values ||= {}
       end
 
       # Apply messages to state via registered handlers.
@@ -47,7 +47,7 @@ module Sourced
           @handled_messages_for_evolve ||= []
         end
 
-        # Define initial state factory. Block receives partition values array.
+        # Define initial state factory. Block receives partition values hash.
         def state(&blk)
           define_method(:init_state, &blk)
         end

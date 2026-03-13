@@ -69,7 +69,7 @@ module Sourced
         # @param history [ReadResult] event history for the partition
         # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
         def handle_claim(claim, history:)
-          values = partition_keys.map { |k| claim.partition_value[k.to_s] }
+          values = partition_keys.to_h { |k| [k, claim.partition_value[k.to_s]] }
           handle_batch(values, claim.messages, history:)
         end
 
@@ -87,8 +87,8 @@ module Sourced
 
       attr_reader :partition_values
 
-      # @param partition_values [Array<String, nil>] values for the decider's partition keys
-      def initialize(partition_values = [])
+      # @param partition_values [Hash{Symbol => String}] partition key-value pairs
+      def initialize(partition_values = {})
         @partition_values = partition_values
         @uncommitted_events = []
       end
