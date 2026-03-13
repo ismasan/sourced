@@ -33,6 +33,29 @@ module Sourced
       def to_ary = [messages, guard]
     end
 
+    ReadAllResult = Data.define(:messages, :last_position, :fetcher) do
+      include Enumerable
+
+      def to_ary = [messages, last_position]
+
+      # Iterates messages in the current page.
+      def each(&block) = messages.each(&block)
+
+      # Returns an Enumerator that lazily paginates through all messages,
+      # fetching subsequent pages as needed.
+      def to_enum
+        Enumerator.new do |y|
+          result = self
+          loop do
+            break if result.messages.empty?
+
+            result.messages.each { |m| y << m }
+            result = result.fetcher.call(result.messages.last.position)
+          end
+        end
+      end
+    end
+
     Stats = Data.define(:max_position, :groups)
 
     # SQLite-backed store for CCC's flat, globally-ordered message log.
@@ -231,7 +254,7 @@ module Sourced
       #
       # @param from_position [Integer] return messages after this position (default 0)
       # @param limit [Integer] max number of messages to return (default 50)
-      # @return [Array<PositionedMessage>] messages ordered by position
+      # @return [ReadAllResult] messages and last global position
       def read_all(from_position: nil, limit: 50, order: :asc)
         desc = order == :desc
         ds = db[@messages_table]
@@ -240,9 +263,12 @@ module Sourced
           ds = desc ? ds.where { position < from_position } : ds.where { position > from_position }
         end
 
-        ds.order(desc ? Sequel.desc(:position) : :position)
+        messages = ds.order(desc ? Sequel.desc(:position) : :position)
           .limit(limit)
           .map { |row| deserialize(row) }
+
+        fetcher = ->(pos) { read_all(from_position: pos, limit: limit, order: order) }
+        ReadAllResult.new(messages: messages, last_position: latest_position, fetcher: fetcher)
       end
 
       # Query messages by conditions. Each condition matches on

@@ -94,17 +94,51 @@ result = store.read_partition(
 
 ### Browsing the global log
 
-`read_all` paginates the entire message log in position order, without requiring query conditions or partition attributes.
+`read_all` paginates the entire message log, without requiring query conditions or partition attributes. It returns a `ReadAllResult` with `messages` and `last_position` (the current max position in the store), so clients know whether more pages exist.
 
 ```ruby
-# First page (default limit: 50)
-messages = store.read_all(limit: 20)
+# First page (default limit: 50, ascending order)
+result = store.read_all(limit: 20)
+result.messages       # => [PositionedMessage, ...]
+result.last_position  # => 100 (max position in the store)
 
-# Next page — pass the last position from the previous page
-messages = store.read_all(from_position: messages.last.position, limit: 20)
+# Next page — pass the last message's position as cursor
+result = store.read_all(from_position: result.messages.last.position, limit: 20)
+
+# Check if there are more pages
+has_more = result.messages.any? && result.messages.last.position < result.last_position
+
+# Destructuring is also supported
+messages, last_position = store.read_all(limit: 20)
 ```
 
-Returns an array of `PositionedMessage` instances ordered by position, or `[]` if the store is empty or there are no more messages after `from_position`.
+Use `order: :desc` for reverse-chronological browsing (newest first). Pagination works the same way — `from_position` fetches messages *before* the given position.
+
+```ruby
+result = store.read_all(order: :desc, limit: 20)
+
+# Next page of older messages
+result = store.read_all(from_position: result.messages.last.position, order: :desc, limit: 20)
+```
+
+#### Iterating all messages with `to_enum`
+
+`ReadAllResult#to_enum` returns a lazy `Enumerator` that transparently fetches subsequent pages as you iterate, using the same `order` and `limit` from the original query.
+
+```ruby
+# Iterate all messages in pages of 50
+store.read_all(limit: 50).to_enum.each do |msg|
+  puts "#{msg.position}: #{msg.type}"
+end
+
+# Works with Enumerable methods
+store.read_all(order: :desc, limit: 100).to_enum.map(&:type)
+
+# Supports lazy enumeration — stops fetching pages once satisfied
+store.read_all(limit: 20).to_enum.lazy.select { |m|
+  m.type == 'courses.created'
+}.first(5)
+```
 
 ### Database setup
 

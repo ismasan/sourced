@@ -296,16 +296,48 @@ RSpec.describe Sourced::CCC::Store do
   end
 
   describe '#read_all' do
-    it 'returns messages in position order' do
+    it 'returns a ReadAllResult with messages and last_position' do
       store.append([
         CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
         CCCStoreTestMessages::AssetRegistered.new(payload: { asset_id: 'a-1', label: 'X' }),
         CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'a-1' })
       ])
 
-      messages = store.read_all
-      expect(messages.size).to eq(3)
-      expect(messages.map(&:position)).to eq([1, 2, 3])
+      result = store.read_all
+      expect(result).to be_a(Sourced::CCC::ReadAllResult)
+      expect(result.messages.size).to eq(3)
+      expect(result.messages.map(&:position)).to eq([1, 2, 3])
+      expect(result.last_position).to eq(3)
+    end
+
+    it 'supports #each to iterate current page messages' do
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::AssetRegistered.new(payload: { asset_id: 'a-1', label: 'X' })
+      ])
+
+      result = store.read_all
+      positions = result.map(&:position)
+      expect(positions).to eq([1, 2])
+    end
+
+    it '#each without a block returns an enumerator for chaining' do
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::AssetRegistered.new(payload: { asset_id: 'a-1', label: 'X' })
+      ])
+
+      result = store.read_all
+      pairs = result.each.with_index.map { |msg, i| [i, msg.position] }
+      expect(pairs).to eq([[0, 1], [1, 2]])
+    end
+
+    it 'supports destructuring into messages and last_position' do
+      store.append(CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+
+      messages, last_position = store.read_all
+      expect(messages.size).to eq(1)
+      expect(last_position).to eq(1)
     end
 
     it 'paginates with from_position and limit' do
@@ -313,26 +345,29 @@ RSpec.describe Sourced::CCC::Store do
         store.append(CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: "dev-#{i}", name: "D#{i}" }))
       end
 
-      page1 = store.read_all(limit: 2)
-      expect(page1.map(&:position)).to eq([1, 2])
+      result1 = store.read_all(limit: 2)
+      expect(result1.messages.map(&:position)).to eq([1, 2])
+      expect(result1.last_position).to eq(5)
 
-      page2 = store.read_all(from_position: page1.last.position, limit: 2)
-      expect(page2.map(&:position)).to eq([3, 4])
+      result2 = store.read_all(from_position: result1.messages.last.position, limit: 2)
+      expect(result2.messages.map(&:position)).to eq([3, 4])
 
-      page3 = store.read_all(from_position: page2.last.position, limit: 2)
-      expect(page3.map(&:position)).to eq([5])
+      result3 = store.read_all(from_position: result2.messages.last.position, limit: 2)
+      expect(result3.messages.map(&:position)).to eq([5])
     end
 
-    it 'returns [] for an empty store' do
-      expect(store.read_all).to eq([])
+    it 'returns empty messages with last_position 0 for an empty store' do
+      result = store.read_all
+      expect(result.messages).to eq([])
+      expect(result.last_position).to eq(0)
     end
 
     it 'returns PositionedMessage instances' do
       store.append(CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
 
-      messages = store.read_all
-      expect(messages.first).to be_a(Sourced::CCC::PositionedMessage)
-      expect(messages.first).to be_a(CCCStoreTestMessages::DeviceRegistered)
+      result = store.read_all
+      expect(result.messages.first).to be_a(Sourced::CCC::PositionedMessage)
+      expect(result.messages.first).to be_a(CCCStoreTestMessages::DeviceRegistered)
     end
 
     context 'with order: :desc' do
@@ -343,24 +378,64 @@ RSpec.describe Sourced::CCC::Store do
       end
 
       it 'returns messages in descending position order' do
-        messages = store.read_all(order: :desc)
-        expect(messages.map(&:position)).to eq([5, 4, 3, 2, 1])
+        result = store.read_all(order: :desc)
+        expect(result.messages.map(&:position)).to eq([5, 4, 3, 2, 1])
+        expect(result.last_position).to eq(5)
       end
 
       it 'paginates in descending order using from_position' do
-        page1 = store.read_all(order: :desc, limit: 2)
-        expect(page1.map(&:position)).to eq([5, 4])
+        result1 = store.read_all(order: :desc, limit: 2)
+        expect(result1.messages.map(&:position)).to eq([5, 4])
 
-        page2 = store.read_all(from_position: page1.last.position, order: :desc, limit: 2)
-        expect(page2.map(&:position)).to eq([3, 2])
+        result2 = store.read_all(from_position: result1.messages.last.position, order: :desc, limit: 2)
+        expect(result2.messages.map(&:position)).to eq([3, 2])
 
-        page3 = store.read_all(from_position: page2.last.position, order: :desc, limit: 2)
-        expect(page3.map(&:position)).to eq([1])
+        result3 = store.read_all(from_position: result2.messages.last.position, order: :desc, limit: 2)
+        expect(result3.messages.map(&:position)).to eq([1])
       end
 
       it 'returns [] when no messages before from_position' do
-        messages = store.read_all(from_position: 1, order: :desc)
-        expect(messages).to eq([])
+        result = store.read_all(from_position: 1, order: :desc)
+        expect(result.messages).to eq([])
+        expect(result.last_position).to eq(5)
+      end
+    end
+
+    describe '#to_enum' do
+      before do
+        5.times do |i|
+          store.append(CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: "dev-#{i}", name: "D#{i}" }))
+        end
+      end
+
+      it 'iterates all messages across pages in ascending order' do
+        result = store.read_all(limit: 2)
+        positions = result.to_enum.map(&:position)
+        expect(positions).to eq([1, 2, 3, 4, 5])
+      end
+
+      it 'iterates all messages across pages in descending order' do
+        result = store.read_all(order: :desc, limit: 2)
+        positions = result.to_enum.map(&:position)
+        expect(positions).to eq([5, 4, 3, 2, 1])
+      end
+
+      it 'works when all messages fit in a single page' do
+        result = store.read_all(limit: 100)
+        positions = result.to_enum.map(&:position)
+        expect(positions).to eq([1, 2, 3, 4, 5])
+      end
+
+      it 'returns an empty enumerator for an empty store' do
+        store.clear!
+        result = store.read_all(limit: 2)
+        expect(result.to_enum.to_a).to eq([])
+      end
+
+      it 'supports lazy enumeration' do
+        result = store.read_all(limit: 2)
+        first_three = result.to_enum.lazy.take(3).map(&:position).to_a
+        expect(first_three).to eq([1, 2, 3])
       end
     end
   end
