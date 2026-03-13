@@ -918,35 +918,7 @@ module Sourced
       # @param limit [Integer, nil]
       # @return [Array<PositionedMessage>]
       def query_messages(conditions, from_position: nil, limit: nil)
-        # Step 1: resolve all key_pair IDs across all conditions
-        all_lookups = conditions.flat_map { |c| c.attrs.map { |k, v| [k.to_s, v.to_s] } }.uniq
-        return [] if all_lookups.empty?
-
-        or_clauses = all_lookups.map { |n, v| "(name = #{db.literal(n)} AND value = #{db.literal(v)})" }
-        key_rows = db.fetch("SELECT id, name, value FROM #{@key_pairs_table} WHERE #{or_clauses.join(' OR ')}").all
-
-        key_pair_index = {}
-        key_rows.each { |r| key_pair_index[[r[:name], r[:value]]] = r[:id] }
-
-        # Step 2: build per-condition subqueries (AND within, OR across)
-        subqueries = conditions.filter_map do |c|
-          kp_ids = c.attrs.filter_map { |k, v| key_pair_index[[k.to_s, v.to_s]] }
-          # If any attr's key pair is missing from DB, this condition can't match
-          next if kp_ids.size < c.attrs.size
-
-          kp_ids_list = kp_ids.map { |id| db.literal(id) }.join(', ')
-
-          <<~SQL
-            SELECT DISTINCT m.position
-            FROM #{@messages_table} m
-            JOIN #{@message_key_pairs_table} mkp ON m.position = mkp.message_position
-            WHERE m.message_type = #{db.literal(c.message_type)}
-              AND mkp.key_pair_id IN (#{kp_ids_list})
-            GROUP BY m.position
-            HAVING COUNT(DISTINCT mkp.key_pair_id) = #{kp_ids.size}
-          SQL
-        end
-
+        subqueries = condition_position_subqueries(conditions, from_position: from_position)
         return [] if subqueries.empty?
 
         union = subqueries.join(" UNION ")
@@ -955,10 +927,8 @@ module Sourced
           SELECT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.created_at
           FROM #{@messages_table} m
           WHERE m.position IN (#{union})
+          ORDER BY m.position
         SQL
-
-        sql += " AND m.position > #{db.literal(from_position)}" if from_position
-        sql += ' ORDER BY m.position'
         sql += " LIMIT #{db.literal(limit)}" if limit
 
         db.fetch(sql).map { |row| deserialize(row) }
@@ -985,8 +955,24 @@ module Sourced
       def max_position_for(conditions, from_position: nil)
         return from_position || latest_position if conditions.empty?
 
+        subqueries = condition_position_subqueries(conditions, from_position: from_position)
+        return from_position || latest_position if subqueries.empty?
+
+        union = subqueries.join(" UNION ")
+        row = db.fetch("SELECT MAX(position) AS max_pos FROM (#{union})").first
+        row[:max_pos] || from_position || latest_position
+      end
+
+      # Build per-condition position subqueries with AND-within/OR-across semantics.
+      # Resolves key_pair IDs, then builds one SQL subquery per condition.
+      # Each subquery selects positions where the message matches ALL attrs in the condition.
+      #
+      # @param conditions [Array<QueryCondition>]
+      # @param from_position [Integer, nil] only include positions after this
+      # @return [Array<String>] SQL subquery strings (empty if no conditions can match)
+      def condition_position_subqueries(conditions, from_position: nil)
         all_lookups = conditions.flat_map { |c| c.attrs.map { |k, v| [k.to_s, v.to_s] } }.uniq
-        return from_position || latest_position if all_lookups.empty?
+        return [] if all_lookups.empty?
 
         or_clauses = all_lookups.map { |n, v| "(name = #{db.literal(n)} AND value = #{db.literal(v)})" }
         key_rows = db.fetch("SELECT id, name, value FROM #{@key_pairs_table} WHERE #{or_clauses.join(' OR ')}").all
@@ -994,7 +980,9 @@ module Sourced
         key_pair_index = {}
         key_rows.each { |r| key_pair_index[[r[:name], r[:value]]] = r[:id] }
 
-        subqueries = conditions.filter_map do |c|
+        position_filter = from_position ? "AND m.position > #{db.literal(from_position)}" : ""
+
+        conditions.filter_map do |c|
           kp_ids = c.attrs.filter_map { |k, v| key_pair_index[[k.to_s, v.to_s]] }
           next if kp_ids.size < c.attrs.size
 
@@ -1006,20 +994,11 @@ module Sourced
             JOIN #{@message_key_pairs_table} mkp ON m.position = mkp.message_position
             WHERE m.message_type = #{db.literal(c.message_type)}
               AND mkp.key_pair_id IN (#{kp_ids_list})
+              #{position_filter}
             GROUP BY m.position
             HAVING COUNT(DISTINCT mkp.key_pair_id) = #{kp_ids.size}
           SQL
         end
-
-        return from_position || latest_position if subqueries.empty?
-
-        union = subqueries.join(" UNION ")
-
-        sql = "SELECT MAX(position) AS max_pos FROM (#{union})"
-        sql += " WHERE position > #{db.literal(from_position)}" if from_position
-
-        row = db.fetch(sql).first
-        row[:max_pos] || from_position || latest_position
       end
 
       # Deserialize a database row into a {PositionedMessage}.
