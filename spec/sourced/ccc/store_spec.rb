@@ -334,6 +334,35 @@ RSpec.describe Sourced::CCC::Store do
       expect(messages.first).to be_a(Sourced::CCC::PositionedMessage)
       expect(messages.first).to be_a(CCCStoreTestMessages::DeviceRegistered)
     end
+
+    context 'with order: :desc' do
+      before do
+        5.times do |i|
+          store.append(CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: "dev-#{i}", name: "D#{i}" }))
+        end
+      end
+
+      it 'returns messages in descending position order' do
+        messages = store.read_all(order: :desc)
+        expect(messages.map(&:position)).to eq([5, 4, 3, 2, 1])
+      end
+
+      it 'paginates in descending order using from_position' do
+        page1 = store.read_all(order: :desc, limit: 2)
+        expect(page1.map(&:position)).to eq([5, 4])
+
+        page2 = store.read_all(from_position: page1.last.position, order: :desc, limit: 2)
+        expect(page2.map(&:position)).to eq([3, 2])
+
+        page3 = store.read_all(from_position: page2.last.position, order: :desc, limit: 2)
+        expect(page3.map(&:position)).to eq([1])
+      end
+
+      it 'returns [] when no messages before from_position' do
+        messages = store.read_all(from_position: 1, order: :desc)
+        expect(messages).to eq([])
+      end
+    end
   end
 
   describe '#read' do

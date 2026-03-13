@@ -232,10 +232,15 @@ module Sourced
       # @param from_position [Integer] return messages after this position (default 0)
       # @param limit [Integer] max number of messages to return (default 50)
       # @return [Array<PositionedMessage>] messages ordered by position
-      def read_all(from_position: 0, limit: 50)
-        db[@messages_table]
-          .where { position > from_position }
-          .order(:position)
+      def read_all(from_position: nil, limit: 50, order: :asc)
+        desc = order == :desc
+        ds = db[@messages_table]
+
+        if from_position
+          ds = desc ? ds.where { position < from_position } : ds.where { position > from_position }
+        end
+
+        ds.order(desc ? Sequel.desc(:position) : :position)
           .limit(limit)
           .map { |row| deserialize(row) }
       end
