@@ -1416,6 +1416,98 @@ RSpec.describe Sourced::CCC::Store do
     end
   end
 
+  describe '#claim_next (composite partition — cross-partition false positives)' do
+    let(:group_id) { 'cross-partition-test' }
+    let(:handled_types) { ['store_test.user.joined_course'] }
+
+    before do
+      store.register_consumer_group(group_id)
+    end
+
+    it 'acked partition with shared key_pair does not block other partitions with pending work' do
+      # Partition by (course_name, user_id).
+      # Two partitions share course_name='Algebra' but differ on user_id.
+      #
+      # After both are processed, a new message arrives for jake.
+      # joe's acked partition still has a lower last_position, and the OR
+      # join in find_and_claim_partition matches jake's new message via the
+      # shared course_name key_pair. joe gets claimed first (lower OR-based
+      # next_position), fetch_partition_messages (AND semantics) finds nothing,
+      # and claim_next returns nil — never reaching jake's partition.
+
+      # Step 1: append and process both partitions
+      store.append(
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
+      )
+      r1 = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+
+      store.append(
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'jake' })
+      )
+      r2 = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      store.ack(group_id, offset_id: r2.offset_id, position: r2.messages.last.position)
+
+      # joe: last_position=1, jake: last_position=2. Both fully caught up.
+
+      # Step 2: new message for jake only
+      store.append(
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'jake' })
+      )
+
+      # Step 3: claim_next should find jake (the partition with real work),
+      # not return nil because joe's OR-match on course_name got in the way.
+      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      expect(result).not_to be_nil
+      expect(result.partition_value).to eq({ 'course_name' => 'Algebra', 'user_id' => 'jake' })
+      expect(result.messages.size).to eq(1)
+      expect(result.messages.first.payload.user_id).to eq('jake')
+    end
+
+    it 'processes all partitions when many share a key_pair and new messages arrive' do
+      # Simulates the seat selection scenario: many (showing_id, seat_id)
+      # partitions share the same showing_id. After processing all initial
+      # messages, new messages for specific partitions should be claimable
+      # even though other acked partitions share the showing_id key_pair.
+      seats = %w[A1 A2 A3 A4 A5]
+
+      # Append and process one message per seat
+      seats.each do |seat|
+        store.append(
+          CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: seat })
+        )
+      end
+      seats.size.times do
+        result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+        expect(result).not_to be_nil
+        store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
+      end
+
+      # All caught up. Now append new messages for A3 and A5 only.
+      store.append(
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'A3' })
+      )
+      store.append(
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'A5' })
+      )
+
+      # Should claim A3 and A5, not be blocked by A1/A2/A4's stale OR matches
+      claimed_users = []
+      2.times do |i|
+        result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+        expect(result).not_to be_nil, "Expected partition #{i + 1} of 2 to be claimable but got nil (claimed so far: #{claimed_users})"
+        claimed_users << result.partition_value['user_id']
+        store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
+      end
+
+      expect(claimed_users).to contain_exactly('A3', 'A5')
+
+      # No more work
+      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      expect(result).to be_nil
+    end
+  end
+
   describe '#ack' do
     let(:group_id) { 'ack-test' }
 

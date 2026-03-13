@@ -825,8 +825,11 @@ module Sourced
       end
 
       # Find the next unclaimed partition with pending messages and claim it.
-      # Uses OR semantics for detection (any matching key_pair is sufficient);
-      # exact conditional AND filtering happens at fetch time.
+      # Uses OR joins for candidate detection (any matching key_pair), then
+      # a NOT EXISTS clause to exclude messages that conflict on a shared
+      # attribute name (same name, different value). This gives AND semantics:
+      # a message only counts as pending for a partition when every attribute
+      # it shares with the partition has the same value.
       #
       # @param cg_id [Integer] consumer group internal ID
       # @param handled_types [Array<String>] message type strings
@@ -846,6 +849,16 @@ module Sourced
             AND o.claimed = 0
             AND m.position > o.last_position
             AND m.message_type IN (#{types_list})
+            AND NOT EXISTS (
+              SELECT 1
+              FROM #{@offset_key_pairs_table} okp2
+              JOIN #{@key_pairs_table} kp_part ON okp2.key_pair_id = kp_part.id
+              JOIN #{@message_key_pairs_table} mkp2 ON mkp2.message_position = m.position
+              JOIN #{@key_pairs_table} kp_msg ON mkp2.key_pair_id = kp_msg.id
+              WHERE okp2.offset_id = o.id
+                AND kp_msg.name = kp_part.name
+                AND kp_msg.value != kp_part.value
+            )
           GROUP BY o.id
           ORDER BY next_position ASC
           LIMIT 1
