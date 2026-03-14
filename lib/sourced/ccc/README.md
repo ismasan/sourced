@@ -270,7 +270,7 @@ String keys are automatically symbolized, so `ctx.build('type' => '...', 'payloa
 
 Subclass `CommandContext` and register class-level hooks to enrich or transform commands at build time — e.g. injecting session data or adding metadata from the request scope.
 
-- **`on(MessageClass)`** — runs for a specific command type (one block per class, last-write-wins)
+- **`on(MessageClass, ...)`** — runs for one or more command types (one block per class, last-write-wins)
 - **`any`** — runs for all commands (multiple blocks allowed, executed in order)
 
 Both receive the `app` scope and the command, and must return the (possibly modified) command. `on` blocks run before `any` blocks.
@@ -280,6 +280,11 @@ class AppCommandContext < Sourced::CCC::CommandContext
   # Enrich a specific command with data from the app scope
   on CreateCourse do |app, cmd|
     cmd.with_payload(created_by: app.current_user.id)
+  end
+
+  # Same block for multiple command types
+  on EnrolStudent, DropStudent do |app, cmd|
+    cmd.with_metadata(campus: app.current_campus)
   end
 
   # Add metadata to every command

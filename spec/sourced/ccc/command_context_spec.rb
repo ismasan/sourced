@@ -79,6 +79,17 @@ RSpec.describe Sourced::CCC::CommandContext do
       expect(cmd.payload.value).to eq(11)
     end
 
+    it 'registers on block for multiple command types' do
+      klass = Class.new(described_class)
+      klass.on(CccContextTest::Add, CccContextTest::Remove) { |_app, cmd| cmd.with_metadata(tagged: true) }
+
+      ctx = klass.new
+      add_cmd = ctx.build(CccContextTest::Add, payload: { value: 1 })
+      remove_cmd = ctx.build(CccContextTest::Remove, payload: { value: 2 })
+      expect(add_cmd.metadata[:tagged]).to eq(true)
+      expect(remove_cmd.metadata[:tagged]).to eq(true)
+    end
+
     it 'does not run on block for non-matching command type' do
       klass = Class.new(described_class)
       klass.on(CccContextTest::Add) { |_app, cmd| cmd.with_payload(value: cmd.payload.value + 10) }

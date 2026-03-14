@@ -18,14 +18,14 @@ module Sourced
     #   cmd = ctx.build(type: 'my.cmd', payload: { name: 'hello' })
     class CommandContext
       class << self
-        # Register a block to run when building a specific command type.
+        # Register a block to run when building specific command type(s).
         # The block receives the app scope and the command, and must return the (possibly modified) command.
         #
-        # @param message_class [Class] the command class to match
+        # @param message_classes [Class] one or more command classes to match
         # @yield [app, cmd] transformation block
         # @return [void]
-        def on(message_class, &block)
-          message_blocks[message_class] = block
+        def on(*message_classes, &block)
+          message_classes.each { |klass| message_blocks[klass] = block }
         end
 
         # Register a block to run for all commands.
