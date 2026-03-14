@@ -220,6 +220,134 @@ RSpec.describe Sourced::CCC::Message do
     end
   end
 
+  describe '#with_metadata' do
+    it 'merges new metadata into existing metadata' do
+      msg = CCCTestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' },
+        metadata: { user_id: 42 }
+      )
+      updated = msg.with_metadata(request_id: 'req-1')
+      expect(updated.metadata).to eq({ user_id: 42, request_id: 'req-1' })
+    end
+
+    it 'returns self when given empty hash' do
+      msg = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      expect(msg.with_metadata({})).to equal(msg)
+    end
+
+    it 'does not mutate the original message' do
+      msg = CCCTestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' },
+        metadata: { user_id: 42 }
+      )
+      updated = msg.with_metadata(request_id: 'req-1')
+      expect(msg.metadata).to eq({ user_id: 42 })
+      expect(updated).not_to equal(msg)
+    end
+  end
+
+  describe '#at' do
+    it 'returns new message with updated created_at' do
+      msg = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      future = msg.created_at + 3600
+      updated = msg.at(future)
+      expect(updated.created_at).to eq(future)
+      expect(updated).not_to equal(msg)
+    end
+
+    it 'raises PastMessageDateError when given a past time' do
+      msg = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      past = msg.created_at - 3600
+      expect { msg.at(past) }.to raise_error(Sourced::PastMessageDateError)
+    end
+
+    it 'does not mutate the original message' do
+      msg = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      original_time = msg.created_at
+      msg.at(msg.created_at + 3600)
+      expect(msg.created_at).to eq(original_time)
+    end
+  end
+
+  describe 'Registry' do
+    describe '#keys' do
+      it 'returns array of registered type strings' do
+        keys = Sourced::CCC::Message.registry.keys
+        expect(keys).to include('device.registered', 'asset.registered', 'system.updated')
+      end
+    end
+  end
+
+  describe 'Payload' do
+    let(:msg) { CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' }) }
+
+    describe '#[]' do
+      it 'returns attribute value by symbol key' do
+        expect(msg.payload[:device_id]).to eq('dev-1')
+        expect(msg.payload[:name]).to eq('Sensor A')
+      end
+    end
+
+    describe '#fetch' do
+      it 'returns attribute value for existing key' do
+        expect(msg.payload.fetch(:device_id)).to eq('dev-1')
+      end
+
+      it 'raises KeyError for missing key' do
+        expect { msg.payload.fetch(:missing) }.to raise_error(KeyError)
+      end
+
+      it 'supports default value' do
+        expect(msg.payload.fetch(:missing, 'default')).to eq('default')
+      end
+
+      it 'supports block fallback' do
+        expect(msg.payload.fetch(:missing) { 'from_block' }).to eq('from_block')
+      end
+    end
+  end
+
+  describe '#initialize default payload' do
+    it 'creates message without explicit payload arg' do
+      bare = Sourced::CCC::Message.define('test.init_default')
+      msg = bare.new
+      expect(msg.payload).to be_nil
+      expect(msg.id).not_to be_nil
+      expect(msg.type).to eq('test.init_default')
+    end
+  end
+
+  describe Sourced::CCC::ConsistencyGuard do
+    it 'is a Data struct with conditions and last_position' do
+      conditions = [Sourced::CCC::QueryCondition.new(message_type: 'device.registered', attrs: { device_id: 'dev-1' })]
+      guard = Sourced::CCC::ConsistencyGuard.new(conditions: conditions, last_position: 42)
+      expect(guard.conditions).to eq(conditions)
+      expect(guard.last_position).to eq(42)
+    end
+  end
+
+  describe 'Command and Event subclass registries' do
+    let!(:test_cmd) { Sourced::CCC::Command.define('test.do_something') { attribute :name, String } }
+    let!(:test_evt) { Sourced::CCC::Event.define('test.something_happened') { attribute :name, String } }
+
+    it 'registers Command types in Command registry' do
+      expect(Sourced::CCC::Command.registry['test.do_something']).to eq(test_cmd)
+    end
+
+    it 'registers Event types in Event registry' do
+      expect(Sourced::CCC::Event.registry['test.something_happened']).to eq(test_evt)
+    end
+
+    it 'does not register Command types in Event registry' do
+      expect(Sourced::CCC::Event.registry['test.do_something']).to be_nil
+    end
+
+    it 'Message.registry can look up types from subclass registries' do
+      expect(Sourced::CCC::Message.registry['test.do_something']).to eq(test_cmd)
+      expect(Sourced::CCC::Message.registry['test.something_happened']).to eq(test_evt)
+    end
+  end
+
   describe Sourced::CCC::QueryCondition do
     it 'is a Data struct with message_type and attrs hash' do
       cond = Sourced::CCC::QueryCondition.new(
