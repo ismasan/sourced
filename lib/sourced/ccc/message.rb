@@ -149,6 +149,12 @@ module Sourced
         with(metadata: metadata.merge(meta))
       end
 
+      def with_payload(attrs = {})
+        hash = to_h
+        (hash[:payload] ||= {}).merge!(attrs)
+        self.class.new(hash)
+      end
+
       def at(datetime)
         if datetime < created_at
           raise Sourced::PastMessageDateError, "Message #{type} can't be delayed to a date in the past"

@@ -246,6 +246,41 @@ RSpec.describe Sourced::CCC::Message do
     end
   end
 
+  describe '#with_payload' do
+    it 'merges new attributes into existing payload' do
+      msg = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      updated = msg.with_payload(name: 'Sensor B')
+      expect(updated.payload.device_id).to eq('dev-1')
+      expect(updated.payload.name).to eq('Sensor B')
+    end
+
+    it 'preserves id and other attributes' do
+      msg = CCCTestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' },
+        metadata: { user_id: 42 }
+      )
+      updated = msg.with_payload(name: 'Sensor B')
+      expect(updated.id).to eq(msg.id)
+      expect(updated.metadata).to eq({ user_id: 42 })
+      expect(updated.type).to eq('device.registered')
+    end
+
+    it 'returns a new instance without mutating the original' do
+      msg = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      updated = msg.with_payload(name: 'Sensor B')
+      expect(updated).not_to equal(msg)
+      expect(msg.payload.name).to eq('Sensor A')
+    end
+
+    it 'works with empty hash (returns equivalent copy)' do
+      msg = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      updated = msg.with_payload({})
+      expect(updated.payload.device_id).to eq('dev-1')
+      expect(updated.payload.name).to eq('Sensor A')
+      expect(updated).not_to equal(msg)
+    end
+  end
+
   describe '#at' do
     it 'returns new message with updated created_at' do
       msg = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
