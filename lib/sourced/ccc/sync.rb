@@ -17,11 +17,26 @@ module Sourced
         end
       end
 
+      # Build Actions::AfterSync wrappers for all registered after_sync blocks.
+      def after_sync_actions(**args)
+        self.class.after_sync_blocks.map do |block|
+          Actions::AfterSync.new(proc { instance_exec(**args, &block) })
+        end
+      end
+
+      # Build all sync and after_sync actions together.
+      def collect_actions(**args)
+        sync_actions(**args) + after_sync_actions(**args)
+      end
+
       module ClassMethods
         def inherited(subclass)
           super
           sync_blocks.each do |blk|
             subclass.sync_blocks << blk
+          end
+          after_sync_blocks.each do |blk|
+            subclass.after_sync_blocks << blk
           end
         end
 
@@ -31,6 +46,14 @@ module Sourced
 
         def sync(&block)
           sync_blocks << block
+        end
+
+        def after_sync_blocks
+          @after_sync_blocks ||= []
+        end
+
+        def after_sync(&block)
+          after_sync_blocks << block
         end
       end
     end

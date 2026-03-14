@@ -47,6 +47,10 @@ class TestItemProjector < Sourced::CCC::Projector::StateStored
     state[:synced] = true
     state[:last_replaying] = replaying
   end
+
+  after_sync do |state:, messages:, replaying:|
+    state[:after_synced] = true
+  end
 end
 
 class TestItemESProjector < Sourced::CCC::Projector::EventSourced
@@ -72,6 +76,10 @@ class TestItemESProjector < Sourced::CCC::Projector::EventSourced
   sync do |state:, messages:, replaying:|
     state[:synced] = true
     state[:last_replaying] = replaying
+  end
+
+  after_sync do |state:, messages:, replaying:|
+    state[:after_synced] = true
   end
 end
 
@@ -103,7 +111,7 @@ RSpec.describe Sourced::CCC::Projector do
   end
 
   describe '.handle_batch (StateStored)' do
-    it 'evolves from new_messages and includes sync actions' do
+    it 'evolves from new_messages and includes sync and after_sync actions' do
       msgs = [
         Sourced::CCC::PositionedMessage.new(
           CCCProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Apple' }), 1
@@ -121,6 +129,9 @@ RSpec.describe Sourced::CCC::Projector do
 
       sync_action = Array(sync_actions).find { |a| a.is_a?(Sourced::CCC::Actions::Sync) }
       expect(sync_action).not_to be_nil
+
+      after_sync_action = Array(sync_actions).find { |a| a.is_a?(Sourced::CCC::Actions::AfterSync) }
+      expect(after_sync_action).not_to be_nil
     end
 
     it 'runs reactions when not replaying' do

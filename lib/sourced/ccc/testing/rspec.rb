@@ -176,7 +176,9 @@ module Sourced
 
             if sync
               pairs.each do |actions, _|
-                Array(actions).select { |a| a.is_a?(CCC::Actions::Sync) }.each(&:call)
+                Array(actions).select { |a|
+                  a.is_a?(CCC::Actions::Sync) || a.is_a?(CCC::Actions::AfterSync)
+                }.each(&:call) # collect_actions produces both types; filter from pairs
               end
             end
 
@@ -220,7 +222,7 @@ module Sourced
             end
 
             if sync
-              instance.sync_actions(
+              instance.collect_actions(
                 state: instance.state, messages: @given_messages, replaying: false
               ).each(&:call)
             end

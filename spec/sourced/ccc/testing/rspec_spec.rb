@@ -75,6 +75,10 @@ class GWTTestDecider < Sourced::CCC::Decider
   sync do |state:, messages:, events:|
     state[:synced] = true
   end
+
+  after_sync do |state:, messages:, events:|
+    state[:after_synced] = true
+  end
 end
 
 # Decider without reactions (produces only events)
@@ -99,7 +103,7 @@ class GWTTestStateStoredProjector < Sourced::CCC::Projector::StateStored
   consumer_group 'gwt-test-ss-projector'
 
   state do |(list_id)|
-    { list_id: list_id, items: [], synced: false }
+    { list_id: list_id, items: [], synced: false, after_synced: false }
   end
 
   evolve CCCGWTTestMessages::ItemAdded do |state, msg|
@@ -112,6 +116,10 @@ class GWTTestStateStoredProjector < Sourced::CCC::Projector::StateStored
 
   sync do |state:, messages:, replaying:|
     state[:synced] = true
+  end
+
+  after_sync do |state:, messages:, replaying:|
+    state[:after_synced] = true
   end
 end
 
@@ -120,7 +128,7 @@ class GWTTestEventSourcedProjector < Sourced::CCC::Projector::EventSourced
   consumer_group 'gwt-test-es-projector'
 
   state do |(list_id)|
-    { list_id: list_id, items: [], synced: false }
+    { list_id: list_id, items: [], synced: false, after_synced: false }
   end
 
   evolve CCCGWTTestMessages::ItemAdded do |state, msg|
@@ -133,6 +141,10 @@ class GWTTestEventSourcedProjector < Sourced::CCC::Projector::EventSourced
 
   sync do |state:, messages:, replaying:|
     state[:synced] = true
+  end
+
+  after_sync do |state:, messages:, replaying:|
+    state[:after_synced] = true
   end
 end
 
@@ -182,7 +194,7 @@ RSpec.describe Sourced::CCC::Testing::RSpec do
         .then([])
     end
 
-    it 'then! runs sync actions' do
+    it 'then! runs sync and after_sync actions' do
       with_reactor(GWTTestDecider, device_id: 'd1')
         .given(CCCGWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
         .when(CCCGWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
@@ -232,6 +244,12 @@ RSpec.describe Sourced::CCC::Testing::RSpec do
         .then! { |state| expect(state[:synced]).to be true }
     end
 
+    it 'then! runs after_sync actions before yielding state' do
+      with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
+        .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .then! { |state| expect(state[:after_synced]).to be true }
+    end
+
     it 'given events with archive → state reflects removal' do
       with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
         .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
@@ -267,6 +285,12 @@ RSpec.describe Sourced::CCC::Testing::RSpec do
       with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
         .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .then! { |state| expect(state[:synced]).to be true }
+    end
+
+    it 'then! runs after_sync actions before yielding state' do
+      with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
+        .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .then! { |state| expect(state[:after_synced]).to be true }
     end
 
     it '.when raises ArgumentError' do

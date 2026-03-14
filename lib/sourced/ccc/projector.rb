@@ -20,7 +20,7 @@ module Sourced
         private
 
         def build_action_pairs(instance, messages, replaying:)
-          sync_actions = instance.sync_actions(
+          sync_actions = instance.collect_actions(
             state: instance.state, messages: messages, replaying: replaying
           )
 

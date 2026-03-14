@@ -79,11 +79,17 @@ module Sourced
       private
 
       def execute_actions(action_pairs, claim, group_id)
+        after_sync_actions = []
+
         store.db.transaction do
           last_position = nil
           Array(action_pairs).each do |(actions, source_message)|
             Array(actions).each do |action|
-              action.execute(store, source_message) unless action == Actions::OK
+              if action.is_a?(Actions::AfterSync)
+                after_sync_actions << action
+              elsif action != Actions::OK
+                action.execute(store, source_message)
+              end
             end
             last_position = source_message.position if source_message.respond_to?(:position)
           end
@@ -94,6 +100,8 @@ module Sourced
             store.release(group_id, offset_id: claim.offset_id)
           end
         end
+
+        after_sync_actions.each(&:call)
       end
     end
   end

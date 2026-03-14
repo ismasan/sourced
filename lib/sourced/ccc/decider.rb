@@ -52,7 +52,7 @@ module Sourced
                 actions.concat(Actions.build_for(reaction_msgs, source: evt))
               end
 
-              actions += instance.sync_actions(
+              actions += instance.collect_actions(
                 state: instance.state, messages: [msg], events: raw_events
               )
 

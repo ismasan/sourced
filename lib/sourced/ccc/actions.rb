@@ -121,6 +121,25 @@ module Sourced
           nil
         end
       end
+
+      # Execute a side effect after the transaction commits.
+      class AfterSync
+        # @param work [#call] callable to execute
+        def initialize(work)
+          @work = work
+        end
+
+        # @return [Object] the callable's return value
+        def call = @work.call
+
+        # @param _store [Object] unused
+        # @param _source_message [Object] unused
+        # @return [nil]
+        def execute(_store, _source_message)
+          call
+          nil
+        end
+      end
     end
   end
 end

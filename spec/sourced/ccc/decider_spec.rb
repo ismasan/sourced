@@ -68,6 +68,10 @@ class TestDeviceDecider < Sourced::CCC::Decider
   reaction CCCDeciderTestMessages::DeviceBound do |_state, evt|
     CCCDeciderTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
   end
+
+  after_sync do |state:, messages:, events:|
+    state[:after_synced] = true
+  end
 end
 
 class TestDelayedReactionDecider < Sourced::CCC::Decider
@@ -190,6 +194,28 @@ RSpec.describe Sourced::CCC::Decider do
         expect(reaction_append.messages.first).to be_a(CCCDeciderTestMessages::NotifyBound)
         expect(reaction_append.guard).to be_nil
       end
+    end
+
+    it 'includes after_sync actions in action pairs' do
+      reg = CCCDeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      history_msgs = [Sourced::CCC::PositionedMessage.new(reg, 1)]
+      guard = Sourced::CCC::ConsistencyGuard.new(conditions: [], last_position: 1)
+      history = Sourced::CCC::ReadResult.new(messages: history_msgs, guard: guard)
+
+      cmd = CCCDeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      cmd_positioned = Sourced::CCC::PositionedMessage.new(cmd, 2)
+
+      claim = Sourced::CCC::ClaimResult.new(
+        offset_id: 1, key_pair_ids: [], partition_key: 'device_id:d1',
+        partition_value: { 'device_id' => 'd1' },
+        messages: [cmd_positioned], replaying: false, guard: guard
+      )
+
+      pairs = TestDeviceDecider.handle_claim(claim, history: history)
+      actions = Array(pairs.first.first)
+
+      after_sync_action = actions.find { |a| a.is_a?(Sourced::CCC::Actions::AfterSync) }
+      expect(after_sync_action).not_to be_nil
     end
 
     it 'returns [OK, msg] for non-command messages' do
