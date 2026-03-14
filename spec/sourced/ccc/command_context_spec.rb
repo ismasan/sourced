@@ -205,5 +205,38 @@ RSpec.describe Sourced::CCC::CommandContext do
       cmd = ctx.build(type: 'ccc_ctest.add', payload: { value: 1 })
       expect(cmd.payload.value).to eq(6)
     end
+
+    it 'runs on blocks in the context of the instance' do
+      klass = Class.new(described_class) do
+        on(CccContextTest::Add) { |app, cmd| cmd.with_metadata(user_id: build_user_id(app)) }
+
+        private
+
+        def build_user_id(app)
+          "user-#{app.session_id}"
+        end
+      end
+
+      app = double('app', session_id: '42')
+      ctx = klass.new(app: app)
+      cmd = ctx.build(CccContextTest::Add, payload: { value: 1 })
+      expect(cmd.metadata[:user_id]).to eq('user-42')
+    end
+
+    it 'runs any blocks in the context of the instance' do
+      klass = Class.new(described_class) do
+        any { |app, cmd| cmd.with_metadata(source: request_source) }
+
+        private
+
+        def request_source
+          'web'
+        end
+      end
+
+      ctx = klass.new
+      cmd = ctx.build(CccContextTest::Add, payload: { value: 1 })
+      expect(cmd.metadata[:source]).to eq('web')
+    end
   end
 end

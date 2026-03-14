@@ -273,7 +273,7 @@ Subclass `CommandContext` and register class-level hooks to enrich or transform 
 - **`on(MessageClass, ...)`** — runs for one or more command types. Multiple `on` calls for the same class accumulate (all blocks run in registration order).
 - **`any`** — runs for all commands (multiple blocks allowed, executed in order)
 
-Both receive the `app` scope and the command, and must return the (possibly modified) command. `on` blocks run before `any` blocks.
+Both receive the `app` scope and the command, and must return the (possibly modified) command. `on` blocks run before `any` blocks. Blocks are evaluated in the context of the `CommandContext` instance, so they can call private helper methods defined on the subclass.
 
 ```ruby
 class AppCommandContext < Sourced::CCC::CommandContext
@@ -316,6 +316,22 @@ cmd.metadata[:request_id]  # => set by the `any` hook
 ```
 
 `app` defaults to `nil`, so existing callers without hooks are unaffected. Hooks are inherited by subclasses.
+
+Since blocks run in instance context, you can extract shared logic into private methods:
+
+```ruby
+class AppCommandContext < Sourced::CCC::CommandContext
+  on CreateCourse do |app, cmd|
+    cmd.with_metadata(user_id: build_user_id(app))
+  end
+
+  private
+
+  def build_user_id(app)
+    "user-#{app.session_id}"
+  end
+end
+```
 
 #### Scoping to a command subset
 

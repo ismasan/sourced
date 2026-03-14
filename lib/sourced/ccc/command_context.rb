@@ -102,13 +102,14 @@ module Sourced
 
       private
 
+      EMPTY_ARRAY = [].freeze
+
       attr_reader :defaults, :scope, :app
 
       def run_pipeline(cmd)
-        blocks = self.class.message_blocks[cmd.class]
-        blocks&.each { |blk| cmd = blk.call(app, cmd) }
-        self.class.any_blocks.each { |blk| cmd = blk.call(app, cmd) }
-        cmd
+        blocks = self.class.message_blocks[cmd.class] || EMPTY_ARRAY
+        steps = blocks + self.class.any_blocks
+        steps.reduce(cmd) { |c, st| instance_exec(app, c, &st) }
       end
     end
   end
