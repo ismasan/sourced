@@ -266,6 +266,47 @@ cmd = ctx.build(CreateCourse, payload: { course_id: 'c1', course_name: 'Algebra'
 
 String keys are automatically symbolized, so `ctx.build('type' => '...', 'payload' => { ... })` works too.
 
+#### Callback hooks (`on` and `any`)
+
+Subclass `CommandContext` and register class-level hooks to enrich or transform commands at build time — e.g. injecting session data or adding metadata from the request scope.
+
+- **`on(MessageClass)`** — runs for a specific command type (one block per class, last-write-wins)
+- **`any`** — runs for all commands (multiple blocks allowed, executed in order)
+
+Both receive the `app` scope and the command, and must return the (possibly modified) command. `on` blocks run before `any` blocks.
+
+```ruby
+class AppCommandContext < Sourced::CCC::CommandContext
+  # Enrich a specific command with data from the app scope
+  on CreateCourse do |app, cmd|
+    cmd.with_payload(created_by: app.current_user.id)
+  end
+
+  # Add metadata to every command
+  any do |app, cmd|
+    cmd.with_metadata(
+      request_id: app.request_id,
+      session_id: app.session_id
+    )
+  end
+end
+```
+
+Pass the request-scoped `app` object at construction time:
+
+```ruby
+# In a web controller
+ctx = AppCommandContext.new(
+  metadata: { user_id: session[:user_id] },
+  app: self  # e.g. Sinatra app instance, Rack env wrapper, etc.
+)
+
+cmd = ctx.build(type: 'courses.create', payload: { course_id: 'c1', course_name: 'Algebra' })
+cmd.metadata[:request_id]  # => set by the `any` hook
+```
+
+`app` defaults to `nil`, so existing callers without hooks are unaffected. Hooks are inherited by subclasses.
+
 #### Scoping to a command subset
 
 By default, `CommandContext` looks up types in `CCC::Command.registry`. Pass a `scope:` to restrict lookups to a specific command subclass — attempts to build commands outside the scope raise `Sourced::UnknownMessageError`.
