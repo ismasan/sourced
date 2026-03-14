@@ -322,6 +322,13 @@ class CourseCatalogProjector < Sourced::CCC::Projector::EventSourced
     # Write projection to disk, database, cache, etc.
     File.write("projections/#{state[:course_id]}.json", state.to_json)
   end
+
+  # After-sync block runs after the transaction commits.
+  # Use for side effects that should only happen on successful commit
+  # (e.g. sending emails, HTTP calls, pushing to external queues).
+  after_sync do |state:, messages:, **|
+    NotificationService.notify("Course #{state[:course_name]} updated")
+  end
 end
 ```
 
@@ -367,6 +374,40 @@ end
 ```
 
 Reactions are skipped during replay (when `replaying: true`), so side effects don't re-fire.
+
+## Sync and After-Sync Blocks
+
+Both deciders and projectors support `sync` and `after_sync` blocks for running side effects during message processing.
+
+- **`sync`** blocks run **inside** the store transaction, alongside event persistence and offset acknowledgement. Use them for writes that must be atomic with the event append (e.g. updating a database projection).
+- **`after_sync`** blocks run **after** the transaction commits. Use them for side effects that should only happen if the commit succeeds (e.g. sending emails, HTTP calls, pushing to external queues).
+
+Both receive the same keyword arguments as the reactor's action-building step:
+
+| Reactor type | Keyword arguments                     |
+|--------------|---------------------------------------|
+| Decider      | `state:`, `messages:`, `events:`      |
+| Projector    | `state:`, `messages:`, `replaying:`   |
+
+```ruby
+class OrderDecider < Sourced::CCC::Decider
+  partition_by :order_id
+
+  # ... evolve / command handlers ...
+
+  sync do |state:, messages:, events:|
+    # Runs inside the transaction
+    OrderCache.update(state[:order_id], state)
+  end
+
+  after_sync do |state:, messages:, events:|
+    # Runs after successful commit
+    Mailer.send_confirmation(state[:order_id]) if events.any? { |e| e.is_a?(OrderPlaced) }
+  end
+end
+```
+
+Multiple `sync` and `after_sync` blocks can be registered; they execute in registration order. Blocks are inherited by subclasses.
 
 ## Configuration
 
@@ -663,9 +704,9 @@ it 'inspects action pairs' do
 end
 ```
 
-#### `.then!` — run sync actions
+#### `.then!` — run sync and after_sync actions
 
-Use `.then!` instead of `.then` to execute sync actions before assertions:
+Use `.then!` instead of `.then` to execute both `sync` and `after_sync` actions before assertions:
 
 ```ruby
 it 'runs sync block' do
