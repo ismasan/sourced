@@ -25,7 +25,7 @@ module Sourced
         # @yield [app, cmd] transformation block
         # @return [void]
         def on(*message_classes, &block)
-          message_classes.each { |klass| message_blocks[klass] = block }
+          message_classes.each { |klass| (message_blocks[klass] ||= []) << block }
         end
 
         # Register a block to run for all commands.
@@ -50,7 +50,7 @@ module Sourced
         # @api private
         def inherited(subclass)
           super
-          message_blocks.each { |k, v| subclass.message_blocks[k] = v }
+          message_blocks.each { |k, v| subclass.message_blocks[k] = v.dup }
           any_blocks.each { |blk| subclass.any_blocks << blk }
         end
       end
@@ -105,8 +105,8 @@ module Sourced
       attr_reader :defaults, :scope, :app
 
       def run_pipeline(cmd)
-        block = self.class.message_blocks[cmd.class]
-        cmd = block.call(app, cmd) if block
+        blocks = self.class.message_blocks[cmd.class]
+        blocks&.each { |blk| cmd = blk.call(app, cmd) }
         self.class.any_blocks.each { |blk| cmd = blk.call(app, cmd) }
         cmd
       end

@@ -90,6 +90,23 @@ RSpec.describe Sourced::CCC::CommandContext do
       expect(remove_cmd.metadata[:tagged]).to eq(true)
     end
 
+    it 'accumulates multiple on blocks for the same command type' do
+      klass = Class.new(described_class)
+      klass.on(CccContextTest::Add, CccContextTest::Remove) { |_app, cmd| cmd.with_metadata(first: true) }
+      klass.on(CccContextTest::Add) { |_app, cmd| cmd.with_metadata(second: true) }
+
+      ctx = klass.new
+      # Add gets both blocks
+      add_cmd = ctx.build(CccContextTest::Add, payload: { value: 1 })
+      expect(add_cmd.metadata[:first]).to eq(true)
+      expect(add_cmd.metadata[:second]).to eq(true)
+
+      # Remove only gets the first block
+      remove_cmd = ctx.build(CccContextTest::Remove, payload: { value: 2 })
+      expect(remove_cmd.metadata[:first]).to eq(true)
+      expect(remove_cmd.metadata).not_to have_key(:second)
+    end
+
     it 'does not run on block for non-matching command type' do
       klass = Class.new(described_class)
       klass.on(CccContextTest::Add) { |_app, cmd| cmd.with_payload(value: cmd.payload.value + 10) }
