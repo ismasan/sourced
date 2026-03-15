@@ -496,21 +496,24 @@ module Sourced
           .first
         return nil unless cg
 
-        # Short-circuit: if offsets exist and the latest message of the handled
-        # types is at or below highest_position, all work is done. O(1) via the
-        # message_type index — avoids the per-offset scan entirely on idle polls.
-        # Skipped when no offsets exist (e.g. after reset or first run) so that
-        # discovery can create them.
-        has_offsets = db[@offsets_table].where(consumer_group_id: cg[:id]).limit(1).any?
-        if has_offsets
-          types_max_pos = db[@messages_table]
-            .where(message_type: handled_types)
-            .max(:position) || 0
-          return nil if types_max_pos <= cg[:highest_position]
-        end
+        # Short-circuit: check the latest message position for handled types.
+        # If at or below highest_position and offsets exist, all work is done.
+        types_max_pos = db[@messages_table]
+          .where(message_type: handled_types)
+          .max(:position) || 0
 
-        # Phase 1: Fast path — try existing offsets
-        claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+        has_offsets = db[@offsets_table].where(consumer_group_id: cg[:id]).limit(1).any?
+        return nil if has_offsets && types_max_pos <= cg[:highest_position]
+
+        # Phase 1: Fast path — try existing offsets.
+        # Only worth scanning if discovery has already covered all messages
+        # (discovery_position >= types_max_pos). Otherwise new messages may
+        # belong to undiscovered partitions, and scanning caught-up offsets
+        # to confirm "no work" is O(offsets) wasted queries.
+        claimed = nil
+        if has_offsets && types_max_pos <= cg[:discovery_position]
+          claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+        end
 
         # Phase 2: Discovery — scan forward from watermark, create new offsets
         unless claimed
@@ -808,7 +811,6 @@ module Sourced
         ctes = []
         selects = []
         joins = []
-        not_exists_joins = []
         partition_by.each_with_index do |attr, i|
           ctes << <<~CTE
             attr#{i} AS (
@@ -819,11 +821,13 @@ module Sourced
           CTE
           selects << "a#{i}.kp_id AS kp_id_#{i}, a#{i}.val AS val_#{i}"
           joins << "JOIN attr#{i} a#{i} ON m.position = a#{i}.message_position"
-          not_exists_joins << "JOIN #{@offset_key_pairs_table} okp#{i} ON o.id = okp#{i}.offset_id AND okp#{i}.key_pair_id = a#{i}.kp_id"
         end
 
         group_by = partition_by.each_index.map { |i| "a#{i}.kp_id" }.join(', ')
 
+        # Discover all partition tuples in the window (no NOT EXISTS — fast).
+        # Duplicates are filtered in Ruby against known partition_keys, and
+        # INSERT OR IGNORE handles any remaining races.
         sql = <<~SQL
           WITH #{ctes.join(",\n")}
           SELECT #{selects.join(', ')},
@@ -833,11 +837,6 @@ module Sourced
           #{joins.join("\n")}
           WHERE m.message_type IN (#{types_list})
             AND m.position > #{db.literal(discovery_pos)}
-            AND NOT EXISTS (
-              SELECT 1 FROM #{@offsets_table} o
-              #{not_exists_joins.join("\n")}
-              WHERE o.consumer_group_id = #{db.literal(cg_id)}
-            )
           GROUP BY #{group_by}
           ORDER BY min_pos ASC
           LIMIT #{DISCOVERY_BATCH_SIZE}
@@ -845,11 +844,22 @@ module Sourced
 
         rows = db.fetch(sql).all
 
-        max_discovered_pos = 0
+        # Load known partition_keys for this consumer group to skip duplicates
+        known_keys = db[@offsets_table]
+          .where(consumer_group_id: cg_id)
+          .select_map(:partition_key)
+          .to_set
 
-        if rows.any?
+        max_discovered_pos = 0
+        new_rows = rows.reject do |row|
+          values = {}
+          partition_by.each_with_index { |attr, i| values[attr] = row[:"val_#{i}"] }
+          known_keys.include?(build_partition_key(partition_by, values))
+        end
+
+        if new_rows.any?
           db.transaction do
-            rows.each do |row|
+            new_rows.each do |row|
               values = {}
               kp_ids = []
               partition_by.each_with_index do |attr, i|
@@ -863,8 +873,14 @@ module Sourced
           end
         end
 
-        # Advance watermark: to max discovered position, or to current max if nothing found
-        new_watermark = max_discovered_pos > 0 ? max_discovered_pos : (latest_position)
+        # Advance watermark to the max position seen in the window (whether new or known).
+        # This ensures we don't re-scan these messages on the next discovery call.
+        max_window_pos = rows.any? ? rows.map { |r| r[:max_pos] }.max : 0
+        new_watermark = [max_discovered_pos, max_window_pos, latest_position].select { |p| p > 0 }.min || discovery_pos
+        # If we found a full batch, advance only to the batch's max (more may follow).
+        # If we found fewer than a batch, we've scanned to the end — advance to latest.
+        new_watermark = latest_position if rows.size < DISCOVERY_BATCH_SIZE
+
         if new_watermark > discovery_pos
           db[@consumer_groups_table].where(id: cg_id).update(
             discovery_position: new_watermark,
