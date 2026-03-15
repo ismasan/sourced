@@ -330,6 +330,8 @@ html = <<~HTML
     h1 { font-size: 1.3em; color: #333; }
     h2 { font-size: 1.1em; color: #555; margin-top: 2em; }
     .chart-container { background: white; border-radius: 8px; padding: 20px; margin: 16px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .chart-container p.desc { color: #666; font-size: 0.85em; margin: 0 0 12px 0; line-height: 1.5; }
+    .chart-container p.desc strong { color: #444; }
     canvas { max-height: 400px; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
@@ -352,15 +354,28 @@ html = <<~HTML
 
   <div class="grid">
     <div class="chart-container">
+      <p class="desc"><strong>Idle Poll</strong> &mdash; All partitions are fully caught up. No new messages exist.
+      This is what happens on every catch-up poll interval when the system is quiet.
+      Measures the cost of determining &ldquo;nothing to do&rdquo;.</p>
       <canvas id="idlePoll"></canvas>
     </div>
     <div class="chart-container">
+      <p class="desc"><strong>Cold Drain</strong> &mdash; A new consumer group starts processing an existing log from scratch.
+      No offsets exist yet &mdash; each <code>claim_next</code> call must discover new partitions, create offsets,
+      and claim work. This is the per-claim cost during initial catch-up (sampled over #{options[:sample_size]} claims).</p>
       <canvas id="coldDrain"></canvas>
     </div>
     <div class="chart-container">
+      <p class="desc"><strong>Warm Claim</strong> &mdash; All partitions have existing offsets (previously caught up),
+      then new messages arrive for some partitions. No discovery needed &mdash; offsets already exist.
+      This is the steady-state cost when the notifier or catch-up poller triggers processing.</p>
       <canvas id="warmClaim"></canvas>
     </div>
     <div class="chart-container">
+      <p class="desc"><strong>Incremental Discovery</strong> &mdash; All existing partitions are caught up.
+      One message arrives for a brand-new partition (never seen before). Measures the cost of discovering
+      and claiming that single new partition against a backdrop of N existing offsets.
+      Skipped for scales &gt; #{fmt_scale(INCR_MAX_SCALE)} due to prohibitive NOT EXISTS cost.</p>
       <canvas id="incremental"></canvas>
     </div>
   </div>
