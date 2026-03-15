@@ -922,13 +922,15 @@ module Sourced
       def find_and_claim_partition(cg_id, handled_types, worker_id)
         types_list = handled_types.map { |t| db.literal(t) }.join(', ')
 
-        # Iterate unclaimed offsets ordered by last_position (lowest = most behind).
-        # For each, check if a pending message exists with AND semantics.
-        # Stops at the first match. Uses Sequel's streaming `.each` — rows are
-        # fetched from the SQLite cursor one at a time, not loaded into memory.
+        # Iterate unclaimed offsets that could have pending work.
+        # Ordered by last_position ASC so the most-behind partitions are checked
+        # first. Offsets at or past the latest message position are skipped entirely
+        # (they can't have pending work). Stops at the first match.
+        max_pos = latest_position
         row = nil
         db[@offsets_table]
           .where(consumer_group_id: cg_id, claimed: 0)
+          .where(Sequel.lit('last_position < ?', max_pos))
           .select(:id, :partition_key, :last_position)
           .order(:last_position)
           .each do |offset|
