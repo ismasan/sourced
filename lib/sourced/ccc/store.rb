@@ -790,20 +790,29 @@ module Sourced
 
         types_list = handled_types.map { |t| db.literal(t) }.join(', ')
 
-        # Build AND self-join query scoped to messages after the watermark
-        joins = []
+        # CTE per partition attribute: pre-joins message_key_pairs with key_pairs
+        # so the main query only self-joins on the CTEs (N joins instead of 2N).
+        ctes = []
         selects = []
+        joins = []
         not_exists_joins = []
         partition_by.each_with_index do |attr, i|
-          joins << "JOIN #{@message_key_pairs_table} mkp#{i} ON m.position = mkp#{i}.message_position"
-          joins << "JOIN #{@key_pairs_table} kp#{i} ON mkp#{i}.key_pair_id = kp#{i}.id AND kp#{i}.name = #{db.literal(attr)}"
-          selects << "kp#{i}.id AS kp_id_#{i}, kp#{i}.value AS val_#{i}"
-          not_exists_joins << "JOIN #{@offset_key_pairs_table} okp#{i} ON o.id = okp#{i}.offset_id AND okp#{i}.key_pair_id = kp#{i}.id"
+          ctes << <<~CTE
+            attr#{i} AS (
+              SELECT mkp.message_position, kp.id AS kp_id, kp.value AS val
+              FROM #{@message_key_pairs_table} mkp
+              JOIN #{@key_pairs_table} kp ON mkp.key_pair_id = kp.id AND kp.name = #{db.literal(attr)}
+            )
+          CTE
+          selects << "a#{i}.kp_id AS kp_id_#{i}, a#{i}.val AS val_#{i}"
+          joins << "JOIN attr#{i} a#{i} ON m.position = a#{i}.message_position"
+          not_exists_joins << "JOIN #{@offset_key_pairs_table} okp#{i} ON o.id = okp#{i}.offset_id AND okp#{i}.key_pair_id = a#{i}.kp_id"
         end
 
-        group_by = partition_by.each_index.map { |i| "kp#{i}.id" }.join(', ')
+        group_by = partition_by.each_index.map { |i| "a#{i}.kp_id" }.join(', ')
 
         sql = <<~SQL
+          WITH #{ctes.join(",\n")}
           SELECT #{selects.join(', ')},
                  MIN(m.position) AS min_pos,
                  MAX(m.position) AS max_pos
@@ -973,7 +982,14 @@ module Sourced
         kp_ids_list = key_pair_ids.map { |id| db.literal(id) }.join(', ')
         types_list = handled_types.map { |t| db.literal(t) }.join(', ')
 
+        # CTE pre-resolves which attribute names the partition's key_pairs cover.
+        # The main query uses this to count-match: a message qualifies when it
+        # matches as many partition key_pairs as it has attributes in common with
+        # the partition (AND semantics for shared attributes).
         sql = <<~SQL
+          WITH partition_attr_names AS (
+            SELECT DISTINCT name FROM #{@key_pairs_table} WHERE id IN (#{kp_ids_list})
+          )
           SELECT DISTINCT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.created_at
           FROM #{@messages_table} m
           WHERE m.position > #{db.literal(last_position)}
@@ -988,12 +1004,11 @@ module Sourced
               WHERE mkp.message_position = m.position
                 AND mkp.key_pair_id IN (#{kp_ids_list})
             ) = (
-              SELECT COUNT(DISTINCT kp_part.name)
+              SELECT COUNT(DISTINCT kp_msg.name)
               FROM #{@message_key_pairs_table} mkp2
               JOIN #{@key_pairs_table} kp_msg ON mkp2.key_pair_id = kp_msg.id
-              JOIN #{@key_pairs_table} kp_part ON kp_part.id IN (#{kp_ids_list})
-                AND kp_part.name = kp_msg.name
               WHERE mkp2.message_position = m.position
+                AND kp_msg.name IN (SELECT name FROM partition_attr_names)
             )
           ORDER BY m.position ASC
         SQL
