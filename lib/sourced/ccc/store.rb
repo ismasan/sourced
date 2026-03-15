@@ -805,6 +805,7 @@ module Sourced
 
         sql = <<~SQL
           SELECT #{selects.join(', ')},
+                 MIN(m.position) AS min_pos,
                  MAX(m.position) AS max_pos
           FROM #{@messages_table} m
           #{joins.join("\n")}
@@ -816,6 +817,7 @@ module Sourced
               WHERE o.consumer_group_id = #{db.literal(cg_id)}
             )
           GROUP BY #{group_by}
+          ORDER BY min_pos ASC
           LIMIT #{DISCOVERY_BATCH_SIZE}
         SQL
 
