@@ -496,6 +496,19 @@ module Sourced
           .first
         return nil unless cg
 
+        # Short-circuit: if offsets exist and the latest message of the handled
+        # types is at or below highest_position, all work is done. O(1) via the
+        # message_type index — avoids the per-offset scan entirely on idle polls.
+        # Skipped when no offsets exist (e.g. after reset or first run) so that
+        # discovery can create them.
+        has_offsets = db[@offsets_table].where(consumer_group_id: cg[:id]).limit(1).any?
+        if has_offsets
+          types_max_pos = db[@messages_table]
+            .where(message_type: handled_types)
+            .max(:position) || 0
+          return nil if types_max_pos <= cg[:highest_position]
+        end
+
         # Phase 1: Fast path — try existing offsets
         claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
 
@@ -922,15 +935,9 @@ module Sourced
       def find_and_claim_partition(cg_id, handled_types, worker_id)
         types_list = handled_types.map { |t| db.literal(t) }.join(', ')
 
-        # Iterate unclaimed offsets that could have pending work.
-        # Ordered by last_position ASC so the most-behind partitions are checked
-        # first. Offsets at or past the latest message position are skipped entirely
-        # (they can't have pending work). Stops at the first match.
-        max_pos = latest_position
         row = nil
         db[@offsets_table]
           .where(consumer_group_id: cg_id, claimed: 0)
-          .where(Sequel.lit('last_position < ?', max_pos))
           .select(:id, :partition_key, :last_position)
           .order(:last_position)
           .each do |offset|
