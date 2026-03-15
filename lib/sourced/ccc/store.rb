@@ -181,7 +181,7 @@ module Sourced
           end
         end
 
-        Console.info "AAA append #{messages.map(&:type).uniq}"
+        Console.info "AAA append #{messages.map(&:type).uniq}", messages: messages.size
         notifier.notify_new_messages(messages.map(&:type).uniq)
 
         last_position
