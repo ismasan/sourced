@@ -66,6 +66,7 @@ module Sourced
       ACTIVE = 'active'
       STOPPED = 'stopped'
       FAILED = 'failed'
+      DISCOVERY_BATCH_SIZE = 100
 
       # @return [Sequel::SQLite::Database]
       attr_reader :db
@@ -87,6 +88,7 @@ module Sourced
         @db = db
         @notifier = notifier || Sourced::InlineNotifier.new
         @logger = logger || Sourced.config.logger
+        Sequel.extension(:fiber_concurrency)
         @db.run('PRAGMA foreign_keys = ON')
         @db.run('PRAGMA journal_mode = WAL')
         @db.run('PRAGMA busy_timeout = 5000')
@@ -179,6 +181,7 @@ module Sourced
           end
         end
 
+        Console.info "AAA append #{messages.map(&:type).uniq}"
         notifier.notify_new_messages(messages.map(&:type).uniq)
 
         last_position
@@ -457,6 +460,10 @@ module Sourced
         return unless cg
 
         db[@offsets_table].where(consumer_group_id: cg[:id]).delete
+        db[@consumer_groups_table].where(id: cg[:id]).update(
+          discovery_position: 0,
+          updated_at: Time.now.iso8601
+        )
       end
 
       # Claim the next available partition for processing.
@@ -489,9 +496,15 @@ module Sourced
           .first
         return nil unless cg
 
-        bootstrap_offsets(cg[:id], partition_by)
-
+        # Phase 1: Fast path — try existing offsets
         claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+
+        # Phase 2: Discovery — scan forward from watermark, create new offsets
+        unless claimed
+          discover_new_partitions(cg[:id], partition_by, handled_types)
+          claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+        end
+
         return nil unless claimed
 
         key_pair_ids = db[@offset_key_pairs_table]
@@ -635,15 +648,13 @@ module Sourced
         cg = db[@consumer_groups_table].where(group_id: group_id).first
         return unless cg
 
-        partition_by = partition.keys.sort
-        bootstrap_offsets(cg[:id], partition_by)
+        offset_id = ensure_offset_for_partition(cg[:id], partition)
+        return unless offset_id
 
-        partition_key = build_partition_key(partition_by, partition)
-        offset = db[@offsets_table].where(consumer_group_id: cg[:id], partition_key: partition_key).first
-        return unless offset
+        offset = db[@offsets_table].where(id: offset_id).first
         return if offset[:last_position] >= position
 
-        db[@offsets_table].where(id: offset[:id]).update(last_position: position)
+        db[@offsets_table].where(id: offset_id).update(last_position: position)
 
         if position > cg[:highest_position]
           db[@consumer_groups_table].where(id: cg[:id]).update(
@@ -765,63 +776,125 @@ module Sourced
         partition_by.sort.map { |attr| "#{attr}:#{values[attr]}" }.join('|')
       end
 
-      # Discover partition tuples via AND self-joins and create offset + key_pair rows.
-      # Only messages with ALL partition attributes create partition tuples.
+      # Scan a bounded window of messages forward from the consumer group's
+      # discovery_position watermark, find new partition tuples, create offsets
+      # for them, then advance the watermark.
       #
       # @param cg_id [Integer] consumer group internal ID
       # @param partition_by [Array<String>] sorted attribute names
+      # @param handled_types [Array<String>] message type strings
       # @return [void]
-      def bootstrap_offsets(cg_id, partition_by)
-        # Build AND self-join query to find all unique tuples
+      def discover_new_partitions(cg_id, partition_by, handled_types)
+        cg = db[@consumer_groups_table].where(id: cg_id).first
+        discovery_pos = cg[:discovery_position]
+
+        types_list = handled_types.map { |t| db.literal(t) }.join(', ')
+
+        # Build AND self-join query scoped to messages after the watermark
         joins = []
         selects = []
+        not_exists_joins = []
         partition_by.each_with_index do |attr, i|
           joins << "JOIN #{@message_key_pairs_table} mkp#{i} ON m.position = mkp#{i}.message_position"
           joins << "JOIN #{@key_pairs_table} kp#{i} ON mkp#{i}.key_pair_id = kp#{i}.id AND kp#{i}.name = #{db.literal(attr)}"
           selects << "kp#{i}.id AS kp_id_#{i}, kp#{i}.value AS val_#{i}"
+          not_exists_joins << "JOIN #{@offset_key_pairs_table} okp#{i} ON o.id = okp#{i}.offset_id AND okp#{i}.key_pair_id = kp#{i}.id"
         end
 
         group_by = partition_by.each_index.map { |i| "kp#{i}.id" }.join(', ')
 
         sql = <<~SQL
-          SELECT #{selects.join(', ')}
+          SELECT #{selects.join(', ')},
+                 MAX(m.position) AS max_pos
           FROM #{@messages_table} m
           #{joins.join("\n")}
+          WHERE m.message_type IN (#{types_list})
+            AND m.position > #{db.literal(discovery_pos)}
+            AND NOT EXISTS (
+              SELECT 1 FROM #{@offsets_table} o
+              #{not_exists_joins.join("\n")}
+              WHERE o.consumer_group_id = #{db.literal(cg_id)}
+            )
           GROUP BY #{group_by}
+          LIMIT #{DISCOVERY_BATCH_SIZE}
         SQL
 
         rows = db.fetch(sql).all
-        return if rows.empty?
 
-        db.transaction do
-          rows.each do |row|
-            # Build the values hash and collect key_pair_ids
-            values = {}
-            kp_ids = []
-            partition_by.each_with_index do |attr, i|
-              values[attr] = row[:"val_#{i}"]
-              kp_ids << row[:"kp_id_#{i}"]
-            end
+        max_discovered_pos = 0
 
-            partition_key = build_partition_key(partition_by, values)
+        if rows.any?
+          db.transaction do
+            rows.each do |row|
+              values = {}
+              kp_ids = []
+              partition_by.each_with_index do |attr, i|
+                values[attr] = row[:"val_#{i}"]
+                kp_ids << row[:"kp_id_#{i}"]
+              end
 
-            # INSERT OR IGNORE the offset row
-            db.run(<<~SQL)
-              INSERT OR IGNORE INTO #{@offsets_table} (consumer_group_id, partition_key, last_position, claimed)
-              VALUES (#{db.literal(cg_id)}, #{db.literal(partition_key)}, 0, 0)
-            SQL
-
-            offset_id = db[@offsets_table].where(consumer_group_id: cg_id, partition_key: partition_key).get(:id)
-
-            # INSERT OR IGNORE the offset_key_pairs join rows
-            kp_ids.each do |kp_id|
-              db.run(<<~SQL)
-                INSERT OR IGNORE INTO #{@offset_key_pairs_table} (offset_id, key_pair_id)
-                VALUES (#{db.literal(offset_id)}, #{db.literal(kp_id)})
-              SQL
+              create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids)
+              max_discovered_pos = row[:max_pos] if row[:max_pos] > max_discovered_pos
             end
           end
         end
+
+        # Advance watermark: to max discovered position, or to current max if nothing found
+        new_watermark = max_discovered_pos > 0 ? max_discovered_pos : (latest_position)
+        if new_watermark > discovery_pos
+          db[@consumer_groups_table].where(id: cg_id).update(
+            discovery_position: new_watermark,
+            updated_at: Time.now.iso8601
+          )
+        end
+      end
+
+      # Ensure an offset row exists for a specific partition (by attribute values).
+      # Resolves key_pair IDs from the key_pairs table; returns nil if any
+      # partition attribute has no corresponding key_pair (meaning no messages
+      # with that attribute value exist yet).
+      #
+      # @param cg_id [Integer] consumer group internal ID
+      # @param partition [Hash{String => String}] attribute names and values
+      # @return [Integer, nil] offset ID, or nil if key_pairs not found
+      def ensure_offset_for_partition(cg_id, partition)
+        partition_by = partition.keys.sort
+        kp_ids = []
+        partition_by.each do |attr|
+          kp = db[@key_pairs_table].where(name: attr, value: partition[attr].to_s).first
+          return nil unless kp
+
+          kp_ids << kp[:id]
+        end
+
+        create_offset_with_key_pairs(cg_id, partition_by, partition, kp_ids)
+      end
+
+      # Create an offset row and its key_pair associations. Idempotent via INSERT OR IGNORE.
+      #
+      # @param cg_id [Integer] consumer group internal ID
+      # @param partition_by [Array<String>] sorted attribute names
+      # @param values [Hash{String => String}] attribute values keyed by name
+      # @param kp_ids [Array<Integer>] key_pair IDs
+      # @return [Integer] offset ID
+      def create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids)
+        partition_key = build_partition_key(partition_by, values)
+
+        db.run(<<~SQL)
+          INSERT OR IGNORE INTO #{@offsets_table} (consumer_group_id, partition_key, last_position, claimed)
+          VALUES (#{db.literal(cg_id)}, #{db.literal(partition_key)}, 0, 0)
+        SQL
+
+        offset_id = db[@offsets_table].where(consumer_group_id: cg_id, partition_key: partition_key).get(:id)
+
+        kp_ids.each do |kp_id|
+          db.run(<<~SQL)
+            INSERT OR IGNORE INTO #{@offset_key_pairs_table} (offset_id, key_pair_id)
+            VALUES (#{db.literal(offset_id)}, #{db.literal(kp_id)})
+          SQL
+        end
+
+        offset_id
       end
 
       # Find the next unclaimed partition with pending messages and claim it.
@@ -838,26 +911,30 @@ module Sourced
       def find_and_claim_partition(cg_id, handled_types, worker_id)
         types_list = handled_types.map { |t| db.literal(t) }.join(', ')
 
+        # Uses count-matching for AND semantics: a message is a candidate only
+        # when ALL of the offset's key_pairs appear in message_key_pairs for
+        # that message. This avoids the expensive NOT EXISTS + 4-table subquery
+        # and short-circuits immediately when any key_pair has no match.
         sql = <<~SQL
           SELECT o.id AS offset_id, o.partition_key, o.last_position,
                  MIN(m.position) AS next_position
           FROM #{@offsets_table} o
-          JOIN #{@offset_key_pairs_table} okp ON o.id = okp.offset_id
-          JOIN #{@message_key_pairs_table} mkp ON okp.key_pair_id = mkp.key_pair_id
-          JOIN #{@messages_table} m ON mkp.message_position = m.position
+          CROSS JOIN #{@messages_table} m
           WHERE o.consumer_group_id = #{db.literal(cg_id)}
             AND o.claimed = 0
             AND m.position > o.last_position
             AND m.message_type IN (#{types_list})
-            AND NOT EXISTS (
-              SELECT 1
-              FROM #{@offset_key_pairs_table} okp2
-              JOIN #{@key_pairs_table} kp_part ON okp2.key_pair_id = kp_part.id
-              JOIN #{@message_key_pairs_table} mkp2 ON mkp2.message_position = m.position
-              JOIN #{@key_pairs_table} kp_msg ON mkp2.key_pair_id = kp_msg.id
-              WHERE okp2.offset_id = o.id
-                AND kp_msg.name = kp_part.name
-                AND kp_msg.value != kp_part.value
+            AND (
+              SELECT COUNT(*)
+              FROM #{@offset_key_pairs_table} okp
+              JOIN #{@message_key_pairs_table} mkp
+                ON mkp.key_pair_id = okp.key_pair_id
+                AND mkp.message_position = m.position
+              WHERE okp.offset_id = o.id
+            ) = (
+              SELECT COUNT(*)
+              FROM #{@offset_key_pairs_table}
+              WHERE offset_id = o.id
             )
           GROUP BY o.id
           ORDER BY next_position ASC

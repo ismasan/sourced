@@ -46,6 +46,7 @@ Sequel.migration do
       String :group_id, null: false, unique: true
       String :status, null: false, default: 'active'
       Integer :highest_position, null: false, default: 0
+      Integer :discovery_position, null: false, default: 0
       String :error_context
       String :retry_at
       String :created_at, null: false

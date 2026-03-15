@@ -972,7 +972,7 @@ RSpec.describe Sourced::CCC::Store do
       store.register_consumer_group(group_id)
     end
 
-    it 'bootstraps offsets for new partitions' do
+    it 'lazily discovers and creates offsets for new partitions' do
       store.append(
         CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
@@ -1249,6 +1249,126 @@ RSpec.describe Sourced::CCC::Store do
       r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       expect(r2.replaying).to be false
       expect(r2.messages.size).to eq(2)
+    end
+  end
+
+  describe '#claim_next (lazy discovery)' do
+    let(:group_id) { 'discovery-test' }
+    let(:handled_types) { ['store_test.device.registered', 'store_test.device.bound'] }
+
+    before do
+      store.register_consumer_group(group_id)
+    end
+
+    it 'advances discovery_position after discovering partitions' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+
+      cg = db[:sourced_consumer_groups].where(group_id: group_id).first
+      expect(cg[:discovery_position]).to be >= 1
+    end
+
+    it 'does not re-scan earlier messages on subsequent discovery calls' do
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
+      ])
+
+      # First claim discovers both partitions and claims one
+      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+
+      # Second claim uses fast path (no discovery needed)
+      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(r2).not_to be_nil
+      expect(r2.partition_key).not_to eq(r1.partition_key)
+    end
+
+    it 'discovers new partitions added after initial discovery' do
+      # First batch of messages
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+
+      # No more work
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(result).to be_nil
+
+      # New partition arrives
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
+      )
+
+      # Should discover and claim the new partition
+      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(r2).not_to be_nil
+      expect(r2.partition_value).to eq({ 'device_id' => 'dev-2' })
+    end
+
+    it 'resets discovery_position when consumer group is reset' do
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+
+      cg = db[:sourced_consumer_groups].where(group_id: group_id).first
+      expect(cg[:discovery_position]).to be > 0
+
+      store.reset_consumer_group(group_id)
+
+      cg = db[:sourced_consumer_groups].where(group_id: group_id).first
+      expect(cg[:discovery_position]).to eq(0)
+    end
+
+    it 'a new reactor catches up on old messages without explicit bootstrap' do
+      # Pre-populate with multiple partitions
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-3', name: 'C' })
+      ])
+
+      # New reactor with no prior offsets
+      new_group = 'new-reactor'
+      store.register_consumer_group(new_group)
+
+      # Should discover and process all partitions
+      claimed_partitions = []
+      3.times do
+        r = store.claim_next(new_group, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+        break unless r
+
+        claimed_partitions << r.partition_key
+        store.ack(new_group, offset_id: r.offset_id, position: r.messages.last.position)
+      end
+
+      expect(claimed_partitions.size).to eq(3)
+      expect(claimed_partitions).to contain_exactly('device_id:dev-1', 'device_id:dev-2', 'device_id:dev-3')
+    end
+
+    it 'only discovers partitions matching handled_types' do
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::AssetRegistered.new(payload: { asset_id: 'a-1', label: 'Truck' })
+      ])
+
+      # Only handles device events, not asset events
+      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      expect(result).not_to be_nil
+      expect(result.partition_value).to eq({ 'device_id' => 'dev-1' })
+
+      # No more work for device_id partitions
+      store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
+      result2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      expect(result2).to be_nil
     end
   end
 
@@ -1557,7 +1677,7 @@ RSpec.describe Sourced::CCC::Store do
       store.register_consumer_group(group_id)
     end
 
-    it 'bootstraps and advances offset for a new partition' do
+    it 'creates and advances offset for a new partition' do
       store.append(
         CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
