@@ -23,10 +23,10 @@
 <body>
   <h1>CCC::Store#claim_next &mdash; Scaling Benchmark</h1>
   <p class="meta">
-    Generated 2026-03-15 19:43 &middot;
+    Generated 2026-03-15 22:55 &middot;
     Keys: 1, 2, 3 &middot;
-    Scales: 10, 100, 1K, 10K, 100K &middot;
-    Iterations: 2 (adaptive) &middot;
+    Scales: 10, 100, 1K, 10K, 100K, 1M &middot;
+    Iterations: 1 (adaptive) &middot;
     Sample: 50 claims
   </p>
 
@@ -64,21 +64,24 @@
       <tr><th>Keys</th><th>Partitions</th><th>Idle Poll (ms)</th><th>Cold /claim (ms)</th><th>Warm /claim (ms)</th><th>Incremental (ms)</th></tr>
     </thead>
     <tbody>
-      <tr><td>1</td><td>10</td><td>0.207</td><td>0.3923</td><td>0.391</td><td>0.697</td></tr>
-      <tr><td>1</td><td>100</td><td>0.114</td><td>0.437</td><td>0.4788</td><td>1.0375</td></tr>
-      <tr><td>1</td><td>1,000</td><td>0.111</td><td>1.2875</td><td>1.3205</td><td>2.5875</td></tr>
-      <tr><td>1</td><td>10,000</td><td>0.1235</td><td>17.433</td><td>9.632</td><td>14.661</td></tr>
-      <tr><td>1</td><td>100,000</td><td>0.128</td><td>135.8178</td><td>102.9913</td><td>—</td></tr>
-      <tr><td>2</td><td>10</td><td>0.116</td><td>0.3882</td><td>0.4562</td><td>0.877</td></tr>
-      <tr><td>2</td><td>100</td><td>0.1335</td><td>0.5327</td><td>0.5865</td><td>1.052</td></tr>
-      <tr><td>2</td><td>1,000</td><td>0.1145</td><td>2.0573</td><td>2.001</td><td>3.083</td></tr>
-      <tr><td>2</td><td>10,000</td><td>0.1135</td><td>28.0365</td><td>16.4437</td><td>21.843</td></tr>
-      <tr><td>2</td><td>100,000</td><td>0.1145</td><td>254.4025</td><td>179.9813</td><td>—</td></tr>
-      <tr><td>3</td><td>10</td><td>0.116</td><td>0.4215</td><td>0.4413</td><td>1.014</td></tr>
-      <tr><td>3</td><td>100</td><td>0.1135</td><td>0.5617</td><td>0.61</td><td>1.2725</td></tr>
-      <tr><td>3</td><td>1,000</td><td>0.1185</td><td>2.3715</td><td>2.4615</td><td>3.4625</td></tr>
-      <tr><td>3</td><td>10,000</td><td>0.122</td><td>36.8228</td><td>20.767</td><td>25.621</td></tr>
-      <tr><td>3</td><td>100,000</td><td>0.1245</td><td>356.0062</td><td>229.1015</td><td>—</td></tr>
+      <tr><td>1</td><td>10</td><td>0.112</td><td>0.475</td><td>0.3735</td><td>0.693</td></tr>
+      <tr><td>1</td><td>100</td><td>0.111</td><td>0.4295</td><td>0.467</td><td>0.764</td></tr>
+      <tr><td>1</td><td>1,000</td><td>0.113</td><td>1.239</td><td>1.278</td><td>1.764</td></tr>
+      <tr><td>1</td><td>10,000</td><td>0.113</td><td>15.9395</td><td>9.391</td><td>10.406</td></tr>
+      <tr><td>1</td><td>100,000</td><td>0.116</td><td>134.379</td><td>102.802</td><td>—</td></tr>
+      <tr><td>1</td><td>1,000,000</td><td>0.124</td><td>1371.1305</td><td>1093.0945</td><td>—</td></tr>
+      <tr><td>2</td><td>10</td><td>0.116</td><td>0.4025</td><td>0.4045</td><td>0.785</td></tr>
+      <tr><td>2</td><td>100</td><td>0.113</td><td>0.5</td><td>0.611</td><td>1.012</td></tr>
+      <tr><td>2</td><td>1,000</td><td>0.115</td><td>2.133</td><td>2.1325</td><td>2.488</td></tr>
+      <tr><td>2</td><td>10,000</td><td>0.117</td><td>27.0435</td><td>16.6415</td><td>17.072</td></tr>
+      <tr><td>2</td><td>100,000</td><td>0.121</td><td>252.2725</td><td>178.629</td><td>—</td></tr>
+      <tr><td>2</td><td>1,000,000</td><td>0.14</td><td>2583.0955</td><td>1873.197</td><td>—</td></tr>
+      <tr><td>3</td><td>10</td><td>0.119</td><td>0.434</td><td>0.4065</td><td>0.891</td></tr>
+      <tr><td>3</td><td>100</td><td>0.112</td><td>0.5735</td><td>0.66</td><td>1.211</td></tr>
+      <tr><td>3</td><td>1,000</td><td>0.121</td><td>2.314</td><td>2.398</td><td>2.942</td></tr>
+      <tr><td>3</td><td>10,000</td><td>0.121</td><td>35.305</td><td>20.633</td><td>20.734</td></tr>
+      <tr><td>3</td><td>100,000</td><td>0.129</td><td>354.079</td><td>225.447</td><td>—</td></tr>
+      <tr><td>3</td><td>1,000,000</td><td>0.188</td><td>3673.461</td><td>2379.7215</td><td>—</td></tr>
     </tbody>
   </table>
 
@@ -88,41 +91,49 @@
     {
       "keys": 1,
       "scale": 10,
-      "idle_poll_ms": 0.207,
-      "per_claim_cold_ms": 0.3923,
-      "per_claim_warm_ms": 0.391,
-      "incremental_ms": 0.697
+      "idle_poll_ms": 0.112,
+      "per_claim_cold_ms": 0.475,
+      "per_claim_warm_ms": 0.3735,
+      "incremental_ms": 0.693
     },
     {
       "keys": 1,
       "scale": 100,
-      "idle_poll_ms": 0.114,
-      "per_claim_cold_ms": 0.437,
-      "per_claim_warm_ms": 0.4788,
-      "incremental_ms": 1.0375
+      "idle_poll_ms": 0.111,
+      "per_claim_cold_ms": 0.4295,
+      "per_claim_warm_ms": 0.467,
+      "incremental_ms": 0.764
     },
     {
       "keys": 1,
       "scale": 1000,
-      "idle_poll_ms": 0.111,
-      "per_claim_cold_ms": 1.2875,
-      "per_claim_warm_ms": 1.3205,
-      "incremental_ms": 2.5875
+      "idle_poll_ms": 0.113,
+      "per_claim_cold_ms": 1.239,
+      "per_claim_warm_ms": 1.278,
+      "incremental_ms": 1.764
     },
     {
       "keys": 1,
       "scale": 10000,
-      "idle_poll_ms": 0.1235,
-      "per_claim_cold_ms": 17.433,
-      "per_claim_warm_ms": 9.632,
-      "incremental_ms": 14.661
+      "idle_poll_ms": 0.113,
+      "per_claim_cold_ms": 15.9395,
+      "per_claim_warm_ms": 9.391,
+      "incremental_ms": 10.406
     },
     {
       "keys": 1,
       "scale": 100000,
-      "idle_poll_ms": 0.128,
-      "per_claim_cold_ms": 135.8178,
-      "per_claim_warm_ms": 102.9913,
+      "idle_poll_ms": 0.116,
+      "per_claim_cold_ms": 134.379,
+      "per_claim_warm_ms": 102.802,
+      "incremental_ms": null
+    },
+    {
+      "keys": 1,
+      "scale": 1000000,
+      "idle_poll_ms": 0.124,
+      "per_claim_cold_ms": 1371.1305,
+      "per_claim_warm_ms": 1093.0945,
       "incremental_ms": null
     }
   ],
@@ -131,40 +142,48 @@
       "keys": 2,
       "scale": 10,
       "idle_poll_ms": 0.116,
-      "per_claim_cold_ms": 0.3882,
-      "per_claim_warm_ms": 0.4562,
-      "incremental_ms": 0.877
+      "per_claim_cold_ms": 0.4025,
+      "per_claim_warm_ms": 0.4045,
+      "incremental_ms": 0.785
     },
     {
       "keys": 2,
       "scale": 100,
-      "idle_poll_ms": 0.1335,
-      "per_claim_cold_ms": 0.5327,
-      "per_claim_warm_ms": 0.5865,
-      "incremental_ms": 1.052
+      "idle_poll_ms": 0.113,
+      "per_claim_cold_ms": 0.5,
+      "per_claim_warm_ms": 0.611,
+      "incremental_ms": 1.012
     },
     {
       "keys": 2,
       "scale": 1000,
-      "idle_poll_ms": 0.1145,
-      "per_claim_cold_ms": 2.0573,
-      "per_claim_warm_ms": 2.001,
-      "incremental_ms": 3.083
+      "idle_poll_ms": 0.115,
+      "per_claim_cold_ms": 2.133,
+      "per_claim_warm_ms": 2.1325,
+      "incremental_ms": 2.488
     },
     {
       "keys": 2,
       "scale": 10000,
-      "idle_poll_ms": 0.1135,
-      "per_claim_cold_ms": 28.0365,
-      "per_claim_warm_ms": 16.4437,
-      "incremental_ms": 21.843
+      "idle_poll_ms": 0.117,
+      "per_claim_cold_ms": 27.0435,
+      "per_claim_warm_ms": 16.6415,
+      "incremental_ms": 17.072
     },
     {
       "keys": 2,
       "scale": 100000,
-      "idle_poll_ms": 0.1145,
-      "per_claim_cold_ms": 254.4025,
-      "per_claim_warm_ms": 179.9813,
+      "idle_poll_ms": 0.121,
+      "per_claim_cold_ms": 252.2725,
+      "per_claim_warm_ms": 178.629,
+      "incremental_ms": null
+    },
+    {
+      "keys": 2,
+      "scale": 1000000,
+      "idle_poll_ms": 0.14,
+      "per_claim_cold_ms": 2583.0955,
+      "per_claim_warm_ms": 1873.197,
       "incremental_ms": null
     }
   ],
@@ -172,41 +191,49 @@
     {
       "keys": 3,
       "scale": 10,
-      "idle_poll_ms": 0.116,
-      "per_claim_cold_ms": 0.4215,
-      "per_claim_warm_ms": 0.4413,
-      "incremental_ms": 1.014
+      "idle_poll_ms": 0.119,
+      "per_claim_cold_ms": 0.434,
+      "per_claim_warm_ms": 0.4065,
+      "incremental_ms": 0.891
     },
     {
       "keys": 3,
       "scale": 100,
-      "idle_poll_ms": 0.1135,
-      "per_claim_cold_ms": 0.5617,
-      "per_claim_warm_ms": 0.61,
-      "incremental_ms": 1.2725
+      "idle_poll_ms": 0.112,
+      "per_claim_cold_ms": 0.5735,
+      "per_claim_warm_ms": 0.66,
+      "incremental_ms": 1.211
     },
     {
       "keys": 3,
       "scale": 1000,
-      "idle_poll_ms": 0.1185,
-      "per_claim_cold_ms": 2.3715,
-      "per_claim_warm_ms": 2.4615,
-      "incremental_ms": 3.4625
+      "idle_poll_ms": 0.121,
+      "per_claim_cold_ms": 2.314,
+      "per_claim_warm_ms": 2.398,
+      "incremental_ms": 2.942
     },
     {
       "keys": 3,
       "scale": 10000,
-      "idle_poll_ms": 0.122,
-      "per_claim_cold_ms": 36.8228,
-      "per_claim_warm_ms": 20.767,
-      "incremental_ms": 25.621
+      "idle_poll_ms": 0.121,
+      "per_claim_cold_ms": 35.305,
+      "per_claim_warm_ms": 20.633,
+      "incremental_ms": 20.734
     },
     {
       "keys": 3,
       "scale": 100000,
-      "idle_poll_ms": 0.1245,
-      "per_claim_cold_ms": 356.0062,
-      "per_claim_warm_ms": 229.1015,
+      "idle_poll_ms": 0.129,
+      "per_claim_cold_ms": 354.079,
+      "per_claim_warm_ms": 225.447,
+      "incremental_ms": null
+    },
+    {
+      "keys": 3,
+      "scale": 1000000,
+      "idle_poll_ms": 0.188,
+      "per_claim_cold_ms": 3673.461,
+      "per_claim_warm_ms": 2379.7215,
       "incremental_ms": null
     }
   ]

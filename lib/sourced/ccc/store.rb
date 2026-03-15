@@ -844,22 +844,11 @@ module Sourced
 
         rows = db.fetch(sql).all
 
-        # Load known partition_keys for this consumer group to skip duplicates
-        known_keys = db[@offsets_table]
-          .where(consumer_group_id: cg_id)
-          .select_map(:partition_key)
-          .to_set
-
         max_discovered_pos = 0
-        new_rows = rows.reject do |row|
-          values = {}
-          partition_by.each_with_index { |attr, i| values[attr] = row[:"val_#{i}"] }
-          known_keys.include?(build_partition_key(partition_by, values))
-        end
 
-        if new_rows.any?
+        if rows.any?
           db.transaction do
-            new_rows.each do |row|
+            rows.each do |row|
               values = {}
               kp_ids = []
               partition_by.each_with_index do |attr, i|
@@ -867,6 +856,9 @@ module Sourced
                 kp_ids << row[:"kp_id_#{i}"]
               end
 
+              # INSERT OR IGNORE handles duplicates — no need to pre-filter.
+              # At most DISCOVERY_BATCH_SIZE (100) tuples per call, so the
+              # cost of re-attempting known offsets is bounded.
               create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids)
               max_discovered_pos = row[:max_pos] if row[:max_pos] > max_discovered_pos
             end
