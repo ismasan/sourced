@@ -911,37 +911,38 @@ module Sourced
       def find_and_claim_partition(cg_id, handled_types, worker_id)
         types_list = handled_types.map { |t| db.literal(t) }.join(', ')
 
-        # Uses count-matching for AND semantics: a message is a candidate only
-        # when ALL of the offset's key_pairs appear in message_key_pairs for
-        # that message. This avoids the expensive NOT EXISTS + 4-table subquery
-        # and short-circuits immediately when any key_pair has no match.
-        sql = <<~SQL
-          SELECT o.id AS offset_id, o.partition_key, o.last_position,
-                 MIN(m.position) AS next_position
-          FROM #{@offsets_table} o
-          CROSS JOIN #{@messages_table} m
-          WHERE o.consumer_group_id = #{db.literal(cg_id)}
-            AND o.claimed = 0
-            AND m.position > o.last_position
-            AND m.message_type IN (#{types_list})
-            AND (
-              SELECT COUNT(*)
-              FROM #{@offset_key_pairs_table} okp
-              JOIN #{@message_key_pairs_table} mkp
-                ON mkp.key_pair_id = okp.key_pair_id
-                AND mkp.message_position = m.position
-              WHERE okp.offset_id = o.id
-            ) = (
-              SELECT COUNT(*)
-              FROM #{@offset_key_pairs_table}
-              WHERE offset_id = o.id
-            )
-          GROUP BY o.id
-          ORDER BY next_position ASC
-          LIMIT 1
-        SQL
+        # Iterate unclaimed offsets ordered by last_position (lowest = most behind).
+        # For each, check if a pending message exists with AND semantics.
+        # Stops at the first match. Uses Sequel's streaming `.each` — rows are
+        # fetched from the SQLite cursor one at a time, not loaded into memory.
+        row = nil
+        db[@offsets_table]
+          .where(consumer_group_id: cg_id, claimed: 0)
+          .select(:id, :partition_key, :last_position)
+          .order(:last_position)
+          .each do |offset|
 
-        row = db.fetch(sql).first
+          pending = db.fetch(<<~SQL).first
+            SELECT 1
+            FROM #{@offset_key_pairs_table} okp
+            JOIN #{@message_key_pairs_table} mkp ON okp.key_pair_id = mkp.key_pair_id
+            JOIN #{@messages_table} m ON mkp.message_position = m.position
+            WHERE okp.offset_id = #{db.literal(offset[:id])}
+              AND m.position > #{db.literal(offset[:last_position])}
+              AND m.message_type IN (#{types_list})
+            GROUP BY m.position
+            HAVING COUNT(*) = (
+              SELECT COUNT(*) FROM #{@offset_key_pairs_table} WHERE offset_id = #{db.literal(offset[:id])}
+            )
+            LIMIT 1
+          SQL
+
+          if pending
+            row = { offset_id: offset[:id], partition_key: offset[:partition_key], last_position: offset[:last_position] }
+            break
+          end
+        end
+
         return nil unless row
 
         now = Time.now.iso8601
@@ -951,7 +952,7 @@ module Sourced
 
         return nil if updated == 0
 
-        { offset_id: row[:offset_id], partition_key: row[:partition_key], last_position: row[:last_position] }
+        row
       end
 
       # Fetch messages for a partition using conditional AND semantics.
