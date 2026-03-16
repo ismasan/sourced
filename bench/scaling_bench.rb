@@ -130,14 +130,18 @@ end
 # Simpler caught_up seeding: parse partition_key to match key_pairs
 # For the bulk offset_key_pairs insert, extract the value from partition_key
 # which has format "k0:v123" or "k0:v123|k1:v123"
-def seed_caught_up_fast(count, key_count)
+def seed_caught_up_fast(count, key_count, eager: false)
   db = Sequel.sqlite
   db.run('PRAGMA cache_size = -64000')
   db.run('PRAGMA synchronous = OFF')
   db.run('PRAGMA journal_mode = MEMORY')
   store = Sourced::CCC::Store.new(db)
   store.install!
-  store.register_consumer_group(GROUP_ID)
+  if eager
+    store.register_consumer_group(GROUP_ID, partition_by: partition_keys(key_count))
+  else
+    store.register_consumer_group(GROUP_ID)
+  end
 
   cg_id = db[:sourced_consumer_groups].where(group_id: GROUP_ID).get(:id)
   now = Time.now.iso8601
@@ -295,6 +299,42 @@ options[:keys].each do |key_count|
       row[:incremental_ms] = nil
     end
 
+    # --- 5. Eager warm claim (offsets created by append, no discovery) ---
+    $stderr.print " [eager-warm"
+    eager_warm_times = []
+    iters.times do
+      _db, store = seed_caught_up_fast(scale, key_count, eager: true)
+      msgs = (0...sample).map { |i| BenchEvent.new(payload: { k0: "v#{i}", k1: "v#{i}", k2: "v#{i}", k3: "v#{i}" }) }
+      store.append(msgs)
+
+      times = []
+      sample.times do
+        t, r = measure { claim_once(store, key_count) }
+        break unless r
+        store.ack(GROUP_ID, offset_id: r.offset_id, position: r.messages.last.position)
+        times << t
+      end
+      eager_warm_times << median(times) if times.any?
+    end
+    row[:eager_warm_ms] = eager_warm_times.any? ? (median(eager_warm_times) * 1000).round(4) : 0
+    $stderr.print "=#{row[:eager_warm_ms]}ms]"
+
+    # --- 6. Eager incremental (1 new partition, offset created by append) ---
+    if scale <= INCR_MAX_SCALE
+      $stderr.print " [eager-incr"
+      eager_incr_times = []
+      iters.times do
+        _db, store = seed_caught_up_fast(scale, key_count, eager: true)
+        store.append(BenchEvent.new(payload: { k0: 'vnew', k1: 'vnew', k2: 'vnew', k3: 'vnew' }))
+        t, _ = measure { claim_once(store, key_count) }
+        eager_incr_times << t
+      end
+      row[:eager_incremental_ms] = (median(eager_incr_times) * 1000).round(4)
+      $stderr.print "=#{row[:eager_incremental_ms]}ms]"
+    else
+      row[:eager_incremental_ms] = nil
+    end
+
     results << row
   end
 end
@@ -302,10 +342,11 @@ end
 # --- CSV output ------------------------------------------------------------
 
 $stderr.puts "\n"
-puts "keys,scale,idle_poll_ms,per_claim_cold_ms,per_claim_warm_ms,incremental_ms"
+puts "keys,scale,idle_poll_ms,per_claim_cold_ms,per_claim_warm_ms,incremental_ms,eager_warm_ms,eager_incremental_ms"
 results.each do |r|
   incr = r[:incremental_ms] ? r[:incremental_ms].to_s : ''
-  puts "#{r[:keys]},#{r[:scale]},#{r[:idle_poll_ms]},#{r[:per_claim_cold_ms]},#{r[:per_claim_warm_ms]},#{incr}"
+  eager_incr = r[:eager_incremental_ms] ? r[:eager_incremental_ms].to_s : ''
+  puts "#{r[:keys]},#{r[:scale]},#{r[:idle_poll_ms]},#{r[:per_claim_cold_ms]},#{r[:per_claim_warm_ms]},#{incr},#{r[:eager_warm_ms]},#{eager_incr}"
 end
 
 # --- HTML chart output -----------------------------------------------------
@@ -367,9 +408,15 @@ html = <<~HTML
     </div>
     <div class="chart-container">
       <p class="desc"><strong>Warm Claim</strong> &mdash; All partitions have existing offsets (previously caught up),
-      then new messages arrive for some partitions. No discovery needed &mdash; offsets already exist.
+      then new messages arrive for some partitions. Legacy path runs discovery to advance watermark.
       This is the steady-state cost when the notifier or catch-up poller triggers processing.</p>
       <canvas id="warmClaim"></canvas>
+    </div>
+    <div class="chart-container">
+      <p class="desc"><strong>Eager Warm Claim</strong> &mdash; Same as Warm Claim, but with <code>partition_by</code>
+      registered. Offsets are created during <code>append</code>, so <code>claim_next</code> goes straight
+      to the fast path &mdash; no discovery CTE needed.</p>
+      <canvas id="eagerWarm"></canvas>
     </div>
     <div class="chart-container">
       <p class="desc"><strong>Incremental Discovery</strong> &mdash; All existing partitions are caught up.
@@ -378,18 +425,26 @@ html = <<~HTML
       Skipped for scales &gt; #{fmt_scale(INCR_MAX_SCALE)} due to prohibitive NOT EXISTS cost.</p>
       <canvas id="incremental"></canvas>
     </div>
+    <div class="chart-container">
+      <p class="desc"><strong>Eager Incremental</strong> &mdash; Same scenario as Incremental, but with eager offset
+      creation. The offset is created during <code>append</code>, so <code>claim_next</code> finds it
+      on the fast path without running the discovery CTE.
+      Skipped for scales &gt; #{fmt_scale(INCR_MAX_SCALE)}.</p>
+      <canvas id="eagerIncremental"></canvas>
+    </div>
   </div>
 
   <h2>Raw Data</h2>
   <table>
     <thead>
-      <tr><th>Keys</th><th>Partitions</th><th>Idle Poll (ms)</th><th>Cold /claim (ms)</th><th>Warm /claim (ms)</th><th>Incremental (ms)</th></tr>
+      <tr><th>Keys</th><th>Partitions</th><th>Idle Poll (ms)</th><th>Cold /claim (ms)</th><th>Warm (ms)</th><th>Eager Warm (ms)</th><th>Incr (ms)</th><th>Eager Incr (ms)</th></tr>
     </thead>
     <tbody>
       #{results.map { |r|
         scale_fmt = r[:scale].to_s.reverse.gsub(/(\d{3})(?=\d)/, '\\1,').reverse
         incr_fmt = r[:incremental_ms] ? r[:incremental_ms].to_s : '—'
-        "<tr><td>#{r[:keys]}</td><td>#{scale_fmt}</td><td>#{r[:idle_poll_ms]}</td><td>#{r[:per_claim_cold_ms]}</td><td>#{r[:per_claim_warm_ms]}</td><td>#{incr_fmt}</td></tr>"
+        eager_incr_fmt = r[:eager_incremental_ms] ? r[:eager_incremental_ms].to_s : '—'
+        "<tr><td>#{r[:keys]}</td><td>#{scale_fmt}</td><td>#{r[:idle_poll_ms]}</td><td>#{r[:per_claim_cold_ms]}</td><td>#{r[:per_claim_warm_ms]}</td><td>#{r[:eager_warm_ms]}</td><td>#{incr_fmt}</td><td>#{eager_incr_fmt}</td></tr>"
       }.join("\n      ")}
     </tbody>
   </table>
@@ -444,8 +499,10 @@ html = <<~HTML
 
     makeChart('idlePoll', 'Idle Poll (all caught up, no work)', 'idle_poll_ms', 'ms');
     makeChart('coldDrain', 'Cold Drain (per-claim cost, sampled)', 'per_claim_cold_ms', 'ms / claim');
-    makeChart('warmClaim', 'Warm Claim (per-claim cost, sampled)', 'per_claim_warm_ms', 'ms / claim');
-    makeChart('incremental', 'Incremental Discovery (1 new partition)', 'incremental_ms', 'ms');
+    makeChart('warmClaim', 'Warm Claim — legacy (per-claim cost)', 'per_claim_warm_ms', 'ms / claim');
+    makeChart('eagerWarm', 'Eager Warm Claim (per-claim cost)', 'eager_warm_ms', 'ms / claim');
+    makeChart('incremental', 'Incremental Discovery — legacy (1 new partition)', 'incremental_ms', 'ms');
+    makeChart('eagerIncremental', 'Eager Incremental (1 new partition)', 'eager_incremental_ms', 'ms');
   </script>
 </body>
 </html>
