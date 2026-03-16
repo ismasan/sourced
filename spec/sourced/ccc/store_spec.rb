@@ -1354,6 +1354,36 @@ RSpec.describe Sourced::CCC::Store do
       expect(claimed_partitions).to contain_exactly('device_id:dev-1', 'device_id:dev-2', 'device_id:dev-3')
     end
 
+    it 'does not short-circuit remaining partitions after acking the one at max position' do
+      # Regression: highest_position short-circuit skipped unprocessed partitions
+      # when one partition's last message happened to be at types_max_pos.
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-3', name: 'C' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-4', name: 'D' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-5', name: 'E' })
+      ])
+
+      new_group = 'multi-catch-up'
+      store.register_consumer_group(new_group)
+
+      claimed_partitions = []
+      10.times do
+        r = store.claim_next(new_group, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+        break unless r
+
+        claimed_partitions << r.partition_key
+        store.ack(new_group, offset_id: r.offset_id, position: r.messages.last.position)
+      end
+
+      expect(claimed_partitions.size).to eq(5)
+      expect(claimed_partitions).to contain_exactly(
+        'device_id:dev-1', 'device_id:dev-2', 'device_id:dev-3',
+        'device_id:dev-4', 'device_id:dev-5'
+      )
+    end
+
     it 'only discovers partitions matching handled_types' do
       store.append([
         CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
@@ -1999,6 +2029,177 @@ RSpec.describe Sourced::CCC::Store do
 
       expect(r2.offset_id).to eq(r1.offset_id)
       expect(r2.messages.map(&:position)).to eq(r1.messages.map(&:position))
+    end
+  end
+
+  describe 'eager offset creation' do
+    let(:group_id) { 'eager-test-group' }
+
+    it 'creates offsets during append when partition_by is registered' do
+      store.register_consumer_group(group_id, partition_by: [:device_id])
+
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      offsets = db[:sourced_offsets].all
+      expect(offsets.size).to eq(1)
+      expect(offsets.first[:partition_key]).to eq('device_id:dev-1')
+    end
+
+    it 'creates offsets for multiple partitions in a single append' do
+      store.register_consumer_group(group_id, partition_by: [:device_id])
+
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
+      ])
+
+      offsets = db[:sourced_offsets].order(:partition_key).all
+      expect(offsets.size).to eq(2)
+      expect(offsets.map { |o| o[:partition_key] }).to eq(['device_id:dev-1', 'device_id:dev-2'])
+    end
+
+    it 'deduplicates offsets within the same append batch' do
+      store.register_consumer_group(group_id, partition_by: [:device_id])
+
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
+      ])
+
+      offsets = db[:sourced_offsets].all
+      expect(offsets.size).to eq(1)
+    end
+
+    it 'is idempotent across multiple appends' do
+      store.register_consumer_group(group_id, partition_by: [:device_id])
+
+      store.append(CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+      store.append(CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }))
+
+      offsets = db[:sourced_offsets].all
+      expect(offsets.size).to eq(1)
+    end
+
+    it 'skips messages missing partition attributes' do
+      store.register_consumer_group(group_id, partition_by: [:device_id])
+
+      # AssetRegistered has no device_id
+      store.append(CCCStoreTestMessages::AssetRegistered.new(payload: { asset_id: 'a-1', label: 'X' }))
+
+      offsets = db[:sourced_offsets].all
+      expect(offsets).to be_empty
+    end
+
+    it 'creates offsets for composite partitions' do
+      store.register_consumer_group(group_id, partition_by: [:course_name, :user_id])
+
+      store.append(
+        CCCStoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
+      )
+
+      offsets = db[:sourced_offsets].all
+      expect(offsets.size).to eq(1)
+      expect(offsets.first[:partition_key]).to eq('course_name:Algebra|user_id:joe')
+    end
+
+    it 'skips messages with only partial composite partition attributes' do
+      store.register_consumer_group(group_id, partition_by: [:course_name, :user_id])
+
+      # CourseCreated only has course_name, not user_id
+      store.append(CCCStoreTestMessages::CourseCreated.new(payload: { course_name: 'Algebra' }))
+
+      offsets = db[:sourced_offsets].all
+      expect(offsets).to be_empty
+    end
+
+    it 'does not create offsets when no consumer groups are registered' do
+      # No register_consumer_group call
+      store.append(CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+
+      offsets = db[:sourced_offsets].all
+      expect(offsets).to be_empty
+    end
+
+    it 'does not create offsets when partition_by is nil (legacy group)' do
+      store.register_consumer_group(group_id) # no partition_by
+
+      store.append(CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+
+      offsets = db[:sourced_offsets].all
+      expect(offsets).to be_empty
+    end
+
+    it 'creates offsets for multiple registered consumer groups' do
+      store.register_consumer_group('group-a', partition_by: [:device_id])
+      store.register_consumer_group('group-b', partition_by: [:device_id])
+
+      store.append(CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+
+      cg_a = db[:sourced_consumer_groups].where(group_id: 'group-a').first
+      cg_b = db[:sourced_consumer_groups].where(group_id: 'group-b').first
+
+      offsets_a = db[:sourced_offsets].where(consumer_group_id: cg_a[:id]).all
+      offsets_b = db[:sourced_offsets].where(consumer_group_id: cg_b[:id]).all
+
+      expect(offsets_a.size).to eq(1)
+      expect(offsets_b.size).to eq(1)
+    end
+
+    it 'persists partition_by in consumer_groups table' do
+      store.register_consumer_group(group_id, partition_by: [:device_id, :name])
+
+      row = db[:sourced_consumer_groups].where(group_id: group_id).first
+      expect(JSON.parse(row[:partition_by])).to eq(['device_id', 'name'])
+    end
+
+    it 'updates partition_by on re-registration' do
+      store.register_consumer_group(group_id, partition_by: [:device_id])
+      store.register_consumer_group(group_id, partition_by: [:asset_id])
+
+      row = db[:sourced_consumer_groups].where(group_id: group_id).first
+      expect(JSON.parse(row[:partition_by])).to eq(['asset_id'])
+    end
+
+    it 'claim_next skips discovery when offsets already exist from append' do
+      store.register_consumer_group(group_id, partition_by: [:device_id])
+
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      # Offsets already exist from append — claim should work without discovery
+      result = store.claim_next(
+        group_id,
+        partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'],
+        worker_id: 'w-1'
+      )
+
+      expect(result).not_to be_nil
+      expect(result.messages.size).to eq(1)
+      expect(result.partition_value).to eq({ 'device_id' => 'dev-1' })
+    end
+
+    it 'claim_next falls back to discovery for pre-existing messages' do
+      # Append BEFORE registering — no eager offsets
+      store.append(
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      store.register_consumer_group(group_id, partition_by: [:device_id])
+
+      # claim_next should still find the message via discovery fallback
+      result = store.claim_next(
+        group_id,
+        partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'],
+        worker_id: 'w-1'
+      )
+
+      expect(result).not_to be_nil
+      expect(result.messages.size).to eq(1)
     end
   end
 end

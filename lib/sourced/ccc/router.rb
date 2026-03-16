@@ -15,7 +15,10 @@ module Sourced
 
       def register(reactor_class)
         @reactors << reactor_class
-        store.register_consumer_group(reactor_class.group_id)
+        store.register_consumer_group(
+          reactor_class.group_id,
+          partition_by: reactor_class.partition_keys.map(&:to_s)
+        )
         @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
       end
 

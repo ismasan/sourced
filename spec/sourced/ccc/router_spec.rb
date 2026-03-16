@@ -130,6 +130,13 @@ RSpec.describe Sourced::CCC::Router do
       expect(router.instance_variable_get(:@needs_history)[RouterTestDecider]).to be true
       expect(router.instance_variable_get(:@needs_history)[RouterTestProjector]).to be false
     end
+
+    it 'passes partition_keys to register_consumer_group' do
+      router.register(RouterTestDecider)
+
+      row = db[:sourced_consumer_groups].where(group_id: 'router-test-decider').first
+      expect(JSON.parse(row[:partition_by])).to eq(['device_id'])
+    end
   end
 
   describe '#handle_next_for' do

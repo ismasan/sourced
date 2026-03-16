@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'set'
 require 'sourced/inline_notifier'
 require 'sourced/ccc/installer'
 
@@ -104,6 +105,11 @@ module Sourced
         @offsets_table           = @installer.offsets_table
         @offset_key_pairs_table  = @installer.offset_key_pairs_table
         @workers_table           = @installer.workers_table
+
+        # Cache of registered consumer groups for eager offset creation in append.
+        # Populated by register_consumer_group.
+        # { group_id => { cg_id: Integer, partition_by: Array<String> | nil } }
+        @registered_groups = {}
       end
 
       # Whether all required tables exist.
@@ -180,6 +186,8 @@ module Sourced
               SQL
             end
           end
+
+          ensure_offsets_for_registered_groups(messages)
         end
 
         Console.info "AAA append #{messages.map(&:type).uniq}", messages: messages.size
@@ -381,15 +389,25 @@ module Sourced
       end
 
       # Register a consumer group. Idempotent.
+      # When +partition_by+ is provided, offsets are created eagerly during {#append}
+      # instead of lazily via discovery in {#claim_next}.
       #
       # @param group_id [String] unique identifier for the consumer group
+      # @param partition_by [Array<String, Symbol>, nil] attribute names defining partitions
       # @return [void]
-      def register_consumer_group(group_id)
+      def register_consumer_group(group_id, partition_by: nil)
+        partition_by_sorted = partition_by ? Array(partition_by).map(&:to_s).sort : nil
+        partition_by_json = partition_by_sorted ? JSON.dump(partition_by_sorted) : nil
         now = Time.now.iso8601
         db.run(<<~SQL)
-          INSERT OR IGNORE INTO #{@consumer_groups_table} (group_id, status, highest_position, created_at, updated_at)
-          VALUES (#{db.literal(group_id)}, '#{ACTIVE}', 0, #{db.literal(now)}, #{db.literal(now)})
+          INSERT INTO #{@consumer_groups_table} (group_id, status, highest_position, partition_by, created_at, updated_at)
+          VALUES (#{db.literal(group_id)}, '#{ACTIVE}', 0, #{db.literal(partition_by_json)}, #{db.literal(now)}, #{db.literal(now)})
+          ON CONFLICT(group_id) DO UPDATE SET partition_by = #{db.literal(partition_by_json)}, updated_at = #{db.literal(now)}
         SQL
+
+        # Cache for hot-path use in append
+        cg = db[@consumer_groups_table].where(group_id: group_id).first
+        @registered_groups[group_id] = { cg_id: cg[:id], partition_by: partition_by_sorted }
       end
 
       # Whether the consumer group exists and is active.
@@ -498,28 +516,37 @@ module Sourced
         return nil unless cg
 
         # Short-circuit: check the latest message position for handled types.
-        # If at or below highest_position and offsets exist, all work is done.
+        # If the least-progressed offset is past types_max_pos, all work is done.
         types_max_pos = db[@messages_table]
           .where(message_type: handled_types)
           .max(:position) || 0
 
         has_offsets = db[@offsets_table].where(consumer_group_id: cg[:id]).limit(1).any?
-        return nil if has_offsets && types_max_pos <= cg[:highest_position]
+        min_offset_pos = db[@offsets_table]
+          .where(consumer_group_id: cg[:id])
+          .min(:last_position)
+        return nil if min_offset_pos && min_offset_pos >= types_max_pos
 
-        # Phase 1: Fast path — try existing offsets.
-        # Only worth scanning if discovery has already covered all messages
-        # (discovery_position >= types_max_pos). Otherwise new messages may
-        # belong to undiscovered partitions, and scanning caught-up offsets
-        # to confirm "no work" is O(offsets) wasted queries.
         claimed = nil
-        if has_offsets && types_max_pos <= cg[:discovery_position]
-          claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
-        end
+        group_info = @registered_groups[group_id]
 
-        # Phase 2: Discovery — scan forward from watermark, create new offsets
-        unless claimed
-          discover_new_partitions(cg[:id], partition_by, handled_types)
+        if group_info&.fetch(:partition_by, nil)
+          # Eager path: offsets were created by append. Try fast claim first,
+          # fall back to discovery only for catch-up (new group against existing log).
           claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+          unless claimed
+            discover_new_partitions(cg[:id], partition_by, handled_types)
+            claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+          end
+        else
+          # Legacy path: lazy discovery
+          if has_offsets && types_max_pos <= cg[:discovery_position]
+            claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+          end
+          unless claimed
+            discover_new_partitions(cg[:id], partition_by, handled_types)
+            claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+          end
         end
 
         return nil unless claimed
@@ -781,6 +808,38 @@ module Sourced
       # @return [String]
       def resolve_group_id(group_id)
         group_id.respond_to?(:group_id) ? group_id.group_id : group_id
+      end
+
+      # Create offsets eagerly for all registered consumer groups.
+      # Called inside the append transaction after messages and key_pairs are inserted.
+      #
+      # @param messages [Array<CCC::Message>] messages being appended
+      # @return [void]
+      def ensure_offsets_for_registered_groups(messages)
+        return if @registered_groups.empty?
+
+        @registered_groups.each_value do |group_info|
+          partition_by = group_info[:partition_by]
+          next unless partition_by
+
+          cg_id = group_info[:cg_id]
+          seen = Set.new
+
+          messages.each do |msg|
+            keys = msg.extracted_keys.to_h  # {"device_id"=>"dev-1", "name"=>"A"}
+            next unless partition_by.all? { |attr| keys.key?(attr) }
+
+            values = partition_by.to_h { |attr| [attr, keys[attr]] }
+            pk = build_partition_key(partition_by, values)
+            next if seen.include?(pk)
+            seen << pk
+
+            kp_ids = partition_by.map { |attr|
+              db[@key_pairs_table].where(name: attr, value: values[attr]).get(:id)
+            }
+            create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids)
+          end
+        end
       end
 
       # Build canonical partition key string from attribute names and values.
