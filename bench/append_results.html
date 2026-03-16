@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CCC::Store#append — Benchmark</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; background: #fafafa; }
+    h1 { font-size: 1.3em; color: #333; }
+    h2 { font-size: 1.1em; color: #555; margin-top: 2em; }
+    .chart-container { background: white; border-radius: 8px; padding: 20px; margin: 16px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .chart-container p.desc { color: #666; font-size: 0.85em; margin: 0 0 12px 0; line-height: 1.5; }
+    .chart-container p.desc strong { color: #444; }
+    canvas { max-height: 400px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+    .meta { color: #888; font-size: 0.85em; margin-bottom: 20px; }
+    table { border-collapse: collapse; width: 100%; margin: 16px 0; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    th, td { padding: 8px 12px; text-align: right; border-bottom: 1px solid #eee; font-variant-numeric: tabular-nums; }
+    th { background: #f5f5f5; font-weight: 600; color: #555; }
+    td:first-child, th:first-child { text-align: left; }
+  </style>
+</head>
+<body>
+  <h1>CCC::Store#append &mdash; Benchmark</h1>
+  <p class="meta">
+    Generated 2026-03-16 10:19 &middot;
+    Keys: 1, 2, 3 &middot;
+    Batch sizes: 1, 10, 50, 100 &middot;
+    Pre-existing: 0, 1K, 10K &middot;
+    Iterations: 5
+  </p>
+
+  <div class="grid">
+    <div class="chart-container">
+      <p class="desc"><strong>Total append time</strong> &mdash; Wall-clock time for a single
+      <code>store.append(messages)</code> call. Includes message insertion, key_pair
+      extraction/dedup, and message_key_pairs indexing. Varies with batch size
+      and number of payload attributes (keys).</p>
+      <canvas id="totalTime"></canvas>
+    </div>
+    <div class="chart-container">
+      <p class="desc"><strong>Per-message cost</strong> &mdash; Total time divided by message count.
+      Shows the marginal cost of each additional message in the batch. Should be
+      roughly constant if append scales linearly with batch size.</p>
+      <canvas id="perMsg"></canvas>
+    </div>
+  </div>
+
+  <h2>Raw Data</h2>
+  <table>
+    <thead>
+      <tr><th>Keys</th><th>Pre-existing</th><th>Batch size</th><th>Total (ms)</th><th>Per-msg (ms)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>1</td><td>0</td><td>1</td><td>0.19</td><td>0.19</td></tr>
+      <tr><td>1</td><td>0</td><td>10</td><td>1.071</td><td>0.107</td></tr>
+      <tr><td>1</td><td>0</td><td>50</td><td>5.358</td><td>0.107</td></tr>
+      <tr><td>1</td><td>0</td><td>100</td><td>10.092</td><td>0.101</td></tr>
+      <tr><td>1</td><td>1,000</td><td>1</td><td>0.194</td><td>0.194</td></tr>
+      <tr><td>1</td><td>1,000</td><td>10</td><td>1.181</td><td>0.118</td></tr>
+      <tr><td>1</td><td>1,000</td><td>50</td><td>5.671</td><td>0.113</td></tr>
+      <tr><td>1</td><td>1,000</td><td>100</td><td>11.196</td><td>0.112</td></tr>
+      <tr><td>1</td><td>10,000</td><td>1</td><td>0.268</td><td>0.268</td></tr>
+      <tr><td>1</td><td>10,000</td><td>10</td><td>1.202</td><td>0.12</td></tr>
+      <tr><td>1</td><td>10,000</td><td>50</td><td>5.286</td><td>0.106</td></tr>
+      <tr><td>1</td><td>10,000</td><td>100</td><td>10.178</td><td>0.102</td></tr>
+      <tr><td>2</td><td>0</td><td>1</td><td>0.221</td><td>0.221</td></tr>
+      <tr><td>2</td><td>0</td><td>10</td><td>1.547</td><td>0.155</td></tr>
+      <tr><td>2</td><td>0</td><td>50</td><td>7.308</td><td>0.146</td></tr>
+      <tr><td>2</td><td>0</td><td>100</td><td>15.648</td><td>0.156</td></tr>
+      <tr><td>2</td><td>1,000</td><td>1</td><td>0.227</td><td>0.227</td></tr>
+      <tr><td>2</td><td>1,000</td><td>10</td><td>1.651</td><td>0.165</td></tr>
+      <tr><td>2</td><td>1,000</td><td>50</td><td>7.607</td><td>0.152</td></tr>
+      <tr><td>2</td><td>1,000</td><td>100</td><td>15.364</td><td>0.154</td></tr>
+      <tr><td>2</td><td>10,000</td><td>1</td><td>0.367</td><td>0.367</td></tr>
+      <tr><td>2</td><td>10,000</td><td>10</td><td>1.726</td><td>0.173</td></tr>
+      <tr><td>2</td><td>10,000</td><td>50</td><td>7.376</td><td>0.148</td></tr>
+      <tr><td>2</td><td>10,000</td><td>100</td><td>15.378</td><td>0.154</td></tr>
+      <tr><td>3</td><td>0</td><td>1</td><td>0.259</td><td>0.259</td></tr>
+      <tr><td>3</td><td>0</td><td>10</td><td>2.061</td><td>0.206</td></tr>
+      <tr><td>3</td><td>0</td><td>50</td><td>9.943</td><td>0.199</td></tr>
+      <tr><td>3</td><td>0</td><td>100</td><td>20.003</td><td>0.2</td></tr>
+      <tr><td>3</td><td>1,000</td><td>1</td><td>0.269</td><td>0.269</td></tr>
+      <tr><td>3</td><td>1,000</td><td>10</td><td>2.153</td><td>0.215</td></tr>
+      <tr><td>3</td><td>1,000</td><td>50</td><td>10.421</td><td>0.208</td></tr>
+      <tr><td>3</td><td>1,000</td><td>100</td><td>19.97</td><td>0.2</td></tr>
+      <tr><td>3</td><td>10,000</td><td>1</td><td>0.398</td><td>0.398</td></tr>
+      <tr><td>3</td><td>10,000</td><td>10</td><td>2.213</td><td>0.221</td></tr>
+      <tr><td>3</td><td>10,000</td><td>50</td><td>9.722</td><td>0.194</td></tr>
+      <tr><td>3</td><td>10,000</td><td>100</td><td>20.754</td><td>0.208</td></tr>
+    </tbody>
+  </table>
+
+  <script>
+    const data = {
+  "1 key, 0 existing": [
+    {
+      "keys": 1,
+      "pre_existing": 0,
+      "count": 1,
+      "total_ms": 0.19,
+      "per_msg_ms": 0.19
+    },
+    {
+      "keys": 1,
+      "pre_existing": 0,
+      "count": 10,
+      "total_ms": 1.071,
+      "per_msg_ms": 0.107
+    },
+    {
+      "keys": 1,
+      "pre_existing": 0,
+      "count": 50,
+      "total_ms": 5.358,
+      "per_msg_ms": 0.107
+    },
+    {
+      "keys": 1,
+      "pre_existing": 0,
+      "count": 100,
+      "total_ms": 10.092,
+      "per_msg_ms": 0.101
+    }
+  ],
+  "1 key, 1K existing": [
+    {
+      "keys": 1,
+      "pre_existing": 1000,
+      "count": 1,
+      "total_ms": 0.194,
+      "per_msg_ms": 0.194
+    },
+    {
+      "keys": 1,
+      "pre_existing": 1000,
+      "count": 10,
+      "total_ms": 1.181,
+      "per_msg_ms": 0.118
+    },
+    {
+      "keys": 1,
+      "pre_existing": 1000,
+      "count": 50,
+      "total_ms": 5.671,
+      "per_msg_ms": 0.113
+    },
+    {
+      "keys": 1,
+      "pre_existing": 1000,
+      "count": 100,
+      "total_ms": 11.196,
+      "per_msg_ms": 0.112
+    }
+  ],
+  "1 key, 10K existing": [
+    {
+      "keys": 1,
+      "pre_existing": 10000,
+      "count": 1,
+      "total_ms": 0.268,
+      "per_msg_ms": 0.268
+    },
+    {
+      "keys": 1,
+      "pre_existing": 10000,
+      "count": 10,
+      "total_ms": 1.202,
+      "per_msg_ms": 0.12
+    },
+    {
+      "keys": 1,
+      "pre_existing": 10000,
+      "count": 50,
+      "total_ms": 5.286,
+      "per_msg_ms": 0.106
+    },
+    {
+      "keys": 1,
+      "pre_existing": 10000,
+      "count": 100,
+      "total_ms": 10.178,
+      "per_msg_ms": 0.102
+    }
+  ],
+  "2 keys, 0 existing": [
+    {
+      "keys": 2,
+      "pre_existing": 0,
+      "count": 1,
+      "total_ms": 0.221,
+      "per_msg_ms": 0.221
+    },
+    {
+      "keys": 2,
+      "pre_existing": 0,
+      "count": 10,
+      "total_ms": 1.547,
+      "per_msg_ms": 0.155
+    },
+    {
+      "keys": 2,
+      "pre_existing": 0,
+      "count": 50,
+      "total_ms": 7.308,
+      "per_msg_ms": 0.146
+    },
+    {
+      "keys": 2,
+      "pre_existing": 0,
+      "count": 100,
+      "total_ms": 15.648,
+      "per_msg_ms": 0.156
+    }
+  ],
+  "2 keys, 1K existing": [
+    {
+      "keys": 2,
+      "pre_existing": 1000,
+      "count": 1,
+      "total_ms": 0.227,
+      "per_msg_ms": 0.227
+    },
+    {
+      "keys": 2,
+      "pre_existing": 1000,
+      "count": 10,
+      "total_ms": 1.651,
+      "per_msg_ms": 0.165
+    },
+    {
+      "keys": 2,
+      "pre_existing": 1000,
+      "count": 50,
+      "total_ms": 7.607,
+      "per_msg_ms": 0.152
+    },
+    {
+      "keys": 2,
+      "pre_existing": 1000,
+      "count": 100,
+      "total_ms": 15.364,
+      "per_msg_ms": 0.154
+    }
+  ],
+  "2 keys, 10K existing": [
+    {
+      "keys": 2,
+      "pre_existing": 10000,
+      "count": 1,
+      "total_ms": 0.367,
+      "per_msg_ms": 0.367
+    },
+    {
+      "keys": 2,
+      "pre_existing": 10000,
+      "count": 10,
+      "total_ms": 1.726,
+      "per_msg_ms": 0.173
+    },
+    {
+      "keys": 2,
+      "pre_existing": 10000,
+      "count": 50,
+      "total_ms": 7.376,
+      "per_msg_ms": 0.148
+    },
+    {
+      "keys": 2,
+      "pre_existing": 10000,
+      "count": 100,
+      "total_ms": 15.378,
+      "per_msg_ms": 0.154
+    }
+  ],
+  "3 keys, 0 existing": [
+    {
+      "keys": 3,
+      "pre_existing": 0,
+      "count": 1,
+      "total_ms": 0.259,
+      "per_msg_ms": 0.259
+    },
+    {
+      "keys": 3,
+      "pre_existing": 0,
+      "count": 10,
+      "total_ms": 2.061,
+      "per_msg_ms": 0.206
+    },
+    {
+      "keys": 3,
+      "pre_existing": 0,
+      "count": 50,
+      "total_ms": 9.943,
+      "per_msg_ms": 0.199
+    },
+    {
+      "keys": 3,
+      "pre_existing": 0,
+      "count": 100,
+      "total_ms": 20.003,
+      "per_msg_ms": 0.2
+    }
+  ],
+  "3 keys, 1K existing": [
+    {
+      "keys": 3,
+      "pre_existing": 1000,
+      "count": 1,
+      "total_ms": 0.269,
+      "per_msg_ms": 0.269
+    },
+    {
+      "keys": 3,
+      "pre_existing": 1000,
+      "count": 10,
+      "total_ms": 2.153,
+      "per_msg_ms": 0.215
+    },
+    {
+      "keys": 3,
+      "pre_existing": 1000,
+      "count": 50,
+      "total_ms": 10.421,
+      "per_msg_ms": 0.208
+    },
+    {
+      "keys": 3,
+      "pre_existing": 1000,
+      "count": 100,
+      "total_ms": 19.97,
+      "per_msg_ms": 0.2
+    }
+  ],
+  "3 keys, 10K existing": [
+    {
+      "keys": 3,
+      "pre_existing": 10000,
+      "count": 1,
+      "total_ms": 0.398,
+      "per_msg_ms": 0.398
+    },
+    {
+      "keys": 3,
+      "pre_existing": 10000,
+      "count": 10,
+      "total_ms": 2.213,
+      "per_msg_ms": 0.221
+    },
+    {
+      "keys": 3,
+      "pre_existing": 10000,
+      "count": 50,
+      "total_ms": 9.722,
+      "per_msg_ms": 0.194
+    },
+    {
+      "keys": 3,
+      "pre_existing": 10000,
+      "count": 100,
+      "total_ms": 20.754,
+      "per_msg_ms": 0.208
+    }
+  ]
+};
+    const colorList = ["#2196F3","#FF9800","#4CAF50","#9C27B0","#F44336","#00BCD4","#FF5722","#8BC34A","#3F51B5","#CDDC39"];
+
+    function makeChart(id, title, field, yLabel) {
+      let i = 0;
+      const datasets = Object.entries(data).map(([label, rows]) => {
+        const color = colorList[i++ % colorList.length];
+        return {
+          label: label,
+          data: rows.map(r => ({ x: r.count, y: r[field] })),
+          borderColor: color,
+          backgroundColor: color + '20',
+          tension: 0.3,
+          pointRadius: 4,
+          borderWidth: 2
+        };
+      });
+
+      new Chart(document.getElementById(id), {
+        type: 'line',
+        data: { datasets },
+        options: {
+          responsive: true,
+          plugins: { title: { display: true, text: title, font: { size: 14 } } },
+          scales: {
+            x: { type: 'linear', title: { display: true, text: 'Messages per append' }, min: 0 },
+            y: { title: { display: true, text: yLabel }, beginAtZero: true }
+          }
+        }
+      });
+    }
+
+    makeChart('totalTime', 'Total Append Time', 'total_ms', 'ms');
+    makeChart('perMsg', 'Per-Message Cost', 'per_msg_ms', 'ms / message');
+  </script>
+</body>
+</html>
