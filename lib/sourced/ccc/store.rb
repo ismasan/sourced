@@ -156,7 +156,8 @@ module Sourced
             payload_json = msg.payload ? JSON.dump(msg.payload.to_h) : '{}'
             metadata_json = msg.metadata.empty? ? nil : JSON.dump(msg.metadata)
 
-            db[@messages_table].insert(
+            # insert returns last_insert_rowid on SQLite — no need for a separate SELECT
+            last_position = db[@messages_table].insert(
               message_id: msg.id,
               message_type: msg.type,
               causation_id: msg.causation_id,
@@ -166,17 +167,17 @@ module Sourced
               created_at: msg.created_at.iso8601
             )
 
-            last_position = db[@messages_table].where(message_id: msg.id).get(:position)
-
-            # Extract and index key pairs
+            # Upsert key pairs and link to message in 2 statements (was 3):
+            # 1. INSERT OR IGNORE the key_pair
+            # 2. INSERT message_key_pair with key_pair_id resolved via subquery
             msg.extracted_keys.each do |name, value|
               db.run("INSERT OR IGNORE INTO #{@key_pairs_table} (name, value) VALUES (#{db.literal(name)}, #{db.literal(value)})")
-              key_pair_id = db[@key_pairs_table].where(name: name, value: value).get(:id)
-
-              db[@message_key_pairs_table].insert(
-                message_position: last_position,
-                key_pair_id: key_pair_id
-              )
+              db.run(<<~SQL)
+                INSERT INTO #{@message_key_pairs_table} (message_position, key_pair_id)
+                SELECT #{db.literal(last_position)}, id
+                FROM #{@key_pairs_table}
+                WHERE name = #{db.literal(name)} AND value = #{db.literal(value)}
+              SQL
             end
           end
         end
