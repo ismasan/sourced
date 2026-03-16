@@ -23,10 +23,10 @@
 <body>
   <h1>CCC::Store#claim_next &mdash; Scaling Benchmark</h1>
   <p class="meta">
-    Generated 2026-03-15 22:55 &middot;
+    Generated 2026-03-16 12:09 &middot;
     Keys: 1, 2, 3 &middot;
-    Scales: 10, 100, 1K, 10K, 100K, 1M &middot;
-    Iterations: 1 (adaptive) &middot;
+    Scales: 100, 1K, 10K, 100K, 1M &middot;
+    Iterations: 2 (adaptive) &middot;
     Sample: 50 claims
   </p>
 
@@ -45,9 +45,15 @@
     </div>
     <div class="chart-container">
       <p class="desc"><strong>Warm Claim</strong> &mdash; All partitions have existing offsets (previously caught up),
-      then new messages arrive for some partitions. No discovery needed &mdash; offsets already exist.
+      then new messages arrive for some partitions. Legacy path runs discovery to advance watermark.
       This is the steady-state cost when the notifier or catch-up poller triggers processing.</p>
       <canvas id="warmClaim"></canvas>
+    </div>
+    <div class="chart-container">
+      <p class="desc"><strong>Eager Warm Claim</strong> &mdash; Same as Warm Claim, but with <code>partition_by</code>
+      registered. Offsets are created during <code>append</code>, so <code>claim_next</code> goes straight
+      to the fast path &mdash; no discovery CTE needed.</p>
+      <canvas id="eagerWarm"></canvas>
     </div>
     <div class="chart-container">
       <p class="desc"><strong>Incremental Discovery</strong> &mdash; All existing partitions are caught up.
@@ -56,32 +62,36 @@
       Skipped for scales &gt; 10K due to prohibitive NOT EXISTS cost.</p>
       <canvas id="incremental"></canvas>
     </div>
+    <div class="chart-container">
+      <p class="desc"><strong>Eager Incremental</strong> &mdash; Same scenario as Incremental, but with eager offset
+      creation. The offset is created during <code>append</code>, so <code>claim_next</code> finds it
+      on the fast path without running the discovery CTE.
+      Skipped for scales &gt; 10K.</p>
+      <canvas id="eagerIncremental"></canvas>
+    </div>
   </div>
 
   <h2>Raw Data</h2>
   <table>
     <thead>
-      <tr><th>Keys</th><th>Partitions</th><th>Idle Poll (ms)</th><th>Cold /claim (ms)</th><th>Warm /claim (ms)</th><th>Incremental (ms)</th></tr>
+      <tr><th>Keys</th><th>Partitions</th><th>Idle Poll (ms)</th><th>Cold /claim (ms)</th><th>Warm (ms)</th><th>Eager Warm (ms)</th><th>Incr (ms)</th><th>Eager Incr (ms)</th></tr>
     </thead>
     <tbody>
-      <tr><td>1</td><td>10</td><td>0.112</td><td>0.475</td><td>0.3735</td><td>0.693</td></tr>
-      <tr><td>1</td><td>100</td><td>0.111</td><td>0.4295</td><td>0.467</td><td>0.764</td></tr>
-      <tr><td>1</td><td>1,000</td><td>0.113</td><td>1.239</td><td>1.278</td><td>1.764</td></tr>
-      <tr><td>1</td><td>10,000</td><td>0.113</td><td>15.9395</td><td>9.391</td><td>10.406</td></tr>
-      <tr><td>1</td><td>100,000</td><td>0.116</td><td>134.379</td><td>102.802</td><td>—</td></tr>
-      <tr><td>1</td><td>1,000,000</td><td>0.124</td><td>1371.1305</td><td>1093.0945</td><td>—</td></tr>
-      <tr><td>2</td><td>10</td><td>0.116</td><td>0.4025</td><td>0.4045</td><td>0.785</td></tr>
-      <tr><td>2</td><td>100</td><td>0.113</td><td>0.5</td><td>0.611</td><td>1.012</td></tr>
-      <tr><td>2</td><td>1,000</td><td>0.115</td><td>2.133</td><td>2.1325</td><td>2.488</td></tr>
-      <tr><td>2</td><td>10,000</td><td>0.117</td><td>27.0435</td><td>16.6415</td><td>17.072</td></tr>
-      <tr><td>2</td><td>100,000</td><td>0.121</td><td>252.2725</td><td>178.629</td><td>—</td></tr>
-      <tr><td>2</td><td>1,000,000</td><td>0.14</td><td>2583.0955</td><td>1873.197</td><td>—</td></tr>
-      <tr><td>3</td><td>10</td><td>0.119</td><td>0.434</td><td>0.4065</td><td>0.891</td></tr>
-      <tr><td>3</td><td>100</td><td>0.112</td><td>0.5735</td><td>0.66</td><td>1.211</td></tr>
-      <tr><td>3</td><td>1,000</td><td>0.121</td><td>2.314</td><td>2.398</td><td>2.942</td></tr>
-      <tr><td>3</td><td>10,000</td><td>0.121</td><td>35.305</td><td>20.633</td><td>20.734</td></tr>
-      <tr><td>3</td><td>100,000</td><td>0.129</td><td>354.079</td><td>225.447</td><td>—</td></tr>
-      <tr><td>3</td><td>1,000,000</td><td>0.188</td><td>3673.461</td><td>2379.7215</td><td>—</td></tr>
+      <tr><td>1</td><td>100</td><td>0.1545</td><td>0.443</td><td>0.4865</td><td>0.4925</td><td>0.8035</td><td>0.8365</td></tr>
+      <tr><td>1</td><td>1,000</td><td>0.113</td><td>1.3478</td><td>1.3323</td><td>1.318</td><td>1.866</td><td>1.438</td></tr>
+      <tr><td>1</td><td>10,000</td><td>0.1185</td><td>16.4027</td><td>9.7495</td><td>9.654</td><td>10.172</td><td>9.476</td></tr>
+      <tr><td>1</td><td>100,000</td><td>0.1205</td><td>133.7683</td><td>102.8572</td><td>102.696</td><td>—</td><td>—</td></tr>
+      <tr><td>1</td><td>1,000,000</td><td>0.111</td><td>1377.755</td><td>1090.871</td><td>1093.1885</td><td>—</td><td>—</td></tr>
+      <tr><td>2</td><td>100</td><td>0.1125</td><td>0.5673</td><td>0.576</td><td>0.5705</td><td>0.988</td><td>0.62</td></tr>
+      <tr><td>2</td><td>1,000</td><td>0.1185</td><td>1.9635</td><td>1.9828</td><td>2.0248</td><td>2.619</td><td>2.2775</td></tr>
+      <tr><td>2</td><td>10,000</td><td>0.12</td><td>27.2497</td><td>16.441</td><td>16.2705</td><td>16.9165</td><td>16.084</td></tr>
+      <tr><td>2</td><td>100,000</td><td>0.1155</td><td>253.194</td><td>179.9335</td><td>179.7775</td><td>—</td><td>—</td></tr>
+      <tr><td>2</td><td>1,000,000</td><td>0.116</td><td>2594.071</td><td>1874.9285</td><td>1883.2475</td><td>—</td><td>—</td></tr>
+      <tr><td>3</td><td>100</td><td>0.122</td><td>0.5583</td><td>0.6433</td><td>0.6185</td><td>1.22</td><td>0.6865</td></tr>
+      <tr><td>3</td><td>1,000</td><td>0.1165</td><td>2.3558</td><td>2.3978</td><td>2.4068</td><td>2.9145</td><td>2.5075</td></tr>
+      <tr><td>3</td><td>10,000</td><td>0.114</td><td>35.4237</td><td>20.4867</td><td>20.3833</td><td>20.9815</td><td>20.2955</td></tr>
+      <tr><td>3</td><td>100,000</td><td>0.136</td><td>356.1052</td><td>226.6478</td><td>226.9365</td><td>—</td><td>—</td></tr>
+      <tr><td>3</td><td>1,000,000</td><td>0.118</td><td>3647.892</td><td>2357.129</td><td>2351.4825</td><td>—</td><td>—</td></tr>
     </tbody>
   </table>
 
@@ -90,151 +100,157 @@
   "1": [
     {
       "keys": 1,
-      "scale": 10,
-      "idle_poll_ms": 0.112,
-      "per_claim_cold_ms": 0.475,
-      "per_claim_warm_ms": 0.3735,
-      "incremental_ms": 0.693
-    },
-    {
-      "keys": 1,
       "scale": 100,
-      "idle_poll_ms": 0.111,
-      "per_claim_cold_ms": 0.4295,
-      "per_claim_warm_ms": 0.467,
-      "incremental_ms": 0.764
+      "idle_poll_ms": 0.1545,
+      "per_claim_cold_ms": 0.443,
+      "per_claim_warm_ms": 0.4865,
+      "incremental_ms": 0.8035,
+      "eager_warm_ms": 0.4925,
+      "eager_incremental_ms": 0.8365
     },
     {
       "keys": 1,
       "scale": 1000,
       "idle_poll_ms": 0.113,
-      "per_claim_cold_ms": 1.239,
-      "per_claim_warm_ms": 1.278,
-      "incremental_ms": 1.764
+      "per_claim_cold_ms": 1.3478,
+      "per_claim_warm_ms": 1.3323,
+      "incremental_ms": 1.866,
+      "eager_warm_ms": 1.318,
+      "eager_incremental_ms": 1.438
     },
     {
       "keys": 1,
       "scale": 10000,
-      "idle_poll_ms": 0.113,
-      "per_claim_cold_ms": 15.9395,
-      "per_claim_warm_ms": 9.391,
-      "incremental_ms": 10.406
+      "idle_poll_ms": 0.1185,
+      "per_claim_cold_ms": 16.4027,
+      "per_claim_warm_ms": 9.7495,
+      "incremental_ms": 10.172,
+      "eager_warm_ms": 9.654,
+      "eager_incremental_ms": 9.476
     },
     {
       "keys": 1,
       "scale": 100000,
-      "idle_poll_ms": 0.116,
-      "per_claim_cold_ms": 134.379,
-      "per_claim_warm_ms": 102.802,
-      "incremental_ms": null
+      "idle_poll_ms": 0.1205,
+      "per_claim_cold_ms": 133.7683,
+      "per_claim_warm_ms": 102.8572,
+      "incremental_ms": null,
+      "eager_warm_ms": 102.696,
+      "eager_incremental_ms": null
     },
     {
       "keys": 1,
       "scale": 1000000,
-      "idle_poll_ms": 0.124,
-      "per_claim_cold_ms": 1371.1305,
-      "per_claim_warm_ms": 1093.0945,
-      "incremental_ms": null
+      "idle_poll_ms": 0.111,
+      "per_claim_cold_ms": 1377.755,
+      "per_claim_warm_ms": 1090.871,
+      "incremental_ms": null,
+      "eager_warm_ms": 1093.1885,
+      "eager_incremental_ms": null
     }
   ],
   "2": [
     {
       "keys": 2,
-      "scale": 10,
-      "idle_poll_ms": 0.116,
-      "per_claim_cold_ms": 0.4025,
-      "per_claim_warm_ms": 0.4045,
-      "incremental_ms": 0.785
-    },
-    {
-      "keys": 2,
       "scale": 100,
-      "idle_poll_ms": 0.113,
-      "per_claim_cold_ms": 0.5,
-      "per_claim_warm_ms": 0.611,
-      "incremental_ms": 1.012
+      "idle_poll_ms": 0.1125,
+      "per_claim_cold_ms": 0.5673,
+      "per_claim_warm_ms": 0.576,
+      "incremental_ms": 0.988,
+      "eager_warm_ms": 0.5705,
+      "eager_incremental_ms": 0.62
     },
     {
       "keys": 2,
       "scale": 1000,
-      "idle_poll_ms": 0.115,
-      "per_claim_cold_ms": 2.133,
-      "per_claim_warm_ms": 2.1325,
-      "incremental_ms": 2.488
+      "idle_poll_ms": 0.1185,
+      "per_claim_cold_ms": 1.9635,
+      "per_claim_warm_ms": 1.9828,
+      "incremental_ms": 2.619,
+      "eager_warm_ms": 2.0248,
+      "eager_incremental_ms": 2.2775
     },
     {
       "keys": 2,
       "scale": 10000,
-      "idle_poll_ms": 0.117,
-      "per_claim_cold_ms": 27.0435,
-      "per_claim_warm_ms": 16.6415,
-      "incremental_ms": 17.072
+      "idle_poll_ms": 0.12,
+      "per_claim_cold_ms": 27.2497,
+      "per_claim_warm_ms": 16.441,
+      "incremental_ms": 16.9165,
+      "eager_warm_ms": 16.2705,
+      "eager_incremental_ms": 16.084
     },
     {
       "keys": 2,
       "scale": 100000,
-      "idle_poll_ms": 0.121,
-      "per_claim_cold_ms": 252.2725,
-      "per_claim_warm_ms": 178.629,
-      "incremental_ms": null
+      "idle_poll_ms": 0.1155,
+      "per_claim_cold_ms": 253.194,
+      "per_claim_warm_ms": 179.9335,
+      "incremental_ms": null,
+      "eager_warm_ms": 179.7775,
+      "eager_incremental_ms": null
     },
     {
       "keys": 2,
       "scale": 1000000,
-      "idle_poll_ms": 0.14,
-      "per_claim_cold_ms": 2583.0955,
-      "per_claim_warm_ms": 1873.197,
-      "incremental_ms": null
+      "idle_poll_ms": 0.116,
+      "per_claim_cold_ms": 2594.071,
+      "per_claim_warm_ms": 1874.9285,
+      "incremental_ms": null,
+      "eager_warm_ms": 1883.2475,
+      "eager_incremental_ms": null
     }
   ],
   "3": [
     {
       "keys": 3,
-      "scale": 10,
-      "idle_poll_ms": 0.119,
-      "per_claim_cold_ms": 0.434,
-      "per_claim_warm_ms": 0.4065,
-      "incremental_ms": 0.891
-    },
-    {
-      "keys": 3,
       "scale": 100,
-      "idle_poll_ms": 0.112,
-      "per_claim_cold_ms": 0.5735,
-      "per_claim_warm_ms": 0.66,
-      "incremental_ms": 1.211
+      "idle_poll_ms": 0.122,
+      "per_claim_cold_ms": 0.5583,
+      "per_claim_warm_ms": 0.6433,
+      "incremental_ms": 1.22,
+      "eager_warm_ms": 0.6185,
+      "eager_incremental_ms": 0.6865
     },
     {
       "keys": 3,
       "scale": 1000,
-      "idle_poll_ms": 0.121,
-      "per_claim_cold_ms": 2.314,
-      "per_claim_warm_ms": 2.398,
-      "incremental_ms": 2.942
+      "idle_poll_ms": 0.1165,
+      "per_claim_cold_ms": 2.3558,
+      "per_claim_warm_ms": 2.3978,
+      "incremental_ms": 2.9145,
+      "eager_warm_ms": 2.4068,
+      "eager_incremental_ms": 2.5075
     },
     {
       "keys": 3,
       "scale": 10000,
-      "idle_poll_ms": 0.121,
-      "per_claim_cold_ms": 35.305,
-      "per_claim_warm_ms": 20.633,
-      "incremental_ms": 20.734
+      "idle_poll_ms": 0.114,
+      "per_claim_cold_ms": 35.4237,
+      "per_claim_warm_ms": 20.4867,
+      "incremental_ms": 20.9815,
+      "eager_warm_ms": 20.3833,
+      "eager_incremental_ms": 20.2955
     },
     {
       "keys": 3,
       "scale": 100000,
-      "idle_poll_ms": 0.129,
-      "per_claim_cold_ms": 354.079,
-      "per_claim_warm_ms": 225.447,
-      "incremental_ms": null
+      "idle_poll_ms": 0.136,
+      "per_claim_cold_ms": 356.1052,
+      "per_claim_warm_ms": 226.6478,
+      "incremental_ms": null,
+      "eager_warm_ms": 226.9365,
+      "eager_incremental_ms": null
     },
     {
       "keys": 3,
       "scale": 1000000,
-      "idle_poll_ms": 0.188,
-      "per_claim_cold_ms": 3673.461,
-      "per_claim_warm_ms": 2379.7215,
-      "incremental_ms": null
+      "idle_poll_ms": 0.118,
+      "per_claim_cold_ms": 3647.892,
+      "per_claim_warm_ms": 2357.129,
+      "incremental_ms": null,
+      "eager_warm_ms": 2351.4825,
+      "eager_incremental_ms": null
     }
   ]
 };
@@ -286,8 +302,10 @@
 
     makeChart('idlePoll', 'Idle Poll (all caught up, no work)', 'idle_poll_ms', 'ms');
     makeChart('coldDrain', 'Cold Drain (per-claim cost, sampled)', 'per_claim_cold_ms', 'ms / claim');
-    makeChart('warmClaim', 'Warm Claim (per-claim cost, sampled)', 'per_claim_warm_ms', 'ms / claim');
-    makeChart('incremental', 'Incremental Discovery (1 new partition)', 'incremental_ms', 'ms');
+    makeChart('warmClaim', 'Warm Claim — legacy (per-claim cost)', 'per_claim_warm_ms', 'ms / claim');
+    makeChart('eagerWarm', 'Eager Warm Claim (per-claim cost)', 'eager_warm_ms', 'ms / claim');
+    makeChart('incremental', 'Incremental Discovery — legacy (1 new partition)', 'incremental_ms', 'ms');
+    makeChart('eagerIncremental', 'Eager Incremental (1 new partition)', 'eager_incremental_ms', 'ms');
   </script>
 </body>
 </html>
