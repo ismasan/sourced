@@ -481,6 +481,7 @@ module Sourced
         db[@offsets_table].where(consumer_group_id: cg[:id]).delete
         db[@consumer_groups_table].where(id: cg[:id]).update(
           discovery_position: 0,
+          last_nil_types_max_pos: 0,
           updated_at: Time.now.iso8601
         )
       end
@@ -515,17 +516,12 @@ module Sourced
           .first
         return nil unless cg
 
-        # Short-circuit: check the latest message position for handled types.
-        # If the least-progressed offset is past types_max_pos, all work is done.
+        # Short-circuit: no new messages since the last nil claim.
         types_max_pos = db[@messages_table]
           .where(message_type: handled_types)
           .max(:position) || 0
 
-        has_offsets = db[@offsets_table].where(consumer_group_id: cg[:id]).limit(1).any?
-        min_offset_pos = db[@offsets_table]
-          .where(consumer_group_id: cg[:id])
-          .min(:last_position)
-        return nil if min_offset_pos && min_offset_pos >= types_max_pos
+        return nil if types_max_pos <= cg[:last_nil_types_max_pos]
 
         claimed = nil
         group_info = @registered_groups[group_id]
@@ -540,6 +536,7 @@ module Sourced
           end
         else
           # Legacy path: lazy discovery
+          has_offsets = db[@offsets_table].where(consumer_group_id: cg[:id]).limit(1).any?
           if has_offsets && types_max_pos <= cg[:discovery_position]
             claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
           end
@@ -549,7 +546,12 @@ module Sourced
           end
         end
 
-        return nil unless claimed
+        unless claimed
+          # Remember types_max_pos so next poll short-circuits instantly
+          db[@consumer_groups_table].where(id: cg[:id])
+            .update(last_nil_types_max_pos: types_max_pos)
+          return nil
+        end
 
         key_pair_ids = db[@offset_key_pairs_table]
           .where(offset_id: claimed[:offset_id])
@@ -818,6 +820,15 @@ module Sourced
       def ensure_offsets_for_registered_groups(messages)
         return if @registered_groups.empty?
 
+        # Collect all partition attribute names across registered groups
+        attr_names = @registered_groups.each_value.flat_map { |gi| gi[:partition_by] || [] }.uniq
+
+        # Pre-fetch relevant key_pair IDs in one query, keyed by "name:value"
+        kp_id_cache = {}
+        db[@key_pairs_table].where(name: attr_names).each do |row|
+          kp_id_cache["#{row[:name]}:#{row[:value]}"] = row[:id]
+        end
+
         @registered_groups.each_value do |group_info|
           partition_by = group_info[:partition_by]
           next unless partition_by
@@ -834,9 +845,7 @@ module Sourced
             next if seen.include?(pk)
             seen << pk
 
-            kp_ids = partition_by.map { |attr|
-              db[@key_pairs_table].where(name: attr, value: values[attr]).get(:id)
-            }
+            kp_ids = partition_by.map { |attr| kp_id_cache["#{attr}:#{values[attr]}"] }
             create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids)
           end
         end
