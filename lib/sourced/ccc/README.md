@@ -654,6 +654,54 @@ store.stop_consumer_group('CourseApp::CourseDecider')
 
 When retries are configured via `CCC.config.error_strategy`, failed consumer groups remain active but paused until their `retry_at` time. Once that time passes, they become claimable again automatically.
 
+### Lifecycle hooks via Router
+
+The Router provides lifecycle methods that wrap the Store operations and invoke optional callbacks on the reactor class. This lets reactors run cleanup or setup logic when their consumer group is stopped, reset, or started.
+
+```ruby
+# Accept a reactor class or a string group_id
+Sourced::CCC.stop_consumer_group(CourseDecider, 'maintenance window')
+Sourced::CCC.reset_consumer_group(CourseDecider)
+Sourced::CCC.start_consumer_group(CourseDecider)
+
+# String group_id works too — the router resolves it to the registered class
+Sourced::CCC.stop_consumer_group('CourseApp::CourseDecider')
+```
+
+These delegate to `Router#stop_consumer_group`, `Router#reset_consumer_group`, and `Router#start_consumer_group`, which:
+
+1. Resolve the argument to a registered reactor class (raising `ArgumentError` if the string doesn't match any registered reactor)
+2. Call the corresponding `Store` method
+3. Invoke the reactor's callback (`on_stop`, `on_reset`, `on_start`)
+
+#### Defining callbacks
+
+Override the no-op class methods on your reactor to hook into lifecycle events:
+
+```ruby
+class CourseDecider < Sourced::CCC::Decider
+  partition_by :course_name
+
+  # Called when the consumer group is stopped.
+  # `message` is the optional reason string passed to stop_consumer_group.
+  def self.on_stop(message = nil)
+    Rails.logger.info "CourseDecider stopped: #{message}"
+  end
+
+  # Called when the consumer group is reset (offsets cleared).
+  def self.on_reset
+    Rails.cache.delete_matched('course_projections/*')
+  end
+
+  # Called when the consumer group is started.
+  def self.on_start
+    Rails.logger.info 'CourseDecider started'
+  end
+end
+```
+
+Reactors without custom callbacks work fine — the defaults are no-ops.
+
 ## Monitoring
 
 `Store#stats` returns system-wide diagnostics for monitoring and debugging CCC deployments.

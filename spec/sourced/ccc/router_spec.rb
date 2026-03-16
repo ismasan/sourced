@@ -2,6 +2,7 @@
 
 require 'spec_helper'
 require 'sourced/ccc'
+require 'sourced/ccc/store'
 require 'sequel'
 
 module CCCRouterTestMessages
@@ -360,6 +361,125 @@ RSpec.describe Sourced::CCC::Router do
       expect(notify.correlation_id).to eq(bound.correlation_id)
       # The whole chain shares the same correlation_id (the command's)
       expect(notify.correlation_id).to eq(cmd.correlation_id)
+    end
+  end
+
+  describe 'consumer group lifecycle' do
+    before do
+      router.register(RouterTestDecider)
+      router.register(RouterTestProjector)
+    end
+
+    describe '#stop_consumer_group' do
+      it 'stops group and calls on_stop with class' do
+        expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be true
+
+        router.stop_consumer_group(RouterTestDecider, 'maintenance')
+
+        expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be false
+      end
+
+      it 'stops group and calls on_stop with string group_id' do
+        router.stop_consumer_group('router-test-decider', 'maintenance')
+
+        expect(store.consumer_group_active?('router-test-decider')).to be false
+      end
+
+      it 'invokes on_stop callback on reactor class' do
+        allow(RouterTestDecider).to receive(:on_stop)
+
+        router.stop_consumer_group(RouterTestDecider, 'going down')
+
+        expect(RouterTestDecider).to have_received(:on_stop).with('going down')
+      end
+
+      it 'passes nil message when none given' do
+        allow(RouterTestDecider).to receive(:on_stop)
+
+        router.stop_consumer_group(RouterTestDecider)
+
+        expect(RouterTestDecider).to have_received(:on_stop).with(nil)
+      end
+    end
+
+    describe '#reset_consumer_group' do
+      it 'resets group offsets and calls on_reset with class' do
+        # Append a message and drain so offsets are advanced
+        store.append(
+          CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+        )
+        router.drain
+
+        router.reset_consumer_group(RouterTestDecider)
+
+        # Offsets should be cleared (group can re-process messages)
+        row = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).first
+        expect(row[:discovery_position]).to eq(0)
+      end
+
+      it 'resets group with string group_id' do
+        store.append(
+          CCCRouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+        )
+        router.drain
+
+        router.reset_consumer_group('router-test-decider')
+
+        row = db[:sourced_consumer_groups].where(group_id: 'router-test-decider').first
+        expect(row[:discovery_position]).to eq(0)
+      end
+
+      it 'invokes on_reset callback on reactor class' do
+        allow(RouterTestDecider).to receive(:on_reset)
+
+        router.reset_consumer_group(RouterTestDecider)
+
+        expect(RouterTestDecider).to have_received(:on_reset)
+      end
+    end
+
+    describe '#start_consumer_group' do
+      it 'starts group and calls on_start with class' do
+        router.stop_consumer_group(RouterTestDecider)
+        expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be false
+
+        router.start_consumer_group(RouterTestDecider)
+
+        expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be true
+      end
+
+      it 'starts group with string group_id' do
+        router.stop_consumer_group('router-test-decider')
+
+        router.start_consumer_group('router-test-decider')
+
+        expect(store.consumer_group_active?('router-test-decider')).to be true
+      end
+
+      it 'invokes on_start callback on reactor class' do
+        allow(RouterTestDecider).to receive(:on_start)
+
+        router.start_consumer_group(RouterTestDecider)
+
+        expect(RouterTestDecider).to have_received(:on_start)
+      end
+    end
+
+    describe 'resolve_reactor_class' do
+      it 'raises ArgumentError for unregistered group_id' do
+        expect {
+          router.stop_consumer_group('unknown-group')
+        }.to raise_error(ArgumentError, /No reactor registered with group_id 'unknown-group'/)
+      end
+    end
+
+    describe 'no-op default callbacks' do
+      it 'works fine when reactor does not override callbacks' do
+        # RouterTestProjector has no custom callbacks — should not raise
+        expect { router.stop_consumer_group(RouterTestProjector) }.not_to raise_error
+        expect { router.reset_consumer_group(RouterTestProjector) }.not_to raise_error
+        expect { router.start_consumer_group(RouterTestProjector) }.not_to raise_error
+      end
     end
   end
 

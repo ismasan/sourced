@@ -85,6 +85,32 @@ module Sourced
         CCC.config.error_strategy.call(exception, message, group)
       end
 
+      # Called by {Router#stop_consumer_group} after the group is marked as stopped.
+      # Override in reactor classes to run cleanup logic on stop.
+      #
+      # @param message [String, nil] optional reason for stopping
+      # @return [void]
+      def on_stop(message = nil)
+        # no-op by default
+      end
+
+      # Called by {Router#reset_consumer_group} after the group's offsets are cleared.
+      # Override in reactor classes to run cleanup logic on reset
+      # (e.g. clearing caches or projections).
+      #
+      # @return [void]
+      def on_reset
+        # no-op by default
+      end
+
+      # Called by {Router#start_consumer_group} after the group is marked as active.
+      # Override in reactor classes to run setup logic on start.
+      #
+      # @return [void]
+      def on_start
+        # no-op by default
+      end
+
       # Iterate messages collecting [actions, message] pairs.
       # On mid-batch failure, raises PartialBatchError with pairs collected so far.
       # If the first message fails, re-raises the original error.

@@ -47,6 +47,40 @@ module Sourced
       config.router
     end
 
+    # Stop a consumer group and invoke the reactor's +on_stop+ callback.
+    # Delegates to {Router#stop_consumer_group}.
+    #
+    # @param reactor_or_id [Class, String] a registered reactor class, or its +group_id+ string
+    # @param message [String, nil] optional reason for stopping
+    # @return [void]
+    # @raise [ArgumentError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    # @see Router#stop_consumer_group
+    def self.stop_consumer_group(reactor_or_id, message = nil)
+      config.router.stop_consumer_group(reactor_or_id, message)
+    end
+
+    # Reset a consumer group and invoke the reactor's +on_reset+ callback.
+    # Delegates to {Router#reset_consumer_group}.
+    #
+    # @param reactor_or_id [Class, String] a registered reactor class, or its +group_id+ string
+    # @return [void]
+    # @raise [ArgumentError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    # @see Router#reset_consumer_group
+    def self.reset_consumer_group(reactor_or_id)
+      config.router.reset_consumer_group(reactor_or_id)
+    end
+
+    # Start a consumer group and invoke the reactor's +on_start+ callback.
+    # Delegates to {Router#start_consumer_group}.
+    #
+    # @param reactor_or_id [Class, String] a registered reactor class, or its +group_id+ string
+    # @return [void]
+    # @raise [ArgumentError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    # @see Router#start_consumer_group
+    def self.start_consumer_group(reactor_or_id)
+      config.router.start_consumer_group(reactor_or_id)
+    end
+
     # Reset the global configuration. For test teardown.
     def self.reset!
       @config = nil
