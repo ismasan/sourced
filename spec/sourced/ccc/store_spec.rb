@@ -347,11 +347,12 @@ RSpec.describe Sourced::CCC::Store do
       expect(result1.messages.map(&:position)).to eq([1, 2])
       expect(result1.last_position).to eq(5)
 
-      result2 = store.read_all(from_position: result1.messages.last.position, limit: 2)
-      expect(result2.messages.map(&:position)).to eq([3, 4])
+      # from_position is inclusive, so position 2 is included
+      result2 = store.read_all(from_position: 2, limit: 2)
+      expect(result2.messages.map(&:position)).to eq([2, 3])
 
-      result3 = store.read_all(from_position: result2.messages.last.position, limit: 2)
-      expect(result3.messages.map(&:position)).to eq([5])
+      result3 = store.read_all(from_position: 4, limit: 2)
+      expect(result3.messages.map(&:position)).to eq([4, 5])
     end
 
     it 'returns empty messages with last_position 0 for an empty store' do
@@ -381,20 +382,21 @@ RSpec.describe Sourced::CCC::Store do
         expect(result.last_position).to eq(5)
       end
 
-      it 'paginates in descending order using from_position' do
+      it 'paginates in descending order using from_position (inclusive)' do
         result1 = store.read_all(order: :desc, limit: 2)
         expect(result1.messages.map(&:position)).to eq([5, 4])
 
-        result2 = store.read_all(from_position: result1.messages.last.position, order: :desc, limit: 2)
-        expect(result2.messages.map(&:position)).to eq([3, 2])
+        # from_position is inclusive, so position 4 is included
+        result2 = store.read_all(from_position: 4, order: :desc, limit: 2)
+        expect(result2.messages.map(&:position)).to eq([4, 3])
 
-        result3 = store.read_all(from_position: result2.messages.last.position, order: :desc, limit: 2)
-        expect(result3.messages.map(&:position)).to eq([1])
+        result3 = store.read_all(from_position: 2, order: :desc, limit: 2)
+        expect(result3.messages.map(&:position)).to eq([2, 1])
       end
 
-      it 'returns [] when no messages before from_position' do
+      it 'returns only the first message when from_position is 1 (inclusive)' do
         result = store.read_all(from_position: 1, order: :desc)
-        expect(result.messages).to eq([])
+        expect(result.messages.map(&:position)).to eq([1])
         expect(result.last_position).to eq(5)
       end
     end

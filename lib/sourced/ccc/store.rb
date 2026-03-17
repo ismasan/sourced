@@ -264,7 +264,7 @@ module Sourced
       # @example Next page (using the last position from the previous page)
       #   messages = store.read_all(from_position: 20, limit: 20)
       #
-      # @param from_position [Integer] return messages after this position (default 0)
+      # @param from_position [Integer] return messages from this position, inclusive (default 0)
       # @param limit [Integer] max number of messages to return (default 50)
       # @return [ReadAllResult] messages and last global position
       def read_all(from_position: nil, limit: 50, order: :asc)
@@ -272,14 +272,14 @@ module Sourced
         ds = db[@messages_table]
 
         if from_position
-          ds = desc ? ds.where { position < from_position } : ds.where { position > from_position }
+          ds = desc ? ds.where { position <= from_position } : ds.where { position >= from_position }
         end
 
         messages = ds.order(desc ? Sequel.desc(:position) : :position)
           .limit(limit)
           .map { |row| deserialize(row) }
 
-        fetcher = ->(pos) { read_all(from_position: pos, limit: limit, order: order) }
+        fetcher = ->(pos) { read_all(from_position: desc ? pos - 1 : pos + 1, limit: limit, order: order) }
         ReadAllResult.new(messages: messages, last_position: latest_position, fetcher: fetcher)
       end
 
