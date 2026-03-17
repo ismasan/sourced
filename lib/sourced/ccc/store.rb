@@ -59,6 +59,29 @@ module Sourced
 
     Stats = Data.define(:max_position, :groups)
 
+    OffsetsResult = Data.define(:offsets, :total_count, :fetcher) do
+      include Enumerable
+
+      def to_ary = [offsets, total_count]
+
+      # Iterates offsets in the current page.
+      def each(&block) = offsets.each(&block)
+
+      # Returns an Enumerator that lazily paginates through all offsets,
+      # fetching subsequent pages as needed.
+      def to_enum
+        Enumerator.new do |y|
+          result = self
+          loop do
+            break if result.offsets.empty?
+
+            result.offsets.each { |o| y << o }
+            result = result.fetcher.call(result.offsets.last[:id] + 1)
+          end
+        end
+      end
+    end
+
     # SQLite-backed store for CCC's flat, globally-ordered message log.
     # Provides message storage with automatic key-pair indexing,
     # consumer group management, and partition-based offset tracking
@@ -760,6 +783,49 @@ module Sourced
         end
 
         Stats.new(max_position: latest_position, groups: groups)
+      end
+
+      # List offsets with optional group filtering and cursor-based pagination.
+      #
+      # @param group_id [String, nil] filter by consumer group (nil = all groups)
+      # @param limit [Integer] max offsets per page (default 50)
+      # @param from_id [Integer, nil] cursor — return offsets with id >= from_id (inclusive)
+      # @return [CCC::OffsetsResult] paginated offsets with total_count and fetcher for auto-pagination
+      def read_offsets(group_id: nil, limit: 50, from_id: nil)
+        dataset = db[@offsets_table].join(@consumer_groups_table, id: :consumer_group_id)
+          .select(
+            Sequel[@offsets_table][:id],
+            Sequel[@consumer_groups_table][:group_id].as(:group_name),
+            Sequel[@consumer_groups_table][:status].as(:group_status),
+            Sequel[@offsets_table][:partition_key],
+            Sequel[@offsets_table][:last_position],
+            Sequel[@offsets_table][:claimed],
+            Sequel[@offsets_table][:claimed_at],
+            Sequel[@offsets_table][:claimed_by]
+          )
+          .order(Sequel[@offsets_table][:id])
+
+        count_dataset = db[@offsets_table].join(@consumer_groups_table, id: :consumer_group_id)
+
+        if group_id
+          dataset = dataset.where(Sequel[@consumer_groups_table][:group_id] => group_id)
+          count_dataset = count_dataset.where(Sequel[@consumer_groups_table][:group_id] => group_id)
+        end
+
+        if from_id
+          dataset = dataset.where(Sequel[@offsets_table][:id] >= from_id)
+        end
+
+        total_count = count_dataset.count
+        offsets = dataset.limit(limit).all
+
+        offsets.each do |o|
+          o[:claimed] = o[:claimed] == 1
+        end
+
+        fetcher = ->(next_from_id) { read_offsets(group_id: group_id, limit: limit, from_id: next_from_id) }
+
+        OffsetsResult.new(offsets: offsets, total_count: total_count, fetcher: fetcher)
       end
 
       # Fetch all messages sharing the same correlation_id as the given message.

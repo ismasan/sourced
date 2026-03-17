@@ -746,6 +746,80 @@ stats.groups.each do |g|
 end
 ```
 
+### `Store#read_offsets` — inspecting partition offsets
+
+`read_offsets` lists individual consumer group offsets with optional filtering and cursor-based pagination. Useful for inspecting the progress and claim status of each partition.
+
+```ruby
+result = store.read_offsets
+result.offsets       # => array of offset hashes
+result.total_count   # => total number of matching offsets (ignoring pagination)
+```
+
+#### Parameters
+
+| Parameter    | Type           | Default | Description                                              |
+|-------------|----------------|---------|----------------------------------------------------------|
+| `group_id:` | `String`, `nil` | `nil`   | Filter by consumer group. `nil` returns all groups.      |
+| `limit:`    | `Integer`       | `50`    | Max offsets per page.                                    |
+| `from_id:`  | `Integer`, `nil`| `nil`   | Cursor — return offsets with `id >= from_id` (inclusive). |
+
+#### Offset hash fields
+
+Each offset in the result is a Hash with:
+
+| Key              | Type          | Description                                          |
+|------------------|---------------|------------------------------------------------------|
+| `:id`            | `Integer`     | Offset primary key (used as pagination cursor)       |
+| `:group_name`    | `String`      | Consumer group identifier                            |
+| `:group_status`  | `String`      | `"active"`, `"stopped"`, or `"failed"`               |
+| `:partition_key` | `String`      | Partition identifier (e.g. `"device_id:dev-1"`)      |
+| `:last_position` | `Integer`     | Highest acked position for this partition             |
+| `:claimed`       | `Boolean`     | Whether a worker currently holds this partition       |
+| `:claimed_at`    | `String`, `nil`| ISO8601 timestamp of the claim                      |
+| `:claimed_by`    | `String`, `nil`| Worker ID holding the claim                         |
+
+#### Filtering by group
+
+```ruby
+result = store.read_offsets(group_id: 'CourseDecider')
+result.offsets.each do |o|
+  puts "#{o[:partition_key]}: position #{o[:last_position]}, claimed=#{o[:claimed]}"
+end
+```
+
+#### Pagination
+
+```ruby
+# First page
+page1 = store.read_offsets(limit: 20)
+
+# Next page using cursor
+page2 = store.read_offsets(limit: 20, from_id: page1.offsets.last[:id] + 1)
+```
+
+#### Auto-pagination with `to_enum`
+
+`OffsetsResult#to_enum` returns a lazy `Enumerator` that fetches subsequent pages automatically.
+
+```ruby
+# Iterate all offsets in pages of 20
+store.read_offsets(limit: 20).to_enum.each do |offset|
+  puts "#{offset[:group_name]} / #{offset[:partition_key]}: #{offset[:last_position]}"
+end
+
+# Works with Enumerable methods
+behind = store.read_offsets(limit: 50).to_enum.lazy.select { |o|
+  o[:last_position] < store.latest_position - 100
+}.to_a
+```
+
+#### Array destructuring
+
+```ruby
+offsets, total_count = store.read_offsets(group_id: 'CourseDecider')
+```
+
 ## Testing
 
 CCC ships with RSpec helpers for Given-When-Then testing of deciders and projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.

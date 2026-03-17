@@ -1946,6 +1946,150 @@ RSpec.describe Sourced::CCC::Store do
     end
   end
 
+  describe '#read_offsets' do
+    it 'returns empty result when no offsets exist' do
+      result = store.read_offsets
+      expect(result).to be_a(Sourced::CCC::OffsetsResult)
+      expect(result.offsets).to eq([])
+      expect(result.total_count).to eq(0)
+    end
+
+    it 'returns all offsets across groups with group_name and group_status' do
+      store.register_consumer_group('group-a')
+      store.register_consumer_group('group-b')
+
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
+      ])
+
+      # Claim to bootstrap offsets in both groups
+      store.claim_next('group-a', partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      store.claim_next('group-b', partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'], worker_id: 'w-2')
+
+      result = store.read_offsets
+      expect(result.total_count).to be >= 2
+
+      group_names = result.offsets.map { |o| o[:group_name] }.uniq.sort
+      expect(group_names).to include('group-a', 'group-b')
+
+      result.offsets.each do |o|
+        expect(o).to have_key(:id)
+        expect(o).to have_key(:group_name)
+        expect(o).to have_key(:group_status)
+        expect(o).to have_key(:partition_key)
+        expect(o).to have_key(:last_position)
+        expect(o).to have_key(:claimed)
+        expect(o).to have_key(:claimed_at)
+        expect(o).to have_key(:claimed_by)
+        expect(o[:group_status]).to eq('active')
+      end
+    end
+
+    it 'filters by group_id when provided' do
+      store.register_consumer_group('group-a')
+      store.register_consumer_group('group-b')
+
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      ])
+
+      store.claim_next('group-a', partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      store.claim_next('group-b', partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'], worker_id: 'w-2')
+
+      result = store.read_offsets(group_id: 'group-a')
+      expect(result.offsets).to all(satisfy { |o| o[:group_name] == 'group-a' })
+      expect(result.total_count).to eq(result.offsets.size)
+    end
+
+    it 'paginates with from_id and limit (inclusive)' do
+      store.register_consumer_group('group-a')
+
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-3', name: 'C' })
+      ])
+
+      # Claim each to bootstrap offsets
+      3.times do
+        store.claim_next('group-a', partition_by: 'device_id',
+          handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      end
+
+      # Get first page of 2
+      page1 = store.read_offsets(group_id: 'group-a', limit: 2)
+      expect(page1.offsets.size).to eq(2)
+      expect(page1.total_count).to eq(3)
+
+      # Get second page starting from next id (inclusive)
+      page2 = store.read_offsets(group_id: 'group-a', limit: 2, from_id: page1.offsets.last[:id] + 1)
+      expect(page2.offsets.size).to eq(1)
+
+      # No overlap between pages
+      page1_ids = page1.offsets.map { |o| o[:id] }
+      page2_ids = page2.offsets.map { |o| o[:id] }
+      expect(page1_ids & page2_ids).to be_empty
+    end
+
+    it 'to_enum iterates across pages' do
+      store.register_consumer_group('group-a')
+
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }),
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-3', name: 'C' })
+      ])
+
+      3.times do
+        store.claim_next('group-a', partition_by: 'device_id',
+          handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      end
+
+      # Paginate with limit: 1 to force multiple fetches
+      result = store.read_offsets(group_id: 'group-a', limit: 1)
+      all_offsets = result.to_enum.to_a
+      expect(all_offsets.size).to eq(3)
+      expect(all_offsets.map { |o| o[:id] }).to eq(all_offsets.map { |o| o[:id] }.sort)
+    end
+
+    it 'includes claim status fields' do
+      store.register_consumer_group('group-a')
+
+      store.append([
+        CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      ])
+
+      # Claim creates an offset that is claimed
+      claim = store.claim_next('group-a', partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+
+      result = store.read_offsets(group_id: 'group-a')
+      offset = result.offsets.first
+
+      expect(offset[:claimed]).to be true
+      expect(offset[:claimed_by]).to eq('w-1')
+
+      # Ack releases the claim
+      store.ack('group-a', offset_id: claim.offset_id, position: claim.messages.last.position)
+
+      result = store.read_offsets(group_id: 'group-a')
+      offset = result.offsets.first
+
+      expect(offset[:claimed]).to be false
+    end
+
+    it 'supports array destructuring' do
+      offsets, total = store.read_offsets
+      expect(offsets).to eq([])
+      expect(total).to eq(0)
+    end
+  end
+
   describe '#read_correlation_batch' do
     it 'returns all messages sharing the same correlation_id, ordered by position' do
       # Create a command (source of the correlation chain)
