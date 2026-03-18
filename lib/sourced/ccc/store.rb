@@ -213,7 +213,6 @@ module Sourced
           ensure_offsets_for_registered_groups(messages)
         end
 
-        Console.info "AAA append #{messages.map(&:type).uniq}", messages: messages.size
         notifier.notify_new_messages(messages.map(&:type).uniq)
 
         last_position

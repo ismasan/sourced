@@ -25,7 +25,6 @@ module Sourced
       def handle_next_for(reactor_class, worker_id: 'default', batch_size: nil)
         handled_types = reactor_class.handled_messages.map(&:type).uniq
 
-        t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         claim = store.claim_next(
           reactor_class.group_id,
           partition_by: reactor_class.partition_keys.map(&:to_s),
@@ -33,8 +32,6 @@ module Sourced
           worker_id: worker_id,
           batch_size: batch_size
         )
-        t1 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        Console.info "AAA #{reactor_class.name} claim_next=#{((t1-t0)*1000).round(1)}ms found=#{!!claim}"
         return false unless claim
 
         begin
@@ -42,16 +39,10 @@ module Sourced
           if @needs_history[reactor_class]
             attrs = claim.partition_value.transform_keys(&:to_sym)
             conditions = reactor_class.context_for(attrs)
-            t2 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
             kwargs[:history] = store.read(conditions)
-            t3 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-            Console.info "AAA #{reactor_class.name} read_history=#{((t3-t2)*1000).round(1)}ms"
           end
 
-          t4 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
           action_pairs = reactor_class.handle_claim(claim, **kwargs)
-          t5 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-          Console.info "AAA #{reactor_class.name} handle_claim=#{((t5-t4)*1000).round(1)}ms"
 
           if action_pairs == Actions::RETRY
             store.release(reactor_class.group_id, offset_id: claim.offset_id)
@@ -162,7 +153,6 @@ module Sourced
       def execute_actions(action_pairs, claim, group_id)
         after_sync_actions = []
 
-        t_tx0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         store.db.transaction do
           last_position = nil
           Array(action_pairs).each do |(actions, source_message)|
@@ -183,8 +173,6 @@ module Sourced
           end
         end
 
-        t_tx1 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        Console.info "AAA transaction=#{((t_tx1-t_tx0)*1000).round(1)}ms"
         after_sync_actions.each(&:call)
       end
     end
