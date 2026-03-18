@@ -76,6 +76,17 @@ module Sourced
           nil
         end
 
+        # All registered message classes across this registry and subclass registries.
+        #
+        # @return [Enumerator<Class>] if no block given
+        # @yield [Class] each registered message class
+        def all(&block)
+          return enum_for(:all) unless block
+
+          lookup.each_value(&block)
+          subclasses.each { |c| c.registry.all(&block) }
+        end
+
         private
 
         attr_reader :lookup, :message_class

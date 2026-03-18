@@ -311,6 +311,38 @@ RSpec.describe Sourced::CCC::Message do
         expect(keys).to include('device.registered', 'asset.registered', 'system.updated')
       end
     end
+
+    describe '#all' do
+      let!(:test_cmd) { Sourced::CCC::Command.define('test.reg_all_cmd') { attribute :name, String } }
+      let!(:test_evt) { Sourced::CCC::Event.define('test.reg_all_evt') { attribute :name, String } }
+
+      it 'returns an Enumerator when no block given' do
+        expect(Sourced::CCC::Message.registry.all).to be_a(Enumerator)
+      end
+
+      it 'includes classes from subclass registries' do
+        all = Sourced::CCC::Message.registry.all.to_a
+        expect(all).to include(test_cmd)
+        expect(all).to include(test_evt)
+      end
+
+      it 'includes classes registered directly on Message' do
+        all = Sourced::CCC::Message.registry.all.to_a
+        expect(all).to include(CCCTestMessages::DeviceRegistered)
+      end
+
+      it 'yields each class when block given' do
+        yielded = []
+        Sourced::CCC::Message.registry.all { |c| yielded << c }
+        expect(yielded).to include(test_cmd, test_evt)
+      end
+
+      it 'scoped to a subclass registry only includes that branch' do
+        cmd_all = Sourced::CCC::Command.registry.all.to_a
+        expect(cmd_all).to include(test_cmd)
+        expect(cmd_all).not_to include(test_evt)
+      end
+    end
   end
 
   describe 'Payload' do
