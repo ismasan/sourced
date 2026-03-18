@@ -489,17 +489,17 @@ RSpec.describe Sourced::CCC::Store do
       )
     end
 
-    it 'filters with from_position' do
+    it 'filters with after_position' do
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
         attrs: { device_id: 'dev-1' }
       )
-      # dev-1 registered is at position 1, so from_position: 1 should return nothing
-      results, _guard = store.read([cond], from_position: 1)
+      # dev-1 registered is at position 1, so after_position: 1 should return nothing
+      results, _guard = store.read([cond], after_position: 1)
       expect(results).to be_empty
 
-      # from_position: 0 should return it
-      results, _guard = store.read([cond], from_position: 0)
+      # after_position: 0 should return it
+      results, _guard = store.read([cond], after_position: 0)
       expect(results.size).to eq(1)
     end
 
@@ -575,12 +575,12 @@ RSpec.describe Sourced::CCC::Store do
       expect(guard.last_position).to eq(store.latest_position)
     end
 
-    it 'guard last_position falls back to from_position when no results and from_position given' do
+    it 'guard last_position falls back to after_position when no results and after_position given' do
       cond = Sourced::CCC::QueryCondition.new(
         message_type: 'store_test.device.registered',
         attrs: { device_id: 'nonexistent' }
       )
-      _results, guard = store.read([cond], from_position: 2)
+      _results, guard = store.read([cond], after_position: 2)
       expect(guard.last_position).to eq(2)
     end
   end

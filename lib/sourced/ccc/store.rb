@@ -309,18 +309,18 @@ module Sourced
       # (message_type AND key_name AND key_value). Multiple conditions are OR'd.
       #
       # @param conditions [QueryCondition, Array<QueryCondition>] query conditions
-      # @param from_position [Integer, nil] only return messages after this position
+      # @param after_position [Integer, nil] only return messages after this position (exclusive)
       # @param limit [Integer, nil] max number of messages to return
       # @return [ReadResult] messages and a guard
-      def read(conditions, from_position: nil, limit: nil)
+      def read(conditions, after_position: nil, limit: nil)
         conditions = Array(conditions)
         if conditions.empty?
-          guard = ConsistencyGuard.new(conditions:, last_position: from_position || latest_position)
+          guard = ConsistencyGuard.new(conditions:, last_position: after_position || latest_position)
           return ReadResult.new(messages: [], guard:)
         end
 
-        messages = query_messages(conditions, from_position:, limit:)
-        last_position = messages.any? ? messages.last.position : (from_position || latest_position)
+        messages = query_messages(conditions, after_position:, limit:)
+        last_position = messages.any? ? messages.last.position : (after_position || latest_position)
         guard = ConsistencyGuard.new(conditions:, last_position:)
         ReadResult.new(messages:, guard:)
       end
@@ -351,7 +351,7 @@ module Sourced
       #   result = store.read_partition(
       #     { device_id: 'dev-1' },
       #     handled_types: ['device.registered'],
-      #     from_position: 42
+      #     after_position: 42
       #   )
       #   # Only returns messages with position > 42
       #
@@ -366,9 +366,9 @@ module Sourced
       #
       # @param partition_attrs [Hash{Symbol|String => String}] partition attribute values
       # @param handled_types [Array<String>] message type strings to include
-      # @param from_position [Integer] fetch messages after this position (default 0)
+      # @param after_position [Integer] fetch messages after this position (exclusive, default 0)
       # @return [ReadResult] messages and a guard for optimistic concurrency
-      def read_partition(partition_attrs, handled_types:, from_position: 0)
+      def read_partition(partition_attrs, handled_types:, after_position: 0)
         # Resolve key_pair_ids for each partition attribute
         key_pair_ids = partition_attrs.filter_map do |name, value|
           db[@key_pairs_table].where(name: name.to_s, value: value.to_s).get(:id)
@@ -376,11 +376,11 @@ module Sourced
 
         # If any key pair doesn't exist in the store, no messages can match
         if key_pair_ids.size < partition_attrs.size
-          guard = ConsistencyGuard.new(conditions: [], last_position: from_position)
+          guard = ConsistencyGuard.new(conditions: [], last_position: after_position)
           return ReadResult.new(messages: [], guard:)
         end
 
-        messages = fetch_partition_messages(key_pair_ids, from_position, handled_types)
+        messages = fetch_partition_messages(key_pair_ids, after_position, handled_types)
 
         # Build guard conditions from handled_types, scoped to partition attrs.
         # These use OR semantics so the guard detects any concurrent write
@@ -394,7 +394,7 @@ module Sourced
         # The guard's last_position must cover the full OR-context, not just
         # the AND-filtered messages. Otherwise a message that passes the OR
         # conditions but was excluded by AND filtering would look like a conflict.
-        last_pos = max_position_for(guard_conditions, from_position: from_position)
+        last_pos = max_position_for(guard_conditions, after_position: after_position)
 
         guard = ConsistencyGuard.new(conditions: guard_conditions, last_position: last_pos)
         ReadResult.new(messages: messages, guard: guard)
@@ -407,7 +407,7 @@ module Sourced
       # @param position [Integer] check for messages after this position
       # @return [ReadResult]
       def messages_since(conditions, position)
-        read(conditions, from_position: position)
+        read(conditions, after_position: position)
       end
 
       # Register a consumer group. Idempotent.
@@ -1173,11 +1173,11 @@ module Sourced
       # Attributes within each condition are AND'd; conditions are OR'd.
       #
       # @param conditions [Array<QueryCondition>]
-      # @param from_position [Integer, nil]
+      # @param after_position [Integer, nil] only include messages after this position (exclusive)
       # @param limit [Integer, nil]
       # @return [Array<PositionedMessage>]
-      def query_messages(conditions, from_position: nil, limit: nil)
-        subqueries = condition_position_subqueries(conditions, from_position: from_position)
+      def query_messages(conditions, after_position: nil, limit: nil)
+        subqueries = condition_position_subqueries(conditions, after_position: after_position)
         return [] if subqueries.empty?
 
         union = subqueries.join(" UNION ")
@@ -1201,25 +1201,25 @@ module Sourced
       def check_conflicts(conditions, after_position)
         return [] if conditions.empty?
 
-        query_messages(conditions, from_position: after_position)
+        query_messages(conditions, after_position:)
       end
 
       # Max position among messages matching the given conditions.
       # Attributes within each condition are AND'd; conditions are OR'd.
-      # Returns from_position (or latest_position) if no matches.
+      # Returns after_position (or latest_position) if no matches.
       #
       # @param conditions [Array<QueryCondition>]
-      # @param from_position [Integer, nil]
+      # @param after_position [Integer, nil] only consider messages after this position (exclusive)
       # @return [Integer]
-      def max_position_for(conditions, from_position: nil)
-        return from_position || latest_position if conditions.empty?
+      def max_position_for(conditions, after_position: nil)
+        return after_position || latest_position if conditions.empty?
 
-        subqueries = condition_position_subqueries(conditions, from_position: from_position)
-        return from_position || latest_position if subqueries.empty?
+        subqueries = condition_position_subqueries(conditions, after_position: after_position)
+        return after_position || latest_position if subqueries.empty?
 
         union = subqueries.join(" UNION ")
         row = db.fetch("SELECT MAX(position) AS max_pos FROM (#{union})").first
-        row[:max_pos] || from_position || latest_position
+        row[:max_pos] || after_position || latest_position
       end
 
       # Build per-condition position subqueries with AND-within/OR-across semantics.
@@ -1227,9 +1227,9 @@ module Sourced
       # Each subquery selects positions where the message matches ALL attrs in the condition.
       #
       # @param conditions [Array<QueryCondition>]
-      # @param from_position [Integer, nil] only include positions after this
+      # @param after_position [Integer, nil] only include positions after this (exclusive)
       # @return [Array<String>] SQL subquery strings (empty if no conditions can match)
-      def condition_position_subqueries(conditions, from_position: nil)
+      def condition_position_subqueries(conditions, after_position: nil)
         all_lookups = conditions.flat_map { |c| c.attrs.map { |k, v| [k.to_s, v.to_s] } }.uniq
         return [] if all_lookups.empty?
 
@@ -1239,7 +1239,7 @@ module Sourced
         key_pair_index = {}
         key_rows.each { |r| key_pair_index[[r[:name], r[:value]]] = r[:id] }
 
-        position_filter = from_position ? "AND m.position > #{db.literal(from_position)}" : ""
+        position_filter = after_position ? "AND m.position > #{db.literal(after_position)}" : ""
 
         conditions.filter_map do |c|
           kp_ids = c.attrs.filter_map { |k, v| key_pair_index[[k.to_s, v.to_s]] }
