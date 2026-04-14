@@ -139,11 +139,11 @@ module Sourced
         @workers = worker_count.times.map do |i|
           Worker.new(
             work_queue: @work_queue,
-            router: router,
+            router:,
             name: "worker-#{i}",
-            batch_size: batch_size,
-            max_drain_rounds: max_drain_rounds,
-            logger: logger
+            batch_size:,
+            max_drain_rounds:,
+            logger:
           )
         end
 
@@ -153,15 +153,15 @@ module Sourced
 
         @catchup_poller = CatchUpPoller.new(
           work_queue: @work_queue,
-          reactors: reactors,
+          reactors:,
           interval: catchup_interval,
-          logger: logger
+          logger:
         )
 
         @scheduled_message_poller = ScheduledMessagePoller.new(
           store: router.store,
           interval: catchup_interval,
-          logger: logger
+          logger:
         )
 
         @stale_claim_reaper = StaleClaimReaper.new(
@@ -169,7 +169,7 @@ module Sourced
           interval: housekeeping_interval,
           ttl_seconds: claim_ttl_seconds,
           worker_ids_provider: -> { @workers.map(&:name) },
-          logger: logger
+          logger:
         )
       end
 
