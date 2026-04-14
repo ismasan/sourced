@@ -286,23 +286,28 @@ module Sourced
       # @example Next page (using the last position from the previous page)
       #   messages = store.read_all(from_position: 20, limit: 20)
       #
+      # @example Filtered by conditions (OR semantics, same as #read)
+      #   messages = store.read_all(conditions: [cond1, cond2], limit: 20)
+      #
       # @param from_position [Integer] return messages from this position, inclusive (default 0)
+      # @param conditions [Array<QueryCondition>, nil] optional conditions to filter by
       # @param limit [Integer] max number of messages to return (default 50)
       # @return [ReadAllResult] messages and last global position
-      def read_all(from_position: nil, limit: 50, order: :asc)
+      def read_all(from_position: nil, conditions: [], limit: 50, order: :asc)
         desc = order == :desc
-        ds = db[@messages_table]
+        conditions = Array(conditions).compact
+        after_position = from_position ? from_position - 1 : nil
 
-        if from_position
-          ds = desc ? ds.where { position <= from_position } : ds.where { position >= from_position }
+        if conditions.any?
+          messages = query_messages(conditions, after_position:, limit:, order:)
+        else
+          ds = db[@messages_table]
+          ds = desc ? ds.where { position <= from_position } : ds.where { position >= from_position } if from_position
+          messages = ds.order(desc ? Sequel.desc(:position) : :position).limit(limit).map { |row| deserialize(row) }
         end
 
-        messages = ds.order(desc ? Sequel.desc(:position) : :position)
-          .limit(limit)
-          .map { |row| deserialize(row) }
-
-        fetcher = ->(pos) { read_all(from_position: desc ? pos - 1 : pos + 1, limit: limit, order: order) }
-        ReadAllResult.new(messages: messages, last_position: latest_position, fetcher: fetcher)
+        fetcher = ->(pos) { read_all(from_position: desc ? pos - 1 : pos + 1, conditions:, limit:, order:) }
+        ReadAllResult.new(messages:, last_position: latest_position, fetcher:)
       end
 
       # Query messages by conditions. Each condition matches on
@@ -1168,25 +1173,27 @@ module Sourced
         db.fetch(sql).map { |row| deserialize(row) }
       end
 
-      # Core query logic shared by {#read} and {#check_conflicts}.
+      # Core query logic shared by {#read}, {#read_all}, and {#check_conflicts}.
       # Resolves key_pair IDs from conditions, then queries messages.
       # Attributes within each condition are AND'd; conditions are OR'd.
       #
       # @param conditions [Array<QueryCondition>]
       # @param after_position [Integer, nil] only include messages after this position (exclusive)
       # @param limit [Integer, nil]
+      # @param order [:asc, :desc] position order (default :asc)
       # @return [Array<PositionedMessage>]
-      def query_messages(conditions, after_position: nil, limit: nil)
+      def query_messages(conditions, after_position: nil, limit: nil, order: :asc)
         subqueries = condition_position_subqueries(conditions, after_position: after_position)
         return [] if subqueries.empty?
 
         union = subqueries.join(" UNION ")
+        direction = order == :desc ? "DESC" : "ASC"
 
         sql = <<~SQL
           SELECT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.created_at
           FROM #{@messages_table} m
           WHERE m.position IN (#{union})
-          ORDER BY m.position
+          ORDER BY m.position #{direction}
         SQL
         sql += " LIMIT #{db.literal(limit)}" if limit
 

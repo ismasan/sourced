@@ -438,6 +438,80 @@ RSpec.describe Sourced::CCC::Store do
         expect(first_three).to eq([1, 2, 3])
       end
     end
+
+    context 'with conditions' do
+      before do
+        store.append([
+          CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' }),
+          CCCStoreTestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'Truck' }),
+          CCCStoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }),
+          CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'Sensor B' })
+        ])
+      end
+
+      it 'filters messages matching conditions' do
+        cond = Sourced::CCC::QueryCondition.new(
+          message_type: 'store_test.device.registered',
+          attrs: { device_id: 'dev-1' }
+        )
+        result = store.read_all(conditions: [cond])
+        expect(result.messages.size).to eq(1)
+        expect(result.messages.first.payload.device_id).to eq('dev-1')
+      end
+
+      it 'ORs multiple conditions' do
+        cond1 = Sourced::CCC::QueryCondition.new(
+          message_type: 'store_test.device.registered',
+          attrs: { device_id: 'dev-1' }
+        )
+        cond2 = Sourced::CCC::QueryCondition.new(
+          message_type: 'store_test.asset.registered',
+          attrs: { asset_id: 'asset-1' }
+        )
+        result = store.read_all(conditions: [cond1, cond2])
+        types = result.messages.map(&:type)
+        expect(types).to eq(['store_test.device.registered', 'store_test.asset.registered'])
+      end
+
+      it 'combines conditions with from_position' do
+        cond = Sourced::CCC::QueryCondition.new(
+          message_type: 'store_test.device.registered',
+          attrs: { device_id: 'dev-2' }
+        )
+        # dev-2 registered is at position 4
+        result = store.read_all(conditions: [cond], from_position: 4)
+        expect(result.messages.size).to eq(1)
+        expect(result.messages.first.payload.device_id).to eq('dev-2')
+
+        # from_position past it returns nothing
+        result = store.read_all(conditions: [cond], from_position: 5)
+        expect(result.messages).to be_empty
+      end
+
+      it 'returns empty messages when conditions match nothing' do
+        cond = Sourced::CCC::QueryCondition.new(
+          message_type: 'store_test.device.registered',
+          attrs: { device_id: 'nonexistent' }
+        )
+        result = store.read_all(conditions: [cond])
+        expect(result.messages).to be_empty
+      end
+
+      it 'paginates with to_enum' do
+        cond1 = Sourced::CCC::QueryCondition.new(
+          message_type: 'store_test.device.registered',
+          attrs: { device_id: 'dev-1' }
+        )
+        cond2 = Sourced::CCC::QueryCondition.new(
+          message_type: 'store_test.device.registered',
+          attrs: { device_id: 'dev-2' }
+        )
+        # DeviceRegistered messages at positions 1 and 4
+        result = store.read_all(conditions: [cond1, cond2], limit: 1)
+        positions = result.to_enum.map(&:position)
+        expect(positions).to eq([1, 4])
+      end
+    end
   end
 
   describe '#read' do
