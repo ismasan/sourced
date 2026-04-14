@@ -92,6 +92,20 @@ module Sourced
       # @return [Array<CCC::Worker>] worker instances managed by this dispatcher
       attr_reader :workers
 
+      def self.spawn_into(task)
+        config = CCC.config
+        dispatcher = CCC::Dispatcher.new(
+          router: CCC.router,
+          worker_count: config.worker_count,
+          batch_size: config.batch_size,
+          max_drain_rounds: config.max_drain_rounds,
+          catchup_interval: config.catchup_interval,
+          housekeeping_interval: config.housekeeping_interval,
+          claim_ttl_seconds: config.claim_ttl_seconds,
+          logger: config.logger
+        ).spawn_into(task)
+      end
+
       # @param router [CCC::Router] the CCC router providing reactors and store
       # @param worker_count [Integer] number of worker fibers to spawn (default 2)
       # @param batch_size [Integer] max messages per claim (default 50)
@@ -185,6 +199,8 @@ module Sourced
         @workers.each do |w|
           task.send(s) { w.run }
         end
+
+        self
       end
 
       # Stop all components and close the work queue.
