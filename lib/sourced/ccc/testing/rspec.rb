@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'sourced/ccc'
+require 'sourced/ccc/store'
 
 module Sourced
   module CCC
@@ -10,7 +11,11 @@ module Sourced
 
         # Entry point for CCC reactor GWT tests.
         #
-        # @param reactor_class [Class] a CCC::Decider or CCC::Projector subclass
+        # Works with any reactor that responds to the standard
+        # <tt>handle_batch(partition_values, new_messages, history:, replaying:)</tt>
+        # contract (Deciders, Projectors, DurableWorkflows).
+        #
+        # @param reactor_class [Class] a CCC reactor class
         # @param partition_attrs [Hash] partition key-value pairs (e.g. device_id: 'd1')
         # @return [GWT]
         #
@@ -20,13 +25,19 @@ module Sourced
         #     .when(BindDevice, device_id: 'd1', asset_id: 'a1')
         #     .then(DeviceBound, device_id: 'd1', asset_id: 'a1')
         #
-        # @example Projector
+        # @example Projector — assert state via block
         #   with_reactor(MyProjector, list_id: 'L1')
         #     .given(ItemAdded, list_id: 'L1', name: 'Apple')
-        #     .then { |state| expect(state[:items]).to eq(['Apple']) }
+        #     .then { |r| expect(r.state[:items]).to eq(['Apple']) }
         def with_reactor(reactor_class, **partition_attrs)
           GWT.new(reactor_class, **partition_attrs)
         end
+
+        # Uniform result yielded to +.then+ / +.then!+ block callbacks.
+        # Gives access to both the reactor's produced action pairs / messages
+        # (what deciders typically assert on) and the evolved state (what
+        # projectors typically assert on).
+        RunResult = Data.define(:pairs, :messages, :state)
 
         class MessageMatcher
           def initialize(expected_messages)
@@ -69,74 +80,61 @@ module Sourced
         class GWT
           def initialize(reactor_class, **partition_attrs)
             @reactor_class = reactor_class
-            @partition_attrs = partition_attrs
             @partition_values = partition_attrs
             @given_messages = []
-            @when_message = nil
+            @when_messages = []
             @asserted = false
           end
 
-          # Accumulate history/context messages.
-          # For Deciders: these become the history (ReadResult).
-          # For Projectors: these are evolved onto the instance.
+          # Accumulate history / context messages. These become +history.messages+
+          # passed to the reactor's +handle_batch+.
           #
-          # @param klass [Class] message class
-          # @param payload [Hash] payload attributes
+          # @param klass_or_instance [Class, CCC::Message]
+          # @param payload [Hash]
           # @return [self]
           def given(klass_or_instance = nil, **payload)
             raise 'test case already asserted' if @asserted
 
-            msg = build_message(klass_or_instance, **payload)
-            @given_messages << msg
+            @given_messages << build_message(klass_or_instance, **payload)
             self
           end
 
           alias_method :and, :given
 
-          # Set the command to decide on (Deciders only).
+          # The batch of new messages to process via +handle_batch+. Can be
+          # called multiple times to supply several messages.
           #
-          # @param klass [Class] command class
-          # @param payload [Hash] payload attributes
+          # @param klass_or_instance [Class, CCC::Message]
+          # @param payload [Hash]
           # @return [self]
           def when(klass_or_instance = nil, **payload)
             raise 'test case already asserted' if @asserted
-            raise ArgumentError, '.when is not supported for Projectors' if projector?
 
-            @when_message = build_message(klass_or_instance, **payload)
+            @when_messages << build_message(klass_or_instance, **payload)
             self
           end
 
           # Assert expected outcomes.
           #
-          # For Deciders:
-          #   - Pass message class + payload pairs to assert produced messages
-          #   - Pass [] or NONE to assert no messages
-          #   - Pass an Exception class (+ optional message) to assert invariant violation
-          #   - Pass a block to receive action pairs for custom assertions
-          #
-          # For Projectors:
-          #   - Requires a block that receives the evolved state
+          #   - Pass message class + payload pairs (or instances) to assert
+          #     produced messages.
+          #   - Pass +[]+ or +NONE+ to assert no messages.
+          #   - Pass an Exception class (+ optional message) to assert the
+          #     reactor raised.
+          #   - Pass a block to receive a {RunResult} for custom assertions.
           #
           # @return [self]
           def then(*expected, **payload, &block)
             run_then(false, *expected, **payload, &block)
           end
 
-          # Like #then, but runs sync actions before yielding state (Projectors)
-          # or before extracting messages (Deciders).
+          # Like #then, but runs Sync / AfterSync actions before computing
+          # the result yielded to the block (or before extracting messages).
           def then!(*expected, **payload, &block)
             run_then(true, *expected, **payload, &block)
           end
 
           private
-
-          def decider?
-            @reactor_class < CCC::Decider
-          end
-
-          def projector?
-            @reactor_class < CCC::Projector
-          end
 
           def build_message(klass_or_instance, **payload)
             if klass_or_instance.is_a?(CCC::Message)
@@ -154,43 +152,28 @@ module Sourced
               expected = [expected[0].new(payload: payload)]
             end
 
-            if decider?
-              run_decider_then(sync, *expected, &block)
-            elsif projector?
-              run_projector_then(sync, *expected, &block)
-            else
-              raise ArgumentError, "unsupported reactor type: #{@reactor_class}"
-            end
-
-            self
-          end
-
-          def run_decider_then(sync, *expected, &block)
             # Exception expectation
             if expected.size >= 1 && exception_expectation?(expected[0])
               expect_exception(expected[0], expected[1])
-              return
+              return self
             end
 
-            pairs = run_decider
+            pairs = run_handle_batch
 
             if sync
               pairs.each do |actions, _|
                 Array(actions).select { |a|
                   a.is_a?(CCC::Actions::Sync) || a.is_a?(CCC::Actions::AfterSync)
-                }.each(&:call) # collect_actions produces both types; filter from pairs
+                }.each(&:call)
               end
             end
 
             if block_given?
-              block.call(pairs)
-              return
+              block.call(RunResult.new(pairs: pairs, messages: extract_messages(pairs), state: compute_state(sync: sync)))
+              return self
             end
 
-            # Extract messages from action pairs
             actual_messages = extract_messages(pairs)
-
-            # Build expected messages
             expected_msgs = build_expected(*expected)
 
             if expected_msgs.empty?
@@ -199,41 +182,58 @@ module Sourced
                   "Expected no messages, but got #{actual_messages.size}: #{actual_messages.inspect}"
                 )
               end
-              return
+              return self
             end
 
             matcher = MessageMatcher.new(expected_msgs)
             unless matcher.matches?(actual_messages)
               ::RSpec::Expectations.fail_with(matcher.failure_message)
             end
+
+            self
           end
 
-          def run_projector_then(sync, *_expected, &block)
-            raise ArgumentError, '.then for Projectors requires a block' unless block_given?
+          def run_handle_batch
+            guard = CCC::ConsistencyGuard.new(conditions: [], last_position: 0)
+            history = CCC::ReadResult.new(messages: @given_messages, guard: guard)
+            @reactor_class.handle_batch(
+              @partition_values,
+              @when_messages,
+              history: history,
+              replaying: false
+            )
+          end
 
+          # Build an instance and evolve it with all known messages so the
+          # caller can assert on state regardless of reactor type. For reactors
+          # whose +handle_batch+ evolves its own instance (Decider, Projector,
+          # DurableWorkflow), this is an independent, predictable computation.
+          # When +sync+ is true, also runs the reactor's Sync / AfterSync
+          # blocks against this instance so their state mutations are visible.
+          def compute_state(sync: false)
             instance = @reactor_class.new(@partition_values)
+            return nil unless instance.respond_to?(:evolve)
 
-            if @reactor_class < CCC::Projector::EventSourced
-              # EventSourced: evolve from full history
-              instance.evolve(@given_messages)
-            else
-              # StateStored: evolve from given messages
-              instance.evolve(@given_messages)
-            end
-
-            if sync
-              instance.collect_actions(
-                state: instance.state, messages: @given_messages, replaying: false
-              ).each(&:call)
-            end
-
-            block.call(instance.state)
+            messages = @given_messages + @when_messages
+            instance.evolve(messages)
+            run_sync_on(instance, messages) if sync
+            instance.state
           end
 
-          def run_decider
-            guard = ConsistencyGuard.new(conditions: [], last_position: 0)
-            history = ReadResult.new(messages: @given_messages, guard: guard)
-            @reactor_class.handle_batch(@partition_values, [@when_message], history: history)
+          # Invoke Sync / AfterSync blocks against +instance+. Per-block
+          # kwarg signatures vary by reactor type (deciders expect +events:+,
+          # projectors expect +replaying:+); we inspect each block's
+          # parameters and pass only what it declares.
+          def run_sync_on(instance, messages)
+            all_args = { state: instance.state, messages: messages, events: [], replaying: false }
+            klass = instance.class
+            blocks = []
+            blocks.concat(klass.sync_blocks) if klass.respond_to?(:sync_blocks)
+            blocks.concat(klass.after_sync_blocks) if klass.respond_to?(:after_sync_blocks)
+            blocks.each do |block|
+              wanted = block.parameters.select { |type, _| type == :keyreq || type == :key }.map(&:last)
+              instance.instance_exec(**all_args.slice(*wanted), &block)
+            end
           end
 
           def extract_messages(pairs)
@@ -263,11 +263,8 @@ module Sourced
           end
 
           def expect_exception(exception_class, message = nil)
-            guard = ConsistencyGuard.new(conditions: [], last_position: 0)
-            history = ReadResult.new(messages: @given_messages, guard: guard)
-
             begin
-              @reactor_class.handle_batch(@partition_values, [@when_message], history: history)
+              run_handle_batch
             rescue exception_class => e
               if message && e.message != message
                 ::RSpec::Expectations.fail_with(

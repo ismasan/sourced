@@ -33,7 +33,7 @@ module Sourced
           define_method(Sourced.message_method_name('ccc_decide', message_class.to_s), &block)
         end
 
-        def handle_batch(partition_values, new_messages, history:)
+        def handle_batch(partition_values, new_messages, history:, replaying: false)
           instance = new(partition_values)
           instance.evolve(history.messages)
 

@@ -179,9 +179,9 @@ RSpec.describe Sourced::CCC::Testing::RSpec do
       with_reactor(GWTTestDecider, device_id: 'd1')
         .given(CCCGWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
         .when(CCCGWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
-        .then { |pairs|
-          expect(pairs).to be_a(Array)
-          actions, _source = pairs.first
+        .then { |r|
+          expect(r.pairs).to be_a(Array)
+          actions, _source = r.pairs.first
           append_actions = Array(actions).select { |a| a.respond_to?(:messages) }
           expect(append_actions).not_to be_empty
         }
@@ -198,8 +198,8 @@ RSpec.describe Sourced::CCC::Testing::RSpec do
       with_reactor(GWTTestDecider, device_id: 'd1')
         .given(CCCGWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
         .when(CCCGWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
-        .then! { |pairs|
-          expect(pairs).to be_a(Array)
+        .then! { |r|
+          expect(r.pairs).to be_a(Array)
         }
     end
 
@@ -228,26 +228,26 @@ RSpec.describe Sourced::CCC::Testing::RSpec do
     it 'given events → then block asserts evolved state' do
       with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
         .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .then { |state| expect(state[:items]).to eq(['Apple']) }
+        .then { |r| expect(r.state[:items]).to eq(['Apple']) }
     end
 
     it 'given multiple events → then block sees cumulative state' do
       with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
         .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Banana')
-        .then { |state| expect(state[:items]).to eq(['Apple', 'Banana']) }
+        .then { |r| expect(r.state[:items]).to eq(['Apple', 'Banana']) }
     end
 
     it 'then! runs sync actions before yielding state' do
       with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
         .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .then! { |state| expect(state[:synced]).to be true }
+        .then! { |r| expect(r.state[:synced]).to be true }
     end
 
     it 'then! runs after_sync actions before yielding state' do
       with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
         .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .then! { |state| expect(state[:after_synced]).to be true }
+        .then! { |r| expect(r.state[:after_synced]).to be true }
     end
 
     it 'given events with archive → state reflects removal' do
@@ -255,14 +255,7 @@ RSpec.describe Sourced::CCC::Testing::RSpec do
         .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .and(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Banana')
         .and(CCCGWTTestMessages::ItemArchived, list_id: 'L1', name: 'Apple')
-        .then { |state| expect(state[:items]).to eq(['Banana']) }
-    end
-
-    it '.when raises ArgumentError' do
-      expect {
-        with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
-          .when(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-      }.to raise_error(ArgumentError, '.when is not supported for Projectors')
+        .then { |r| expect(r.state[:items]).to eq(['Banana']) }
     end
   end
 
@@ -271,33 +264,27 @@ RSpec.describe Sourced::CCC::Testing::RSpec do
       with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
         .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Banana')
-        .then { |state| expect(state[:items]).to eq(['Apple', 'Banana']) }
+        .then { |r| expect(r.state[:items]).to eq(['Apple', 'Banana']) }
     end
 
     it 'given events with archive → state reflects removal' do
       with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
         .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .and(CCCGWTTestMessages::ItemArchived, list_id: 'L1', name: 'Apple')
-        .then { |state| expect(state[:items]).to eq([]) }
+        .then { |r| expect(r.state[:items]).to eq([]) }
     end
 
     it 'then! runs sync actions before yielding state' do
       with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
         .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .then! { |state| expect(state[:synced]).to be true }
+        .then! { |r| expect(r.state[:synced]).to be true }
     end
 
     it 'then! runs after_sync actions before yielding state' do
       with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
         .given(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .then! { |state| expect(state[:after_synced]).to be true }
+        .then! { |r| expect(r.state[:after_synced]).to be true }
     end
 
-    it '.when raises ArgumentError' do
-      expect {
-        with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
-          .when(CCCGWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-      }.to raise_error(ArgumentError, '.when is not supported for Projectors')
-    end
   end
 end

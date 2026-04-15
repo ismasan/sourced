@@ -49,7 +49,7 @@ module Sourced
       # Projector variant that evolves only the claimed messages on top of stored state.
       class StateStored < self
         class << self
-          def handle_batch(partition_values, new_messages, replaying: false)
+          def handle_batch(partition_values, new_messages, history: nil, replaying: false)
             instance = new(partition_values)
             instance.evolve(new_messages)
             build_action_pairs(instance, new_messages, replaying: replaying)
