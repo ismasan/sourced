@@ -192,24 +192,27 @@ module Sourced
         Waiter.new(self, workflow_id, store:)
       end
 
-      # Router entry point. Processes one claimed message at a time: for each
-      # message, replay history up to and including that position, then run
-      # {#__handle} to derive the next action.
+      # Router entry point. Drops claim.messages from the read history (the
+      # router's +store.read(conditions)+ returns the full partition, including
+      # messages being claimed) and delegates to {.handle_batch}.
       def self.handle_claim(claim, history:)
-        workflow_id = claim.partition_value['workflow_id']
-        ordered = history.messages.sort_by { |m| m.respond_to?(:position) ? m.position : 0 }
-        guard = history.guard
+        claim_positions = claim.messages.map { |m| m.position if m.respond_to?(:position) }.compact.to_set
+        prior = history.messages.reject { |m| m.respond_to?(:position) && claim_positions.include?(m.position) }
+        prior_history = ReadResult.new(messages: prior, guard: history.guard)
+        values = claim.partition_value.transform_keys(&:to_sym)
+        handle_batch(values, claim.messages, history: prior_history)
+      end
 
-        each_with_partial_ack(claim.messages) do |msg|
-          msg_pos = msg.respond_to?(:position) ? msg.position : nil
-          prior = if msg_pos
-            ordered.take_while { |m| (m.respond_to?(:position) ? m.position : 0) <= msg_pos }
-          else
-            ordered
-          end
-          instance = new([workflow_id])
-          instance.__replay(prior)
-          actions = instance.__handle(msg, guard: guard)
+      # GWT-compatible entry point. +history.messages+ must be disjoint from
+      # +new_messages+ — the caller owns that distinction.
+      def self.handle_batch(partition_values, new_messages, history:, replaying: false)
+        workflow_id = partition_values[:workflow_id]
+        instance = new([workflow_id])
+        instance.__replay(history.messages)
+
+        each_with_partial_ack(new_messages) do |msg|
+          instance.__evolve(msg)
+          actions = instance.__handle(msg, guard: history.guard)
           [actions, msg]
         end
       end
@@ -272,7 +275,7 @@ module Sourced
       def initialize(partition_values = nil)
         @id = case partition_values
               when Array then partition_values.first
-              when Hash then partition_values[:workflow_id] || partition_values['workflow_id']
+              when Hash then partition_values[:workflow_id]
               when String then partition_values
               else nil
               end

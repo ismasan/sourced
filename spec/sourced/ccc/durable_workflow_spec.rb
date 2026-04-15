@@ -3,6 +3,7 @@
 require 'spec_helper'
 require 'sourced/ccc'
 require 'sourced/ccc/store'
+require 'sourced/ccc/testing/rspec'
 require 'sequel'
 
 module CCCDurableTests
@@ -101,6 +102,8 @@ module CCCDurableTests
 end
 
 RSpec.describe Sourced::CCC::DurableWorkflow do
+  include Sourced::CCC::Testing::RSpec
+
   let(:workflow_id) { 'durable-test-1' }
   let(:name) { 'Joe' }
 
@@ -162,25 +165,19 @@ RSpec.describe Sourced::CCC::DurableWorkflow do
       get_ip_key = Sourced::CCC::DurableWorkflow.step_key(:get_ip, [])
       geolocate_key = Sourced::CCC::DurableWorkflow.step_key(:geolocate, ['11.111.111'])
 
-      history = [
-        CCCDurableTests::Task::WorkflowStarted.new(payload: { workflow_id:, args: [name] }),
-        CCCDurableTests::Task::StepStarted.new(payload: { workflow_id:, key: get_ip_key, step_name: :get_ip, args: [] }),
-        CCCDurableTests::Task::StepComplete.new(payload: { workflow_id:, key: get_ip_key, step_name: :get_ip, output: '11.111.111' }),
-        CCCDurableTests::Task::StepStarted.new(payload: { workflow_id:, key: geolocate_key, step_name: :geolocate, args: ['11.111.111'] })
-      ]
-
       expect(CCCDurableTests::IPResolver).not_to receive(:resolve)
       expect(CCCDurableTests::Geolocator).to receive(:locate).with('11.111.111').and_return('Santiago, Chile')
 
-      until history.last.is_a?(CCCDurableTests::Task::WorkflowComplete)
-        next_action = CCCDurableTests::Task.handle(history.last, history:)
-        expect(next_action).to be_a Sourced::CCC::Actions::Append
-        history += next_action.messages
-      end
-
-      task = CCCDurableTests::Task.from(history)
-      expect(task.status).to eq(:complete)
-      expect(task.output).to eq('Hello Joe, your IP is 11.111.111 and its location is Santiago, Chile')
+      with_reactor(CCCDurableTests::Task, workflow_id: workflow_id)
+        .given(CCCDurableTests::Task::WorkflowStarted, workflow_id:, args: [name])
+        .given(CCCDurableTests::Task::StepStarted, workflow_id:, key: get_ip_key, step_name: :get_ip, args: [])
+        .given(CCCDurableTests::Task::StepComplete, workflow_id:, key: get_ip_key, step_name: :get_ip, output: '11.111.111')
+        .when(CCCDurableTests::Task::StepStarted, workflow_id:, key: geolocate_key, step_name: :geolocate, args: ['11.111.111'])
+        .then(
+          CCCDurableTests::Task::StepComplete.new(payload: {
+            workflow_id:, key: geolocate_key, step_name: :geolocate, output: 'Santiago, Chile'
+          })
+        )
     end
   end
 
@@ -188,27 +185,21 @@ RSpec.describe Sourced::CCC::DurableWorkflow do
     it 'does not try again' do
       get_ip_key = Sourced::CCC::DurableWorkflow.step_key(:get_ip, [])
 
-      history = [
-        CCCDurableTests::Task::WorkflowStarted.new(payload: { workflow_id:, args: [name] }),
-        CCCDurableTests::Task::StepStarted.new(payload: { workflow_id:, key: get_ip_key, step_name: :get_ip, args: [] }),
-        CCCDurableTests::Task::StepFailed.new(payload: { workflow_id:, key: get_ip_key, step_name: :get_ip, error_class: 'NetworkError', error_message: 'foo', backtrace: [] }),
-        CCCDurableTests::Task::WorkflowFailed.new(payload: { workflow_id: })
-      ]
-
-      step_started = CCCDurableTests::Task::StepStarted.new(payload: { workflow_id:, key: get_ip_key, step_name: :get_ip, args: [] })
-      next_action = CCCDurableTests::Task.handle(step_started, history:)
-      expect(next_action).to eq(Sourced::CCC::Actions::OK)
+      with_reactor(CCCDurableTests::Task, workflow_id: workflow_id)
+        .given(CCCDurableTests::Task::WorkflowStarted, workflow_id:, args: [name])
+        .given(CCCDurableTests::Task::StepStarted, workflow_id:, key: get_ip_key, step_name: :get_ip, args: [])
+        .given(CCCDurableTests::Task::StepFailed, workflow_id:, key: get_ip_key, step_name: :get_ip, error_class: 'NetworkError', error_message: 'foo', backtrace: [])
+        .given(CCCDurableTests::Task::WorkflowFailed, workflow_id:)
+        .when(CCCDurableTests::Task::StepStarted, workflow_id:, key: get_ip_key, step_name: :get_ip, args: [])
+        .then(Sourced::CCC::Testing::RSpec::NONE)
     end
   end
 
   context 'with a different workflow handling irrelevant messages' do
     it 'blows up' do
-      started = make_started(CCCDurableTests::AnotherTask, args: [name])
-      history = [started]
-
-      expect {
-        CCCDurableTests::Task.handle(history.last, history:)
-      }.to raise_error(Sourced::CCC::DurableWorkflow::UnknownMessageError)
+      with_reactor(CCCDurableTests::Task, workflow_id: workflow_id)
+        .when(CCCDurableTests::AnotherTask::WorkflowStarted, workflow_id:, args: [name])
+        .then(Sourced::CCC::DurableWorkflow::UnknownMessageError)
     end
   end
 
