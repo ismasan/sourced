@@ -35,7 +35,6 @@ module Sourced
     attribute :payload, Types::Static[nil]
 
     # Lookup table mapping type strings to message subclasses.
-    # Separate from {Sourced::Message}'s registry.
     class Registry
       # @param message_class [Class] the root message class for this registry
       def initialize(message_class)

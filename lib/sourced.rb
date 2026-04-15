@@ -56,6 +56,7 @@ module Sourced
   def self.register(reactor)
     config.setup!
     config.router.register(reactor)
+    @topology = nil
   end
 
   # @return [Sourced::Store]
@@ -112,19 +113,19 @@ module Sourced
 
   # Handle a command synchronously: validate, load history, decide, append, ACK.
   def self.handle!(reactor_class, command, store: nil)
-    store ||= self.store
-
     partition_attrs = extract_partition_attrs(command, reactor_class)
     values = reactor_class.partition_keys.map { |k| partition_attrs[k]&.to_s }
-    instance = reactor_class.new(values)
 
     unless command.valid?
-      return HandleResult.new(command: command, reactor: instance, events: [])
+      return HandleResult.new(command: command, reactor: reactor_class.new(values), events: [])
     end
 
+    store ||= self.store
     needs_history = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
     if needs_history
       instance, read_result = load(reactor_class, store: store, **partition_attrs)
+    else
+      instance = reactor_class.new(values)
     end
 
     raw_events = instance.decide(command)
@@ -160,19 +161,13 @@ module Sourced
   end
 
   private_class_method def self.advance_registered_offsets(store, reactor_class, partition_attrs, position)
-    return unless config.router
+    return unless config.router&.reactors&.include?(reactor_class)
 
-    partition = partition_attrs.transform_keys(&:to_s)
-
-    config.router.reactors.each do |registered_reactor|
-      next unless registered_reactor == reactor_class
-
-      store.advance_offset(
-        registered_reactor.group_id,
-        partition: partition,
-        position: position
-      )
-    end
+    store.advance_offset(
+      reactor_class.group_id,
+      partition: partition_attrs.transform_keys(&:to_s),
+      position: position
+    )
   end
 end
 

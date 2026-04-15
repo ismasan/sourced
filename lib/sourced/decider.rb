@@ -8,6 +8,8 @@ module Sourced
     include Sourced::Sync
     extend Sourced::Consumer
 
+    PREFIX = 'sourced_decide'
+
     class << self
       # @return [Array<Class>] command message classes handled by this decider
       def handled_commands
@@ -29,7 +31,7 @@ module Sourced
       # @return [void]
       def command(message_class, &block)
         handled_commands << message_class
-        define_method(Sourced.message_method_name('sourced_decide', message_class.to_s), &block)
+        define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
       end
 
       def handle_batch(partition_values, new_messages, history:, replaying: false)
@@ -98,7 +100,7 @@ module Sourced
     # @return [Array<Sourced::Message>] newly produced events
     def decide(command)
       @uncommitted_events = []
-      method_name = Sourced.message_method_name('sourced_decide', command.class.to_s)
+      method_name = Sourced.message_method_name(PREFIX, command.class.to_s)
       send(method_name, state, command) if respond_to?(method_name)
       @uncommitted_events.dup
     end

@@ -268,7 +268,7 @@ module Sourced
       def events_produced_by(reactor, cmd_class)
         return [] unless @prism_available
 
-        method_name = Sourced.message_method_name('sourced_decide', cmd_class.name)
+        method_name = Sourced.message_method_name(Decider::PREFIX, cmd_class.name)
         extract_calls_from_handler(reactor, method_name, :event)
       end
 
