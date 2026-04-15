@@ -476,7 +476,7 @@ end
 
 ### Reactions
 
-Both deciders and projectors can react to events to produce new commands or events, enabling workflow orchestration.
+Both deciders and projectors can react to events to produce follow-up messages, enabling workflow orchestration. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
 
 ```ruby
 class EnrolmentDecider < Sourced::Decider
@@ -484,12 +484,41 @@ class EnrolmentDecider < Sourced::Decider
 
   # ... evolve and command handlers ...
 
-  # React to an event by producing new messages
+  # Dispatch a follow-up message by class
   reaction StudentEnrolled do |state, event|
-    NotifyStudent.new(payload: { student_id: event.payload.student_id })
+    dispatch(NotifyStudent, student_id: event.payload.student_id)
+  end
+
+  # Dispatch multiple messages from one block
+  reaction OrderPlaced do |_state, event|
+    dispatch(ReserveInventory, order_id: event.payload.order_id)
+    dispatch(ChargePayment,    order_id: event.payload.order_id)
+  end
+
+  # Chain .with_metadata and .at for metadata/delay
+  reaction StudentEnrolled do |_state, event|
+    dispatch(SendReminder, student_id: event.payload.student_id)
+      .with_metadata(channel: 'email')
+      .at(Time.now + 300)
+  end
+
+  # Dispatch by symbol (resolved via the reactor's message registry)
+  reaction :student_enrolled do |_state, event|
+    dispatch(:notify_student, student_id: event.payload.student_id)
+  end
+
+  # Wildcard: react to every evolve type without an explicit handler.
+  # Useful for side-channel pipelines (audit logs, outbox, etc.).
+  reaction do |_state, event|
+    dispatch(ForwardToOutbox, event_id: event.id)
   end
 end
 ```
+
+`dispatch` accepts either a message class or a symbol. Symbols are looked up via `self.class[symbol]` against the reactor's command/event registry and raise if unresolved. The returned `Dispatcher` supports:
+
+- `.with_metadata(hash)` — merges into the message metadata (the `producer` key is already set).
+- `.at(time)` — stamps the message for delayed delivery (promoted by the `ScheduledMessagePoller`).
 
 Reactions are skipped during replay (when `replaying: true`), so side effects don't re-fire.
 
