@@ -6,3 +6,5 @@ logs/
 pkg
 .DS_Store
 .claude
+bench/
+
