@@ -1,115 +1,102 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'sourced'
 
-module EvolveTest
-  class Reactor
-    include Sourced::Evolve
-
-    Event1 = Sourced::Message.define('evolvetest.reactor.event1')
-    Event2 = Sourced::Message.define('evolvetest.reactor.event2')
-    Event3 = Sourced::Message.define('evolvetest.reactor.event3')
-
-    state do |_id|
-      []
-    end
-
-    event Event1 do |state, event|
-      state << event
-    end
-
-    event Event2 do |state, event|
-      state << event
-    end
+module EvolveTestMessages
+  ItemAdded = Sourced::Message.define('evolve_test.item.added') do
+    attribute :item_id, String
+    attribute :name, String
   end
 
-  class ChildReactor < Reactor
-    event Event3
+  ItemRemoved = Sourced::Message.define('evolve_test.item.removed') do
+    attribute :item_id, String
   end
 
-  class Noop
-    include Sourced::Evolve
-
-    state do |_id|
-      []
-    end
-
-    event Reactor::Event1
-  end
-
-  class EvolveAll
-    include Sourced::Evolve
-
-    state do |_id|
-      []
-    end
-
-    evolve_all Reactor do |state, event|
-      state << event
-    end
-  end
-
-  class WithBefore < EvolveAll
-    before_evolve do |state, event|
-      state << event.seq
-    end
+  Unhandled = Sourced::Message.define('evolve_test.unhandled') do
+    attribute :foo, String
   end
 end
 
 RSpec.describe Sourced::Evolve do
+  let(:evolver_class) do
+    Class.new do
+      include Sourced::Evolve
+
+      def initialize(partition_values = {})
+        @partition_values = partition_values
+      end
+
+      state do |partition_values|
+        { items: [], partition_values: partition_values }
+      end
+
+      evolve EvolveTestMessages::ItemAdded do |state, msg|
+        state[:items] << { id: msg.payload.item_id, name: msg.payload.name }
+      end
+
+      evolve EvolveTestMessages::ItemRemoved do |state, msg|
+        state[:items].reject! { |i| i[:id] == msg.payload.item_id }
+      end
+    end
+  end
+
+  describe '.state' do
+    it 'initializes state with partition values hash' do
+      instance = evolver_class.new(key1: 'val1', key2: 'val2')
+      expect(instance.state[:partition_values]).to eq({ key1: 'val1', key2: 'val2' })
+    end
+  end
+
   describe '#evolve' do
-    it 'evolves instance' do
-      evt1 = EvolveTest::Reactor::Event1.new(stream_id: '1', seq: 1)
-      evt2 = EvolveTest::Reactor::Event2.new(stream_id: '1', seq: 2)
-      state = EvolveTest::Reactor.new.evolve([evt1, evt2])
-      expect(state).to eq([evt1, evt2])
+    it 'applies registered handlers in order' do
+      instance = evolver_class.new
+      messages = [
+        EvolveTestMessages::ItemAdded.new(payload: { item_id: 'i1', name: 'Apple' }),
+        EvolveTestMessages::ItemAdded.new(payload: { item_id: 'i2', name: 'Banana' }),
+        EvolveTestMessages::ItemRemoved.new(payload: { item_id: 'i1' })
+      ]
+
+      instance.evolve(messages)
+
+      expect(instance.state[:items]).to eq([{ id: 'i2', name: 'Banana' }])
     end
 
-    it 'accepts single message' do
-      evt1 = EvolveTest::Reactor::Event1.new(stream_id: '1', seq: 1)
-      instance = EvolveTest::Reactor.new
-      instance.evolve(evt1)
-      expect(instance.state).to eq([evt1])
+    it 'skips unregistered message types' do
+      instance = evolver_class.new
+      messages = [
+        EvolveTestMessages::ItemAdded.new(payload: { item_id: 'i1', name: 'Apple' }),
+        EvolveTestMessages::Unhandled.new(payload: { foo: 'bar' })
+      ]
+
+      instance.evolve(messages)
+
+      expect(instance.state[:items]).to eq([{ id: 'i1', name: 'Apple' }])
     end
   end
 
-  specify '.handled_messages_for_evolve' do
-    expect(EvolveTest::Reactor.handled_messages_for_evolve).to eq([
-      EvolveTest::Reactor::Event1,
-      EvolveTest::Reactor::Event2
-    ])
-
-    expect(EvolveTest::ChildReactor.handled_messages_for_evolve).to eq([
-      EvolveTest::Reactor::Event1,
-      EvolveTest::Reactor::Event2,
-      EvolveTest::Reactor::Event3,
-    ])
+  describe '.handled_messages_for_evolve' do
+    it 'tracks registered classes' do
+      expect(evolver_class.handled_messages_for_evolve).to contain_exactly(
+        EvolveTestMessages::ItemAdded,
+        EvolveTestMessages::ItemRemoved
+      )
+    end
   end
 
-  specify '.evolve handlers without a block' do
-    expect(EvolveTest::Noop.handled_messages_for_evolve).to eq([EvolveTest::Reactor::Event1])
+  describe 'inheritance' do
+    it 'subclass inherits evolve handlers' do
+      subclass = Class.new(evolver_class)
+      expect(subclass.handled_messages_for_evolve).to contain_exactly(
+        EvolveTestMessages::ItemAdded,
+        EvolveTestMessages::ItemRemoved
+      )
 
-    evt1 = EvolveTest::Reactor::Event1.new(stream_id: '1', seq: 1)
-    new_state = EvolveTest::Noop.new.evolve([evt1])
-    expect(new_state).to eq([])
-  end
-
-  specify '.evolve_all' do
-    evt1 = EvolveTest::Reactor::Event1.new(stream_id: '1', seq: 1)
-    evt2 = EvolveTest::Reactor::Event2.new(stream_id: '1', seq: 2)
-    evolver = EvolveTest::EvolveAll.new
-    expect(evolver.state).to eq([])
-    new_state = evolver.evolve([evt1, evt2])
-    expect(new_state).to eq([evt1, evt2])
-    expect(evolver.state).to eq([evt1, evt2])
-  end
-
-  specify '.before_evolve' do
-    evt1 = EvolveTest::Reactor::Event1.new(stream_id: '1', seq: 1)
-    evt2 = EvolveTest::Reactor::Event2.new(stream_id: '1', seq: 2)
-    # evt3 is not handled by the reactor
-    evt3 = EvolveTest::Reactor::Event3.new(stream_id: '1', seq: 3)
-    new_state = EvolveTest::WithBefore.new.evolve([evt1, evt2, evt3])
-    expect(new_state).to eq([1, evt1, 2, evt2])
+      instance = subclass.new
+      instance.evolve([
+        EvolveTestMessages::ItemAdded.new(payload: { item_id: 'i1', name: 'Apple' })
+      ])
+      expect(instance.state[:items]).to eq([{ id: 'i1', name: 'Apple' }])
+    end
   end
 end

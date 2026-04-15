@@ -1,139 +1,276 @@
 # frozen_string_literal: true
 
+require 'spec_helper'
+require 'sourced'
 require 'sequel'
 
 RSpec.describe Sourced::Configuration do
-  subject(:config) { described_class.new }
+  after { Sourced.reset! }
 
-  it 'has a test backend by default' do
-    expect(config.backend).to be_a(Sourced::Backends::TestBackend)
+  describe 'Sourced.config' do
+    it 'returns a Configuration with sensible defaults' do
+      config = Sourced.config
+      expect(config).to be_a(described_class)
+      expect(config.worker_count).to eq(2)
+      expect(config.batch_size).to eq(50)
+      expect(config.catchup_interval).to eq(5)
+      expect(config.max_drain_rounds).to eq(10)
+      expect(config.claim_ttl_seconds).to eq(120)
+      expect(config.housekeeping_interval).to eq(30)
+      expect(config.logger).to eq(Sourced.config.logger)
+    end
+
+    it 'returns the same instance on repeated calls' do
+      expect(Sourced.config).to be(Sourced.config)
+    end
   end
 
-  it 'has a default #error_strategy' do
-    expect(config.error_strategy).to be_a(Sourced::ErrorStrategy)
-  end
-
-  specify '#error_strategy=' do
-    st = Sourced::ErrorStrategy.new
-    config.error_strategy = st
-    expect(config.error_strategy).to eq(st)
-  end
-
-  describe '#error_strategy(&block)' do
-    it 'configures the error strategy with a block' do
-      config.error_strategy do |s|
-        s.retry(times: 30, after: 50)
+  describe 'Sourced.configure' do
+    it 'yields the config and freezes it after setup' do
+      Sourced.configure do |c|
+        c.worker_count = 4
+        c.batch_size = 100
       end
 
-      expect(config.error_strategy).to be_a(Sourced::ErrorStrategy)
-      expect(config.error_strategy.max_retries).to eq(30)
-      expect(config.error_strategy.retry_after).to eq(50)
+      expect(Sourced.config.worker_count).to eq(4)
+      expect(Sourced.config.batch_size).to eq(100)
+      expect(Sourced.config).to be_frozen
+    end
+
+    it 'calls setup! which creates store and router' do
+      Sourced.configure {}
+
+      expect(Sourced.config.store).to be_a(Sourced::Store)
+      expect(Sourced.config.router).to be_a(Sourced::Router)
     end
   end
 
-  describe '#backend=' do
-    it 'can configure backend with a Sequel SQLite database' do
-      config.backend = Sequel.sqlite
-      expect(config.backend).to be_a(Sourced::Backends::SQLiteBackend)
+  describe 'Sourced.register' do
+    let(:reactor_class) do
+      Class.new(Sourced::Projector::StateStored) do
+        def self.name = 'TestConfigReactor'
+
+        consumer_group 'test-config-reactor'
+        partition_by :thing_id
+
+        state { |_| {} }
+      end
     end
 
-    it 'uses PGBackend for Postgres databases' do
-      config.backend = Sequel.postgres('sourced_test')
-      expect(config.backend).to be_a(Sourced::Backends::PGBackend)
+    it 'triggers setup and delegates to router.register' do
+      Sourced.register(reactor_class)
+
+      expect(Sourced.router.reactors).to include(reactor_class)
+    end
+  end
+
+  describe 'Sourced.store' do
+    it 'triggers setup and returns the store' do
+      store = Sourced.store
+      expect(store).to be_a(Sourced::Store)
+      expect(store.installed?).to be true
+    end
+  end
+
+  describe 'Sourced.router' do
+    it 'triggers setup and returns the router' do
+      router = Sourced.router
+      expect(router).to be_a(Sourced::Router)
+      expect(router.store).to be(Sourced.store)
+    end
+  end
+
+  describe 'Sourced.setup!' do
+    let(:reactor_class) do
+      Class.new(Sourced::Projector::StateStored) do
+        def self.name = 'SetupTestReactor'
+
+        consumer_group 'setup-test-reactor'
+        partition_by :thing_id
+
+        state { |_| {} }
+      end
     end
 
-    it 'accepts anything with the Backend interface' do
-      backend = Struct.new(
-        :installed?,
-        :reserve_next_for_reactor,
-        :append_to_stream,
-        :read_correlation_batch,
-        :read_stream,
-        :updating_consumer_group,
-        :register_consumer_group,
-        :start_consumer_group,
-        :stop_consumer_group,
-        :reset_consumer_group,
-        :stats,
-        :transaction
+    it 'replays the configure block on a fresh Configuration' do
+      call_count = 0
+      Sourced.configure do |c|
+        call_count += 1
+        c.worker_count = 8
+      end
+
+      expect(call_count).to eq(1)
+      original_config = Sourced.config
+
+      Sourced.setup!
+
+      expect(call_count).to eq(2)
+      expect(Sourced.config).not_to be(original_config)
+      expect(Sourced.config.worker_count).to eq(8)
+      expect(Sourced.config).to be_frozen
+    end
+
+    it 'creates a new store connection on each call' do
+      Sourced.configure {}
+      store1 = Sourced.config.store
+
+      Sourced.setup!
+      store2 = Sourced.config.store
+
+      expect(store2).not_to be(store1)
+    end
+
+    it 'works without a configure block' do
+      Sourced.setup!
+
+      expect(Sourced.config.store).to be_a(Sourced::Store)
+      expect(Sourced.config.router).to be_a(Sourced::Router)
+      expect(Sourced.config).to be_frozen
+    end
+  end
+
+  describe 'Sourced.reset!' do
+    it 'clears the singleton config' do
+      original = Sourced.config
+      Sourced.reset!
+      expect(Sourced.config).not_to be(original)
+    end
+
+    it 'clears the stored configure block' do
+      Sourced.configure do |c|
+        c.worker_count = 8
+      end
+
+      Sourced.reset!
+      Sourced.setup!
+
+      expect(Sourced.config.worker_count).to eq(2)
+    end
+  end
+
+  describe '#store=' do
+    it 'accepts a Sourced::Store instance directly' do
+      db = Sequel.sqlite
+      store = Sourced::Store.new(db)
+
+      config = described_class.new
+      config.store = store
+      expect(config.store).to be(store)
+    end
+
+    it 'wraps a Sequel::SQLite::Database in a Store' do
+      db = Sequel.sqlite
+
+      config = described_class.new
+      config.store = db
+      expect(config.store).to be_a(Sourced::Store)
+      expect(config.store.db).to be(db)
+    end
+
+    it 'accepts any object implementing StoreInterface' do
+      fake_store = double('CustomStore',
+        installed?: true, install!: nil, append: nil, read: nil,
+        read_partition: nil, claim_next: nil, ack: nil, release: nil,
+        register_consumer_group: nil, worker_heartbeat: nil,
+        release_stale_claims: nil, notifier: nil
       )
 
-      config.backend = backend.new(nil, nil, nil, nil, nil, nil)
-
-      expect(config.backend).to be_a(backend)
+      config = described_class.new
+      config.store = fake_store
+      expect(config.store).to be(fake_store)
     end
 
-    it 'fails loudly if the backend does not implement the Backend interface' do
-      expect { config.backend = Object.new }.to raise_error(Plumb::ParseError)
-    end
-  end
-
-  describe '#pubsub' do
-    it 'defaults to PubSub::Test' do
-      expect(config.pubsub).to be_a(Sourced::PubSub::Test)
-    end
-
-    it 'auto-sets PubSub::PG when backend is a Postgres database' do
-      config.backend = Sequel.postgres('sourced_test')
-      expect(config.pubsub).to be_a(Sourced::PubSub::PG)
-    end
-
-    it 'keeps current pubsub when backend is SQLite' do
-      config.backend = Sequel.sqlite
-      expect(config.pubsub).to be_a(Sourced::PubSub::Test)
-    end
-
-    it 'can be overridden with pubsub=' do
-      custom = Struct.new(:subscribe, :publish).new
-      config.pubsub = custom
-      expect(config.pubsub).to eq(custom)
-    end
-
-    it 'fails loudly if the pubsub does not implement the PubSub interface' do
-      expect { config.pubsub = Object.new }.to raise_error(Plumb::ParseError)
+    it 'raises for objects not implementing StoreInterface' do
+      config = described_class.new
+      expect { config.store = Object.new }.to raise_error(Plumb::ParseError)
     end
   end
 
-  specify '#executor' do
-    expect(config.executor).to be_a(Sourced::AsyncExecutor)
+  describe '#error_strategy' do
+    it 'returns a default ErrorStrategy' do
+      config = described_class.new
+      expect(config.error_strategy).to be_a(Sourced::ErrorStrategy)
+    end
+
+    it 'can be overridden with a custom callable' do
+      custom = ->(_e, _m, _g) {}
+      config = described_class.new
+      config.error_strategy = custom
+      expect(config.error_strategy).to be(custom)
+    end
+
+    it 'raises if assigned a non-callable' do
+      config = described_class.new
+      expect { config.error_strategy = 'not callable' }.to raise_error(ArgumentError)
+    end
   end
 
-  describe 'subscribers' do
-    it 'triggers subscribers on #setup!' do
-      executor_class = nil
-      config.subscribe do |c|
-        executor_class = c.executor.class
-      end
-      config.executor = :thread
+  describe '#setup!' do
+    it 'is idempotent' do
+      config = described_class.new
       config.setup!
-      expect(executor_class).to eq(Sourced::ThreadExecutor)
+      store1 = config.store
+      router1 = config.router
+      config.setup!
+      expect(config.store).to be(store1)
+      expect(config.router).to be(router1)
+    end
+
+    it 'defaults to in-memory SQLite store when none configured' do
+      config = described_class.new
+      config.setup!
+      expect(config.store).to be_a(Sourced::Store)
+      expect(config.store.installed?).to be true
+    end
+
+    it 'uses configured store when set' do
+      db = Sequel.sqlite
+      store = Sourced::Store.new(db)
+      store.install!
+
+      config = described_class.new
+      config.store = store
+      config.setup!
+      expect(config.store).to be(store)
     end
   end
 
-  describe '#executor=()' do
-    specify ':async' do
-      config.executor = :async
-      expect(config.executor).to be_a(Sourced::AsyncExecutor)
-    end
+  describe 'Sourced.load with global store' do
+    let(:db) { Sequel.sqlite }
+    let(:store) { Sourced::Store.new(db) }
 
-    specify ':thread' do
-      config.executor = :thread
-      expect(config.executor).to be_a(Sourced::ThreadExecutor)
-    end
+    let(:decider_class) do
+      Class.new(Sourced::Decider) do
+        def self.name = 'ConfigLoadDecider'
 
-    specify 'any #start interface' do
-      custom = Class.new do
-        def start; end
+        partition_by :thing_id
+        consumer_group 'config-load-decider'
+
+        state { |_| { count: 0 } }
       end
-
-      config.executor = custom.new
-      expect(config.executor).to be_a(custom)
     end
 
-    specify 'an invalid executor' do
-      expect {
-        config.executor = Object.new
-      }.to raise_error(ArgumentError)
+    before do
+      store.install!
+      Sourced.configure do |c|
+        c.store = store
+      end
+    end
+
+    it 'uses global store when store: not provided' do
+      instance, read_result = Sourced.load(decider_class, thing_id: 'abc')
+      expect(instance.state[:count]).to eq(0)
+      expect(read_result.messages).to be_empty
+    end
+
+    it 'uses override store when store: provided' do
+      other_db = Sequel.sqlite
+      other_store = Sourced::Store.new(other_db)
+      other_store.install!
+
+      instance, read_result = Sourced.load(decider_class, store: other_store, thing_id: 'abc')
+      expect(instance.state[:count]).to eq(0)
+      expect(read_result.messages).to be_empty
     end
   end
 end

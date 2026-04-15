@@ -1,122 +1,164 @@
 # frozen_string_literal: true
 
 module Sourced
-  # This mixin provides consumer info configuration
-  # and a .consumer_info method to access it.
-  # @example
-  #
-  #  class MyConsumer
-  #    extend Sourced::Consumer
-  #
-  #    consumer do |c|
-  #      # consumer group
-  #      c.group_id = 'my-group'
-  #
-  #      # Start consuming events from the beginning of history
-  #      c.start_from = :beginning
-  #    end
-  #  end
-  #
-  #  MyConsumer.consumer_info.group_id # => 'my-group'
-  #
+  # Accumulates mutations to a consumer group row for atomic persistence.
+  # Accumulates consumer group mutations for atomic persistence.
+  # Used by {Store#updating_consumer_group}.
+  class GroupUpdater
+    attr_reader :group_id, :updates, :error_context
+
+    def initialize(group_id, row, logger)
+      @group_id = group_id
+      @logger = logger
+      @error_context = row[:error_context]
+      @updates = { error_context: @error_context.dup }
+    end
+
+    def stop(message: nil)
+      @logger.error "Sourced: stopping consumer group #{group_id}"
+      @updates[:status] = Store::STOPPED
+      @updates[:retry_at] = nil
+      @updates[:updated_at] = Time.now.iso8601
+      @updates[:error_context][:message] = message if message
+    end
+
+    def fail(exception: nil)
+      @logger.error "Sourced: failing consumer group #{group_id}. #{exception&.class}: #{exception&.message}"
+      @updates[:status] = Store::FAILED
+      @updates[:retry_at] = nil
+      @updates[:updated_at] = Time.now.iso8601
+      if exception
+        @updates[:error_context][:exception_class] = exception.class.to_s
+        @updates[:error_context][:exception_message] = exception.message
+      end
+    end
+
+    def retry(time, **ctx)
+      @logger.warn "Sourced: retrying consumer group #{group_id} at #{time}"
+      @updates[:updated_at] = Time.now.iso8601
+      @updates[:retry_at] = time.iso8601
+      @updates[:error_context].merge!(ctx)
+    end
+  end
+
+  # Shared consumer configuration for reactors.
+  # Extended (not included) onto reactor classes.
   module Consumer
-    class ConsumerInfo < Types::Data
-      ToBlock = Types::Any.transform(Proc) { |v| -> { v } }
-      StartFromBeginning = Types::Value[:beginning] >> Types::Static[nil] >> ToBlock
-      StartFromNow = Types::Value[:now] >> Types::Static[-> { Time.now - 5 }.freeze]
-      StartFromTime = Types::Interface[:call].check('must return a Time') { |v| v.call.is_a?(Time) }
-
-      StartFrom = (
-        StartFromBeginning | StartFromNow | StartFromTime
-      ).default { -> { nil } }
-
-      attribute :group_id, Types::String.present, writer: true
-      attribute :start_from, StartFrom, writer: true
-      attribute :batch_size, Types::Integer.nullable.default(nil), writer: true
+    def self.extended(base)
+      super
+      base.extend ClassMethods
     end
 
-    def consumer_info
-      @consumer_info ||= ConsumerInfo.new(group_id: name, start_from: :beginning)
+    def partition_keys
+      @partition_keys ||= []
     end
 
-    def consumer(&)
-      return consumer_info unless block_given?
-
-      info = ConsumerInfo.new(group_id: name)
-      yield info
-      raise Plumb::ParseError, info.errors unless info.valid?
-
-      @consumer_info = info
+    def partition_by(*keys)
+      @partition_keys = keys.flatten.map(&:to_sym)
     end
 
-    # Implement this in your reactors
-    # to manage exception handling in eventually-consistent workflows
-    # @example retry with exponential back off
-    #
-    #   def self.on_exception(exception, _message, group)
-    #     retry_count = group.error_context[:retry_count] || 0
-    #     if retry_count < 3
-    #       later = 5 + 5 * retry_count
-    #       group.retry(later, retry_count: retry_count + 1)
-    #     else
-    #       group.fail(exception:)
-    #     end
-    #   end
-    #
-    # @param exception [Exception] the exception raised
-    # @param message [Sourced::Message] the event or command being handled
-    # @param group [#stop, #fail, #retry] consumer group object to update state, ie. for retries
+    def group_id
+      @group_id ||= name
+    end
+
+    def consumer_group(id)
+      @group_id = id
+    end
+
+    # Message types this consumer evolves from. Used by {#context_for}
+    # to build query conditions for history reads.
+    # Defaults to empty; overridden by Sourced::Evolve mixin.
+    def handled_messages_for_evolve
+      @handled_messages_for_evolve ||= []
+    end
+
+    # Build query conditions from partition attributes and handled evolve types.
+    # Override in reactor for custom per-command conditions.
+    def context_for(partition_attrs)
+      handled_messages_for_evolve.flat_map { |klass|
+        klass.to_conditions(**partition_attrs)
+      }
+    end
+
     def on_exception(exception, message, group)
       Sourced.config.error_strategy.call(exception, message, group)
     end
 
-    # Default handle_batch implementation that wraps per-message .handle calls.
-    # Returns array of [actions, source_message] pairs.
-    # Reactors with optimized batch processing (Projector, Actor) override this.
+    # Called by {Router#stop_consumer_group} after the group is marked as stopped.
+    # Override in reactor classes to run cleanup logic on stop.
     #
-    # @param batch [Array<[Message, Boolean]>] array of [message, replaying] pairs
-    # @return [Array<[actions, source_message]>] action pairs
-    def handle_batch(batch)
-      each_with_partial_ack(batch) do |message, replaying|
-        kargs = {}
-        kargs[:replaying] = replaying if handle_kargs.include?(:replaying)
-        kargs[:logger] = Sourced.config.logger if handle_kargs.include?(:logger)
-        actions = handle(message, **kargs)
-        [actions, message]
-      end
+    # @param message [String, nil] optional reason for stopping
+    # @return [void]
+    def on_stop(message = nil)
+      # no-op by default
     end
 
-    private
+    # Called by {Router#reset_consumer_group} after the group's offsets are cleared.
+    # Override in reactor classes to run cleanup logic on reset
+    # (e.g. clearing caches or projections).
+    #
+    # @return [void]
+    def on_reset
+      # no-op by default
+    end
 
-    # Iterate batch with per-message error handling.
-    # Collects [actions, message] pairs returned by the block.
-    # On mid-batch failure, raises PartialBatchError with pairs collected so far,
-    # allowing the backend to ACK up to the last successful message.
-    # If the first message fails, raises the original error (no partial ACK possible).
+    # Called by {Router#start_consumer_group} after the group is marked as active.
+    # Override in reactor classes to run setup logic on start.
     #
-    # Used by Consumer (default handle_batch), Actor, and Projector (reaction loop)
-    # to provide partial ACK across all reactor types.
-    #
-    # @param batch [Array<[Message, Boolean]>] array of [message, replaying] pairs
-    # @yield [message, replaying] called for each message in the batch
-    # @yieldreturn [Array(actions, Message), nil] action pair, or nil to skip
-    # @return [Array<[actions, source_message]>] action pairs
-    def each_with_partial_ack(batch)
+    # @return [void]
+    def on_start
+      # no-op by default
+    end
+
+    # Iterate messages collecting [actions, message] pairs.
+    # On mid-batch failure, raises PartialBatchError with pairs collected so far.
+    # If the first message fails, re-raises the original error.
+    def each_with_partial_ack(messages)
       results = []
-      batch.each do |message, replaying|
-        pair = yield(message, replaying)
+      messages.each do |msg|
+        pair = yield(msg)
         results << pair if pair
       rescue StandardError => e
         raise e if results.empty?
-        raise PartialBatchError.new(results, message, e)
+        raise Sourced::PartialBatchError.new(results, msg, e)
       end
       results
     end
 
-    # Lazily resolved keyword argument names for the reactor's .handle method.
-    # Cached as a class instance variable.
-    def handle_kargs
-      @handle_kargs ||= Injector.resolve_args(self, :handle)
+    module ClassMethods
+      # Resolve a messages class from a symbol or type-like string.
+      #
+      # Symbols are normalized by replacing dots with underscores before
+      # matching against registered message types. For example,
+      # +:course_created+ matches <tt>"course.created"</tt> and
+      # <tt>"course_created"</tt>.
+      #
+      # @param message_symbol [Symbol, String] symbolic message identifier
+      # @return [Class, nil] matching messages class, or +nil+ if none found
+      #
+      # @example
+      #   CourseDecider[:courses_created]
+      #   # => CourseCreated
+      def [](message_symbol)
+        normalized = message_symbol.to_s.tr('.', '_')
+        find_registered_message_class(normalized)
+      end
+
+      private
+
+      def find_registered_message_class(normalized_name, base = Sourced::Message)
+        base.registry.keys.each do |type|
+          klass = base.registry[type]
+          return klass if type.tr('.', '_') == normalized_name
+        end
+
+        base.subclasses.each do |subclass|
+          klass = find_registered_message_class(normalized_name, subclass)
+          return klass if klass
+        end
+
+        nil
+      end
     end
   end
 end

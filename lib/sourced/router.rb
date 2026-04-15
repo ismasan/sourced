@@ -1,197 +1,178 @@
 # frozen_string_literal: true
 
-require 'singleton'
 require 'sourced/injector'
 
 module Sourced
-  # The Router is the central dispatch mechanism in Sourced, responsible for:
-  # - Registering Reactors (actors and projectors)
-  # - Routing events to appropriate reactors
-  # - Managing the execution of asynchronous reactors
-  # - Coordinating with the backend for event storage and retrieval
-  #
-  # The Router uses the Singleton pattern to ensure a single global registry
-  # of all registered components in the system.
-  #
-  # @example Register components
-  #   Sourced::Router.register(MyActor)
-  #   Sourced::Router.register(MyProjector)
-  #   
   class Router
-    include Singleton
+    attr_reader :store, :reactors
 
-    PID = Process.pid
-
-    class << self
-      public :new
-
-      # Register an actor or projector for command/event handling.
-      # @param args [Object] Arguments passed to the instance register method
-      # @return [void]
-      # @see #register
-      def register(...)
-        instance.register(...)
-      end
-
-      # @return [Boolean] true if the class is registered as a decider or reactor
-      def registered?(...)
-        instance.registered?(...)
-      end
-
-      # Get all registered asynchronous reactors.
-      # @return [Set] Set of async reactor classes
-      # @see #async_reactors
-      def async_reactors
-        instance.async_reactors
-      end
-
-      # Handle the next available event for a specific reactor.
-      # @param reactor [Class] The reactor class to get events for
-      # @param process_name [String, nil] Optional process identifier for logging
-      # @return [Boolean] true if an event was handled, false if no events available
-      # @see #handle_next_event_for_reactor
-      def handle_next_event_for_reactor(...)
-        instance.handle_next_event_for_reactor(...)
-      end
-
-      def backend = instance.backend
-    end
-
-    # @!attribute [r] async_reactors  
-    #   @return [Set] Reactors that run asynchronously in background workers
-    # @!attribute [r] backend
-    #   @return [Object] The configured backend for event storage
-    # @!attribute [r] logger
-    #   @return [Object] The configured logger instance
-    attr_reader :async_reactors, :backend, :logger, :needs_history
-
-    # Initialize a new Router instance.
-    # @param backend [Object] Backend for event storage (defaults to configured backend)
-    # @param logger [Object] Logger instance (defaults to configured logger)
-    def initialize(backend: Sourced.config.backend, logger: Sourced.config.logger)
-      @backend = backend
-      @logger = logger
-      @registered_lookup = {}
+    def initialize(store:)
+      @store = store
+      @reactors = []
       @needs_history = {}
-      @async_reactors = Set.new
     end
 
-    # Register a Reactor with the router.
-    #
-    # During registration, the router analyzes the reactor's #handle_batch method signature
-    # to determine whether it needs stream history. Reactors that declare a `history:` keyword
-    # will receive the full stream history when processing batches.
-    #
-    # @param thing [Class] Reactor object to register.
-    # @return [void]
-    # @raise [InvalidReactorError] if the class doesn't implement required interfaces
-    #
-    # @example Register an actor that handles both commands and events
-    #   router.register(CartActor)
-    #
-    # @example Reactors with different handle_batch signatures
-    #   # Reactor that doesn't need history (default Consumer wrapper)
-    #   class SimpleReactor
-    #     extend Sourced::Consumer
-    #     def self.handle(event) = Sourced::Actions::OK
-    #   end
-    #
-    #   # Reactor that needs access to full stream history
-    #   class HistoryReactor
-    #     extend Sourced::Consumer
-    #     def self.handle_batch(batch, history:)
-    #       # batch is Array of [message, replaying] pairs
-    #       # history is Array of all messages in the stream
-    #     end
-    #   end
-    def register(thing)
-      unless ReactorInterface === thing
-        raise InvalidReactorError, "#{thing.inspect} is not a valid Reactor interface"
-      end
-
-      # Analyze the reactor's handle_batch signature to determine if it needs history
-      @needs_history[thing] = Injector.resolve_args(thing, :handle_batch).include?(:history)
-      @async_reactors << thing
-
-      group_id = thing.consumer_info.group_id
-      @registered_lookup[group_id] = true
-      backend.register_consumer_group(group_id)
+    def register(reactor_class)
+      @reactors << reactor_class
+      store.register_consumer_group(
+        reactor_class.group_id,
+        partition_by: reactor_class.partition_keys.map(&:to_s)
+      )
+      @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
     end
 
-    def registered?(thing)
-      !!@registered_lookup[thing.consumer_info.group_id]
-    end
+    def handle_next_for(reactor_class, worker_id: 'default', batch_size: nil)
+      handled_types = reactor_class.handled_messages.map(&:type).uniq
 
-    # Handle the next available batch of messages for a specific reactor.
-    #
-    # Fetches a batch of messages from the backend and calls reactor.handle_batch(batch, **kargs).
-    # If the reactor's handle_batch signature includes `history:`, the full stream history
-    # is fetched from the backend and passed through.
-    #
-    # @param reactor [Class] The reactor class to get events for
-    # @param worker_id [String, nil] Optional process identifier for logging
-    # @param raise_on_error [Boolean] Raise error immediately instead of notifying Reactor#on_exception
-    # @param batch_size [Integer] Number of messages to fetch per lock cycle
-    # @return [Boolean] true if a batch was handled, false if no messages available
-    def handle_next_event_for_reactor(reactor, worker_id = nil, raise_on_error = false, batch_size: 1)
-      effective_batch_size = reactor.consumer_info.batch_size || batch_size
-      found = false
+      claim = store.claim_next(
+        reactor_class.group_id,
+        partition_by: reactor_class.partition_keys.map(&:to_s),
+        handled_types: handled_types,
+        worker_id: worker_id,
+        batch_size: batch_size
+      )
+      return false unless claim
 
-      backend.reserve_next_for_reactor(reactor, batch_size: effective_batch_size, with_history: @needs_history[reactor], worker_id:) do |batch, history|
-        found = true
-        first_msg = batch.first&.first
-        log_event("handling batch(#{batch.size})", reactor, first_msg, worker_id) if first_msg
-
-        kargs = {}
-        kargs[:history] = history if @needs_history[reactor]
-        reactor.handle_batch(batch, **kargs)
-      rescue PartialBatchError => e
-        raise e if raise_on_error
-
-        logger.warn "[#{PID}]: partial batch failure for reactor #{reactor}: #{e.message}"
-        backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
-          reactor.on_exception(e, e.failed_message, group)
+      begin
+        kwargs = {}
+        if @needs_history[reactor_class]
+          attrs = claim.partition_value.transform_keys(&:to_sym)
+          conditions = reactor_class.context_for(attrs)
+          kwargs[:history] = store.read(conditions)
         end
-        e.action_pairs
+
+        action_pairs = reactor_class.handle_claim(claim, **kwargs)
+
+        if action_pairs == Actions::RETRY
+          store.release(reactor_class.group_id, offset_id: claim.offset_id)
+          return true
+        end
+
+        execute_actions(action_pairs, claim, reactor_class.group_id)
+        true
+
+      rescue Sourced::PartialBatchError => e
+        execute_actions(e.action_pairs, claim, reactor_class.group_id)
+        store.updating_consumer_group(reactor_class.group_id) do |group|
+          reactor_class.on_exception(e, e.failed_message, group)
+        end
+        true
+      rescue Sourced::ConcurrentAppendError
+        store.release(reactor_class.group_id, offset_id: claim.offset_id)
+        true
       rescue StandardError => e
-        raise e if raise_on_error
-
-        logger.warn "[#{PID}]: error handling batch with reactor #{reactor} #{e}"
-        backend.updating_consumer_group(reactor.consumer_info.group_id) do |group|
-          reactor.on_exception(e, batch.first&.first, group)
+        store.release(reactor_class.group_id, offset_id: claim.offset_id)
+        store.updating_consumer_group(reactor_class.group_id) do |group|
+          reactor_class.on_exception(e, claim.messages.first, group)
         end
-        Actions::RETRY
+        true
       end
-      found
     end
 
-    # Handle messages for reactors in this router
-    # until there's none left in the backend
-    # Useful for testing workflows
-    # @param limit [Numeric] How many times to loop fetching new messages
-    def drain(limit = Float::INFINITY)
-      pid = Process.pid
-      have_messages = @async_reactors.each.with_index.with_object({}) { |(_, i), m| m[i] = true }
+    # Stop a consumer group and invoke the reactor's {Consumer#on_stop} callback.
+    #
+    # Marks the group as stopped in the store so workers will no longer claim
+    # work for it, then calls +on_stop+ on the reactor class.
+    #
+    # @param reactor_or_id [Class, String] a registered reactor class, or its +group_id+ string
+    # @param message [String, nil] optional reason for stopping (persisted in the group's error_context)
+    # @return [void]
+    # @raise [ArgumentError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    #
+    # @example Stop with a reactor class
+    #   router.stop_consumer_group(CourseDecider, 'maintenance window')
+    #
+    # @example Stop with a string group_id
+    #   router.stop_consumer_group('CourseDecider')
+    def stop_consumer_group(reactor_or_id, message = nil)
+      reactor_class = resolve_reactor_class(reactor_or_id)
+      store.stop_consumer_group(reactor_class.group_id, message)
+      reactor_class.on_stop(message)
+    end
 
+    # Reset a consumer group and invoke the reactor's {Consumer#on_reset} callback.
+    #
+    # Clears all partition offsets and resets the discovery position to 0,
+    # so the group will reprocess messages from the beginning. Does not
+    # change the group's status (a stopped group remains stopped after reset).
+    # Then calls +on_reset+ on the reactor class.
+    #
+    # @param reactor_or_id [Class, String] a registered reactor class, or its +group_id+ string
+    # @return [void]
+    # @raise [ArgumentError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    #
+    # @example
+    #   router.reset_consumer_group(CourseDecider)
+    def reset_consumer_group(reactor_or_id)
+      reactor_class = resolve_reactor_class(reactor_or_id)
+      store.reset_consumer_group(reactor_class.group_id)
+      reactor_class.on_reset
+    end
+
+    # Start a consumer group and invoke the reactor's {Consumer#on_start} callback.
+    #
+    # Marks the group as active in the store so workers can claim work for it
+    # again, then calls +on_start+ on the reactor class.
+    #
+    # @param reactor_or_id [Class, String] a registered reactor class, or its +group_id+ string
+    # @return [void]
+    # @raise [ArgumentError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    #
+    # @example
+    #   router.start_consumer_group(CourseDecider)
+    def start_consumer_group(reactor_or_id)
+      reactor_class = resolve_reactor_class(reactor_or_id)
+      store.start_consumer_group(reactor_class.group_id)
+      reactor_class.on_start
+    end
+
+    def drain(limit = Float::INFINITY)
       count = 0
       loop do
         count += 1
-        @async_reactors.each.with_index do |r, idx|
-          found = handle_next_event_for_reactor(r, pid, true)
-          have_messages[idx] = found
-        end
-        break if have_messages.values.none? || count >= limit
+        found_any = @reactors.any? { |r| handle_next_for(r) }
+        break unless found_any && count < limit
       end
     end
 
     private
 
-    def log_event(label, reactor, event, process_name = PID)
-      logger.info "[#{process_name}]: #{reactor.consumer_info.group_id} #{label} #{event_info(event)}"
+    # Resolve a reactor class or group_id string to a registered reactor class.
+    #
+    # @param reactor_or_id [Class, String] a reactor class (returned as-is) or a +group_id+ string
+    # @return [Class] the matching registered reactor class
+    # @raise [ArgumentError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    def resolve_reactor_class(reactor_or_id)
+      return reactor_or_id if reactor_or_id.is_a?(Module)
+
+      @reactors.find { |r| r.group_id == reactor_or_id } ||
+        raise(ArgumentError, "No reactor registered with group_id '#{reactor_or_id}'")
     end
 
-    def event_info(event)
-      %([#{event.type}] stream_id:#{event.stream_id} seq:#{event.seq})
+    def execute_actions(action_pairs, claim, group_id)
+      after_sync_actions = []
+
+      store.db.transaction do
+        last_position = nil
+        Array(action_pairs).each do |(actions, source_message)|
+          Array(actions).each do |action|
+            if action.is_a?(Actions::AfterSync)
+              after_sync_actions << action
+            elsif action != Actions::OK
+              action.execute(store, source_message)
+            end
+          end
+          last_position = source_message.position if source_message.respond_to?(:position)
+        end
+
+        if last_position
+          store.ack(group_id, offset_id: claim.offset_id, position: last_position)
+        else
+          store.release(group_id, offset_id: claim.offset_id)
+        end
+      end
+
+      after_sync_actions.each(&:call)
     end
   end
 end

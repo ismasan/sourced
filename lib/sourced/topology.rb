@@ -7,6 +7,9 @@ rescue LoadError
 end
 
 module Sourced
+  # Analyzes registered reactors (Deciders and Projectors) and builds a
+  # flat array of node structs describing the message flow graph. Enables
+  # visualization, introspection, and Event Modeling diagram generation.
   module Topology
     CommandNode = Struct.new(:type, :id, :name, :group_id, :produces, :schema, keyword_init: true)
     EventNode = Struct.new(:type, :id, :name, :group_id, :produces, :schema, keyword_init: true)
@@ -14,24 +17,24 @@ module Sourced
     ReadModelNode = Struct.new(:type, :id, :name, :group_id, :consumes, :produces, :schema, keyword_init: true)
 
     # Analyze registered reactors and build the topology graph.
-    # @param reactors [Enumerable<Class>] reactor classes (Actors, Projectors)
-    # @return [Array<CommandNode, EventNode, AutomationNode>]
+    #
+    # @param reactors [Enumerable<Class>] reactor classes (Deciders and/or Projectors)
+    # @return [Array<CommandNode, EventNode, AutomationNode, ReadModelNode>]
     def self.build(reactors)
       analyzer = SourceAnalyzer.new
       nodes = []
-      command_ids = {} # type_string => CommandNode (dedup across reactors)
-      event_nodes = {} # type_string => EventNode (dedup)
+      command_ids = {}
+      event_nodes = {}
 
       reactors.each do |reactor|
-        group_id = reactor.consumer_info.group_id
+        group_id = reactor.group_id
 
-        # Command nodes (actors only)
         if reactor.respond_to?(:handled_commands)
           reactor.handled_commands.each do |cmd_class|
             next if command_ids.key?(cmd_class.type)
 
             produced_refs = analyzer.events_produced_by(reactor, cmd_class)
-            produced_types = resolve_refs(produced_refs, reactor, :event)
+            produced_types = resolve_refs(produced_refs, reactor)
 
             schema = extract_schema(cmd_class)
             cmd_node = CommandNode.new(
@@ -45,12 +48,11 @@ module Sourced
             nodes << cmd_node
             command_ids[cmd_class.type] = cmd_node
 
-            # Register event nodes from produces
             produced_types.each do |evt_type|
               next if event_nodes.key?(evt_type)
               next if command_ids.key?(evt_type)
 
-              evt_class = find_event_class(evt_type, reactor)
+              evt_class = find_event_class(evt_type)
               next unless evt_class
 
               event_nodes[evt_type] = EventNode.new(
@@ -65,10 +67,8 @@ module Sourced
           end
         end
 
-        # Event nodes from evolve handlers (covers projectors and events not yet seen)
         if reactor.respond_to?(:handled_messages_for_evolve)
           reactor.handled_messages_for_evolve.each do |evt_class|
-            # Skip command classes that ended up in evolve handlers
             next if evt_class < Sourced::Command
 
             evt_type = evt_class.type
@@ -90,15 +90,13 @@ module Sourced
         rm_id = is_projector ? "#{Sourced::Types::ModuleToMessageType.parse(group_id)}-rm" : nil
         projector_aut_ids = []
 
-        # Automation nodes from reactions
         if reactor.respond_to?(:handled_messages_for_react)
           catch_all_events = reactor.respond_to?(:catch_all_react_events) ? reactor.catch_all_react_events : Set.new
           specific_events = reactor.handled_messages_for_react.reject { |e| catch_all_events.include?(e) }
 
-          # Specific reactions: one automation node per event
           specific_events.each do |evt_class|
             produced_refs = analyzer.commands_dispatched_by(reactor, evt_class)
-            produced_types = resolve_refs(produced_refs, reactor, :command)
+            produced_types = resolve_refs(produced_refs, reactor)
 
             aut_id = "#{evt_class.type}-#{group_id}-aut"
             projector_aut_ids << aut_id if is_projector
@@ -113,10 +111,9 @@ module Sourced
             )
           end
 
-          # Catch-all reaction: single automation node for all catch-all events
           if catch_all_events.any?
             produced_refs = analyzer.commands_dispatched_by(reactor, catch_all_events.first)
-            produced_types = resolve_refs(produced_refs, reactor, :command)
+            produced_types = resolve_refs(produced_refs, reactor)
 
             group_type_id = Sourced::Types::ModuleToMessageType.parse(group_id)
             aut_id = "#{group_type_id}-aut"
@@ -139,7 +136,6 @@ module Sourced
           end
         end
 
-        # ReadModel nodes (projectors only)
         if is_projector
           consumes = reactor.handled_messages_for_evolve
             .reject { |c| c < Sourced::Command }
@@ -160,22 +156,18 @@ module Sourced
       nodes + event_nodes.values
     end
 
-    # Resolve AST references to message type strings.
-    # @param refs [Array<Array>] e.g. [[:const, "ThingCreated"], [:symbol, "notify"]]
-    # @param reactor [Class] reactor class for namespace resolution
-    # @param kind [Symbol] :event or :command
-    # @return [Array<String>] resolved type strings
-    def self.resolve_refs(refs, reactor, kind)
+    # @api private
+    def self.resolve_refs(refs, reactor)
       refs.filter_map do |ref_type, ref_value|
-        resolve_ref(ref_type, ref_value, reactor, kind)
+        resolve_ref(ref_type, ref_value, reactor)
       end.uniq
     end
 
     # @api private
-    def self.resolve_ref(ref_type, ref_value, reactor, kind)
+    def self.resolve_ref(ref_type, ref_value, reactor)
       case ref_type
       when :symbol
-        resolve_symbol_ref(ref_value, reactor, kind)
+        resolve_symbol_ref(ref_value, reactor)
       when :const
         resolve_const_ref(ref_value, reactor)
       when :const_path
@@ -185,17 +177,11 @@ module Sourced
       end
     end
 
-    def self.resolve_symbol_ref(symbol_name, reactor, kind)
+    def self.resolve_symbol_ref(symbol_name, reactor)
       sym = symbol_name.to_sym
-      if kind == :event && reactor.respond_to?(:resolve_message_class)
+      if reactor.respond_to?(:[])
         begin
-          reactor.resolve_message_class(sym).type
-        rescue StandardError
-          nil
-        end
-      elsif reactor.respond_to?(:[])
-        begin
-          reactor[sym].type
+          reactor[sym]&.type
         rescue StandardError
           nil
         end
@@ -203,9 +189,8 @@ module Sourced
     end
 
     def self.resolve_const_ref(const_name, reactor)
-      # Search in reactor namespace, then enclosing modules, then top-level
       klass = resolve_constant_in_context(const_name, reactor)
-      klass&.type
+      klass&.respond_to?(:type) ? klass.type : nil
     end
 
     def self.resolve_const_path_ref(path)
@@ -215,9 +200,6 @@ module Sourced
       nil
     end
 
-    # Resolve Reactor[:symbol] bracket-accessor references.
-    # @param ref [Hash] with :receiver (const name string) and :index (symbol name string)
-    # @param reactor [Class] reactor class for namespace resolution
     def self.resolve_const_index_ref(ref, reactor)
       receiver_name = ref[:receiver]
       klass = if receiver_name.include?('::')
@@ -232,14 +214,11 @@ module Sourced
       nil
     end
 
-    # Try to find a constant by unqualified name within the reactor's module hierarchy.
     def self.resolve_constant_in_context(const_name, reactor)
-      # 1. Check reactor's own constants
       if reactor.const_defined?(const_name, false)
         return reactor.const_get(const_name, false)
       end
 
-      # 2. Walk enclosing modules
       parts = reactor.name.split('::')
       while parts.length > 1
         parts.pop
@@ -253,19 +232,11 @@ module Sourced
         end
       end
 
-      # 3. Top-level
       Object.const_get(const_name) rescue nil
     end
 
-    def self.find_event_class(type_string, reactor)
-      # Try reactor's event registry first
-      if reactor.respond_to?(:const_get) && reactor.const_defined?(:Event, false)
-        klass = reactor::Event.registry[type_string]
-        return klass if klass
-      end
-
-      # Fall back to global Event registry
-      Sourced::Event.registry[type_string]
+    def self.find_event_class(type_string)
+      Sourced::Message.registry[type_string]
     end
 
     def self.extract_schema(msg_class)
@@ -294,21 +265,13 @@ module Sourced
         @prism_available = check_prism
       end
 
-      # Extract event references from a command handler block.
-      # @param reactor [Class]
-      # @param cmd_class [Class]
-      # @return [Array<Array>] e.g. [[:const, "ThingCreated"]]
       def events_produced_by(reactor, cmd_class)
         return [] unless @prism_available
 
-        method_name = Sourced.message_method_name(Actor::PREFIX, cmd_class.name)
+        method_name = Sourced.message_method_name('sourced_decide', cmd_class.name)
         extract_calls_from_handler(reactor, method_name, :event)
       end
 
-      # Extract dispatch references from a reaction handler block.
-      # @param reactor [Class]
-      # @param evt_class [Class]
-      # @return [Array<Array>] e.g. [[:const, "NotifyThing"]]
       def commands_dispatched_by(reactor, evt_class)
         return [] unless @prism_available
 
@@ -339,14 +302,12 @@ module Sourced
         []
       end
 
-      # Find the block node at a specific line in the AST.
       def find_block_at_line(program, target_line)
         finder = BlockAtLineFinder.new(target_line)
         program.accept(finder)
         finder.found_block
       end
 
-      # Collect all calls to the target method within a block, traversing all branches.
       def collect_calls(block_node, target_name)
         collector = CallCollector.new(target_name)
         block_node.accept(collector)
@@ -354,7 +315,6 @@ module Sourced
       end
 
       if defined?(::Prism)
-        # Prism visitor that finds the block at a specific source line.
         class BlockAtLineFinder < Prism::Visitor
           attr_reader :found_block
 
@@ -371,8 +331,6 @@ module Sourced
           end
         end
 
-        # Prism visitor that collects references from call nodes.
-        # Handles both direct calls (dispatch(Foo)) and chained calls (dispatch(Foo).at(...)).
         class CallCollector < Prism::Visitor
           attr_reader :refs
 
@@ -391,9 +349,6 @@ module Sourced
 
           private
 
-          # Walk receiver chain to find the target call.
-          # dispatch(Foo) => direct match
-          # dispatch(Foo).to(id).at(time) => receiver chain
           def find_target_call(node)
             return node if node.name == @target_name
 
@@ -419,8 +374,6 @@ module Sourced
             @refs << ref if ref
           end
 
-          # Extract Reactor[:symbol] bracket-accessor pattern.
-          # Returns [:const_index, { receiver: "Reactor", index: "symbol" }] or nil.
           def extract_const_index(call_node)
             return unless call_node.name == :[]
             return unless call_node.arguments&.arguments&.size == 1

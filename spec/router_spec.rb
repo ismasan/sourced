@@ -1,440 +1,557 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'sourced'
+require 'sourced/store'
+require 'sequel'
 
-module RouterTest
-  AddItem = Sourced::Message.define('routertest.todos.add')
-  NextCommand = Sourced::Message.define('routertest.todos.next')
-  ItemAdded = Sourced::Message.define('routertest.todos.added')
-
-  class DeciderOnly
-    extend Sourced::Consumer
-
-    # The Decider interface
-    def self.handled_commands
-      [AddItem]
-    end
-
-    def self.handle_command(_cmd); end
+module RouterTestMessages
+  DeviceRegistered = Sourced::Message.define('router_test.device.registered') do
+    attribute :device_id, String
+    attribute :name, String
   end
 
-  class DeciderReactor
-    extend Sourced::Consumer
-
-    def self.handled_messages
-      [ItemAdded, AddItem, NextCommand]
-    end
-
-    def self.handle(evt, replaying:, history:)
-      cmd = NextCommand.parse(stream_id: evt.stream_id)
-
-      Sourced::Actions::AppendNext.new([cmd])
-    end
-
-    # Override default handle_batch to forward all kargs
-    def self.handle_batch(batch, history: [])
-      batch.map do |message, replaying|
-        actions = handle(message, replaying:, history:)
-        [actions, message]
-      end
-    end
+  DeviceBound = Sourced::Message.define('router_test.device.bound') do
+    attribute :device_id, String
+    attribute :asset_id, String
   end
 
-  # Test reactors for argument injection
-  class ReactorWithNoArgs
-    extend Sourced::Consumer
-
-    def self.handled_messages
-      [ItemAdded]
-    end
-
-    def self.handle(event)
-      Sourced::Actions::OK
-    end
+  BindDevice = Sourced::Message.define('router_test.bind_device') do
+    attribute :device_id, String
+    attribute :asset_id, String
   end
 
-  class ReactorWithReplayingOnly
-    extend Sourced::Consumer
-
-    def self.handled_messages
-      [ItemAdded]
-    end
-
-    def self.handle(event, replaying:)
-      Sourced::Actions::OK
-    end
+  NotifyBound = Sourced::Message.define('router_test.notify_bound') do
+    attribute :device_id, String
   end
 
-  # A reactor that needs history — must override handle_batch
-  class ReactorWithHistoryOnly
-    extend Sourced::Consumer
-
-    def self.handled_messages
-      [ItemAdded]
-    end
-
-    def self.handle(event, history:)
-      Sourced::Actions::OK
-    end
-
-    def self.handle_batch(batch, history: [])
-      batch.map do |message, replaying|
-        actions = handle(message, history:)
-        [actions, message]
-      end
-    end
+  # Projector messages
+  DeviceListed = Sourced::Message.define('router_test.device.listed') do
+    attribute :device_id, String
   end
 
-  class ReactorWithBothArgs
-    extend Sourced::Consumer
+  # Simple reactor messages
+  DeviceAudited = Sourced::Message.define('router_test.device.audited') do
+    attribute :device_id, String
+    attribute :event_type, String
+  end
+end
 
-    def self.handled_messages
-      [ItemAdded]
-    end
+# Test decider for router specs
+class RouterTestDecider < Sourced::Decider
+  partition_by :device_id
+  consumer_group 'router-test-decider'
 
-    def self.handle(event, replaying:, history:)
-      Sourced::Actions::OK
-    end
+  state { |_| { exists: false, bound: false } }
 
-    def self.handle_batch(batch, history: [])
-      batch.map do |message, replaying|
-        actions = handle(message, replaying:, history:)
-        [actions, message]
-      end
-    end
+  evolve RouterTestMessages::DeviceRegistered do |state, _evt|
+    state[:exists] = true
   end
 
-  class ReactorWithLogger
-    extend Sourced::Consumer
-
-    def self.handled_messages
-      [ItemAdded]
-    end
-
-    def self.handle(event, logger:)
-      Sourced::Actions::OK
-    end
+  evolve RouterTestMessages::DeviceBound do |state, _evt|
+    state[:bound] = true
   end
 
-  class ReactorWithBatchSize
-    extend Sourced::Consumer
-
-    consumer do |c|
-      c.batch_size = 10
-    end
-
-    def self.handled_messages
-      [ItemAdded]
-    end
-
-    def self.handle(event)
-      Sourced::Actions::OK
-    end
+  command RouterTestMessages::BindDevice do |state, cmd|
+    raise 'Not found' unless state[:exists]
+    raise 'Already bound' if state[:bound]
+    event RouterTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
-  # Reactor that fails on a configurable seq number.
-  # Uses default Consumer handle_batch (per-message .handle calls).
-  class ReactorWithPartialFailure
-    extend Sourced::Consumer
+  reaction RouterTestMessages::DeviceBound do |_state, evt|
+    RouterTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
+  end
+end
 
-    consumer do |c|
-      c.batch_size = 10
-    end
+# Test projector for router specs
+class RouterTestProjector < Sourced::Projector::StateStored
+  partition_by :device_id
+  consumer_group 'router-test-projector'
 
-    def self.handled_messages
-      [ItemAdded]
-    end
+  state { |_| { devices: [] } }
 
-    @log = []
-    @fail_on_seq = nil
+  evolve RouterTestMessages::DeviceRegistered do |state, evt|
+    state[:devices] << evt.payload.name
+  end
 
-    class << self
-      attr_accessor :log, :fail_on_seq
-    end
+  evolve RouterTestMessages::DeviceBound do |state, _evt|
+    # nothing
+  end
 
-    def self.handle(event)
-      raise "boom on seq #{event.seq}" if fail_on_seq == event.seq
+  sync do |state:, messages:, replaying:|
+    # In a real projector, this would persist to DB
+    state[:synced] = true
+  end
+end
 
-      log << event.seq
-      Sourced::Actions::OK
+# Simple reactor: just extends Consumer, defines handled_messages, implements handle_claim.
+# Logs an audit trail message for every DeviceRegistered or DeviceBound it sees.
+class RouterTestAuditReactor
+  extend Sourced::Consumer
+
+  partition_by :device_id
+  consumer_group 'router-test-audit'
+
+  def self.handled_messages
+    [RouterTestMessages::DeviceRegistered, RouterTestMessages::DeviceBound]
+  end
+
+  def self.handle_claim(claim)
+    each_with_partial_ack(claim.messages) do |msg|
+      audit = RouterTestMessages::DeviceAudited.new(
+        payload: { device_id: msg.payload.device_id, event_type: msg.type }
+      )
+      [Sourced::Actions::Append.new(audit), msg]
     end
   end
 end
 
 RSpec.describe Sourced::Router do
-  subject(:router) { described_class.new(backend:) }
+  let(:db) { Sequel.sqlite }
+  let(:store) { Sourced::Store.new(db) }
+  let(:router) { Sourced::Router.new(store: store) }
 
-  let(:backend) { Sourced::Backends::TestBackend.new }
+  before do
+    store.install!
+  end
+
+  describe '#register' do
+    it 'creates consumer group and introspects handle_claim signature' do
+      router.register(RouterTestDecider)
+
+      expect(store.consumer_group_active?('router-test-decider')).to be true
+      expect(router.reactors).to include(RouterTestDecider)
+    end
+
+    it 'detects history: for decider, none for projector' do
+      router.register(RouterTestDecider)
+      router.register(RouterTestProjector)
+
+      # Decider needs history, projector does not
+      expect(router.instance_variable_get(:@needs_history)[RouterTestDecider]).to be true
+      expect(router.instance_variable_get(:@needs_history)[RouterTestProjector]).to be false
+    end
+
+    it 'passes partition_keys to register_consumer_group' do
+      router.register(RouterTestDecider)
+
+      row = db[:sourced_consumer_groups].where(group_id: 'router-test-decider').first
+      expect(JSON.parse(row[:partition_by])).to eq(['device_id'])
+    end
+  end
+
+  describe '#handle_next_for' do
+    before do
+      router.register(RouterTestDecider)
+      router.register(RouterTestProjector)
+    end
+
+    it 'returns false when no work available' do
+      result = router.handle_next_for(RouterTestDecider)
+      expect(result).to be false
+    end
+
+    it 'claims, calls handle_claim, executes actions + acks in transaction' do
+      # Set up: register device first (as history), then send bind command
+      store.append(
+        RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+      store.append(
+        RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      )
+
+      result = router.handle_next_for(RouterTestDecider)
+      expect(result).to be true
+
+      # DeviceBound event should have been appended to store
+      conds = RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
+      read_result = store.read(conds)
+      expect(read_result.messages.size).to eq(1)
+      expect(read_result.messages.first).to be_a(RouterTestMessages::DeviceBound)
+    end
+
+    it 'reads history for decider, skips history for projector' do
+      store.append(
+        RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+
+      # Projector should process without history
+      result = router.handle_next_for(RouterTestProjector)
+      expect(result).to be true
+    end
+
+    it 'releases on ConcurrentAppendError' do
+      store.append(
+        RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+      store.append(
+        RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      )
+
+      # Stub store.append to raise ConcurrentAppendError after claim
+      original_append = store.method(:append)
+      call_count = 0
+      allow(store).to receive(:append) do |*args, **kwargs|
+        call_count += 1
+        if call_count > 0 && kwargs[:guard]
+          raise Sourced::ConcurrentAppendError, 'conflict'
+        end
+        original_append.call(*args, **kwargs)
+      end
+
+      result = router.handle_next_for(RouterTestDecider)
+      expect(result).to be true
+
+      # Offset should be released (not advanced) — can re-claim
+      claim = store.claim_next(
+        'router-test-decider',
+        partition_by: ['device_id'],
+        handled_types: RouterTestDecider.handled_messages.map(&:type),
+        worker_id: 'w-1'
+      )
+      expect(claim).not_to be_nil
+    end
+
+    it 'releases on StandardError and calls on_exception' do
+      store.append(
+        RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+      store.append(
+        RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      )
+
+      # Make handle_claim raise
+      allow(RouterTestDecider).to receive(:handle_claim).and_raise(RuntimeError, 'boom')
+      allow(RouterTestDecider).to receive(:on_exception)
+
+      result = router.handle_next_for(RouterTestDecider)
+      expect(result).to be true
+      expect(RouterTestDecider).to have_received(:on_exception)
+    end
+
+    it 'on_exception fails consumer group when default strategy' do
+      store.append(
+        RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+      store.append(
+        RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      )
+
+      allow(RouterTestDecider).to receive(:handle_claim).and_raise(RuntimeError, 'boom')
+
+      router.handle_next_for(RouterTestDecider)
+      expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be false
+      row = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).first
+      expect(row[:status]).to eq('failed')
+    end
+
+    it 'on_exception persists error_context in the database' do
+      store.append(
+        RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+      store.append(
+        RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      )
+
+      allow(RouterTestDecider).to receive(:handle_claim).and_raise(RuntimeError, 'boom')
+
+      router.handle_next_for(RouterTestDecider)
+
+      row = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).first
+      expect(row[:error_context]).not_to be_nil
+      expect(row[:status]).to eq('failed')
+    end
+
+    it 'on_exception with retry strategy sets retry_at on consumer group' do
+      store.append(
+        RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+      store.append(
+        RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      )
+
+      retry_strategy = Sourced::ErrorStrategy.new do |s|
+        s.retry(times: 3, after: 5)
+      end
+      allow(Sourced).to receive_message_chain(:config, :error_strategy).and_return(retry_strategy)
+
+      allow(RouterTestDecider).to receive(:handle_claim).and_raise(RuntimeError, 'boom')
+
+      router.handle_next_for(RouterTestDecider)
+
+      row = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).first
+      expect(row[:retry_at]).not_to be_nil
+      expect(row[:status]).to eq('active')
+
+      ctx = JSON.parse(row[:error_context], symbolize_names: true)
+      expect(ctx[:retry_count]).to eq(2)
+    end
+  end
 
   describe '#drain' do
-    it 'handles and acknoledges messages for reactors, until there is none left' do
-      logs = []
-      reactor = Class.new do
-        extend Sourced::Consumer
-        def self.handled_messages = [RouterTest::ItemAdded]
-      end
-      reactor.define_singleton_method(:handle) do |message|
-        logs << message.type
-        []
-      end
+    before do
+      router.register(RouterTestDecider)
+      router.register(RouterTestProjector)
+    end
 
-      e1 = RouterTest::ItemAdded.build('123')
-      e2 = RouterTest::ItemAdded.build('123')
-      e3 = RouterTest::ItemAdded.build('123')
-      backend.append_next_to_stream('123', [e1, e2, e3])
-      router.register(reactor)
+    it 'processes all reactors until no work remains' do
+      store.append(
+        RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+      store.append(
+        RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      )
+
       router.drain
-      expect(logs.size).to eq(3)
-      expect(logs.uniq).to eq(%w[routertest.todos.added])
+
+      # Decider should have produced DeviceBound
+      conds = RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
+      read_result = store.read(conds)
+      expect(read_result.messages.size).to eq(1)
+
+      # Projector should have processed DeviceRegistered and DeviceBound
+      # (it handles both via evolve)
     end
   end
 
-  describe '#handle_next_event_for_reactor' do
-    let(:event) { RouterTest::ItemAdded.new(stream_id: '123') }
-
+  describe 'full integration: append commands → Decider → events → Projector' do
     before do
-      router.register(RouterTest::DeciderReactor)
-
-      allow(RouterTest::DeciderReactor).to receive(:on_exception)
-      backend.append_to_stream('123', event)
+      router.register(RouterTestDecider)
+      router.register(RouterTestProjector)
     end
 
-    context 'when reactor returns Sourced::Actions::AppendNext' do
-      it 'appends messages' do
-        allow(backend).to receive(:append_next_to_stream)
+    it 'events are correlated with the command that produced them' do
+      reg = RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      store.append(reg)
 
-        bool = router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
-        expect(bool).to be(true)
-        expect(RouterTest::DeciderReactor).not_to have_received(:on_exception)
-        expect(backend).to have_received(:append_next_to_stream) do |stream_id, events|
-          expect(stream_id).to eq('123')
-          expect(events.size).to eq(1)
-          event = events.first
-          expect(event.stream_id).to eq('123')
-          expect(event).to be_a(RouterTest::NextCommand)
-        end
+      cmd = RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      store.append(cmd)
+
+      router.drain
+
+      # Read the DeviceBound event
+      conds = RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
+      bound = store.read(conds).messages.find { |m| m.is_a?(RouterTestMessages::DeviceBound) }
+
+      expect(bound).not_to be_nil
+      expect(bound.causation_id).to eq(cmd.id)
+      expect(bound.correlation_id).to eq(cmd.correlation_id)
+    end
+
+    it 'reaction messages are correlated with the event reacted to, not the command' do
+      reg = RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      store.append(reg)
+
+      cmd = RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      store.append(cmd)
+
+      router.drain
+
+      # Read the DeviceBound event (produced by command handler)
+      bound_conds = RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
+      bound = store.read(bound_conds).messages.find { |m| m.is_a?(RouterTestMessages::DeviceBound) }
+
+      # Read the NotifyBound reaction message (produced by reaction handler)
+      notify_conds = RouterTestMessages::NotifyBound.to_conditions(device_id: 'd1')
+      notify = store.read(notify_conds).messages.find { |m| m.is_a?(RouterTestMessages::NotifyBound) }
+
+      expect(notify).not_to be_nil
+      # Reaction is correlated with the event, not the command
+      expect(notify.causation_id).to eq(bound.id)
+      expect(notify.correlation_id).to eq(bound.correlation_id)
+      # The whole chain shares the same correlation_id (the command's)
+      expect(notify.correlation_id).to eq(cmd.correlation_id)
+    end
+  end
+
+  describe 'consumer group lifecycle' do
+    before do
+      router.register(RouterTestDecider)
+      router.register(RouterTestProjector)
+    end
+
+    describe '#stop_consumer_group' do
+      it 'stops group and calls on_stop with class' do
+        expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be true
+
+        router.stop_consumer_group(RouterTestDecider, 'maintenance')
+
+        expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be false
+      end
+
+      it 'stops group and calls on_stop with string group_id' do
+        router.stop_consumer_group('router-test-decider', 'maintenance')
+
+        expect(store.consumer_group_active?('router-test-decider')).to be false
+      end
+
+      it 'invokes on_stop callback on reactor class' do
+        allow(RouterTestDecider).to receive(:on_stop)
+
+        router.stop_consumer_group(RouterTestDecider, 'going down')
+
+        expect(RouterTestDecider).to have_received(:on_stop).with('going down')
+      end
+
+      it 'passes nil message when none given' do
+        allow(RouterTestDecider).to receive(:on_stop)
+
+        router.stop_consumer_group(RouterTestDecider)
+
+        expect(RouterTestDecider).to have_received(:on_stop).with(nil)
       end
     end
 
-    context 'when there are no new messages for reactor' do
-      it 'return false' do
-        backend.ack_on(RouterTest::DeciderReactor.consumer_info.group_id, event.id)
-        bool = router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
-        expect(bool).to be(false)
+    describe '#reset_consumer_group' do
+      it 'resets group offsets and calls on_reset with class' do
+        # Append a message and drain so offsets are advanced
+        store.append(
+          RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+        )
+        router.drain
+
+        router.reset_consumer_group(RouterTestDecider)
+
+        # Offsets should be cleared (group can re-process messages)
+        row = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).first
+        expect(row[:discovery_position]).to eq(0)
+      end
+
+      it 'resets group with string group_id' do
+        store.append(
+          RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+        )
+        router.drain
+
+        router.reset_consumer_group('router-test-decider')
+
+        row = db[:sourced_consumer_groups].where(group_id: 'router-test-decider').first
+        expect(row[:discovery_position]).to eq(0)
+      end
+
+      it 'invokes on_reset callback on reactor class' do
+        allow(RouterTestDecider).to receive(:on_reset)
+
+        router.reset_consumer_group(RouterTestDecider)
+
+        expect(RouterTestDecider).to have_received(:on_reset)
       end
     end
 
-    context 'when reactor raises exception' do
-      before do
-        expect(RouterTest::DeciderReactor).to receive(:handle_batch).and_raise('boom')
+    describe '#start_consumer_group' do
+      it 'starts group and calls on_start with class' do
+        router.stop_consumer_group(RouterTestDecider)
+        expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be false
+
+        router.start_consumer_group(RouterTestDecider)
+
+        expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be true
       end
 
-      it 'invokes .on_exception on reactor' do
-        router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
+      it 'starts group with string group_id' do
+        router.stop_consumer_group('router-test-decider')
 
-        expect(RouterTest::DeciderReactor).to have_received(:on_exception) do |exception, message, group|
-          expect(exception.message).to eq('boom')
-          expect(message).to eq(event)
-          expect(group).to respond_to(:stop)
-        end
+        router.start_consumer_group('router-test-decider')
+
+        expect(store.consumer_group_active?('router-test-decider')).to be true
       end
 
-      it 'does not acknowledge event for reactor, so that it can be retried' do
-        router.handle_next_event_for_reactor(RouterTest::DeciderReactor)
-        groups = backend.stats.groups
-        expect(groups.first[:stream_count]).to eq(0)
-      end
+      it 'invokes on_start callback on reactor class' do
+        allow(RouterTestDecider).to receive(:on_start)
 
-      it 'raises immediatly is passed raise_on_error = true' do
+        router.start_consumer_group(RouterTestDecider)
+
+        expect(RouterTestDecider).to have_received(:on_start)
+      end
+    end
+
+    describe 'resolve_reactor_class' do
+      it 'raises ArgumentError for unregistered group_id' do
         expect {
-          router.handle_next_event_for_reactor(RouterTest::DeciderReactor, nil, true)
-        }.to raise_error(RuntimeError, 'boom')
+          router.stop_consumer_group('unknown-group')
+        }.to raise_error(ArgumentError, /No reactor registered with group_id 'unknown-group'/)
       end
     end
 
-    context 'handle_batch interface' do
-      let(:event) { RouterTest::ItemAdded.new(stream_id: '123') }
-      let(:event2) { RouterTest::ItemAdded.new(stream_id: '123', seq: 2) }
-
-      before do
-        backend.clear!
-        backend.append_to_stream('123', [event, event2])
-      end
-
-      context 'with reactor using default handle_batch (no history)' do
-        before { router.register(RouterTest::ReactorWithNoArgs) }
-
-        it 'calls handle_batch with batch (no history kwarg)' do
-          received_batch = nil
-          allow(RouterTest::ReactorWithNoArgs).to receive(:handle_batch).and_wrap_original do |original, batch, **kargs|
-            received_batch = [batch, kargs]
-            original.call(batch, **kargs)
-          end
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithNoArgs)
-          expect(received_batch).not_to be_nil
-          batch, kargs = received_batch
-          expect(batch.first.first).to eq(event)
-          expect(kargs).not_to have_key(:history)
-        end
-      end
-
-      context 'with reactor needing history (handle_batch accepts history:)' do
-        before { router.register(RouterTest::ReactorWithHistoryOnly) }
-
-        it 'calls handle_batch with batch and history' do
-          allow(RouterTest::ReactorWithHistoryOnly).to receive(:handle_batch).and_call_original
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithHistoryOnly)
-          expect(RouterTest::ReactorWithHistoryOnly).to have_received(:handle_batch) do |batch, **kargs|
-            expect(batch.first.first).to eq(event)
-            expect(kargs[:history]).to be_an(Array)
-            expect(kargs[:history].map(&:id)).to include(event.id, event2.id)
-          end
-        end
-      end
-
-      context 'with reactor needing both replaying and history' do
-        before { router.register(RouterTest::ReactorWithBothArgs) }
-
-        it 'calls handle_batch with batch and history' do
-          allow(RouterTest::ReactorWithBothArgs).to receive(:handle_batch).and_call_original
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithBothArgs)
-          expect(RouterTest::ReactorWithBothArgs).to have_received(:handle_batch) do |batch, **kargs|
-            expect(batch.first.first).to eq(event)
-            expect(kargs[:history]).to be_an(Array)
-          end
-        end
-      end
-
-      context 'Consumer default handle_batch forwards replaying to handle' do
-        before { router.register(RouterTest::ReactorWithReplayingOnly) }
-
-        it 'passes replaying through to handle via default handle_batch' do
-          # Force handle_kargs caching before spy wraps .handle (spy changes method signature)
-          RouterTest::ReactorWithReplayingOnly.send(:handle_kargs)
-          allow(RouterTest::ReactorWithReplayingOnly).to receive(:handle).and_call_original
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithReplayingOnly)
-          expect(RouterTest::ReactorWithReplayingOnly).to have_received(:handle).with(event, replaying: false)
-        end
-      end
-
-      context 'Consumer default handle_batch forwards logger to handle' do
-        before { router.register(RouterTest::ReactorWithLogger) }
-
-        it 'passes logger through to handle via default handle_batch' do
-          # Force handle_kargs caching before spy wraps .handle (spy changes method signature)
-          RouterTest::ReactorWithLogger.send(:handle_kargs)
-          allow(RouterTest::ReactorWithLogger).to receive(:handle).and_call_original
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithLogger)
-          expect(RouterTest::ReactorWithLogger).to have_received(:handle).with(event, logger: router.logger)
-        end
-      end
-
-      context 'per-reactor batch_size override' do
-        before do
-          router.register(RouterTest::ReactorWithBatchSize)
-        end
-
-        it 'uses the reactor consumer_info.batch_size over the worker-level default' do
-          allow(backend).to receive(:reserve_next_for_reactor).and_call_original
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithBatchSize, nil, false, batch_size: 1)
-          expect(backend).to have_received(:reserve_next_for_reactor).with(
-            RouterTest::ReactorWithBatchSize,
-            batch_size: 10,
-            with_history: false,
-            worker_id: nil
-          )
-        end
-      end
-
-      context 'partial batch failure' do
-        let(:e1) { RouterTest::ItemAdded.new(stream_id: '123', seq: 1) }
-        let(:e2) { RouterTest::ItemAdded.new(stream_id: '123', seq: 2) }
-        let(:e3) { RouterTest::ItemAdded.new(stream_id: '123', seq: 3) }
-
-        before do
-          backend.clear!
-          backend.append_to_stream('123', [e1, e2, e3])
-          router.register(RouterTest::ReactorWithPartialFailure)
-          allow(RouterTest::ReactorWithPartialFailure).to receive(:on_exception)
-          RouterTest::ReactorWithPartialFailure.fail_on_seq = 3
-          RouterTest::ReactorWithPartialFailure.log = []
-        end
-
-        it 'ACKs successfully processed messages and retries from the failed one' do
-          # First call: batch of 3, e1 and e2 succeed, e3 raises
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithPartialFailure)
-          expect(RouterTest::ReactorWithPartialFailure.log).to eq([1, 2])
-
-          # Second call: should only get e3 (e1 and e2 already ACKed)
-          RouterTest::ReactorWithPartialFailure.fail_on_seq = nil
-          RouterTest::ReactorWithPartialFailure.log = []
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithPartialFailure)
-          expect(RouterTest::ReactorWithPartialFailure.log).to eq([3])
-        end
-
-        it 'calls on_exception for the failed message' do
-          allow(RouterTest::ReactorWithPartialFailure).to receive(:on_exception)
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithPartialFailure)
-
-          expect(RouterTest::ReactorWithPartialFailure).to have_received(:on_exception) do |exception, message, group|
-            expect(exception.message).to eq('boom on seq 3')
-            expect(message.seq).to eq(3)
-          end
-        end
-
-        it 'handles failure on the first message (no partial ACK possible)' do
-          RouterTest::ReactorWithPartialFailure.fail_on_seq = 1
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithPartialFailure)
-          expect(RouterTest::ReactorWithPartialFailure.log).to eq([])
-
-          # Retry: all 3 messages should still be pending
-          RouterTest::ReactorWithPartialFailure.fail_on_seq = nil
-          router.handle_next_event_for_reactor(RouterTest::ReactorWithPartialFailure)
-          expect(RouterTest::ReactorWithPartialFailure.log).to eq([1, 2, 3])
-        end
+    describe 'no-op default callbacks' do
+      it 'works fine when reactor does not override callbacks' do
+        # RouterTestProjector has no custom callbacks — should not raise
+        expect { router.stop_consumer_group(RouterTestProjector) }.not_to raise_error
+        expect { router.reset_consumer_group(RouterTestProjector) }.not_to raise_error
+        expect { router.start_consumer_group(RouterTestProjector) }.not_to raise_error
       end
     end
   end
 
-  specify 'class-level API' do
-    expect(router.async_reactors).to eq(Sourced::Router.async_reactors)
-    expect(Sourced::Router).to respond_to(:register)
-    expect(Sourced::Router).to respond_to(:registered?)
-    expect(Sourced::Router).to respond_to(:handle_next_event_for_reactor)
-    expect(Sourced::Router).to respond_to(:backend)
-  end
-
-  describe '#register' do
+  describe 'simple Consumer reactor (no Decider/Projector)' do
     before do
-      allow(backend).to receive(:register_consumer_group)
+      router.register(RouterTestAuditReactor)
     end
 
-    it 'registers group id with configured backend' do
-      router.register(RouterTest::DeciderReactor)
-      expect(backend).to have_received(:register_consumer_group).with(RouterTest::DeciderReactor.consumer_info.group_id)
+    it 'registers and processes messages through the router' do
+      reg = RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      store.append(reg)
+
+      router.drain
+
+      # Audit message should have been appended
+      conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
+      audits = store.read(conds).messages
+      expect(audits.size).to eq(1)
+      expect(audits.first).to be_a(RouterTestMessages::DeviceAudited)
+      expect(audits.first.payload.event_type).to eq('router_test.device.registered')
     end
 
-    it 'determines if reactor needs history from handle_batch signature' do
-      router.register(RouterTest::DeciderReactor)
-      expect(router.needs_history[RouterTest::DeciderReactor]).to be(true)
+    it 'appended messages are correlated with the source message' do
+      reg = RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      store.append(reg)
 
-      router.register(RouterTest::ReactorWithNoArgs)
-      expect(router.needs_history[RouterTest::ReactorWithNoArgs]).to be(false)
-    end
-  end
+      router.drain
 
-  describe '#register' do
-    it 'registers Reactor interfaces and registers group' do
-      expect(backend).to receive(:register_consumer_group).with(RouterTest::DeciderReactor.consumer_info.group_id)
-      router.register(RouterTest::DeciderReactor)
-      expect(router.async_reactors).to include(RouterTest::DeciderReactor)
-      expect(router.registered?(RouterTest::DeciderReactor)).to be true
+      conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
+      audit = store.read(conds).messages.first
+
+      expect(audit.causation_id).to eq(reg.id)
+      expect(audit.correlation_id).to eq(reg.correlation_id)
     end
 
-    it 'raises if registering a non-compliant interface' do
-      expect do
-        router.register('nope')
-      end.to raise_error(Sourced::InvalidReactorError)
+    it 'handles multiple messages across partitions' do
+      store.append(RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor A' }))
+      store.append(RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd2', name: 'Sensor B' }))
+
+      router.drain
+
+      d1_conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
+      d2_conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd2')
+
+      expect(store.read(d1_conds).messages.size).to eq(1)
+      expect(store.read(d2_conds).messages.size).to eq(1)
+    end
+
+    it 'context_for returns empty conditions (no evolve types)' do
+      expect(RouterTestAuditReactor.context_for(device_id: 'd1')).to eq([])
+    end
+
+    it 'works alongside deciders and projectors' do
+      router.register(RouterTestDecider)
+
+      reg = RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      store.append(reg)
+
+      cmd = RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      store.append(cmd)
+
+      router.drain
+
+      # Audit reactor sees DeviceRegistered and DeviceBound
+      conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
+      audits = store.read(conds).messages
+      types = audits.map { |m| m.payload.event_type }.sort
+
+      expect(types).to eq([
+        'router_test.device.bound',
+        'router_test.device.registered'
+      ])
     end
   end
 end

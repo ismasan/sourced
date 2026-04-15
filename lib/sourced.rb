@@ -1,41 +1,20 @@
 # frozen_string_literal: true
 
 require_relative 'sourced/version'
+require 'sourced/types'
+require 'sourced/injector'
 
-require 'securerandom'
-require 'sourced/message'
-
-# Sourced is an Event Sourcing / CQRS library for Ruby built around the "Decide, Evolve, React" pattern.
-# It provides eventual consistency by default with an actor-like execution model for building 
-# event-sourced applications.
-#
-# @example Basic setup with Sequel backend
-#   Sourced.configure do |config|
-#     config.backend = Sequel.connect('postgres://localhost/mydb')
-#   end
-#
-# @example Register actors and projectors
-#   Sourced.register(MyActor)
-#   Sourced.register(MyProjector)
-#
-# @example Start background workers
-#   Sourced::Supervisor.start(count: 10)
-#
-# @see https://github.com/ismasan/sourced
+# Sourced is an event-sourcing library for Ruby built around stream-less,
+# partition-based consistency. Events go into a flat, globally-ordered log and
+# consistency context is assembled dynamically by querying relevant facts via
+# key-value pairs extracted from event payloads.
 module Sourced
   # Base error class for all Sourced-specific exceptions
   class Error < StandardError; end
-  
-  # Raised when concurrent writes to the same stream are detected
+
   ConcurrentAppendError = Class.new(Error)
-  
-  # Raised when concurrent acknowledgments of the same event are detected
-  ConcurrentAckError = Class.new(Error)
-  
-  # Raised when an invalid reactor is registered
-  InvalidReactorError = Class.new(Error)
-  
-  BackendError = Class.new(Error)
+  UnknownMessageError = Class.new(ArgumentError)
+  PastMessageDateError = Class.new(ArgumentError)
 
   # Raised when a batch is partially processed before a message raises.
   # Carries the action_pairs for successfully processed messages,
@@ -51,190 +30,69 @@ module Sourced
     end
   end
 
-  class InvalidMessageError < Error
-    attr_reader :message
-
-    def initialize(message)
-      @message = message
-      super <<~ERR
-      Invalid message #{message.class} ('#{message.type}')
-      Errors: #{message.errors.inspect}
-      ERR
-    end
-  end
-
-  # Generate a new unique stream identifier, optionally with a prefix.
-  # Stream IDs define concurrency boundaries - events for the same stream ID
-  # are processed sequentially, while different stream IDs can be processed concurrently.
-  #
-  # @param prefix [String, nil] Optional prefix for the stream ID
-  # @return [String] A new UUID-based stream ID
-  # @example Generate a simple stream ID
-  #   Sourced.new_stream_id #=> "123e4567-e89b-12d3-a456-426614174000"
-  # @example Generate a prefixed stream ID
-  #   Sourced.new_stream_id("cart") #=> "cart-123e4567-e89b-12d3-a456-426614174000"
-  def self.new_stream_id(prefix = nil)
-    uuid = SecureRandom.uuid
-    prefix ? "#{prefix}-#{uuid}" : uuid
-  end
-
-  # Access the global Sourced configuration instance.
-  #
-  # @return [Configuration] The current configuration instance
+  # @return [Configuration] the global Sourced configuration instance
   def self.config
     @config ||= Configuration.new
   end
 
-  # Configure Sourced with backend, error handling, and other settings.
-  # The configuration is frozen after the block executes to prevent 
-  # accidental modification during runtime.
-  #
-  # @yield [config] Yields the configuration object for setup
-  # @yieldparam config [Configuration] The configuration instance to configure
-  # @return [Configuration] The frozen configuration
-  # @example Basic configuration with Sequel
-  #   Sourced.configure do |config|
-  #     config.backend = Sequel.connect(ENV['DATABASE_URL'])
-  #     config.logger = Logger.new(STDOUT)
-  #   end
-  # @example Configuration with error handling
-  #   Sourced.configure do |config|
-  #     config.backend = Sequel.connect(ENV['DATABASE_URL'])
-  #     config.error_strategy do |s|
-  #       s.retry(times: 3, after: 5)
-  #       s.on_fail { |e, msg| Sentry.capture_exception(e) }
-  #     end
-  #   end
-  def self.configure(&)
-    yield config if block_given?
-    config.setup!
-    config.freeze
-    config
+  # Configure the Sourced module. Stores the block for re-running after fork
+  # (see {.setup!}), then runs it immediately.
+  # @yieldparam config [Configuration]
+  def self.configure(&block)
+    @configure_block = block
+    setup!
   end
 
-  # Register an Actor or Projector class to make it available for background processing.
-  # Registered reactors can handle commands and react to events asynchronously.
-  #
-  # @param reactor [Class] Actor or Projector class that implements the reactor interface
-  # @return [void]
-  # @raise [InvalidReactorError] if the reactor doesn't implement required interface methods
-  # @example Register an actor
-  #   Sourced.register(CartActor)
-  # @example Register a projector
-  #   Sourced.register(CartListingsProjector)
-  # @see Actor
-  # @see Projector
+  # Run (or re-run) the configure block on a fresh Configuration.
+  # Safe to call after a process fork to re-establish database connections.
+  def self.setup!
+    @config = Configuration.new
+    @configure_block&.call(@config)
+    @config.setup!
+    @config.freeze
+  end
+
+  # Register a reactor class with the global router.
   def self.register(reactor)
-    Router.register(reactor)
+    config.setup!
+    config.router.register(reactor)
   end
 
-  # @return [Boolean]
-  def self.registered?(reactor)
-    Router.registered?(reactor)
+  # @return [Sourced::Store]
+  def self.store
+    config.setup!
+    config.store
   end
 
-  # Append messages (probably commands) to a stream
-  # auto-incrementing the sequence number
-  # Raises if the message is invalid
-  # This is meant for an app's front-end to dispatch commands into the system
-  # so it's defensive and raises on error
-  # helpers upstream of this can first validate the message
-  # and surface errors back to the UI
-  # TODO: in future we might want to restrict what messages
-  # can be publicly dispatched. Whether that lives here, or
-  # somewhere else, I'm not sure.
-  #
-  # @param message [Message] the mesagge to append
-  # @raise [InvalidMessageError] if !message.valid?
-  # @return [Message]
-  # @example
-  #   command = CreateCart.new(stream_id: 'cart-123', payload: {}),
-  #   Sourced.dispatch(command)
-  def self.dispatch(message)
-    raise InvalidMessageError.new(message) unless message.valid?
-
-    appended = config.backend.append_next_to_stream(message.stream_id, [message])
-    raise BackendError, "Backend #{config.backend}#append_next_to_stream failed with message #{message.inspect}" unless appended
-
-    message
+  # @return [Sourced::Router]
+  def self.router
+    config.setup!
+    config.router
   end
 
-  class Loader
-    def initialize(backend: Sourced.config.backend)
-      @backend = backend
-    end
-
-    def load(actor, after: nil, upto: nil)
-      after ||= actor.seq
-      events = @backend.read_stream(actor.id, after:, upto:)
-      actor.evolve(events)
-      [actor, events]
-    end
+  def self.stop_consumer_group(reactor_or_id, message = nil)
+    config.router.stop_consumer_group(reactor_or_id, message)
   end
 
-  # Load or catch up an Actor from its event history
-  # @example
-  #   actor = MyActor.new(id: '123')
-  #   Sourced.load(actor)
-  #   actor.seq # Integer
-  #
-  # Actor must implement:
-  #   #id() => String
-  #   #seq() => Integer
-  #   #evolve(events)
-  #
-  # It also supports passing a Reactor class (Actor, Evolver)
-  # and a stream_id
-  # @example
-  #   actor, events = Sourced.load(MyActor, 'order-123')
-  #   actor, events = Sourced.load(MyActor, 'order-123', after: 20)
-  def self.load(*args)
-    reactor, options = case args
-    in [ReactorInterface => r, String => stream_id, Hash => opts]
-      [r.new(id: stream_id), opts]
-    in [ReactorInterface => r, String => stream_id]
-      [r.new(id: stream_id), {}]
-    in [Evolve => r, Hash => opts]
-      [r, opts]
-    in [Evolve => r]
-      [r, {}]
-    else
-      raise ArgumentError, "expected a Reactor class and stream_id, or a Reactor instance, but got #{args.inspect}"
-    end
-
-    backend = options.delete(:backend) || config.backend
-    Loader.new(backend:).load(reactor, **options)
+  def self.reset_consumer_group(reactor_or_id)
+    config.router.reset_consumer_group(reactor_or_id)
   end
 
-  # Load history for a reactor, or a stream id string
-  # @example
-  #   history = Sourced.history_for('order-123')
-  #   history = Sourced.history_for('order-123', upto: 20)
-  #   history = Sourced.history_for(order_actor)
-  #
-  # @param stream_id [String, #id, #stream_id]
-  # @option after [nil, Integer] load messages after this sequence number
-  # @option upto [nil, Integer] load messsages upto this sequence number
-  # @return [Enumerable<Sourced::Message>]
-  def self.history_for(stream_id, after: nil, upto: nil)
-    stream_id = if stream_id.respond_to?(:stream_id)
-      stream_id.stream_id
-    elsif stream_id.respond_to?(:id)
-      stream_id.id
-    else
-      stream_id
-    end
-
-    config.backend.read_stream(stream_id, after:, upto:)
+  def self.start_consumer_group(reactor_or_id)
+    config.router.start_consumer_group(reactor_or_id)
   end
 
-  # Build the topology graph from all registered async reactors.
-  # Returns a flat array of CommandNode, EventNode, and AutomationNode structs.
-  # The result is memoized; call Sourced.reset_topology to clear.
-  #
-  # @return [Array<Topology::CommandNode, Topology::EventNode, Topology::AutomationNode>]
+  # Reset the global configuration. For test teardown.
+  def self.reset!
+    @config = nil
+    @configure_block = nil
+    @topology = nil
+  end
+
+  # Build and cache the topology graph from all reactors registered with
+  # the global {.router}.
   def self.topology
-    @topology ||= Topology.build(Router.instance.async_reactors)
+    @topology ||= Topology.build(router.reactors)
   end
 
   def self.reset_topology
@@ -242,56 +100,96 @@ module Sourced
   end
 
   # Generate a standardized method name for message handlers.
-  # Used internally to create consistent handler method names.
-  #
-  # @param prefix [String] The handler type prefix (e.g., 'command', 'event')
-  # @param name [String] The message class name
-  # @return [String] The generated method name
   # @api private
   def self.message_method_name(prefix, name)
     "__handle_#{prefix}_#{name.split('::').map(&:downcase).join('_')}"
   end
 
-  # @!group Type Interfaces
-  
-  # Interface that command handlers (Deciders) must implement.
-  # @!attribute [r] handled_commands
-  #   @return [Array<Class>] Command classes this decider handles
-  # @!attribute [r] handle_command  
-  #   @return [Method] Method to handle incoming commands
-  # @!attribute [r] on_exception
-  #   @return [Method] Method to handle exceptions during command processing
-  DeciderInterface = Types::Interface[:handled_commands, :handle_command, :on_exception]
-  
-  # Interface that event handlers (Reactors) must implement.
-  # @!attribute [r] consumer_info
-  #   @return [Sourced::Consumer::ConsumerInfo] Consumer group information for this reactor
-  # @!attribute [r] handled_messages
-  #   @return [Array<Class>] Message classes this reactor handles
-  # @!attribute [r] handle
-  #   @return [Method] Method to handle incoming events
-  # @!attribute [r] on_exception
-  #   @return [Method] Method to handle exceptions during event processing
-  ReactorInterface = Types::Interface[:handle_batch, :consumer_info, :handled_messages, :on_exception]
+  # Returned by {.handle!} with command, reactor instance, and new events.
+  HandleResult = Data.define(:command, :reactor, :events) do
+    def to_ary = [command, reactor, events]
+  end
+
+  # Handle a command synchronously: validate, load history, decide, append, ACK.
+  def self.handle!(reactor_class, command, store: nil)
+    store ||= self.store
+
+    partition_attrs = extract_partition_attrs(command, reactor_class)
+    values = reactor_class.partition_keys.map { |k| partition_attrs[k]&.to_s }
+    instance = reactor_class.new(values)
+
+    unless command.valid?
+      return HandleResult.new(command: command, reactor: instance, events: [])
+    end
+
+    needs_history = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
+    if needs_history
+      instance, read_result = load(reactor_class, store: store, **partition_attrs)
+    end
+
+    raw_events = instance.decide(command)
+    correlated_events = raw_events.map { |e| command.correlate(e) }
+
+    guard = read_result&.guard
+    to_append = [command] + correlated_events
+    last_position = store.append(to_append, guard: guard)
+
+    advance_registered_offsets(store, reactor_class, partition_attrs, last_position)
+
+    HandleResult.new(command: command, reactor: instance, events: correlated_events)
+  end
+
+  # Load a reactor instance from its event history using AND-filtered partition reads.
+  def self.load(reactor_class, store: nil, **values)
+    store ||= self.store
+    partition_attrs = reactor_class.partition_keys.to_h { |k| [k, values[k]] }
+    handled_types = reactor_class.handled_messages_for_evolve.map(&:type).uniq
+    read_result = store.read_partition(partition_attrs, handled_types:)
+    instance = reactor_class.new(values)
+
+    instance.evolve(read_result.messages)
+
+    [instance, read_result]
+  end
+
+  private_class_method def self.extract_partition_attrs(command, reactor_class)
+    reactor_class.partition_keys.each_with_object({}) do |key, h|
+      value = command.payload&.respond_to?(key) ? command.payload.send(key) : nil
+      h[key] = value if value
+    end
+  end
+
+  private_class_method def self.advance_registered_offsets(store, reactor_class, partition_attrs, position)
+    return unless config.router
+
+    partition = partition_attrs.transform_keys(&:to_s)
+
+    config.router.reactors.each do |registered_reactor|
+      next unless registered_reactor == reactor_class
+
+      store.advance_offset(
+        registered_reactor.group_id,
+        partition: partition,
+        position: position
+      )
+    end
+  end
 end
 
-require 'sourced/consumer'
+require 'sourced/configuration'
+require 'sourced/message'
 require 'sourced/actions'
+require 'sourced/consumer'
 require 'sourced/evolve'
 require 'sourced/react'
 require 'sourced/sync'
-require 'sourced/configuration'
-require 'sourced/router'
-require 'sourced/message'
-require 'sourced/actor'
-require 'sourced/handler'
+require 'sourced/decider'
 require 'sourced/projector'
-require 'sourced/work_queue'
-require 'sourced/inline_notifier'
-require 'sourced/catchup_poller'
+require 'sourced/router'
+require 'sourced/worker'
+require 'sourced/stale_claim_reaper'
 require 'sourced/dispatcher'
-require 'sourced/supervisor'
 require 'sourced/command_context'
-require 'sourced/unit'
 require 'sourced/topology'
-# require 'sourced/rails/railtie' if defined?(Rails::Railtie)
+require 'sourced/supervisor'
+require 'sourced/durable_workflow'

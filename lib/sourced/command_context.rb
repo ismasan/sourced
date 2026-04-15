@@ -3,65 +3,112 @@
 require 'sourced/types'
 
 module Sourced
-  # A command factory to instantiate commands from Hash attributes
-  # including extra metadata.
-  # @example
+  # Builds commands instances with shared default metadata.
   #
-  #  ctx = Sourced::CommandContext.new(
-  #    stream_id: params[:stream_id],
-  #    metadata: {
-  #      user_id: session[:user_id]
-  #    }
-  #  )
+  # @example Build a command from a type string
+  #   ctx = CommandContext.new(metadata: { user_id: 10 })
+  #   cmd = ctx.build(type: 'orders.place', payload: { item: 'hat' })
+  #   cmd.metadata[:user_id] # => 10
   #
-  # # params[:command] should be a Hash with { type: String, payload: Hash | nil }
-  #
-  #  cmd = ctx.build(params[:command])
-  #  cmd.stream_id # String
-  #  cmd.metadata[:user_id] # == session[:user_id]
-  #
-  # Passing a command subclass will scope command lookup to subclasses of that class.
-  # Useful for restricting clients to a specific set of commands.
-  #
-  # @example
-  #
-  #  ctx = Sourced::CommandContext.new(scope: PublicCommand)
-  #
-  #  cmd = ctx.build(type: 'do_something', payload: { foo: 'bar' })
-  #
-  #  # Or with class and attrs
-  #  cmd = ctx.build(SomeCommand, stream_id: '111', payload: { foo: 'bar' })
-  #
-  # Attempting to build a command not in the scope will raise an error.
+  # @example Scope to a custom command subclass
+  #   scope = Class.new(Sourced::Command)
+  #   MyCmd = scope.define('my.cmd') { attribute :name, String }
+  #   ctx = CommandContext.new(scope: scope)
+  #   cmd = ctx.build(type: 'my.cmd', payload: { name: 'hello' })
   class CommandContext
-    # @option stream_id [String]
-    # @option metadata [Hash] metadata to add to commands built by this context
-    # @option scope [Sourced::Message] Message class to use as command registry
-    def initialize(stream_id: nil, metadata: Plumb::BLANK_HASH, scope: Sourced::Command)
-      @defaults = {
-        stream_id:,
-        metadata:
-      }.freeze
-      @scope = scope
+    class << self
+      # Register a block to run when building specific command type(s).
+      # The block receives the app scope and the command, and must return the (possibly modified) command.
+      #
+      # @param message_classes [Class] one or more command classes to match
+      # @yield [app, cmd] transformation block
+      # @return [void]
+      def on(*message_classes, &block)
+        message_classes.each { |klass| (message_blocks[klass] ||= []) << block }
+      end
+
+      # Register a block to run for all commands.
+      # The block receives the app scope and the command, and must return the (possibly modified) command.
+      #
+      # @yield [app, cmd] transformation block
+      # @return [void]
+      def any(&block)
+        any_blocks << block
+      end
+
+      # @api private
+      def message_blocks
+        @message_blocks ||= {}
+      end
+
+      # @api private
+      def any_blocks
+        @any_blocks ||= []
+      end
+
+      # @api private
+      def inherited(subclass)
+        super
+        message_blocks.each { |k, v| subclass.message_blocks[k] = v.dup }
+        any_blocks.each { |blk| subclass.any_blocks << blk }
+      end
     end
 
-    # @param attrs [Hash] attributes to lookup and buils a scope from.
-    # @return [Sourced::Message]
+    # @param metadata [Hash] default metadata merged into every command built by this context
+    # @param scope [Class] message class whose registry is used to resolve type strings (default: {Sourced::Command})
+    # @param app [Object, nil] request-scoped object passed to callback blocks
+    #
+    # @example
+    #   ctx = CommandContext.new(metadata: { user_id: 42 }, app: rack_app)
+    def initialize(metadata: Plumb::BLANK_HASH, scope: Sourced::Command, app: nil)
+      @defaults = { metadata: }.freeze
+      @scope = scope
+      @app = app
+    end
+
+    # Build a command instance, merging in default metadata.
+    #
+    # @overload build(attrs)
+    #   Resolve the command class from the +type+ key in +attrs+ via the scope's registry.
+    #   @param attrs [Hash] must include +:type+ and +:payload+ keys
+    #   @return [Sourced::Message]
+    #   @example
+    #     ctx.build(type: 'orders.place', payload: { item: 'hat' })
+    #
+    # @overload build(klass, attrs)
+    #   Use the given command class directly.
+    #   @param klass [Class] a Sourced::Command subclass
+    #   @param attrs [Hash] must include +:payload+ key
+    #   @return [Sourced::Message]
+    #   @example
+    #     ctx.build(PlaceOrder, payload: { item: 'hat' })
+    #
+    # @raise [ArgumentError] if arguments don't match either form
+    # @raise [Sourced::UnknownMessageError] if the type string is not registered in the scope
     def build(*args)
-      case args
-      in [Class => klass, Hash => attrs]
-        attrs = defaults.merge(Types::SymbolizedHash.parse(attrs))
-        klass.parse(attrs)
-      in [Hash => attrs]
-        attrs = defaults.merge(Types::SymbolizedHash.parse(attrs))
-        scope.from(attrs)
-      else
-        raise ArgumentError, "Invalid arguments: #{args.inspect}"
-      end
+      cmd = case args
+            in [Class => klass, Hash => attrs]
+              attrs = defaults.merge(Types::SymbolizedHash.parse(attrs))
+              klass.parse(attrs)
+            in [Hash => attrs]
+              attrs = defaults.merge(Types::SymbolizedHash.parse(attrs))
+              scope.from(attrs)
+            else
+              raise ArgumentError, "Invalid arguments: #{args.inspect}"
+            end
+      run_pipeline(cmd)
     end
 
     private
 
-    attr_reader :defaults, :scope
+    EMPTY_ARRAY = [].freeze
+
+    attr_reader :defaults, :scope, :app
+
+    def run_pipeline(cmd)
+      blocks = self.class.message_blocks[cmd.class] || EMPTY_ARRAY
+      steps = blocks + self.class.any_blocks
+      steps.reduce(cmd) { |c, st| instance_exec(app, c, &st) }
+    end
   end
 end

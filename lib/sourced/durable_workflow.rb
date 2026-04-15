@@ -1,38 +1,64 @@
 # frozen_string_literal: true
 
+require 'securerandom'
+
 module Sourced
+  # Durable workflow base class.
+  #
+  # A workflow instance is identified by a +workflow_id+ string, which doubles
+  # as the partition key. All lifecycle events (WorkflowStarted, StepStarted,
+  # StepFailed, StepComplete, ContextUpdated, WaitStarted, WaitEnded,
+  # WorkflowComplete, WorkflowFailed) carry +workflow_id+ as their first
+  # payload attribute so {Sourced::Message#extracted_keys} indexes them for
+  # partition queries.
+  #
+  # The step-memoisation mechanism (<tt>@lookup</tt> + <tt>catch(:halt)</tt>)
+  # allows +durable+ / +wait+ / +context+ / +execute+ to be re-entered safely.
   class DurableWorkflow
     extend Sourced::Consumer
+    include Sourced::Evolve
+
+    partition_by :workflow_id
 
     UnknownMessageError = Class.new(StandardError)
 
+    # Stable hash-based key for a given (method, args) pair.
     def self.step_key(step_name, args)
       [step_name, args].hash.to_s
     end
 
     def self.inherited(child)
+      super
+      child.partition_by(:workflow_id)
       cname = child.name.to_s.gsub(/::/, '.')
         .gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
         .gsub(/([a-z\d])([A-Z])/, '\1_\2')
-        .tr("-", "_")
+        .tr('-', '_')
         .downcase
 
       child.const_set(:WorkflowStarted, Sourced::Event.define("#{cname}.workflow.started") do
+        attribute :workflow_id, String
         attribute :args, Sourced::Types::Array.default([].freeze)
       end)
       child.const_set(:ContextUpdated, Sourced::Event.define("#{cname}.context.updated") do
+        attribute :workflow_id, String
         attribute :context, Sourced::Types::Any
       end)
       child.const_set(:WorkflowComplete, Sourced::Event.define("#{cname}.workflow.complete") do
+        attribute :workflow_id, String
         attribute :output, Sourced::Types::Any
       end)
-      child.const_set(:WorkflowFailed, Sourced::Event.define("#{cname}.workflow.failed"))
+      child.const_set(:WorkflowFailed, Sourced::Event.define("#{cname}.workflow.failed") do
+        attribute :workflow_id, String
+      end)
       child.const_set(:StepStarted, Sourced::Event.define("#{cname}.step.started") do
+        attribute :workflow_id, String
         attribute :key, String
         attribute :step_name, Sourced::Types::Lax::Symbol
         attribute :args, Sourced::Types::Array.default([].freeze)
       end)
       child.const_set(:StepFailed, Sourced::Event.define("#{cname}.step.failed") do
+        attribute :workflow_id, String
         attribute :key, String
         attribute :step_name, Sourced::Types::Lax::Symbol
         attribute :error_message, String
@@ -40,71 +66,46 @@ module Sourced
         attribute :backtrace, Sourced::Types::Array[String]
       end)
       child.const_set(:StepComplete, Sourced::Event.define("#{cname}.step.complete") do
+        attribute :workflow_id, String
         attribute :key, String
         attribute :step_name, Sourced::Types::Lax::Symbol
         attribute :output, Sourced::Types::Any
       end)
       child.const_set(:WaitStarted, Sourced::Event.define("#{cname}.wait.started") do
+        attribute :workflow_id, String
         attribute :count, Integer
         attribute :at, Sourced::Types::Forms::Time
       end)
-      child.const_set(:WaitEnded, Sourced::Event.define("#{cname}.wait.ended"))
-    end
+      child.const_set(:WaitEnded, Sourced::Event.define("#{cname}.wait.ended") do
+        attribute :workflow_id, String
+      end)
 
-    def self.handled_messages
+      # Register all event classes so:
+      #  - Router claims them on our consumer group (`handled_messages`).
+      #  - `context_for(workflow_id:)` builds OR conditions for the partition
+      #    read (one per event type, via `Message.to_conditions`).
       [
-        self::WorkflowStarted,
-        self::WorkflowComplete,
-        self::StepStarted,
-        self::StepFailed,
-        self::StepComplete,
-        self::WaitStarted,
-        self::WaitEnded
-      ]
-    end
-
-    def self.handle(message, history:, logger: Sourced.config.logger)
-      from(history, logger:).__handle(message)
-    end
-
-    class Waiter
-      attr_reader :stream_id, :instance
-
-      def initialize(reactor, stream_id, backend: Sourced.config.backend, logger: Sourced.config.logger)
-        @reactor, @stream_id, @backend = reactor, stream_id, backend
-        @instance = @reactor.new(logger:)
-        @value = nil
-      end
-
-      def wait
-        while instance.status != :complete && instance.status != :failed
-          sleep 0.1
-          load
-        end
-        instance
-      end
-
-      def load
-        history = @backend.read_stream(@stream_id)
-        instance.__from(history)
+        child::WorkflowStarted, child::ContextUpdated, child::WorkflowComplete,
+        child::WorkflowFailed, child::StepStarted, child::StepFailed,
+        child::StepComplete, child::WaitStarted, child::WaitEnded
+      ].each do |klass|
+        child.handled_messages_for_evolve << klass unless child.handled_messages_for_evolve.include?(klass)
       end
     end
 
-    def self.from(history, logger: nil)
-      new(logger:).__from(history)
+    # Message types this consumer claims. Same set as evolve types because
+    # every workflow event both advances state and re-triggers the workflow.
+    def self.handled_messages
+      handled_messages_for_evolve
     end
 
-    def self.execute(*args)
-      stream_id = "workflow-#{SecureRandom.uuid}"
-      evt = self::WorkflowStarted.parse(stream_id:, payload: { args: })
-      Sourced.config.backend.append_next_to_stream(stream_id, evt)
-      Waiter.new(self, stream_id, backend: Sourced.config.backend)
-    end
-
+    # Define the initial context hash. Block receives no arguments.
     def self.context(&block)
       define_method :initial_context, &block
     end
 
+    # Wrap a method so the runtime memoises its result across workflow
+    # re-entries.
     def self.durable(method_name, retries: nil)
       source_method = :"__durable_source_#{method_name}"
       alias_method source_method, method_name
@@ -115,38 +116,37 @@ module Sourced
         case cached&.status
         when :complete
           cached.output
-        when :started # ready to call.
+        when :started
           begin
             output = send(source_method, *args)
-            @new_events << self.class::StepComplete.parse(
-              stream_id: id, 
-              payload: { key:, step_name: method_name, output: }
+            @new_events << self.class::StepComplete.new(
+              payload: { workflow_id: id, key:, step_name: method_name, output: }
             )
             throw :halt
           rescue StandardError => e
-            # TODO: this catches NameError?
-            # Syntax errors should immediatly stop the workflow, not retry
-            @new_events << self.class::StepFailed.parse(
-              stream_id: id, 
-              payload: { key:, step_name: method_name, error_message: e.inspect, error_class: e.class.to_s, backtrace: e.backtrace }
+            @new_events << self.class::StepFailed.new(
+              payload: {
+                workflow_id: id,
+                key:,
+                step_name: method_name,
+                error_message: e.inspect,
+                error_class: e.class.to_s,
+                backtrace: e.backtrace
+              }
             )
             if retries && cached.attempts == retries
-              @new_events << self.class::WorkflowFailed.parse(stream_id: id)
+              @new_events << self.class::WorkflowFailed.new(payload: { workflow_id: id })
             end
-
             throw :halt
           end
-        when :failed # retry. Exponential backoff, etc
-          @new_events << self.class::StepStarted.parse(
-            stream_id: id, 
-            payload: { key:, step_name: method_name, args: }
+        when :failed
+          @new_events << self.class::StepStarted.new(
+            payload: { workflow_id: id, key:, step_name: method_name, args: }
           )
-
           throw :halt
-        when nil # first call. Schedule StepStarted
-          @new_events << self.class::StepStarted.parse(
-            stream_id: id, 
-            payload: { key:, step_name: method_name, args: }
+        when nil
+          @new_events << self.class::StepStarted.new(
+            payload: { workflow_id: id, key:, step_name: method_name, args: }
           )
           throw :halt
         end
@@ -176,12 +176,106 @@ module Sourced
       end
     end
 
-    attr_reader :id, :seq, :context, :args, :output, :status
+    # Kick off a new workflow instance. Appends a WorkflowStarted event and
+    # returns a {Waiter} that can poll for completion.
+    #
+    # @param args [Array] positional args passed to the workflow's #execute
+    # @param store [Sourced::Store] defaults to Sourced.store
+    # @return [Waiter]
+    def self.execute(*args, store: Sourced.store)
+      workflow_id = "workflow-#{SecureRandom.uuid}"
+      evt = self::WorkflowStarted.new(payload: { workflow_id:, args: })
+      store.append([evt])
+      Waiter.new(self, workflow_id, store:)
+    end
 
-    def initialize(logger: nil)
-      @id = nil
-      @seq = 0
-      @logger = logger
+    # Router entry point. Drops claim.messages from the read history (the
+    # router's +store.read(conditions)+ returns the full partition, including
+    # messages being claimed) and delegates to {.handle_batch}.
+    def self.handle_claim(claim, history:)
+      claim_positions = claim.messages.map { |m| m.position if m.respond_to?(:position) }.compact.to_set
+      prior = history.messages.reject { |m| m.respond_to?(:position) && claim_positions.include?(m.position) }
+      prior_history = ReadResult.new(messages: prior, guard: history.guard)
+      values = claim.partition_value.transform_keys(&:to_sym)
+      handle_batch(values, claim.messages, history: prior_history)
+    end
+
+    # GWT-compatible entry point. +history.messages+ must be disjoint from
+    # +new_messages+ — the caller owns that distinction.
+    def self.handle_batch(partition_values, new_messages, history:, replaying: false)
+      workflow_id = partition_values[:workflow_id]
+      instance = new([workflow_id])
+      instance.__replay(history.messages)
+
+      each_with_partial_ack(new_messages) do |msg|
+        instance.__evolve(msg)
+        actions = instance.__handle(msg, guard: history.guard)
+        [actions, msg]
+      end
+    end
+
+    # Direct handler used by unit tests and by {Waiter}. Mirrors
+    # {Sourced::DurableWorkflow.handle}: +history+ should already contain
+    # +message+ as its last element.
+    def self.handle(message, history:)
+      from(history).__handle(message)
+    end
+
+    # Rebuild a workflow instance by replaying +history+.
+    def self.from(history)
+      new.__replay(history)
+    end
+
+    # Load a workflow instance for +workflow_id+ from the store.
+    def self.load(workflow_id, store: Sourced.store)
+      _inst, _rr = Sourced.load(self, store:, workflow_id: workflow_id)
+    end
+
+    # Polls the store for terminal workflow events.
+    class Waiter
+      attr_reader :workflow_id, :instance
+
+      def initialize(klass, workflow_id, store: Sourced.store)
+        @klass = klass
+        @workflow_id = workflow_id
+        @store = store
+        @instance = klass.new([workflow_id])
+      end
+
+      def wait(timeout: nil)
+        deadline = timeout ? Time.now + timeout : nil
+        until @instance.status == :complete || @instance.status == :failed
+          raise 'DurableWorkflow wait timed out' if deadline && Time.now > deadline
+
+          sleep 0.05
+          load
+        end
+        @instance
+      end
+
+      def load
+        handled_types = @klass.handled_messages_for_evolve.map(&:type).uniq
+        result = @store.read_partition({ workflow_id: @workflow_id }, handled_types:)
+        @instance = @klass.new([@workflow_id])
+        @instance.__replay(result.messages)
+        @instance
+      end
+    end
+
+    attr_reader :id, :context, :args, :output, :status
+
+    # +partition_values+ may be:
+    #   - an Array like +['wf-id']+ (from {.handle_claim})
+    #   - a Hash like +{ workflow_id: 'wf-id' }+ (from {Sourced.load})
+    #   - a String +'wf-id'+
+    #   - nil
+    def initialize(partition_values = nil)
+      @id = case partition_values
+            when Array then partition_values.first
+            when Hash then partition_values[:workflow_id]
+            when String then partition_values
+            else nil
+            end
       @status = :new
       @args = []
       @output = nil
@@ -189,27 +283,28 @@ module Sourced
       @new_events = []
       @wait_count = 0
       @waiters = []
-      @initial_context = nil
       @context = initial_context
     end
 
     def initial_context = nil
 
-    def __from(history)
-      history.each do |event|
-        __evolve(event)
-      end
+    def __replay(history)
+      Array(history).each { |m| __evolve(m) }
       self
     end
 
-    def __evolve(event)
-      @id = event.stream_id
-      @seq = event.seq
+    # Override Sourced::Evolve#evolve so {Sourced.load} (which calls +instance.evolve+)
+    # applies workflow events via our manual dispatcher.
+    def evolve(messages)
+      __replay(messages)
+    end
 
+    def __evolve(event)
       case event
       when self.class::ContextUpdated
         @context = deep_dup(event.payload.context)
       when self.class::WorkflowStarted
+        @id ||= event.payload.workflow_id
         @args = event.payload.args
         @status = :started
       when self.class::WorkflowFailed
@@ -233,18 +328,16 @@ module Sourced
       end
     end
 
-    def __handle(message)
-      return Sourced::Actions::OK if @status == :complete || @status == :failed
+    # Decide the next action given +message+. State is assumed to already
+    # reflect +message+ (caller replayed it).
+    def __handle(message, guard: nil)
+      return Actions::OK if @status == :complete || @status == :failed
 
       if message.is_a?(self.class::WaitStarted)
-        evt = self.class::WaitEnded.parse(stream_id: id)
-        return Sourced::Actions::Schedule.new([evt], at: message.payload.at)
+        evt = self.class::WaitEnded.new(payload: { workflow_id: id })
+        return Actions::Schedule.new([evt], at: message.payload.at)
       end
 
-      # Raise if @waiting ?
-      # we don't allow handling any new messages until wait has ended.
-
-      # TODO: all this deep-duping is not efficient.
       @initial_context = deep_dup(@context)
 
       completed = false
@@ -255,47 +348,48 @@ module Sourced
         completed = true
       end
 
-      # If any step updated context, even on failure
-      # make sure to log a ContextUpdated event to keep track of that state
-      @new_events << self.class::ContextUpdated.parse(
-        stream_id: id,
-        payload: { context: deep_dup(@context) }
-      ) if @context != @initial_context
+      if @context != @initial_context
+        @new_events << self.class::ContextUpdated.new(
+          payload: { workflow_id: id, context: deep_dup(@context) }
+        )
+      end
 
-      @new_events << self.class::WorkflowComplete.parse(
-        stream_id: id,
-        payload: { output: }
-      ) if completed
+      if completed
+        @new_events << self.class::WorkflowComplete.new(
+          payload: { workflow_id: id, output: }
+        )
+      end
 
-      last_seq = @seq
-      events = @new_events.map { |e| e.with(seq: last_seq += 1 )}
-      Sourced::Actions::AppendAfter.new(id, events)
+      events = @new_events
+      @new_events = []
+      return Actions::OK if events.empty?
+
+      Actions::Append.new(events, guard: guard)
     end
 
     private
 
-    attr_reader :logger
-
     def wait(seconds)
       @wait_count += 1
 
-      if @waiters[@wait_count] # we're already waiting for this method call
-        return seconds
-      else # first time we call this method
-        @new_events << self.class::WaitStarted.parse(
-          stream_id: id,
-          payload: { count: @wait_count, at: Time.now + seconds }
+      if @waiters[@wait_count]
+        seconds
+      else
+        @new_events << self.class::WaitStarted.new(
+          payload: { workflow_id: id, count: @wait_count, at: Time.now + seconds }
         )
-
         throw :halt
       end
     end
 
-    def deep_dup(hash)
-      return hash.dup unless hash.is_a?(Hash)
-
-      hash.each.with_object({}) do |(k, v), new_hash|
-        new_hash[k] = deep_dup(v)
+    def deep_dup(value)
+      case value
+      when Hash
+        value.each.with_object({}) { |(k, v), h| h[k] = deep_dup(v) }
+      when Array
+        value.map { |v| deep_dup(v) }
+      else
+        value.dup rescue value
       end
     end
   end

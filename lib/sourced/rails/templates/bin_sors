@@ -1,8 +1,0 @@
-#!/usr/bin/env ruby
-
-require_relative "../config/environment"
-require "sourced"
-
-ActiveRecord::Base.logger = nil
-
-Sourced::Supervisor.start
