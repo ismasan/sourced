@@ -384,6 +384,51 @@ RSpec.describe Sourced::CCC::Message do
     end
   end
 
+  describe '#to_message' do
+    it 'returns self — identity implementation of the to_message contract' do
+      msg = CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      expect(msg.to_message).to equal(msg)
+    end
+  end
+
+  describe '.===' do
+    let(:msg) { CCCTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' }) }
+
+    it 'matches unwrapped instances like Module#===' do
+      expect(CCCTestMessages::DeviceRegistered === msg).to be true
+      expect(CCCTestMessages::AssetRegistered === msg).to be false
+    end
+
+    it 'matches messages wrapped in a to_message-aware delegator' do
+      wrapper = Class.new(SimpleDelegator) do
+        def to_message = __getobj__
+      end.new(msg)
+
+      expect(CCCTestMessages::DeviceRegistered === wrapper).to be true
+      expect(CCCTestMessages::AssetRegistered === wrapper).to be false
+    end
+
+    it 'makes case/when transparent across wrapped and unwrapped messages' do
+      classify = ->(m) do
+        case m
+        when CCCTestMessages::DeviceRegistered then :device
+        when CCCTestMessages::AssetRegistered then :asset
+        else :unknown
+        end
+      end
+
+      wrapper = Sourced::CCC::PositionedMessage.new(msg, 1)
+      expect(classify.call(msg)).to eq(:device)
+      expect(classify.call(wrapper)).to eq(:device)
+    end
+
+    it 'returns false for arbitrary non-message objects without looping' do
+      expect(CCCTestMessages::DeviceRegistered === 'string').to be false
+      expect(CCCTestMessages::DeviceRegistered === 42).to be false
+      expect(CCCTestMessages::DeviceRegistered === Object.new).to be false
+    end
+  end
+
   describe Sourced::CCC::ConsistencyGuard do
     it 'is a Data struct with conditions and last_position' do
       conditions = [Sourced::CCC::QueryCondition.new(message_type: 'device.registered', attrs: { device_id: 'dev-1' })]

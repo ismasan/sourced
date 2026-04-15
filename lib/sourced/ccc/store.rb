@@ -22,6 +22,11 @@ module Sourced
       def is_a?(klass) = __getobj__.is_a?(klass) || super
       def kind_of?(klass) = is_a?(klass)
       def instance_of?(klass) = __getobj__.instance_of?(klass)
+
+      # Unwrap to the underlying {CCC::Message}. Part of the +to_message+
+      # contract honoured by {CCC::Message.===} so that +case/when+ works
+      # transparently across wrapped and unwrapped messages.
+      def to_message = __getobj__
     end
 
     # Returned by {Store#claim_next} with everything needed to process and ack a partition.

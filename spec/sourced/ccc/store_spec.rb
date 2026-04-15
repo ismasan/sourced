@@ -369,6 +369,31 @@ RSpec.describe Sourced::CCC::Store do
       expect(result.messages.first).to be_a(CCCStoreTestMessages::DeviceRegistered)
     end
 
+    describe 'PositionedMessage#to_message' do
+      it 'unwraps to the underlying CCC::Message instance' do
+        store.append(CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+
+        wrapped = store.read_all.messages.first
+        inner = wrapped.to_message
+
+        expect(wrapped).to be_a(Sourced::CCC::PositionedMessage)
+        expect(inner).to be_a(CCCStoreTestMessages::DeviceRegistered)
+        expect(inner).not_to be_a(Sourced::CCC::PositionedMessage)
+        expect(inner.payload.device_id).to eq('dev-1')
+      end
+
+      it 'allows case/when against wrapped messages via CCC::Message.===' do
+        store.append(CCCStoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+
+        wrapped = store.read_all.messages.first
+        matched = case wrapped
+                  when CCCStoreTestMessages::DeviceRegistered then :device
+                  else :other
+                  end
+        expect(matched).to eq(:device)
+      end
+    end
+
     context 'with order: :desc' do
       before do
         5.times do |i|

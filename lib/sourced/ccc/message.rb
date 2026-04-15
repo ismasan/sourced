@@ -154,6 +154,22 @@ module Sourced
         super(attrs)
       end
 
+      # Identity implementation of the +to_message+ contract — see
+      # {.===} and {CCC::PositionedMessage#to_message}.
+      def to_message = self
+
+      # Make +case/when+ transparent to {CCC::PositionedMessage} (or any
+      # wrapper implementing +#to_message+). Ruby's default +Module#===+
+      # is implemented in C and ignores +is_a?+ overrides, so wrapped
+      # messages would otherwise fall through the +else+ branch.
+      def self.===(other)
+        return true if super
+        return false unless other.respond_to?(:to_message)
+
+        unwrapped = other.to_message
+        !unwrapped.equal?(other) && super(unwrapped)
+      end
+
       def with_metadata(meta = {})
         return self if meta.empty?
 
