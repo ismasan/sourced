@@ -81,6 +81,21 @@ store.append(new_events, guard: result.guard)
 # were appended after the read
 ```
 
+### Delayed messages
+
+Any message can be stamped with a future time via `#at(time)`. Scheduled messages live in a separate `sourced_scheduled_messages` table and are promoted into the main log when their `available_at` passes.
+
+```ruby
+cmd = SendReminder.new(payload: { course_id: 'c1' }).at(Time.now + 3600)
+store.schedule_messages([cmd])
+
+# Normally the ScheduledMessagePoller (started by the Dispatcher) promotes
+# due messages automatically. In tests or scripts, do it manually:
+store.update_schedule!  # => number of messages promoted
+```
+
+In a reaction handler, `dispatch(Cmd, ...).at(time)` uses this pipeline under the hood — see [Reactions](#reactions).
+
 ### Partition reads
 
 `read_partition` uses AND semantics — a message is included only when every partition attribute it declares matches the given value.
@@ -140,66 +155,17 @@ store.read_all(limit: 20).to_enum.lazy.select { |m|
 }.first(5)
 ```
 
-### Database setup
+## Reactors
 
-`Store#install!` creates all required tables directly (useful for scripts, tests, and quick prototyping). For production apps using Sequel migrations, the store can export a migration file instead.
+Sourced provides three reactor base classes that share the same lifecycle (claim → evolve → handle → append → ack) and the same consumer-group machinery:
 
-#### Quick setup (e.g. scripts, tests)
+- [Deciders](#deciders) — handle commands, enforce invariants, produce events
+- [Projectors](#projectors) — build read models by consuming events
+- [Durable workflows](#durable-workflows) — imperative orchestrations whose steps are memoised across re-entries
 
-```ruby
-db = Sequel.sqlite('my_app.db')
-store = Sourced::Store.new(db)
-store.install!
-```
+Any reactor can produce follow-up messages via [Reactions](#reactions), and run side effects via [Sync and after-sync blocks](#sync-and-after-sync-blocks).
 
-#### Exporting a Sequel migration
-
-Use `Store#copy_migration_to` to generate a migration file compatible with `Sequel::Migrator`:
-
-```ruby
-db = Sequel.sqlite('my_app.db')
-store = Sourced::Store.new(db)
-
-# Option 1: pass a directory (uses a default filename)
-store.copy_migration_to('db/migrations')
-
-# Option 2: pass a block for full control over the path
-store.copy_migration_to do
-  "db/migrations/#{Time.now.strftime('%Y%m%d%H%M%S')}_create_sourced_tables.rb"
-end
-```
-
-Then run your migrations as usual:
-
-```bash
-sequel -m db/migrations sqlite://my_app.db
-```
-
-#### Custom table prefix
-
-By default, tables are prefixed with `sourced_` (e.g. `sourced_messages`, `sourced_consumer_groups`). Pass a `prefix:` to `Store.new` to customise this — for example when running multiple Sourced stores in the same database:
-
-```ruby
-store = Sourced::Store.new(db, prefix: 'billing')
-store.install!
-# Creates: billing_messages, billing_key_pairs, billing_consumer_groups, ...
-```
-
-The prefix is carried through to exported migrations automatically.
-
-#### Using the Installer directly
-
-The installer is also available as a standalone object, which is useful for Rake tasks or setup scripts:
-
-```ruby
-installer = Sourced::Installer.new(db, logger: Logger.new($stdout), prefix: 'sourced')
-installer.install       # create tables
-installer.installed?    # check if tables exist
-installer.uninstall     # drop tables (test env only)
-installer.copy_migration_to('db/migrations')
-```
-
-## Deciders
+### Deciders
 
 Deciders handle commands, enforce invariants, and produce events. They rebuild state from event history before each decision.
 
@@ -229,7 +195,7 @@ class CourseDecider < Sourced::Decider
 end
 ```
 
-### Synchronous command handling
+#### Synchronous command handling
 
 `Sourced.handle!` loads history, runs the decider, appends the command + events, and advances consumer group offsets — all in one call. Designed for web controllers.
 
@@ -246,7 +212,7 @@ end
 
 Raises `Sourced::ConcurrentAppendError` on conflicts, or `RuntimeError` on domain invariant violations (e.g. "Course already exists").
 
-### CommandContext
+#### CommandContext
 
 `Sourced::CommandContext` is a factory for building Sourced commands from raw Hash attributes (e.g. HTTP params), injecting defaults like `metadata`. It mirrors `Sourced::CommandContext` but without `stream_id`, since Sourced messages are stream-less.
 
@@ -266,7 +232,7 @@ cmd = ctx.build(CreateCourse, payload: { course_id: 'c1', course_name: 'Algebra'
 
 String keys are automatically symbolized, so `ctx.build('type' => '...', 'payload' => { ... })` works too.
 
-#### Callback hooks (`on` and `any`)
+##### Callback hooks (`on` and `any`)
 
 Subclass `CommandContext` and register class-level hooks to enrich or transform commands at build time — e.g. injecting session data or adding metadata from the request scope.
 
@@ -333,7 +299,7 @@ class AppCommandContext < Sourced::CommandContext
 end
 ```
 
-#### Scoping to a command subset
+##### Scoping to a command subset
 
 By default, `CommandContext` looks up types in `Sourced::Command.registry`. Pass a `scope:` to restrict lookups to a specific command subclass — attempts to build commands outside the scope raise `Sourced::UnknownMessageError`.
 
@@ -351,18 +317,18 @@ ctx.build(type: 'courses.create', payload: { ... })  # OK
 ctx.build(type: 'admin.delete_all', payload: {})      # raises UnknownMessageError
 ```
 
-### Loading a decider's state
+#### Loading a decider's state
 
 ```ruby
 decider, read_result = Sourced.load(CourseDecider, course_name: 'Algebra')
 decider.state  # => { name_taken: true }
 ```
 
-## Projectors
+### Projectors
 
 Projectors consume events to build read models. Two flavours:
 
-### EventSourced projector
+#### EventSourced projector
 
 Rebuilds state from full history on every batch (like deciders).
 
@@ -399,7 +365,7 @@ class CourseCatalogProjector < Sourced::Projector::EventSourced
 end
 ```
 
-### StateStored projector
+#### StateStored projector
 
 Loads persisted state via the `state` block, evolves only new (unprocessed) messages.
 
@@ -423,7 +389,92 @@ class MyProjector < Sourced::Projector::StateStored
 end
 ```
 
-## Reactions
+### Durable workflows
+
+`Sourced::DurableWorkflow` models long-running, side-effect-heavy workflows as an imperative `execute` method whose steps are memoised across re-entries. A workflow instance is identified by a `workflow_id` (auto-assigned) which doubles as its partition key.
+
+Subclassing `DurableWorkflow` auto-registers a full lifecycle event set (`WorkflowStarted`, `StepStarted`, `StepComplete`, `StepFailed`, `ContextUpdated`, `WaitStarted`, `WaitEnded`, `WorkflowComplete`, `WorkflowFailed`) under the class name.
+
+```ruby
+class GreetingTask < Sourced::DurableWorkflow
+  def execute(name)
+    ip = resolve_ip
+    location = geolocate(ip)
+    "Hello #{name}, your IP is #{ip} and its location is #{location}"
+  end
+
+  durable def resolve_ip
+    IPResolver.resolve
+  end
+
+  def geolocate(ip)
+    Geolocator.locate(ip)
+  end
+  # retry the step up to 3 times before failing the workflow
+  durable :geolocate, retries: 3
+end
+```
+
+`durable` wraps a method so its result is memoised (via `StepComplete` events) and its failures are recorded (`StepFailed`). Re-entering `execute` replays past steps from memory instead of re-running their side effects. The `durable def foo; ...; end` form works because `def` returns the method's symbol.
+
+#### Starting and observing a workflow
+
+```ruby
+# Register the workflow so the Dispatcher drives it forward
+Sourced.register(GreetingTask)
+
+# Start a new run — appends WorkflowStarted and returns a Waiter
+waiter = GreetingTask.execute('Ada', store: Sourced.store)
+waiter.workflow_id  # => "workflow-<uuid>"
+
+# Block until the workflow reaches a terminal state (:complete or :failed)
+instance = waiter.wait(timeout: 30)
+instance.status  # => :complete
+instance.output  # => "Hello Ada, your IP is ... and its location is ..."
+```
+
+#### Rehydrating from the store
+
+```ruby
+instance = GreetingTask.load('workflow-abc-123')
+instance.status   # => :started | :complete | :failed
+instance.context  # => hash set via the `context` DSL
+```
+
+#### Initial context
+
+```ruby
+class IndexPages < Sourced::DurableWorkflow
+  context do
+    { visited: [] }
+  end
+
+  def execute(urls)
+    urls.each { |u| fetch(u) }
+  end
+
+  durable def fetch(url)
+    # ... returns parsed page
+    context[:visited] << url
+  end
+end
+```
+
+The `context` block runs once per replay and seeds `#context`, which is persisted as `ContextUpdated` events whenever it changes.
+
+#### Waiting inside a workflow
+
+Inside `execute`, `wait(seconds)` suspends the run by appending `WaitStarted` with an `at:` time. The `ScheduledMessagePoller` resumes the workflow by promoting the corresponding `WaitEnded` when the time elapses.
+
+```ruby
+def execute
+  notify_started
+  wait(300)          # sleep for 5 minutes
+  notify_finished
+end
+```
+
+### Reactions
 
 Both deciders and projectors can react to events to produce new commands or events, enabling workflow orchestration.
 
@@ -442,7 +493,7 @@ end
 
 Reactions are skipped during replay (when `replaying: true`), so side effects don't re-fire.
 
-## Sync and After-Sync Blocks
+### Sync and After-Sync Blocks
 
 Both deciders and projectors support `sync` and `after_sync` blocks for running side effects during message processing.
 
@@ -475,78 +526,6 @@ end
 ```
 
 Multiple `sync` and `after_sync` blocks can be registered; they execute in registration order. Blocks are inherited by subclasses.
-
-## Configuration
-
-```ruby
-require 'sourced'
-
-Sourced.configure do |c|
-  # Pass a Sequel SQLite connection or a Sourced::Store instance
-  c.store = Sequel.sqlite('my_app.db')
-
-  # Optional settings
-  c.worker_count = 4           # background worker fibers (default: 2)
-  c.batch_size = 50            # messages per claim (default: 50)
-  c.catchup_interval = 5       # seconds between catch-up polls (default: 5)
-  c.max_drain_rounds = 10      # max drain iterations per pickup (default: 10)
-  c.claim_ttl_seconds = 120    # stale claim threshold (default: 120)
-  c.housekeeping_interval = 30 # heartbeat/reap cycle (default: 30)
-end
-```
-
-## Failure handling and retries
-
-Sourced already supports consumer-group retries on failure.
-
-- On reactor errors, `Router#handle_next_for` calls the reactor's `on_exception` hook.
-- By default, that hook uses `Sourced.config.error_strategy`.
-- The default `Sourced::ErrorStrategy` marks the consumer group as failed immediately.
-- If you configure a retrying error strategy, Sourced stores the next retry time in the consumer group's `retry_at` column and skips claiming work for that group until that time has passed.
-
-So retries are built in already, but they are opt-in via the error strategy configuration.
-
-### Example: exponential backoff retries
-
-```ruby
-require 'sourced'
-
-Sourced.configure do |c|
-  c.store = Sequel.sqlite('my_app.db')
-
-  c.error_strategy = Sourced::ErrorStrategy.new do |s|
-    s.retry(
-      times: 5,
-      after: 2,
-      backoff: ->(retry_after, retry_count) { retry_after * (2**(retry_count - 1)) }
-    )
-
-    s.on_retry do |retry_count, exception, message, later|
-      LOGGER.warn(
-        "Sourced retry ##{retry_count} for #{message.type} (#{message.id}) " \
-        "at #{later}: #{exception.class}: #{exception.message}"
-      )
-    end
-
-    s.on_fail do |exception, message|
-      LOGGER.error(
-        "Sourced failing consumer group after retries for #{message.type} (#{message.id}): " \
-        "#{exception.class}: #{exception.message}"
-      )
-    end
-  end
-end
-```
-
-With the configuration above, failures retry after:
-
-- retry 1: 2 seconds
-- retry 2: 4 seconds
-- retry 3: 8 seconds
-- retry 4: 16 seconds
-- retry 5: 32 seconds
-
-After the configured retries are exhausted, the consumer group is marked as failed.
 
 ## Registering reactors
 
@@ -616,8 +595,9 @@ supervisor.start
 2. **Dispatcher** routes notifications to a `WorkQueue`, mapping message types to interested reactors
 3. **Workers** pop reactors from the queue, claim a partition via `Router#handle_next_for`, process messages, and ack
 4. **CatchUpPoller** periodically pushes all reactors as a safety net (handles missed notifications)
-5. **ScheduledMessagePoller** promotes due delayed messages into the main Sourced log
-6. **StaleClaimReaper** releases claims held by dead workers
+5. **Store#schedule_messages** persists delayed messages in a separate `sourced_scheduled_messages` table keyed by `available_at`
+6. **ScheduledMessagePoller** runs on an interval and promotes any messages whose `available_at` is in the past into the main log
+7. **StaleClaimReaper** releases claims held by dead workers
 
 ### Router (direct usage)
 
@@ -632,6 +612,60 @@ router.handle_next_for(CourseDecider)
 # Drain all pending work across all reactors
 router.drain
 ```
+
+## Failure handling and retries
+
+Sourced already supports consumer-group retries on failure.
+
+- On reactor errors, `Router#handle_next_for` calls the reactor's `on_exception` hook.
+- If a batch fails mid-way, it is raised as `Sourced::PartialBatchError`. The error carries the already-processed `action_pairs` (which are still ack'd) and the `failed_message` the hook receives — so partial progress is not lost.
+- By default, the hook uses `Sourced.config.error_strategy`.
+- The default `Sourced::ErrorStrategy` marks the consumer group as failed immediately.
+- If you configure a retrying error strategy, Sourced stores the next retry time in the consumer group's `retry_at` column and skips claiming work for that group until that time has passed.
+
+So retries are built in already, but they are opt-in via the error strategy configuration.
+
+### Example: exponential backoff retries
+
+```ruby
+require 'sourced'
+
+Sourced.configure do |c|
+  c.store = Sequel.sqlite('my_app.db')
+
+  c.error_strategy = Sourced::ErrorStrategy.new do |s|
+    s.retry(
+      times: 5,
+      after: 2,
+      backoff: ->(retry_after, retry_count) { retry_after * (2**(retry_count - 1)) }
+    )
+
+    s.on_retry do |retry_count, exception, message, later|
+      LOGGER.warn(
+        "Sourced retry ##{retry_count} for #{message.type} (#{message.id}) " \
+        "at #{later}: #{exception.class}: #{exception.message}"
+      )
+    end
+
+    s.on_fail do |exception, message|
+      LOGGER.error(
+        "Sourced failing consumer group after retries for #{message.type} (#{message.id}): " \
+        "#{exception.class}: #{exception.message}"
+      )
+    end
+  end
+end
+```
+
+With the configuration above, failures retry after:
+
+- retry 1: 2 seconds
+- retry 2: 4 seconds
+- retry 3: 8 seconds
+- retry 4: 16 seconds
+- retry 5: 32 seconds
+
+After the configured retries are exhausted, the consumer group is marked as failed.
 
 ## Consumer groups
 
@@ -820,6 +854,37 @@ behind = store.read_offsets(limit: 50).to_enum.lazy.select { |o|
 offsets, total_count = store.read_offsets(group_id: 'CourseDecider')
 ```
 
+## Topology introspection
+
+`Sourced.topology` analyses all registered reactors (deciders and projectors) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for projectors). Each node has at least `type`, `id`, `name`, `group_id`, and depending on kind, `consumes` / `produces` / `schema`.
+
+```ruby
+Sourced.register(CourseDecider)
+Sourced.register(EnrolmentDecider)
+Sourced.register(CourseCatalogProjector)
+
+Sourced.topology.each do |node|
+  puts "#{node.type}: #{node.name}"
+end
+# command: CourseApp::CreateCourse
+# event: CourseApp::CourseCreated
+# command: CourseApp::EnrolStudent
+# automation: reaction(CourseCreated)
+# readmodel: CourseApp::CourseCatalogProjector
+# ...
+```
+
+The graph is cached; `Sourced.register` invalidates the cache automatically, and you can force a rebuild with `Sourced.reset_topology`. Typical uses are generating [Event Modeling](https://eventmodeling.org/) diagrams, debugging "which reactor produces this event", or driving visual service-dependency tooling.
+
+```ruby
+# Which commands produce the `courses.created` event?
+Sourced.topology
+  .select { |n| n.type == 'command' && n.produces.include?('courses.created') }
+  .map(&:name)
+```
+
+`produces` / `consumes` are resolved statically by parsing reactor source with Prism, so they are only populated when the `prism` gem is available.
+
 ## Testing
 
 Sourced ships with RSpec helpers for Given-When-Then testing of deciders and projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
@@ -965,3 +1030,83 @@ See `examples/app/` for a complete Sinatra application with:
 - An event-sourced projector writing JSON files
 - Synchronous command handling via `Sourced.handle!` in HTTP endpoints
 - Background worker processing via Falcon
+
+## Setup & configuration
+
+### Configuration
+
+```ruby
+require 'sourced'
+
+Sourced.configure do |c|
+  # Pass a Sequel SQLite connection or a Sourced::Store instance
+  c.store = Sequel.sqlite('my_app.db')
+
+  # Optional settings
+  c.worker_count = 4           # background worker fibers (default: 2)
+  c.batch_size = 50            # messages per claim (default: 50)
+  c.catchup_interval = 5       # seconds between catch-up polls (default: 5)
+  c.max_drain_rounds = 10      # max drain iterations per pickup (default: 10)
+  c.claim_ttl_seconds = 120    # stale claim threshold (default: 120)
+  c.housekeeping_interval = 30 # heartbeat/reap cycle (default: 30)
+end
+```
+
+### Database setup
+
+`Store#install!` creates all required tables directly (useful for scripts, tests, and quick prototyping). For production apps using Sequel migrations, the store can export a migration file instead.
+
+#### Quick setup (e.g. scripts, tests)
+
+```ruby
+db = Sequel.sqlite('my_app.db')
+store = Sourced::Store.new(db)
+store.install!
+```
+
+#### Exporting a Sequel migration
+
+Use `Store#copy_migration_to` to generate a migration file compatible with `Sequel::Migrator`:
+
+```ruby
+db = Sequel.sqlite('my_app.db')
+store = Sourced::Store.new(db)
+
+# Option 1: pass a directory (uses a default filename)
+store.copy_migration_to('db/migrations')
+
+# Option 2: pass a block for full control over the path
+store.copy_migration_to do
+  "db/migrations/#{Time.now.strftime('%Y%m%d%H%M%S')}_create_sourced_tables.rb"
+end
+```
+
+Then run your migrations as usual:
+
+```bash
+sequel -m db/migrations sqlite://my_app.db
+```
+
+#### Custom table prefix
+
+By default, tables are prefixed with `sourced_` (e.g. `sourced_messages`, `sourced_consumer_groups`). Pass a `prefix:` to `Store.new` to customise this — for example when running multiple Sourced stores in the same database:
+
+```ruby
+store = Sourced::Store.new(db, prefix: 'billing')
+store.install!
+# Creates: billing_messages, billing_key_pairs, billing_consumer_groups, ...
+```
+
+The prefix is carried through to exported migrations automatically.
+
+#### Using the Installer directly
+
+The installer is also available as a standalone object, which is useful for Rake tasks or setup scripts:
+
+```ruby
+installer = Sourced::Installer.new(db, logger: Logger.new($stdout), prefix: 'sourced')
+installer.install       # create tables
+installer.installed?    # check if tables exist
+installer.uninstall     # drop tables (test env only)
+installer.copy_migration_to('db/migrations')
+```
