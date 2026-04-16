@@ -88,9 +88,7 @@ module Sourced
         each_with_partial_ack(new_messages) do |msg|
           if handled_commands.include?(msg.class)
             raw_events = instance.decide(msg)
-            # TODO: correlation should be handled by infra layer, not reactors.
-            correlated_events = raw_events.map { |e| msg.correlate(e) }
-            actions = Actions.build_for(correlated_events, guard: history.guard, correlated: true)
+            actions = Actions.build_for(raw_events, guard: history.guard, source: msg)
             actions += instance.collect_actions(
               state: instance.state, messages: [msg], events: raw_events
             )

@@ -11,9 +11,8 @@ module Sourced
     # @param messages [Sourced::Message, Array<Sourced::Message>] messages produced by a reactor
     # @param guard [ConsistencyGuard, nil] optional concurrency guard for immediate appends
     # @param source [Sourced::Message, nil] source message used for correlation when executing
-    # @param correlated [Boolean] whether +messages+ are already correlated
     # @return [Array<Append, Schedule>] executable actions in append/schedule groups
-    def self.build_for(messages, guard: nil, source: nil, correlated: false)
+    def self.build_for(messages, guard: nil, source: nil)
       actions = []
       messages = Array(messages)
       return actions if messages.empty?
@@ -22,49 +21,37 @@ module Sourced
       now = Time.now
       to_schedule, to_append = messages.partition { |message| message.created_at > now }
 
-      actions << Append.new(to_append, guard:, source:, correlated:) if to_append.any?
+      actions << Append.new(to_append, guard:, source:) if to_append.any?
       to_schedule.group_by(&:created_at).each do |at, scheduled_messages|
-        actions << Schedule.new(scheduled_messages, at:, source:, correlated:)
+        actions << Schedule.new(scheduled_messages, at:, source:)
       end
 
       actions
     end
 
     # Append messages to the store with optional consistency guard.
-    # Auto-correlates messages with the source message at execution time.
+    # Auto-correlates messages at execution time.
     #
     # When +source:+ is provided, it overrides the runtime's source_message
     # for correlation (e.g. reactions correlated with the event, not the command).
-    #
-    # When +correlated: true+, messages are assumed to be already correlated
-    # and are appended as-is without re-correlation.
     class Append
       attr_reader :messages, :guard, :source
 
       # @param messages [Sourced::Message, Array<Sourced::Message>] messages to append
       # @param guard [ConsistencyGuard, nil] optional optimistic concurrency guard
       # @param source [Sourced::Message, nil] explicit correlation source
-      # @param correlated [Boolean] whether +messages+ are already correlated
-      def initialize(messages, guard: nil, source: nil, correlated: false)
+      def initialize(messages, guard: nil, source: nil)
         @messages = Array(messages)
         @guard = guard
         @source = source
-        @correlated = correlated
       end
-
-      # @return [Boolean] whether messages should be appended without re-correlation
-      def correlated? = @correlated
 
       # @param store [Sourced::Store]
       # @param source_message [Sourced::Message] default message to correlate from
       # @return [Array<Sourced::Message>] correlated messages that were appended
       def execute(store, source_message)
-        to_append = if correlated?
-          messages
-        else
-          correlate_from = @source || source_message
-          messages.map { |m| correlate_from.correlate(m) }
-        end
+        correlate_from = @source || source_message
+        to_append = messages.map { |m| correlate_from.correlate(m) }
         store.append(to_append, guard:)
         to_append
       end
@@ -77,27 +64,18 @@ module Sourced
       # @param messages [Sourced::Message, Array<Sourced::Message>] messages to schedule
       # @param at [Time] when the messages should become available for promotion
       # @param source [Sourced::Message, nil] explicit correlation source
-      # @param correlated [Boolean] whether +messages+ are already correlated
-      def initialize(messages, at:, source: nil, correlated: false)
+      def initialize(messages, at:, source: nil)
         @messages = Array(messages)
         @at = at
         @source = source
-        @correlated = correlated
       end
-
-      # @return [Boolean] whether messages should be scheduled without re-correlation
-      def correlated? = @correlated
 
       # @param store [Sourced::Store]
       # @param source_message [Sourced::Message] default message to correlate from
       # @return [Array<Sourced::Message>] correlated messages that were scheduled
       def execute(store, source_message)
-        to_schedule = if @correlated
-          messages
-        else
-          correlate_from = @source || source_message
-          messages.map { |message| correlate_from.correlate(message) }
-        end
+        correlate_from = @source || source_message
+        to_schedule = messages.map { |m| correlate_from.correlate(m) }
         store.schedule_messages(to_schedule, at: at)
         to_schedule
       end
