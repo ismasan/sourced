@@ -1,184 +1,77 @@
 # frozen_string_literal: true
 
-require 'console' #  comes with async gem
-require 'sourced/types'
-require 'sourced/backends/test_backend'
-require 'sourced/pubsub/test'
+require 'logger'
 require 'sourced/error_strategy'
 require 'sourced/async_executor'
 
 module Sourced
-  # Configure a Sourced app.
-  # @example
-  #
-  #  Sourced.configure do |config|
-  #    config.backend = Sequel.Postgres('postgres://localhost/mydb')
-  #    config.logger = Logger.new(STDOUT)
-  #  end
-  #
   class Configuration
-    #  Backends must expose these methods
-    BackendInterface = Types::Interface[
+    StoreInterface = Types::Interface[
       :installed?,
-      :reserve_next_for_reactor,
-      :append_to_stream,
-      :read_correlation_batch,
-      :read_stream,
-      :transaction,
-      :stats,
-      :updating_consumer_group,
+      :install!,
+      :append,
+      :read,
+      :read_partition,
+      :claim_next,
+      :ack,
+      :release,
       :register_consumer_group,
-      :start_consumer_group,
-      :stop_consumer_group,
-      :reset_consumer_group
+      :worker_heartbeat,
+      :release_stale_claims,
+      :notifier
     ]
 
-    PubSubInterface = Types::Interface[:publish, :subscribe]
+    attr_accessor :logger, :worker_count, :batch_size,
+                  :catchup_interval, :max_drain_rounds,
+                  :claim_ttl_seconds, :housekeeping_interval,
+                  :executor
 
-    # Interface that all executors must implement
-    # @see AsyncExecutor
-    # @see ThreadExecutor
-    ExecutorInterface = Types::Interface[
-      :start
-    ]
-
-    attr_accessor :logger
-    # House-keeping configuration
-    # interval: main loop tick for housekeeping (seconds)
-    # heartbeat interval: how often to record heartbeats (seconds)
-    # claim_ttl_seconds: how long before a worker is considered dead for claim release
-    attr_accessor(
-      :worker_count,
-      :worker_batch_size,
-      :housekeeping_count,
-      :housekeeping_interval,
-      :housekeeping_heartbeat_interval,
-      :housekeeping_claim_ttl_seconds,
-      :catchup_interval,
-      :max_drain_rounds
-    )
-
-    attr_reader :backend, :executor, :pubsub
+    attr_reader :store, :router
 
     def initialize
-      @logger = Console
-      @backend = Backends::TestBackend.new
-      @pubsub = PubSub::Test.new
-      @error_strategy = ErrorStrategy.new
-      @executor = AsyncExecutor.new
-      @setup = false
-      # Worker and house-keeping defaults
+      @logger = Logger.new($stdout)
       @worker_count = 2
-      @worker_batch_size = 50
-      @housekeeping_count = 1
-      @housekeeping_interval = 3
-      @housekeeping_heartbeat_interval = 5
-      @housekeeping_claim_ttl_seconds = 120
+      @batch_size = 50
       @catchup_interval = 5
       @max_drain_rounds = 10
-      @subscribers = []
+      @claim_ttl_seconds = 120
+      @housekeeping_interval = 30
+      @executor = AsyncExecutor.new
+      @store = nil
+      @router = nil
+      @error_strategy = ErrorStrategy.new
+      @setup = false
     end
 
-    def subscribe(callable = nil, &block)
-      callable ||= block
-      @subscribers << callable
-      self
-    end
-
-    def setup!
-      return if @setup
-
-      @backend.setup!(self) if @backend.respond_to?(:setup!)
-      @subscribers.each { |s| s.call(self) }
-      @setup = true
-    end
-
-    # Configure the backend for the app.
-    # Defaults to in-memory TestBackend
-    # Also auto-sets pubsub when backend is a PG database.
-    # @param bnd [BackendInterface]
-    def backend=(bnd)
-      @backend = case bnd.class.name
-      when 'Sequel::Postgres::Database'
-        require 'sourced/backends/pg_backend'
-        require 'sourced/pubsub/pg'
-        @pubsub = PubSub::PG.new(db: bnd, logger: @logger)
-        Sourced::Backends::PGBackend.new(bnd)
+    # Accepts a Sourced::Store instance, a Sequel::SQLite::Database connection
+    # (auto-wrapped in Sourced::Store.new(db)), or any object implementing StoreInterface.
+    def store=(s)
+      @store = case s.class.name
       when 'Sequel::SQLite::Database'
-        require 'sourced/backends/sqlite_backend'
-        Sourced::Backends::SQLiteBackend.new(bnd)
-      else
-        BackendInterface.parse(bnd)
+        require 'sourced/store'
+        Store.new(s)
+      else StoreInterface.parse(s)
       end
     end
 
-    # Configure the pubsub implementation for the app.
-    # Defaults to in-memory PubSub::Test.
-    # Automatically set when backend is a PG database.
-    # Can be overridden with any object implementing `subscribe` and `publish`.
-    # @param ps [#subscribe, #publish]
-    def pubsub=(ps)
-      @pubsub = PubSubInterface.parse(ps)
-    end
-
-    # Configure the executor for the app.
-    # Supports both symbol shortcuts and executor instances.
-    # Defaults to AsyncExecutor for fiber-based concurrency.
-    #
-    # @param ex [Symbol, Object] The executor to use
-    # @option ex [Symbol] :async Use AsyncExecutor (fiber-based, default)
-    # @option ex [Symbol] :thread Use ThreadExecutor (thread-based)
-    # @option ex [ExecutorInterface] Custom executor instance
-    # @raise [ArgumentError] if executor doesn't implement ExecutorInterface
-    #
-    # @example Using symbol shortcuts
-    #   config.executor = :async   # Default fiber-based
-    #   config.executor = :thread  # Thread-based for CPU-intensive work
-    #
-    # @example Using custom executor
-    #   config.executor = MyCustomExecutor.new
-    def executor=(ex)
-      @executor = case ex
-      when :async
-        AsyncExecutor.new
-      when :thread
-        require 'sourced/thread_executor'
-        ThreadExecutor.new
-      when ExecutorInterface
-        ex
-      else
-        raise ArgumentError, "executor=(e) must support interface #{ExecutorInterface.inspect}"
-      end
-    end
-
-    # Assign an error strategy
-    # @param strategy [ErrorStrategy, #call(Exception, Sourced::Message, Group)]
-    # @raise [ArgumentError] if strategy does not respond to #call
     def error_strategy=(strategy)
-      raise ArgumentError, 'Must respond to #call(Exception, Sourced::Message, Group)' unless strategy.respond_to?(:call)
+      raise ArgumentError, 'Must respond to #call' unless strategy.respond_to?(:call)
 
       @error_strategy = strategy
     end
 
-    # Configure a built-in Sourced::ErrorStrategy
-    # @example
-    #   config.error_strategy do |s|
-    #     s.retry(times: 30, after: 50, backoff: ->(retry_after, retry_count) { retry_after * retry_count })
-    #
-    #     s.on_retry do |n, exception, message, later| 
-    #       puts "Retrying #{n} times" }
-    #     end
-    #
-    #     s.on_stop do |exception, message|
-    #       Sentry.capture_exception(exception)
-    #     end
-    #   end
-    #
-    # @yieldparam s [ErrorStrategy]
-    def error_strategy(&blk)
-      return @error_strategy unless block_given?
+    attr_reader :error_strategy
 
-      self.error_strategy = ErrorStrategy.new(&blk)
+    def setup!
+      return if @setup
+
+      unless @store
+        require 'sourced/store'
+        @store = Store.new(Sequel.sqlite)
+      end
+      @store.install!
+      @router ||= Router.new(store: @store)
+      @setup = true
     end
   end
 end

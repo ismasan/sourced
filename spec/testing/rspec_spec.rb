@@ -1,305 +1,298 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'sourced'
+require 'sourced/testing/rspec'
 
-module Testing
-  Start = Sourced::Message.define('sourced.testing.start') do
+# Reuse message definitions from decider_spec and projector_spec
+module GWTTestMessages
+  DeviceRegistered = Sourced::Message.define('gwt_test.device.registered') do
+    attribute :device_id, String
     attribute :name, String
   end
 
-  Started = Sourced::Message.define('sourced.testing.started') do
+  DeviceBound = Sourced::Message.define('gwt_test.device.bound') do
+    attribute :device_id, String
+    attribute :asset_id, String
+  end
+
+  BindDevice = Sourced::Message.define('gwt_test.bind_device') do
+    attribute :device_id, String
+    attribute :asset_id, String
+  end
+
+  NotifyBound = Sourced::Message.define('gwt_test.notify_bound') do
+    attribute :device_id, String
+  end
+
+  NoopCommand = Sourced::Message.define('gwt_test.noop_command') do
+    attribute :device_id, String
+  end
+
+  ItemAdded = Sourced::Message.define('gwt_test.item.added') do
+    attribute :list_id, String
     attribute :name, String
   end
 
-  class Reactor
-    extend Sourced::Consumer
-
-    def self.handled_messages = [Start]
-
-    def self.handle(message, history: [])
-      actions = []
-      if Start === message && history.none? { |m| Started === m }
-        actions << Sourced::Actions::AppendNext.new([message.follow(Started, name: message.payload.name)])
-      end
-      actions
-    end
+  ItemArchived = Sourced::Message.define('gwt_test.item.archived') do
+    attribute :list_id, String
+    attribute :name, String
   end
 
-  class Order < Sourced::Actor
-    state do |id|
-      { id:, name: nil}
-    end
+  NotifyArchive = Sourced::Message.define('gwt_test.notify_archive') do
+    attribute :list_id, String
+  end
+end
 
-    command Start do |state, cmd|
-      if state[:name].nil?
-        event Started, cmd.payload
-      end
-    end
+class GWTTestDecider < Sourced::Decider
+  partition_by :device_id
+  consumer_group 'gwt-test-decider'
 
-    event Started do |state, evt|
-      state[:name] = evt.payload.name
-    end
+  state { |_| { exists: false, bound: false } }
 
-    command :start_payment do |_, cmd|
-      if state[:name]
-        event :payment_started
-      end
-    end
-
-    event :payment_started
-
-    reaction :payment_started do |_, evt|
-      dispatch(Payment::Process).to("#{evt.stream_id}-payment")
-    end
+  evolve GWTTestMessages::DeviceRegistered do |state, _evt|
+    state[:exists] = true
   end
 
-  class Payment < Sourced::Actor
-    command :process do |_, cmd|
-      event :processed
-    end
-
-    event :processed
+  evolve GWTTestMessages::DeviceBound do |state, _evt|
+    state[:bound] = true
   end
 
-  class Telemetry
-    STREAM_ID = 'telemetry-stream'
-    include Sourced::Handler
+  command GWTTestMessages::BindDevice do |state, cmd|
+    raise 'Not found' unless state[:exists]
+    raise 'Already bound' if state[:bound]
+    event GWTTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
+  end
 
-    Logged = Sourced::Message.define('test-telemetry.logged') do
-      attribute :source_stream, String
-      attribute :message_type, String
-    end
+  command GWTTestMessages::NoopCommand do |_state, _cmd|
+    # intentionally produces no events
+  end
 
-    consumer do |c|
-      c.group_id = 'test-telemetry'
-    end
+  reaction GWTTestMessages::DeviceBound do |_state, evt|
+    GWTTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
+  end
 
-    on Order::PaymentStarted, Payment::Processed do |event|
-      logged = Logged.build(STREAM_ID, source_stream: event.stream_id, message_type: event.type)
-      [logged]
-    end
+  sync do |state:, messages:, events:|
+    state[:synced] = true
+  end
+
+  after_sync do |state:, messages:, events:|
+    state[:after_synced] = true
+  end
+end
+
+# Decider without reactions (produces only events)
+class GWTTestSimpleDecider < Sourced::Decider
+  partition_by :device_id
+  consumer_group 'gwt-test-simple-decider'
+
+  state { |_| { exists: false } }
+
+  evolve GWTTestMessages::DeviceRegistered do |state, _evt|
+    state[:exists] = true
+  end
+
+  command GWTTestMessages::BindDevice do |state, cmd|
+    raise 'Not found' unless state[:exists]
+    event GWTTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
+  end
+end
+
+class GWTTestStateStoredProjector < Sourced::Projector::StateStored
+  partition_by :list_id
+  consumer_group 'gwt-test-ss-projector'
+
+  state do |(list_id)|
+    { list_id: list_id, items: [], synced: false, after_synced: false }
+  end
+
+  evolve GWTTestMessages::ItemAdded do |state, msg|
+    state[:items] << msg.payload.name
+  end
+
+  evolve GWTTestMessages::ItemArchived do |state, msg|
+    state[:items].delete(msg.payload.name)
+  end
+
+  sync do |state:, messages:, replaying:|
+    state[:synced] = true
+  end
+
+  after_sync do |state:, messages:, replaying:|
+    state[:after_synced] = true
+  end
+end
+
+class GWTTestEventSourcedProjector < Sourced::Projector::EventSourced
+  partition_by :list_id
+  consumer_group 'gwt-test-es-projector'
+
+  state do |(list_id)|
+    { list_id: list_id, items: [], synced: false, after_synced: false }
+  end
+
+  evolve GWTTestMessages::ItemAdded do |state, msg|
+    state[:items] << msg.payload.name
+  end
+
+  evolve GWTTestMessages::ItemArchived do |state, msg|
+    state[:items].delete(msg.payload.name)
+  end
+
+  sync do |state:, messages:, replaying:|
+    state[:synced] = true
+  end
+
+  after_sync do |state:, messages:, replaying:|
+    state[:after_synced] = true
   end
 end
 
 RSpec.describe Sourced::Testing::RSpec do
-  describe 'with_reactor' do
-    context 'with Reactor interface' do
-      it 'works' do
-        with_reactor(Testing::Reactor, 'a')
-          .when(Testing::Start, name: 'Joe')
-          .then(Testing::Started.build('a', name: 'Joe'))
+  include Sourced::Testing::RSpec
 
-        with_reactor(Testing::Reactor, 'a')
-          .given(Testing::Started, name: 'Joe')
-          .when(Testing::Start, name: 'Joe')
-          .then([])
-
-        # If supports any .handle() interface, including u classes
-        with_reactor(Testing::Order, 'a')
-          .when(Testing::Start, name: 'Joe')
-          .then(Testing::Started.build('a', name: 'Joe'))
-      end
+  describe 'Decider' do
+    it 'given history + when command → then event (reactions are deferred)' do
+      with_reactor(GWTTestDecider, device_id: 'd1')
+        .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+        .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
+        .then(
+          GWTTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
+        )
     end
 
-    context 'with Actor instance' do
-      it 'works' do
-        with_reactor(Testing::Order.new(id: 'a'))
-          .when(Testing::Start, name: 'Joe')
-          .then(Testing::Started.build('a', name: 'Joe'))
-
-        with_reactor(Testing::Order.new(id: 'a'))
-          .when(Testing::Start, name: 'Joe')
-          .then(Testing::Started, name: 'Joe')
-
-        with_reactor(Testing::Order.new(id: 'a'))
-          .when(Testing::Start, name: 'Joe')
-          .then([Testing::Started.build('a', name: 'Joe')])
-
-        with_reactor(Testing::Order.new(id: 'a'))
-          .given(Testing::Started, name: 'Joe')
-          .when(Testing::Start, name: 'Joe')
-          .then([])
-      end
+    it 'when reaction-triggering event → then reaction message' do
+      # Reactions run on a separate claim cycle from the originating command.
+      with_reactor(GWTTestDecider, device_id: 'd1')
+        .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+        .when(GWTTestMessages::DeviceBound, device_id: 'd1', asset_id: 'a1')
+        .then(
+          GWTTestMessages::NotifyBound.new(payload: { device_id: 'd1' })
+        )
     end
 
-    context 'when expecting an exception' do
-      it 'passes when the expected exception is raised' do
-        error_class = Class.new(StandardError)
-
-        klass = Class.new do
-          extend Sourced::Consumer
-          def self.handled_messages = [Testing::Start]
-        end
-        klass.define_singleton_method(:handle) do |message, history:|
-          raise error_class, 'boom'
-        end
-
-        with_reactor(klass, 'a')
-          .when(Testing::Start, name: 'Joe')
-          .then(error_class)
-      end
-
-      it 'fails when expected exception is not raised' do
-        error_class = Class.new(StandardError)
-
-        with_reactor(Testing::Reactor, 'a')
-          .when(Testing::Start, name: 'Joe')
-          .then(Testing::Started.build('a', name: 'Joe'))
-
-        expect {
-          with_reactor(Testing::Reactor, 'a')
-            .when(Testing::Start, name: 'Joe')
-            .then(error_class)
-        }.to raise_error(RSpec::Expectations::ExpectationNotMetError, /expected .* to be raised/)
-      end
-
-      it 'works with Actor instances' do
-        error_class = Class.new(StandardError)
-
-        klass = Class.new(Sourced::Actor) do
-          state do |id|
-            { id: }
-          end
-
-          command Testing::Start do |state, cmd|
-            raise error_class, 'not allowed'
-          end
-        end
-
-        with_reactor(klass.new(id: 'a'))
-          .when(Testing::Start, name: 'Joe')
-          .then(error_class)
-      end
-
-      context 'with exception instance' do
-        it 'matches on class and message' do
-          error_class = Class.new(StandardError)
-
-          klass = Class.new do
-            extend Sourced::Consumer
-            def self.handled_messages = [Testing::Start]
-          end
-          klass.define_singleton_method(:handle) do |message, history:|
-            raise error_class, 'specific message'
-          end
-
-          with_reactor(klass, 'a')
-            .when(Testing::Start, name: 'Joe')
-            .then(error_class.new('specific message'))
-        end
-
-        it 'fails when message does not match' do
-          error_class = Class.new(StandardError)
-
-          klass = Class.new do
-            extend Sourced::Consumer
-            def self.handled_messages = [Testing::Start]
-          end
-          klass.define_singleton_method(:handle) do |message, history:|
-            raise error_class, 'actual message'
-          end
-
-          expect {
-            with_reactor(klass, 'a')
-              .when(Testing::Start, name: 'Joe')
-              .then(error_class.new('expected message'))
-          }.to raise_error(
-            RSpec::Expectations::ExpectationNotMetError,
-            /expected .* with message "expected message", but got "actual message"/
-          )
-        end
-      end
+    it 'then with shorthand (Class, **payload) for single expected message' do
+      with_reactor(GWTTestSimpleDecider, device_id: 'd1')
+        .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+        .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
+        .then(GWTTestMessages::DeviceBound, device_id: 'd1', asset_id: 'a1')
     end
 
-    specify 'it raises when adding events after assertion' do
-      expect {
-        with_reactor(Testing::Reactor, 'a')
-          .given(Testing::Started, name: 'Joe')
-          .when(Testing::Start, name: 'Joe')
-          .then([])
-          .given(Testing::Started, name: 'Joe') # <= can't add more state after .then() assertion
-      }.to raise_error(Sourced::Testing::RSpec::FinishedTestCase)
+    it 'no given + when command → then exception (invariant violation)' do
+      with_reactor(GWTTestDecider, device_id: 'd1')
+        .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
+        .then(RuntimeError, 'Not found')
     end
 
-    context 'with block given to #then' do
-      it 'evaluates block' do
-        received = []
-
-        klass = Class.new do
-          extend Sourced::Consumer
-          def self.handled_messages = [Testing::Start]
-        end
-        klass.define_singleton_method(:handle) do |message, history:|
-          received << message
-          []
-        end
-
-        with_reactor(klass, 'abc')
-          .when(Testing::Start, name: 'Joe')
-          .then do |actions|
-            expect(actions).to eq([])
-            expect(received).to match_sourced_messages(Testing::Start.build('abc', name: 'Joe'))
-          end
-      end
+    it 'then with block form yields action pairs' do
+      with_reactor(GWTTestDecider, device_id: 'd1')
+        .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+        .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
+        .then { |r|
+          expect(r.pairs).to be_a(Array)
+          actions, _source = r.pairs.first
+          append_actions = Array(actions).select { |a| a.respond_to?(:messages) }
+          expect(append_actions).not_to be_empty
+        }
     end
 
-    describe '.then!' do
-      it 'evaluates sync blocks' do
-        received = []
+    it 'then with [] expects no messages' do
+      with_reactor(GWTTestDecider, device_id: 'd1')
+        .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+        .when(GWTTestMessages::NoopCommand, device_id: 'd1')
+        .then([])
+    end
 
-        klass = Class.new do
-          extend Sourced::Consumer
-          def self.handled_messages = [Testing::Start]
-        end
-        klass.define_singleton_method(:handle) do |message, history:|
-          sync = proc do
-            received << 10
-          end
-          started = message.follow(Testing::Started, message.payload)
-          [
-            Sourced::Actions::Sync.new(sync), 
-            Sourced::Actions::AppendNext.new([started])
-          ]
-        end
+    it 'then! runs sync and after_sync actions' do
+      with_reactor(GWTTestDecider, device_id: 'd1')
+        .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+        .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
+        .then! { |r|
+          expect(r.pairs).to be_a(Array)
+        }
+    end
 
-        with_reactor(klass, 'abc')
-          .when(Testing::Start, name: 'Joe')
-          .then! do |actions|
-            expect(actions.first).to be_a(Sourced::Actions::Sync)
-            expect(received).to eq([10])
-          end
-          .then(Testing::Started.build('abc', name: 'Joe'))
-      end
+    it 'given with message instances' do
+      reg = GWTTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+
+      with_reactor(GWTTestDecider, device_id: 'd1')
+        .given(reg)
+        .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
+        .then(
+          GWTTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
+        )
+    end
+
+    it 'supports .and as alias for .given' do
+      with_reactor(GWTTestDecider, device_id: 'd1')
+        .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+        .and(GWTTestMessages::DeviceBound, device_id: 'd1', asset_id: 'a1')
+        .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a2')
+        .then(RuntimeError, 'Already bound')
     end
   end
 
-  describe 'with_reactors' do
-    it 'tests collaboration of reactors' do
-      order_stream = 'actor-1'
-      payment_stream = 'actor-1-payment'
-      telemetry_stream = Testing::Telemetry::STREAM_ID
-
-      # With these reactors
-      with_reactors(Testing::Order, Testing::Payment, Testing::Telemetry)
-        # GIVEN that these events exist in history
-        .given(Testing::Started.build(order_stream, name: 'foo'))
-        # WHEN I dispatch this new command
-        .when(Testing::Order::StartPayment.build(order_stream))
-        # Then I expect
-        .then do |_, new_messages|
-          # The different reactors collaborated and
-          # left this message trail behind
-          # Backend#messages is only available in the TestBackend
-          expect(new_messages).to match_sourced_messages([
-            Testing::Started.build(order_stream, name: 'foo'), 
-            Testing::Order::StartPayment.build(order_stream), 
-            Testing::Order::PaymentStarted.build(order_stream), 
-            Testing::Telemetry::Logged.build(telemetry_stream, source_stream: order_stream, message_type: 'testing.order.payment_started'),
-            Testing::Payment::Process.build(payment_stream), 
-            Testing::Payment::Processed.build(payment_stream),
-            Testing::Telemetry::Logged.build(telemetry_stream, source_stream: payment_stream, message_type: 'testing.payment.processed'),
-          ])
-        end
+  describe 'Projector (StateStored)' do
+    it 'given events → then block asserts evolved state' do
+      with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .then { |r| expect(r.state[:items]).to eq(['Apple']) }
     end
+
+    it 'given multiple events → then block sees cumulative state' do
+      with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Banana')
+        .then { |r| expect(r.state[:items]).to eq(['Apple', 'Banana']) }
+    end
+
+    it 'then! runs sync actions before yielding state' do
+      with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .then! { |r| expect(r.state[:synced]).to be true }
+    end
+
+    it 'then! runs after_sync actions before yielding state' do
+      with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .then! { |r| expect(r.state[:after_synced]).to be true }
+    end
+
+    it 'given events with archive → state reflects removal' do
+      with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .and(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Banana')
+        .and(GWTTestMessages::ItemArchived, list_id: 'L1', name: 'Apple')
+        .then { |r| expect(r.state[:items]).to eq(['Banana']) }
+    end
+  end
+
+  describe 'Projector (EventSourced)' do
+    it 'given events → then block asserts evolved state' do
+      with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Banana')
+        .then { |r| expect(r.state[:items]).to eq(['Apple', 'Banana']) }
+    end
+
+    it 'given events with archive → state reflects removal' do
+      with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .and(GWTTestMessages::ItemArchived, list_id: 'L1', name: 'Apple')
+        .then { |r| expect(r.state[:items]).to eq([]) }
+    end
+
+    it 'then! runs sync actions before yielding state' do
+      with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .then! { |r| expect(r.state[:synced]).to be true }
+    end
+
+    it 'then! runs after_sync actions before yielding state' do
+      with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .then! { |r| expect(r.state[:after_synced]).to be true }
+    end
+
   end
 end

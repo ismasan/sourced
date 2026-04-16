@@ -1,1619 +1,1141 @@
-# sourced
+# Sourced — Stream-less Event Sourcing
 
-**WORK IN PROGRESS**
+Sourced is a Ruby library for aggregateless, stream-less event sourcing. Events go into a flat, globally-ordered log. Consistency context is assembled dynamically by querying relevant facts via key-value pairs extracted from event payloads, rather than being pre-assigned to fixed streams.
 
-Event Sourcing / CQRS library for Ruby.
-There's many ES gems available already. The objectives here are:
-* Cohesive and toy-like DX.
-* Eventual consistency by default. Actor-like execution model.
-* Low-level APIs for durable messaging.
-* Supports the [Decide, Evolve, React pattern](https://ismaelcelis.com/posts/decide-evolve-react-pattern-in-ruby/)
-* Control concurrency by modeling.
-* Simple to operate: it should be as simple to run as most Ruby queuing systems.
-* Explore ES as a programming model for Ruby apps.
+## Core Concepts
 
-A small demo app [here](https://github.com/ismasan/sourced_todo).
+- **No streams or aggregates** — all messages share a single append-only log with auto-increment positions.
+- **Partitioning by attributes** — reactors declare which payload attributes define their consistency boundary (e.g. `partition_by :course_id`). The store uses these to build query conditions and claim work.
+- **Decide → Evolve → React** — reactors handle commands, evolve state from history, and react to events.
+- **Optimistic concurrency** — reads return a `ConsistencyGuard` that detects conflicting writes at append time.
 
-## The programming model
+## Messages
 
-If you're unfamiliar with Event Sourcing, you can read this first: [Event Sourcing from the ground up, with Ruby examples](https://ismaelcelis.com/posts/event-sourcing-ruby-examples)
-For a high-level overview of the mental model, [read this](https://ismaelcelis.com/posts/2025-04-give-it-time/). Or the video version, [here](https://www.youtube.com/watch?v=EgUwnzUJHMA).
-
-The entire behaviour of an event-sourced app is described via **commands**, **events** and **reactions**.
-
-<img width="1024" height="469" alt="sourced-arch-diagram" src="https://github.com/user-attachments/assets/ed916471-525f-4743-bc9a-10a2b6d9f8e9" />
-
-
-* **Commands** are _intents_ to effect some change in the state of the system. Ex. `Add cart item`, `Place order`, `Update email`, etc.
-* **Events** are produced after handling a command and they describe _facts_ or state changes in the system. Ex. `Item added to cart`, `order placed`, `email updated`. Events are stored and you can use them to build views ("projections"), caches and reports to support UIs, or other artifacts.
-* **Reactions** are blocks of code that run _after_ an event has been processed and can dispatch new commands in a workflow or automation.
-* **State** is whatever object you need to hold the current state of a part of the system. It's usually derived from past events, and it's just enough to interrogate the state of the system and make the next decision.
-
-## Actors
-
-### Overview
-
-Actors are classes that encapsulate the full life-cycle of a concept in your domain, backed by an event stream. This includes loading state from past events and handling commands for a part of your system. They can also define reactions to their own events, or events emitted by other actors. This is a simple shopping cart actor.
+Messages have no `stream_id` or `seq` — they get a global `position` when stored.
 
 ```ruby
-class Cart < Sourced::Actor
-  # Define what cart state looks like.
-  # This is the initial state which will be updated by applying events.
-  # The state holds whatever data is relevant to decide how to handle a command.
-  # It can be any object you need. A custom class instance, a Hash, an Array, etc.
-  CartState = Struct.new(:id, :status, :items) do
-    def total = items.sum { |it| it.price * it.quantity }
+# Define base classes for your domain (optional but recommended)
+class MyEvent < Sourced::Event; end
+class MyCommand < Sourced::Command; end
+
+# Define typed messages with payload attributes
+CreateCourse = MyCommand.define('courses.create') do
+  attribute :course_id, String
+  attribute :course_name, String
+end
+
+CourseCreated = MyEvent.define('courses.created') do
+  attribute :course_id, String
+  attribute :course_name, String
+end
+```
+
+### Message features
+
+- **Auto-generated UUIDs** for `id`, `causation_id`, and `correlation_id`
+- **Causal tracing** via `#correlate(other_message)` — sets `causation_id` and `correlation_id`
+- **Auto-indexed keys** — `#extracted_keys` returns `[["course_id", "c1"], ["course_name", "Algebra"]]` from payload attributes, used by the store to index messages for querying
+- **Registry** — `Sourced::Message.registry` indexes defined types. Use `.from(type: "courses.created", payload: {...})` to instantiate from a type string.
+- **Typed payloads** — Plumb/Types DSL for attribute coercion and validation
+
+## Store
+
+`Sourced::Store` is an SQLite-backed store (via Sequel) providing the flat message log, key-pair indexing, and consumer group management.
+
+```ruby
+require 'sequel'
+
+db = Sequel.sqlite('my_app.db')
+store = Sourced::Store.new(db)
+store.install!  # creates tables (idempotent)
+```
+
+### Appending messages
+
+```ruby
+cmd = CreateCourse.new(payload: { course_id: 'c1', course_name: 'Algebra' })
+position = store.append(cmd)  # returns the assigned position
+```
+
+### Reading with query conditions
+
+```ruby
+# Build conditions for a specific course
+conditions = CourseCreated.to_conditions(course_id: 'c1')
+# => [QueryCondition('courses.created', attrs: { course_id: 'c1' })]
+
+# Read matching messages
+result = store.read(conditions)
+result.messages  # => [PositionedMessage, ...]
+result.guard     # => ConsistencyGuard (for optimistic concurrency)
+```
+
+### Optimistic concurrency
+
+```ruby
+result = store.read(conditions)
+
+# ... later, append with conflict detection
+store.append(new_events, guard: result.guard)
+# raises Sourced::ConcurrentAppendError if conflicting messages
+# were appended after the read
+```
+
+### Delayed messages
+
+Any message can be stamped with a future time via `#at(time)`. Scheduled messages live in a separate `sourced_scheduled_messages` table and are promoted into the main log when their `available_at` passes.
+
+```ruby
+cmd = SendReminder.new(payload: { course_id: 'c1' }).at(Time.now + 3600)
+store.schedule_messages([cmd])
+
+# Normally the ScheduledMessagePoller (started by the Dispatcher) promotes
+# due messages automatically. In tests or scripts, do it manually:
+store.update_schedule!  # => number of messages promoted
+```
+
+In a reaction handler, `dispatch(Cmd, ...).at(time)` uses this pipeline under the hood — see [Reactions](#reactions).
+
+### Partition reads
+
+`read_partition` uses AND semantics — a message is included only when every partition attribute it declares matches the given value.
+
+```ruby
+result = store.read_partition(
+  { course_id: 'c1' },
+  handled_types: ['courses.created', 'courses.enrolled']
+)
+```
+
+### Browsing the global log
+
+`read_all` paginates the entire message log, without requiring query conditions or partition attributes. It returns a `ReadAllResult` with `messages` and `last_position` (the current max position in the store), so clients know whether more pages exist.
+
+```ruby
+# First page (default limit: 50, ascending order)
+result = store.read_all(limit: 20)
+result.messages       # => [PositionedMessage, ...]
+result.last_position  # => 100 (max position in the store)
+
+# Next page — pass the last message's position as cursor
+result = store.read_all(from_position: result.messages.last.position, limit: 20)
+
+# Check if there are more pages
+has_more = result.messages.any? && result.messages.last.position < result.last_position
+
+# Destructuring is also supported
+messages, last_position = store.read_all(limit: 20)
+```
+
+Use `order: :desc` for reverse-chronological browsing (newest first). Pagination works the same way — `from_position` fetches messages *before* the given position.
+
+```ruby
+result = store.read_all(order: :desc, limit: 20)
+
+# Next page of older messages
+result = store.read_all(from_position: result.messages.last.position, order: :desc, limit: 20)
+```
+
+#### Iterating all messages with `to_enum`
+
+`ReadAllResult#to_enum` returns a lazy `Enumerator` that transparently fetches subsequent pages as you iterate, using the same `order` and `limit` from the original query.
+
+```ruby
+# Iterate all messages in pages of 50
+store.read_all(limit: 50).to_enum.each do |msg|
+  puts "#{msg.position}: #{msg.type}"
+end
+
+# Works with Enumerable methods
+store.read_all(order: :desc, limit: 100).to_enum.map(&:type)
+
+# Supports lazy enumeration — stops fetching pages once satisfied
+store.read_all(limit: 20).to_enum.lazy.select { |m|
+  m.type == 'courses.created'
+}.first(5)
+```
+
+## Reactors
+
+Sourced provides three reactor base classes that share the same lifecycle (claim → evolve → handle → append → ack) and the same consumer-group machinery:
+
+- [Deciders](#deciders) — handle commands, enforce invariants, produce events
+- [Projectors](#projectors) — build read models by consuming events
+- [Durable workflows](#durable-workflows) — imperative orchestrations whose steps are memoised across re-entries
+
+Any reactor can produce follow-up messages via [Reactions](#reactions), and run side effects via [Sync and after-sync blocks](#sync-and-after-sync-blocks).
+
+### Deciders
+
+Deciders handle commands, enforce invariants, and produce events. They rebuild state from event history before each decision.
+
+```ruby
+class CourseDecider < Sourced::Decider
+  # Defines the consistency boundary
+  partition_by :course_name
+
+  # Initial state factory (receives partition values hash)
+  state do |_partition_values|
+    { name_taken: false }
   end
-    
-  CartItem = Struct.new(:product_id, :price, :quantity)
-    
-  # This factory is called to initialise a blank cart.
-  state do |id|
-    CartState.new(id:, status: 'open', items: [])
+
+  # Evolve state from events (rebuilds history)
+  evolve CourseCreated do |state, _event|
+    state[:name_taken] = true
   end
-  
-  # Define a command and its handling logic.
-  # The command handler will be passed the current state of the cart,
-  # and the command instance itself.
-  # Its main job is to validate business rules and decide whether new events
-  # can be emitted to update the state
-  command :add_item, product_id: String, price: Integer, quantity: Integer do |cart, cmd|
-    # Validate that this command can run
-    raise "cart is not open!" unless cart.status == 'open'
-    # Produce a new event with the same attributes as the command
-    event :item_added, cmd.payload
-  end
-  
-  # Define an event handler that will "evolve" the state of the cart by adding an item to it.
-  # These handlers are also used to "hydrate" the initial state from Sourced's storage backend
-  # when first handling a command
-  event :item_added, product_id: String, price: Integer, quantity: Integer do |cart, event|
-    cart.items << CartItem.new(**event.payload.to_h)
-  end
-  
-  # Optionally, define how this actor reacts to the event above.
-  # .reaction blocks can dispatch new commands that will be routed to their handlers.
-  # This allows you to build workflows.
-  reaction :item_added do |event|
-    # Evaluate whether we should dispatch the next command.
-    # Here we could fetch some external data or query that might be needed
-    # to populate the new commands.
-    # Here we dispatch a command to the same stream_id present in the event
-    dispatch(:send_admin_email, product_id: event.payload.product_id)
-  end
-  
-  # Handle the :send_admin_email dispatched by the reaction above
-  command :send_admin_email, product_id: String do |cart, cmd|
-    # maybe produce new events
+
+  # Command handler — enforce invariants, then produce events
+  command CreateCourse do |state, cmd|
+    raise "Course '#{cmd.payload.course_name}' already exists" if state[:name_taken]
+
+    event CourseCreated,
+      course_id: cmd.payload.course_id,
+      course_name: cmd.payload.course_name
   end
 end
 ```
 
-Using the `Cart` actor in an IRB console. This will use Sourced's in-memory backend by default.
+#### Synchronous command handling
+
+`Sourced.handle!` loads history, runs the decider, appends the command + events, and advances consumer group offsets — all in one call. Designed for web controllers.
 
 ```ruby
-cart = Cart.new(id: 'test-cart')
-cart.state.total # => 0
-# Instantiate a command and handle it
-cmd = Cart::AddItem.build('test-cart', product_id: 'p123', price: 1000, quantity: 2)
-events = cart.decide(cmd)
-# => [Cart::ItemAdded.new(...)]
-cmd.valid? # true
-# Inspect state
-cart.state.total # 2000
-cart.items.items.size # 1
-# Inspect that events were stored
-cart.seq # 2 the sequence number or "version" in storage. Ie. how many commands / events exist for this cart
-# Append new messages to the backend
-Sourced.config.backend.append_to_stream('test-cart', events)
-# Load events for cart
-events = Sourced.history_for(cart)
-# => an array with instances of [Cart::AddItem, Cart::ItemAdded]
-events.map(&:type) # ['cart.add_item', 'cart.item_added']
-```
+cmd = CreateCourse.new(payload: { course_id: 'c1', course_name: 'Algebra' })
+cmd, decider, events = Sourced.handle!(CourseDecider, cmd)
 
-Try loading a new cart instance from recorded events
-
-```ruby
-cart2, events = Sourced.load(Cart, 'test-cart')
-cart2.seq # 2
-cart2.state.total # 2000
-cart2.state.items.size # 1
-```
-
-### Registering actors
-
-Invoking commands directly on an actor instance works in an IRB console or a synchronous-only web handler, but for actors to be available to background workers, and to react to other actor's events, you need to register them.
-
-```ruby
-Sourced.register(Cart)
-```
-
-This achieves two things:
-
-1. Messages can be routed to this actor by background processes, using `Sourced.dispatch(message)`.
-2. The actor can _react_ to other events in the system (more on event choreography later), via its low-level `.handle(event)` [Reactor Interface](#the-reactor-interface).
-
-These two properties are what enables asynchronous, eventually-consistent systems in Sourced.
-
-### Expanded message syntax
-
-Commands and event structs can also be defined separately as `Sourced::Command` and `Sourced::Event` sub-classes.
-
-These definitions include a message _type_ (for storage) and payload attributes schema, if any.
-
-```ruby
-module Carts
-  # A command to add an item to the cart
-  # Commands may come from HTML forms, so we use Types::Lax to coerce attributes
-  AddItem = Sourced::Command.define('carts.add_item') do
-    attribute :product_id, Types::Lax::Integer
-    attribute :quantity, Types::Lax::Integer.default(1)
-    attribute :price, Types::Lax::Integer.default(0)
-  end
-  
-  # An event to track items added to the cart
-  # Events are only produced by valid commands, so we don't 
-  # need validations or coercions
-  ItemAdded = Sourced::Event.define('carts.item_added') do
-    attribute :product_id, Integer
-    attribute :quantity, Integer
-    attribute :price, Integer
-  end
-  
-  ## Now define command and event handlers in a Actor
-  class Cart < Sourced::Actor
-    # Initial state, etc...
-    
-    command AddItem do |cart, cmd|
-      # logic here
-      event ItemAdded, cmd.payload
-    end
-    
-    event ItemAdded do |cart, event|
-      cart.items << CartItem.new(**event.payload.to_h)
-    end
-  end
+if cmd.valid?
+  # Success — events were appended
+else
+  # Validation failure — cmd.errors has details
 end
 ```
 
-### `.command` block
+Raises `Sourced::ConcurrentAppendError` on conflicts, or `RuntimeError` on domain invariant violations (e.g. "Course already exists").
 
-The class-level `.command` block defines a _command handler_. Its job is to take a command (from a user, an automation, etc), validate it, and apply state changes by publishing new events.
+#### CommandContext
 
-<img width="615" height="168" alt="sourced-command-handler" src="https://github.com/user-attachments/assets/4db26fa1-6671-4611-b994-b3e864cd88b4" />
-
-
-```ruby
-command AddItem do |cart, cmd|
-  # logic here...
-  # apply and publish one or more new events
-  # using instance-level #event(event_type, **payload)
-  event ItemAdded, product_id: cmd.payload.product_id
-end
-```
-
-
-
-### `.event` block
-
-The class-level `.event` block registers an _event handler_ used to _evolve_ the actor's internal state.
-
-These blocks are used both to load the initial state when handling a command, and to apply new events to the state in command handlers.
-
-<img width="573" height="146" alt="sourced-evolve-handler" src="https://github.com/user-attachments/assets/174fb8d0-e2ef-41f3-8f43-c94b766529ec" />
-
+`Sourced::CommandContext` is a factory for building Sourced commands from raw Hash attributes (e.g. HTTP params), injecting defaults like `metadata`. It mirrors `Sourced::CommandContext` but without `stream_id`, since Sourced messages are stream-less.
 
 ```ruby
-event ItemAdded do |cart, event|
-  cart.items << CartItem.new(**event.payload.to_h)
-end
-```
-
-These handlers are pure: given the same state and event, they should always update the state in the same exact way. They should never reach out to the outside (API calls, current time, etc), and they should never run validations. They work on events already committed to history, which by definition are assumed to be valid.
-
-### `.before_evolve` block
-
-The class-level `.before_evolve` block registers a callback that runs **before** each registered event handler during state evolution. This is useful for common logic that should run before all event handlers, such as updating timestamps or recording metadata.
-
-```ruby
-class CartListings < Sourced::Projector::StateStored
-  state do |id|
-    { id:, items: [], updated_at: nil, seq: 0 }
-  end
-
-  # This block runs before any .event handler
-  before_evolve do |state, event|
-    state[:updated_at] = event.created_at
-    state[:seq] = event.seq
-  end
-
-  event Cart::ItemAdded do |state, event|
-    state[:items] << event.payload.to_h
-  end
-
-  event Cart::Placed do |state, event|
-    state[:status] = :placed
-  end
-end
-```
-
-The `before_evolve` callback only runs for events that have a registered handler via the `.event` macro. If an event is not handled by this class, the callback is skipped for that event.
-
-### `.reaction` block
-
-The class-level `.reaction` block registers an event handler that _reacts_ to events already published by this or other Actors.
-
-`.reaction` blocks can dispatch the next command in a workflow with the instance-level `#dispatch` helper.
-
-<img width="504" height="109" alt="sourced-react-handler" src="https://github.com/user-attachments/assets/b181ebdd-4bc7-4692-a2ab-910c1a829ec4" />
-
-
-```ruby
-reaction ItemAdded do |cart, event|
-  # dispatch the next command to the event's stream_id
-  dispatch(
-    CheckInventory, 
-    product_id: event.payload.product_id,
-    quantity: event.payload.quantity
-  )
-end
-```
-
-You can also dispatch commanda to _other_ streams. For example for starting concurrent workflows.
-
-```ruby
-# dispatch a command to a new custom-made stream_id
-dispatch(CheckInventory, event.payload).to("cart-#{Time.now.to_i}")
-
-# Or use Sourced.new_stream_id
-dispatch(CheckInventory, event.payload).to(Sourced.new_stream_id)
-
-# Or start a new stream and dispatch commands to another actor
-dispatch(:notify, message: 'hello!').to(NotifierActor)
-```
-
-#### `.reaction` block with actor state
-
- `.reaction`  blocks receive the actor state, which is derived by applying past events to it (same as when handling commands).
-
-```ruby
-# Define an event handler to evolve state
-event ItemAdded do |state, event|
-  state[:item_count] += 1
-end
-
-# Now react to it and check state
-reaction ItemAdded do |state, event|
-  if state[:item_count] > 30
-    dispatch NotifyBigCart
-  end
-end
-```
-
-#### `.reaction` with state for all events
-
-If the event name or class is omitted, the `.reaction` macro registers reaction handlers for all events already registered for the actor with the `.event` macro, minus events that have specific reaction handlers defined.
-
-```ruby
-# wildcard reaction for all evolved events
-reaction do |state, event|
-  if state[:item_count] > 30
-    dispatch NotifyBigCart
-  end
-end
-```
-
-#### `.reaction` for multiple events
-
-```ruby
-reaction ItemAdded, InventoryChecked do |state, event|
-  # etc
-end
-```
-
-It also works with symbols, for messages that have been defined as symbols (ex `event :item_added`)
-
-```ruby
-reaction :item_added, InventoryChecked do |state, event|
-  # etc
-end
-```
-
-## Causation and correlation
-
-When a command produces events, or when an event makes a reactor dispatch a new command, the cause-and-effect relationship between these messages is tracked by Sourced in the form of `correlation_id` and `causation_id` properties in each message's metadata.
-
-<img width="878" height="326" alt="sourced-causation-correlation" src="https://github.com/user-attachments/assets/88d86b65-50ff-4222-8941-406826fab243" />
-
-
-This helps the system keep a full audit trail of the cause-and-effect behaviour of the entire system.
-
-<img width="877" height="629" alt="CleanShot 2025-11-11 at 23 59 40" src="https://github.com/user-attachments/assets/38765370-2e80-46d8-bf30-1651208d5cf9" />
-
-## Background vs. foreground execution
-
-By default Sourced processes commands and events **asynchronously** through background workers. Each reactor picks up messages at its own pace — the system is eventually consistent.
-
-Sometimes you need **synchronous, all-or-nothing** execution: a web request handler that must know the full outcome before responding, or a test that needs deterministic behaviour. `Sourced::Unit` provides this.
-
-### `Sourced::Unit`
-
-A Unit wires one or more reactors together and runs the full command → event → reaction → command chain inside a **single backend transaction**, using breadth-first traversal of the message graph. If any step raises, the entire transaction rolls back.
-
-```ruby
-unit = Sourced::Unit.new(
-  OrderActor,
-  PaymentActor,
-  InventoryProjector,
-  backend: Sourced.config.backend
+# In a web controller, build a context with shared metadata
+ctx = Sourced::CommandContext.new(
+  metadata: { user_id: session[:user_id] }
 )
 
-cmd = PlaceOrder.new(stream_id: 'order-1', payload: { amount: 100 })
-results = unit.handle(cmd)
+# Build from a type string + payload hash (e.g. from JSON params)
+cmd = ctx.build(type: 'courses.create', payload: { course_id: 'c1', course_name: 'Algebra' })
+cmd.metadata[:user_id] # => session[:user_id]
+
+# Or pass an explicit command class
+cmd = ctx.build(CreateCourse, payload: { course_id: 'c1', course_name: 'Algebra' })
 ```
 
-Messages produced by one reactor are immediately routed to any other reactor in the unit that handles them — no background workers needed.
+String keys are automatically symbolized, so `ctx.build('type' => '...', 'payload' => { ... })` works too.
 
-#### Extracting results
+##### Callback hooks (`on` and `any`)
 
-`Unit#handle` returns a `Results` object you can query per reactor class.
+Subclass `CommandContext` and register class-level hooks to enrich or transform commands at build time — e.g. injecting session data or adding metadata from the request scope.
 
-```ruby
-results = unit.handle(cmd)
+- **`on(MessageClass, ...)`** — runs for one or more command types. Multiple `on` calls for the same class accumulate (all blocks run in registration order).
+- **`any`** — runs for all commands (multiple blocks allowed, executed in order)
 
-# Hash of { instance => [events] } for a given reactor
-results[OrderActor].each do |instance, events|
-  puts "#{instance.id}: #{events.map(&:type)}"
-end
-
-# Flat list of events
-results.events_for(OrderActor)
-# => [OrderPlaced, ...]
-```
-
-#### Skipping command persistence
-
-By default every message (commands and events) is written to the store. Pass `persist_commands: false` to write only events.
+Both receive the `app` scope and the command, and must return the (possibly modified) command. `on` blocks run before `any` blocks. Blocks are evaluated in the context of the `CommandContext` instance, so they can call private helper methods defined on the subclass.
 
 ```ruby
-unit = Sourced::Unit.new(OrderActor, backend: backend, persist_commands: false)
-unit.handle(cmd) # only events are persisted; commands still flow through the chain
-```
-
-This is useful when commands are transient intents that don't need an audit trail.
-
-#### Loop detection
-
-The BFS traversal is capped at 100 iterations by default. If a reaction dispatches a command whose event triggers the same reaction, the unit raises `Sourced::Unit::InfiniteLoopError` before running away.
-
-```ruby
-unit = Sourced::Unit.new(LoopyActor, backend: backend, max_iterations: 10)
-unit.handle(cmd)
-# => raises Sourced::Unit::InfiniteLoopError after 10 steps
-```
-
-#### ACK tracking
-
-After the BFS completes, the unit ACKs every handled message for each reactor's consumer group. This means background workers won't re-process messages that the unit already handled.
-
-#### When to use Unit vs. background workers
-
-| | `Sourced::Unit` | Background workers |
-|---|---|---|
-| Consistency | Immediate (single transaction) | Eventual |
-| Failure mode | All-or-nothing rollback | Per-message retry / stop |
-| Concurrency | Single-threaded BFS | Concurrent across streams |
-| Use case | Web request handlers, tests, scripts | Long-running workflows, side-effects |
-
-You can combine both: use a Unit for the synchronous core of a request, while other reactors pick up the same events asynchronously in the background.
-
-### Actions
-
-Actions are the return values of reactor `.handle` methods. They tell the runtime (Unit or background worker) what side-effects to perform. Each persistable action class implements an `#execute(backend, source_message)` method that correlates messages and persists them via the backend.
-
-| Action | Description | `#execute` behaviour |
-|---|---|---|
-| `Actions::AppendAfter` | Append to a stream with optimistic locking (sequence check) | Correlate → `backend.append_to_stream` |
-| `Actions::AppendNext` | Append to stream(s), auto-incrementing sequence | Correlate → `backend.append_next_to_stream` per stream |
-| `Actions::Schedule` | Schedule messages for future delivery | Correlate → `backend.schedule_messages` |
-| `Actions::Sync` | Run a synchronous side-effect (cache write, API call) | Call the work block, return nil |
-| `Actions::OK` | Acknowledge the message (no persistence) | — |
-| `Actions::RETRY` | Tell the runtime to retry this message later | — |
-| `Actions::Ack` | ACK an arbitrary message by ID | — |
-
-`OK`, `RETRY`, and `Ack` are caller-specific signals — they don't implement `#execute`.
-
-```ruby
-# Inside a reactor's .handle method:
-def self.handle(message)
-  started = Order::Started.build(message.stream_id)
-  [Sourced::Actions::AppendNext.new([started])]
-end
-```
-
-## Projectors
-
-Projectors react to events published by actors and update views, search indices, caches, or other representations of current state useful to the app. They can both react to events as they happen in the system, and also "catch up" to past events. Sourced keeps track of where in the global event stream each projector is.
-
-From the outside-in, projectors are classes that implement the _Reactor interface_.
-
-Sourced ships with two ready-to-use projectors, but you can also build your own.
-
-### State-stored projector
-
-A state-stored projector fetches initial state from storage somewhere (DB, files, API), and then after reacting to events and updating state, it can save it back to the same or different storage.
-
-```ruby
-class CartListings < Sourced::Projector::StateStored
-  # Fetch listing record from DB, or new one.
-  state do |id|
-    CartListing.find_or_initialize(id)
+class AppCommandContext < Sourced::CommandContext
+  # Enrich a specific command with data from the app scope
+  on CreateCourse do |app, cmd|
+    cmd.with_payload(created_by: app.current_user.id)
   end
 
-  # Evolve listing record from events
-  event Carts::ItemAdded do |listing, event|
-    listing.total += event.payload.price
+  # Same block for multiple command types
+  on EnrolStudent, DropStudent do |app, cmd|
+    cmd.with_metadata(campus: app.current_campus)
   end
 
-  # Sync listing record back to DB
-  sync do |state:, events:, replaying:|
-    state.save!
+  # Additional block for EnrolStudent — both blocks run in order
+  on EnrolStudent do |app, cmd|
+    cmd.with_metadata(enrolment_source: 'web')
+  end
+
+  # Add metadata to every command
+  any do |app, cmd|
+    cmd.with_metadata(
+      request_id: app.request_id,
+      session_id: app.session_id
+    )
   end
 end
 ```
 
-### Event-sourced projector
-
-An event-sourced projector fetches initial state from past events in the event store, and then after reacting to events and updating state, it can save it to a DB table, a file, etc.
+Pass the request-scoped `app` object at construction time:
 
 ```ruby
-class CartListings < Sourced::Projector::EventSourced
-  # Initial in-memory state
-  state do |id|
-    { id:, total: 0 }
-  end
-
-  # Evolve listing record from events
-  event Carts::ItemAdded do |listing, event|
-    listing[:total] += event.payload.price
-  end
-
-  # Sync listing record to a file
-  sync do |state:, events:, replaying:|
-    File.write("/listings/#{state[:id]}.json", JSON.dump(state)) 
-  end
-end
-```
-
-### Registering projectors
-
-Like any other _reactor_, projectors need to be registered for background workers to route events to them.
-
-```ruby
-# In your app's configuration
-Sourced.register(CartListings)
-```
-
-### Reacting to events and scheduling the next command from projectors
-
-Sourced projectors can define `.reaction` handlers that will be called after evolving state via their `.event` handlers, in the same transaction.
-
-This can be useful to implement TODO List patterns where a projector persists projected data, and then reacts to the data update using the data to schedule the next command in a workflow.
-
-![CleanShot 2025-05-30 at 18 43 01](https://github.com/user-attachments/assets/ef8a61b7-6b99-49a1-9767-af94b9c2c4e2)
-
-
-```ruby
-class ReadyOrders < Sourced::Projector::StateStored
-  # Fetch listing record from DB, or new one.
-  state do |id|
-    OrderListing.find_or_initialize(id)
-  end
-
-  event Orders::ItemAdded do |listing, event|
-    listing.line_items << event.payload
-  end
-  
-  # Evolve listing record from events
-  event Orders::PaymentConfirmed do |listing, event|
-    listing.payment_confirmed = true
-  end
-
-  event Orders::BuildConfirmed do |listing, event|
-    listing.build_confirmed = true
-  end
-  
-  # Sync listing record back to DB
-  sync do |state:, events:, replaying:|
-    state.save!
-  end
-  
-  # If a listing has both the build and payment confirmed,
-  # automate dispatching the next command in the workflow
-  reaction do |listing, event|
-    if listing.payment_confirmed? && listing.build_confirmed?
-      dispatch Orders::Release, **listing.attributes
-    end
-  end
-end
-```
-
-Projectors can also define `.reaction event_class do |state, event|` to react to specific events, or `reaction event1, event2` to react to more than one event with the same block.
-
-### Skipping projector reactions when replaying events
-
-When a projector's offsets are reset (so that it starts re-processing events and re- building projections), Sourced skips invoking a projector's `.reaction` handlers. This is because building projections should be deterministic, and rebuilding them should not trigger side-effects such as automations (we don't want to call 3rd party APIs, send emails, or just dispatch the same commands over and over when rebuilding projections).
-
-To do this, Sourced keeps track of each consumer groups' highest acknowledged event sequence. When a consumer group is reset and starts re-processing past events, this sequence number is compared with each event's sequence, which tells us whether the event has been processed before.
-
-## Concurrency model
-
-Concurrency in Sourced is achieved by explicitely _modeling it in_.
-
-Sourced workers process messages by acquiring locks on `[reactor group ID][stream ID]`. For example `"CartActor:cart-123"`
-
-This means that all events for a given reactor/stream are processed in order, but events for different streams can be processed concurrently. You can define workflows where some work is done concurrently by modeling them as a collaboration of streams.
-
-### Single-stream sequential execution
-
-In the following (simplified!) example, a Holiday Booking workflow is modelled as a single stream ("Actor"). The infrastructure makes sure these steps are run sequentially.
-
-<img width="1583" height="292" alt="sourced-concurrency-single-lane" src="https://github.com/user-attachments/assets/025529de-906c-41b4-8f21-0b7759b6e394" />
-
-The Actor glues its steps together by reacting to events emitted by the previous step, and dispatching the next command.
-
-```ruby
-class HolidayBooking < Sourced::Actor
-  # State and details omitted...
-  
-  command :start_booking do |state, cmd|
-    event :booking_started
-  end
-  
-  reaction :booking_started do |event|
-    dispatch :book_flight
-  end
-  
-  command :book_flight do |state, cmd|
-    event :flght_booked
-  end
-  
-  reaction :flight_booked do |event|
-    dispatch :book_hotel
-  end
-  
-  command :book_hotel do |state, cmd|
-    event :hotel_booked
-  end
-  
-  # Define event handlers if you haven't...
-  event :booking_started, # ..etc
-  event :flight_booked, # ..etc
-end
-```
-
-### Multi-stream concurrent execution
-
-In this other example, the same workflow is split into separate streams/actors, so that Flight and Hotel bookings can run concurrently from each other. When completed, they each notify the parent Holiday actor, so the whole process coalesces into a sequential operation again.
-
-<img width="1787" alt="sourced-concurrency-multi-lane" src="https://github.com/user-attachments/assets/444445ff-b837-4c19-8c28-1b47eada7a41" />
-
-```ruby
-# An actor dispatches a message to different stream
-# messages for different streams are processed concurrently
-reaction BookingStarted do |state, event|
-  dispatch(BookHotel).to("#{event.stream_id}-hotel")
-end
-```
-
-### Units of work
-
-<img width="1249" height="652" alt="CleanShot 2025-11-15 at 14 38 05" src="https://github.com/user-attachments/assets/a3631dd5-08b9-4381-8082-ce5cdc8958ed" />
-
-The diagram shows the units of work in an example Sourced workflow. The operations within each of the red boxes are protected by a combination of transactions and locking strategies on the consumer group + stream ID, so they are isolated from other concurrent processing. They can be said to be **immediately consistent**. 
-The data-flow _between_ these boxes is propagated asynchronously by Sourced's infrastructure so, relative to each other, the entire system is **eventually consistent**.
-
-These transactional boundaries are guarded by the same locks that enforce the concurrency model, so that for example the same message can't be processed twice by the same Reactor (workflow, projector, etc). 
-
-## Durable workflows
-
-There's a `Sourced::DurableWorkflow` class that can be subclassed to define Reactors with a synchronous-looking API. This is *work in progress*.
-
-```ruby
-class BookHoliday < Sourced::DurableWorkflow
-  # This method can be called like a regular method
-  # The methods inside also have blocking semantics
-  # but they're in fact event-sourced, and will be
-  # retried on failure until the booking completes.
-  # Methods that were succesful will be idempotent on retry
-  def execute(flight_info, hotel_info)
-    flight = book_flight(flight_info)
-    hotel = book_hotel(hotel_info)
-    confirm_booking(flight, hotel)
-  end
-  
-  # The .durable macro turns a regular method
-  # into an event-sourced workflow
-  durable def book_flight(info)
-    FlightsAPI.book(info)
-  end
-  
-  durable def book_hotel(info)
-    HotelsAPI.book(info)
-  end
-  
-  durable def confirm_booking(flight, hotel)
-    # etc,
-  end
-end
-```
-
-These executions will be handed off to the runtime to be run by one or more workers, while preserving ordering. You can optionally wait for a result.
-
-```ruby
-result = BookHoliday.execute(flight_info, hotel_info).wait.output
-# Confirmed booking, or whatever error result your code returns
-```
-
-Events for the full execution are recorded to the backend.
-<img width="1016" height="1298" alt="CleanShot 2025-11-13 at 13 48 27@2x" src="https://github.com/user-attachments/assets/a591a1a4-88e6-435e-bb27-cb4990aaf91f" />
-
-Durable workflows must be registered with the runtime, like any other Reactor.
-
-```ruby
-Sourced.register BookHoliday
-```
-
-## Handler DSL
-
-The `Sourced::Handler` mixin provides a lighter-weight DSL for simple reactors.
-
-```ruby
-class OrderTelemetry
-  include Sourced::Handler
-  
-  # Handle these Order events
-  # and log them
-  on Order::Started do |event|
-    Logger.info ['order started', event.stream_id]
-    []
-  end
-  
-  on Order::Placed do |event|
-    Logger.info ['order placed', event.stream_id]
-    []
-  end
-end
-
-# Register it
-Sourced.register OrderTelemetry
-```
-
-Handlers can optionally define the `:history` argument. The runtime will provide the full message history for the stream ID being handled.
-
-```ruby
-on Order::Placed do |event, history:|
-  total = history
-    .filter { |e| Order::ProductAdded === e }
-    .reduce(0) { |n, e| n + e.payload.price }
-  
-  if total > 10000
-    return [Order::AddDiscount.build(event.stream_id, amount: 100)]
-  end
-  
-  []
-end
-```
-
-It also supports multiple event types, for generic handling.
-
-```ruby
-on Order::Placed, Order::Complete do |event|
-  Logger.info "received event #{event.inspect}"
-  []
-end
-```
-
-## Command methods for Actors
-
-The optional `Sourced::CommandMethods` mixin allows invoking an Actor's commands as regular methods.
-
-`CommandMethods` automatically generates instance methods from command definitions,
-allowing you to invoke commands in two ways:
-
-1. **In-memory version** (e.g., `actor.start(name: 'Joe')`)
-   - Validates the command and executes the decision handler
-   - Returns a tuple of [cmd, new_events]
-   - Does NOT persist events to backend
-2. **Durable version** (e.g., `actor.start!(name: 'Joe')`)
-   - Same as in-memory, but also appends events to backend
-   - Raises `FailedToAppendMessagesError` if backend fails
-
-Include the module in an Actor and define commands normally:
-
-```ruby
-class MyActor < Sourced::Actor
-  include Sourced::CommandMethods
-
-  command :create_item, name: String do |state, cmd|
-    event :item_created, cmd.payload
-  end
-end
-
-actor = MyActor.new(id: 'actor-123')
-cmd, events = actor.create_item(name: 'Widget')  # In-memory
-cmd, events = actor.create_item!(name: 'Widget') # Persists to backend
-```
-
-
-
-## Orchestration and choreography
-
-### Orchestration
-
-Orchestration is when the flow control of a multi-collaborator workflow is centralised into a single entity. This can be achieved by having one Actor coordinate the communication by reacting to events and sending commands to other actors.
-
-```ruby
-class HolidayBooking < Sourced::Actor
-  state do |id|
-    BookingState.new(id)
-  end
-  
-  command StartBooking do |booking, cmd|
-    # validations, etc
-    event BookingStarted, cmd.payload
-  end
-  
-  event BookingStarted
-  
-  # React to BookingStarted and start sub-workflows
-  reaction BookingStarted do |booking, event|
-    dispatch(HotelBooking::Start)
-  end
-  
-  # React to events emitted by sub-workflows
-  reaction HotelBooking::Started do |booking, event|
-    dispatch(ConfirmHotelBooking, event.payload)
-  end
-  
-  command ConfirmHotelBooking do |booking, cmd|
-    unless booking.hotel.booked?
-      event HotelBookingConfirmed, cmd.payload
-    end
-  end
-  
-  event HotelBookingConfirmed do |booking, event|
-    # update booking state
-    booking.confirm_hotel(event.payload)
-  end
-end
-```
-
-This is a verbose step-by-step choreography, but it can be made more succint by ommiting the mirroring of commands/events, if needed (or by using the [Reactor Interface](#the-reactor-interface) directly).
-
-*TODO*: a way for Actors to initialise their internal state with event attributes other than the `stream_id`. For example, events may carry a `booking_id` for the overall workflow.
-
-### Choreography
-
-Choreography is when each component reacts to other components' events without centralised control. The overall workflow "emerges" from this collaboration.
-
-```ruby
-class HotelBooking < Sourced::Actor
-  # The HotelBooking defines its own
-  # reactions to booking events
-  reaction HolidayBooking::StartBooking do |state, event|
-    # dispatch a command to itself to start its own life-cycle
-    dispatch Start, event.payload
-  end
-  
-  command Start do |state, cmd|
-    # validations, etc
-    # other Actors in the choreography
-    # can choose to react to events emitted here
-    event Started, cmd.payload
-  end
-  
-  event Started do |state, event|
-    # update state, etc
-  end
-end
-```
-
-## Appending and reading messages
-
-### Appending messages without optimistic locking
-
-Use `Backend#append_next_to_stream` to append messages to a stream, with no questions asked.
-
-```ruby
-message = ProductAdded.build('order-123', product_id: 123, price: 100)
-Sourced.config.backend.append_next_to_stream('order-123', [message])
-
-# Shortcut:
-Sourced.dispatch(message)
-```
-
-### Appending messages with optimistic locking
-
-Using `Backend#append_to_stream`, the backend expects the new messages `seq` property (sequence number) to be greater than the last message in storage for the same stream. This is to catch concurrent writes where a different client or thread may append to the stream while your code was preparing for it.
-
-```ruby
-# Your code must make sure to increment sequence numbers
-past_events = Sourced.config.backend.read_stream('order-123')
-last_known_seq = past_events.last&.seq # ex. 10
-# Instantiate new messages and make sure to increment their sequences
-message = ProductAdded.new(
-  stream_id: 'order-123', 
-  seq: last_known_seq + 1, # <== incremented sequence
-  payload: { product_id: 123, price: 100 }
+# In a web controller
+ctx = AppCommandContext.new(
+  metadata: { user_id: session[:user_id] },
+  app: self  # e.g. Sinatra app instance, Rack env wrapper, etc.
 )
 
-# This will raise an exception if there's already a message
-# for this stream with this sequence number in storage.
-Sourced.backend.append_to_stream('order-123', [message])
+cmd = ctx.build(type: 'courses.create', payload: { course_id: 'c1', course_name: 'Algebra' })
+cmd.metadata[:request_id]  # => set by the `any` hook
 ```
 
-`Sourced::Actor` classes do this incrementing automatically when they produce new messages.
+`app` defaults to `nil`, so existing callers without hooks are unaffected. Hooks are inherited by subclasses.
 
-### Scheduling messages in the future
-
-You can append messages to a separate log, with a schedule time. Sourced workers will periodically poll this log and move these messages into the main log at the right time.
+Since blocks run in instance context, you can extract shared logic into private methods:
 
 ```ruby
-message = ProductAdded.build('order-123', product_id: 123, price: 100)
-Sourced.config.backend.schedule_messages([message], at: Time.now + 20)
-```
+class AppCommandContext < Sourced::CommandContext
+  on CreateCourse do |app, cmd|
+    cmd.with_metadata(user_id: build_user_id(app))
+  end
 
-Actor reactions can use the `#dispatch` and `#at` helpers to schedule commands to run at a future time.
+  private
 
-```ruby
-reaction ProductAdded do |order, event|
-  dispatch(NotifyNewProduct).at(Time.now + 20)
-end
-```
-
-## Replaying messages
-
-You can use the backend API to reset offsets for a specific consumer group, which will cause workers to start replaying messages for that group.
-
-```ruby
-Sourced.config.backend.reset_consumer_group(ReadyOrder)
-```
-
-See [below](#stopping-and-starting-consumer-groups) for other consumer lifecycle methods.	
-
-## The Reactor Interface
-
-All built-in Reactors (Actors, Projections) build on the low-level Reactor Interface.
-
-The runtime invokes `.handle_batch` on each reactor, passing a batch of `[message, replaying]` pairs from the same stream. The `Sourced::Consumer` module provides a default `handle_batch` that delegates to a per-message `.handle` method, so simple reactors only need to implement `.handle`.
-
-```ruby
-class MyReactor
-  extend Sourced::Consumer
-  
-  # The runtime will poll and hand over messages of this type
-  def self.handled_messages = [Order::Started, Order::Placed]
-  
-  # The default handle_batch (from Consumer) calls this per message.
-  # Return an Array of one or more Actions.
-  def self.handle(new_message)
-    actions = []
-    
-    # Just acknowledge new_message
-    actions << Sourced::Actions::OK
-    
-    # Append these new messages to the event store
-    # Sourced will automatically increment the stream's sequence number
-    # (ie. no optimistic locking)
-    started = Order::Started.build(new_message.stream_id)
-    actions << Sourced::Actions::AppendNext.new([started])
-    
-    # Append these new messages to the event store.
-    # The messages are expected to have a :seq incremented after new_message.seq
-    # Messages will fail to append if other messages have been appended
-    # with overlapping sequence numbers (optimistic locking)
-    started = Order::Started.new(stream_id: new_message.stream_id, seq: new_message.seq + 1)
-    actions << Sourced::Actions::AppendAfter.new(new_message.stream_id, [started])
-    
-    # Tell the runtime to retry this message
-    actions << Sourced::Actions::RETRY
-    
-    actions
+  def build_user_id(app)
+    "user-#{app.session_id}"
   end
 end
 ```
 
-You can implement your own low-level reactors following the interface above. Then register them as normal.
+##### Scoping to a command subset
+
+By default, `CommandContext` looks up types in `Sourced::Command.registry`. Pass a `scope:` to restrict lookups to a specific command subclass — attempts to build commands outside the scope raise `Sourced::UnknownMessageError`.
 
 ```ruby
-Sourced.register MyReactor
+class PublicCommand < Sourced::Command; end
+
+CreateCourse = PublicCommand.define('courses.create') do
+  attribute :course_id, String
+  attribute :course_name, String
+end
+
+# Only PublicCommand subclasses are allowed
+ctx = Sourced::CommandContext.new(scope: PublicCommand)
+ctx.build(type: 'courses.create', payload: { ... })  # OK
+ctx.build(type: 'admin.delete_all', payload: {})      # raises UnknownMessageError
 ```
 
-### Batch processing
-
-Workers fetch up to `worker_batch_size` messages per lock cycle (default: 50). Built-in reactors optimize batch processing automatically:
-
-- **Projector::StateStored**: loads state once, evolves all batch messages, syncs once (instead of N state loads + N syncs).
-- **Projector::EventSourced**: evolves history once, syncs once (instead of N x O(H) evolves + N syncs).
-- **Actor**: replaying messages return OK immediately; live messages are handled individually.
-
-For custom reactors, you can override `handle_batch` directly for full control:
+#### Loading a decider's state
 
 ```ruby
-class MyBatchReactor
-  extend Sourced::Consumer
+decider, read_result = Sourced.load(CourseDecider, course_name: 'Algebra')
+decider.state  # => { name_taken: true }
+```
 
-  def self.handled_messages = [Order::Started, Order::Placed]
+### Projectors
 
-  # Override handle_batch for custom batch processing.
-  # Must return Array of [actions, source_message] pairs.
-  def self.handle_batch(batch)
-    batch.map do |message, replaying|
-      actions = process(message)
-      [actions, message]
+Projectors consume events to build read models. Two flavours:
+
+#### EventSourced projector
+
+Rebuilds state from full history on every batch (like deciders).
+
+```ruby
+class CourseCatalogProjector < Sourced::Projector::EventSourced
+  partition_by :course_id
+
+  state do |_partition_values|
+    { course_id: nil, course_name: nil, students: [] }
+  end
+
+  evolve CourseCreated do |state, event|
+    state[:course_id] = event.payload.course_id
+    state[:course_name] = event.payload.course_name
+  end
+
+  evolve StudentEnrolled do |state, event|
+    state[:students] << event.payload.student_id
+  end
+
+  # Sync block runs within the store transaction after evolving
+  sync do |state:, messages:, **|
+    next unless state[:course_id]
+    # Write projection to disk, database, cache, etc.
+    File.write("projections/#{state[:course_id]}.json", state.to_json)
+  end
+
+  # After-sync block runs after the transaction commits.
+  # Use for side effects that should only happen on successful commit
+  # (e.g. sending emails, HTTP calls, pushing to external queues).
+  after_sync do |state:, messages:, **|
+    NotificationService.notify("Course #{state[:course_name]} updated")
+  end
+end
+```
+
+#### StateStored projector
+
+Loads persisted state via the `state` block, evolves only new (unprocessed) messages.
+
+```ruby
+class MyProjector < Sourced::Projector::StateStored
+  partition_by :course_id
+
+  state do |partition_values|
+    # Load existing state from your storage
+    existing = MyDB.find(partition_values[:course_id])
+    existing || { course_id: nil, students: [] }
+  end
+
+  evolve StudentEnrolled do |state, event|
+    state[:students] << event.payload.student_id
+  end
+
+  sync do |state:, messages:, **|
+    MyDB.upsert(state)
+  end
+end
+```
+
+### Durable workflows
+
+`Sourced::DurableWorkflow` models long-running, side-effect-heavy workflows as an imperative `execute` method whose steps are memoised across re-entries. A workflow instance is identified by a `workflow_id` (auto-assigned) which doubles as its partition key.
+
+Subclassing `DurableWorkflow` auto-registers a full lifecycle event set (`WorkflowStarted`, `StepStarted`, `StepComplete`, `StepFailed`, `ContextUpdated`, `WaitStarted`, `WaitEnded`, `WorkflowComplete`, `WorkflowFailed`) under the class name.
+
+```ruby
+class GreetingTask < Sourced::DurableWorkflow
+  def execute(name)
+    ip = resolve_ip
+    location = geolocate(ip)
+    "Hello #{name}, your IP is #{ip} and its location is #{location}"
+  end
+
+  durable def resolve_ip
+    IPResolver.resolve
+  end
+
+  def geolocate(ip)
+    Geolocator.locate(ip)
+  end
+  # retry the step up to 3 times before failing the workflow
+  durable :geolocate, retries: 3
+end
+```
+
+`durable` wraps a method so its result is memoised (via `StepComplete` events) and its failures are recorded (`StepFailed`). Re-entering `execute` replays past steps from memory instead of re-running their side effects. The `durable def foo; ...; end` form works because `def` returns the method's symbol.
+
+#### Starting and observing a workflow
+
+```ruby
+# Register the workflow so the Dispatcher drives it forward
+Sourced.register(GreetingTask)
+
+# Start a new run — appends WorkflowStarted and returns a Waiter
+waiter = GreetingTask.execute('Ada', store: Sourced.store)
+waiter.workflow_id  # => "workflow-<uuid>"
+
+# Block until the workflow reaches a terminal state (:complete or :failed)
+instance = waiter.wait(timeout: 30)
+instance.status  # => :complete
+instance.output  # => "Hello Ada, your IP is ... and its location is ..."
+```
+
+#### Rehydrating from the store
+
+```ruby
+instance = GreetingTask.load('workflow-abc-123')
+instance.status   # => :started | :complete | :failed
+instance.context  # => hash set via the `context` DSL
+```
+
+#### Initial context
+
+```ruby
+class IndexPages < Sourced::DurableWorkflow
+  context do
+    { visited: [] }
+  end
+
+  def execute(urls)
+    urls.each { |u| fetch(u) }
+  end
+
+  durable def fetch(url)
+    # ... returns parsed page
+    context[:visited] << url
+  end
+end
+```
+
+The `context` block runs once per replay and seeds `#context`, which is persisted as `ContextUpdated` events whenever it changes.
+
+#### Waiting inside a workflow
+
+Inside `execute`, `wait(seconds)` suspends the run by appending `WaitStarted` with an `at:` time. The `ScheduledMessagePoller` resumes the workflow by promoting the corresponding `WaitEnded` when the time elapses.
+
+```ruby
+def execute
+  notify_started
+  wait(300)          # sleep for 5 minutes
+  notify_finished
+end
+```
+
+### Reactions
+
+Both deciders and projectors can react to events to produce follow-up messages, enabling workflow orchestration. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
+
+```ruby
+class EnrolmentDecider < Sourced::Decider
+  partition_by :course_id
+
+  # ... evolve and command handlers ...
+
+  # Dispatch a follow-up message by class
+  reaction StudentEnrolled do |state, event|
+    dispatch(NotifyStudent, student_id: event.payload.student_id)
+  end
+
+  # Dispatch multiple messages from one block
+  reaction OrderPlaced do |_state, event|
+    dispatch(ReserveInventory, order_id: event.payload.order_id)
+    dispatch(ChargePayment,    order_id: event.payload.order_id)
+  end
+
+  # Chain .with_metadata and .at for metadata/delay
+  reaction StudentEnrolled do |_state, event|
+    dispatch(SendReminder, student_id: event.payload.student_id)
+      .with_metadata(channel: 'email')
+      .at(Time.now + 300)
+  end
+
+  # Dispatch by symbol (resolved via the reactor's message registry)
+  reaction :student_enrolled do |_state, event|
+    dispatch(:notify_student, student_id: event.payload.student_id)
+  end
+
+  # Wildcard: react to every evolve type without an explicit handler.
+  # Useful for side-channel pipelines (audit logs, outbox, etc.).
+  reaction do |_state, event|
+    dispatch(ForwardToOutbox, event_id: event.id)
+  end
+end
+```
+
+`dispatch` accepts either a message class or a symbol. Symbols are looked up via `self.class[symbol]` against the reactor's command/event registry and raise if unresolved. The returned `Dispatcher` supports:
+
+- `.with_metadata(hash)` — merges into the message metadata (the `producer` key is already set).
+- `.at(time)` — stamps the message for delayed delivery (promoted by the `ScheduledMessagePoller`).
+
+Reactions are skipped during replay (when `replaying: true`), so side effects don't re-fire.
+
+### Sync and After-Sync Blocks
+
+Both deciders and projectors support `sync` and `after_sync` blocks for running side effects during message processing.
+
+- **`sync`** blocks run **inside** the store transaction, alongside event persistence and offset acknowledgement. Use them for writes that must be atomic with the event append (e.g. updating a database projection).
+- **`after_sync`** blocks run **after** the transaction commits. Use them for side effects that should only happen if the commit succeeds (e.g. sending emails, HTTP calls, pushing to external queues).
+
+Both receive the same keyword arguments as the reactor's action-building step:
+
+| Reactor type | Keyword arguments                     |
+|--------------|---------------------------------------|
+| Decider      | `state:`, `messages:`, `events:`      |
+| Projector    | `state:`, `messages:`, `replaying:`   |
+
+```ruby
+class OrderDecider < Sourced::Decider
+  partition_by :order_id
+
+  # ... evolve / command handlers ...
+
+  sync do |state:, messages:, events:|
+    # Runs inside the transaction
+    OrderCache.update(state[:order_id], state)
+  end
+
+  after_sync do |state:, messages:, events:|
+    # Runs after successful commit
+    Mailer.send_confirmation(state[:order_id]) if events.any? { |e| e.is_a?(OrderPlaced) }
+  end
+end
+```
+
+Multiple `sync` and `after_sync` blocks can be registered; they execute in registration order. Blocks are inherited by subclasses.
+
+## Registering reactors
+
+```ruby
+Sourced.register(CourseDecider)
+Sourced.register(EnrolmentDecider)
+Sourced.register(CourseCatalogProjector)
+```
+
+This registers the reactor's consumer group with the store and adds it to the global router.
+
+## Background processing
+
+### Falcon (recommended)
+
+`Sourced::Falcon` provides a ready-made Falcon service that runs both the web server and Sourced background workers as sibling fibers. No separate worker process needed.
+
+```ruby
+# falcon.rb
+#!/usr/bin/env falcon-host
+require_relative 'domain'
+require_relative 'app'
+require 'sourced/falcon'
+
+service "my-app" do
+  include Sourced::Falcon::Environment
+  include Falcon::Environment::Rackup
+
+  url "http://localhost:9292"
+  count 1
+end
+```
+
+Start with:
+
+```bash
+bundle exec falcon host
+```
+
+The service automatically calls `Sourced.setup!` in each forked process, which replays the `Sourced.configure` block to create fresh database connections. This is necessary because SQLite connections are not fork-safe.
+
+#### How it works
+
+- `Sourced::Falcon::Environment` — mixin that sets the `service_class` to `Sourced::Falcon::Service`. Include it in your Falcon service definition alongside `Falcon::Environment::Rackup`.
+- `Sourced::Falcon::Service` — extends `Falcon::Service::Server`. On `run`, it calls `Sourced.setup!`, starts the web server, and spawns a `Sourced::Dispatcher` with all settings from `Sourced.config`. On `stop`, it shuts down the dispatcher before the server.
+- No separate HouseKeeper fibers are needed — the `StaleClaimReaper` is embedded in the Sourced Dispatcher.
+
+### Supervisor (standalone)
+
+For running workers without a web server, the supervisor starts workers that claim partitions, process messages, and ack offsets.
+
+```ruby
+# Start blocking (handles INT/TERM signals for graceful shutdown)
+Sourced::Supervisor.start
+
+# Or create and start manually
+supervisor = Sourced::Supervisor.new(
+  router: Sourced.router,
+  count: 4
+)
+supervisor.start
+```
+
+### How it works
+
+1. **Store** appends messages and notifies listeners of new message types
+2. **Dispatcher** routes notifications to a `WorkQueue`, mapping message types to interested reactors
+3. **Workers** pop reactors from the queue, claim a partition via `Router#handle_next_for`, process messages, and ack
+4. **CatchUpPoller** periodically pushes all reactors as a safety net (handles missed notifications)
+5. **Store#schedule_messages** persists delayed messages in a separate `sourced_scheduled_messages` table keyed by `available_at`
+6. **ScheduledMessagePoller** runs on an interval and promotes any messages whose `available_at` is in the past into the main log
+7. **StaleClaimReaper** releases claims held by dead workers
+
+### Router (direct usage)
+
+The router can also be used directly for testing or scripting:
+
+```ruby
+router = Sourced.router
+
+# Process one batch for a specific reactor
+router.handle_next_for(CourseDecider)
+
+# Drain all pending work across all reactors
+router.drain
+```
+
+## Failure handling and retries
+
+Sourced already supports consumer-group retries on failure.
+
+- On reactor errors, `Router#handle_next_for` calls the reactor's `on_exception` hook.
+- If a batch fails mid-way, it is raised as `Sourced::PartialBatchError`. The error carries the already-processed `action_pairs` (which are still ack'd) and the `failed_message` the hook receives — so partial progress is not lost.
+- By default, the hook uses `Sourced.config.error_strategy`.
+- The default `Sourced::ErrorStrategy` marks the consumer group as failed immediately.
+- If you configure a retrying error strategy, Sourced stores the next retry time in the consumer group's `retry_at` column and skips claiming work for that group until that time has passed.
+
+So retries are built in already, but they are opt-in via the error strategy configuration.
+
+### Example: exponential backoff retries
+
+```ruby
+require 'sourced'
+
+Sourced.configure do |c|
+  c.store = Sequel.sqlite('my_app.db')
+
+  c.error_strategy = Sourced::ErrorStrategy.new do |s|
+    s.retry(
+      times: 5,
+      after: 2,
+      backoff: ->(retry_after, retry_count) { retry_after * (2**(retry_count - 1)) }
+    )
+
+    s.on_retry do |retry_count, exception, message, later|
+      LOGGER.warn(
+        "Sourced retry ##{retry_count} for #{message.type} (#{message.id}) " \
+        "at #{later}: #{exception.class}: #{exception.message}"
+      )
+    end
+
+    s.on_fail do |exception, message|
+      LOGGER.error(
+        "Sourced failing consumer group after retries for #{message.type} (#{message.id}): " \
+        "#{exception.class}: #{exception.message}"
+      )
     end
   end
 end
 ```
 
-Individual reactors can override the global `worker_batch_size` via the `consumer` DSL:
+With the configuration above, failures retry after:
+
+- retry 1: 2 seconds
+- retry 2: 4 seconds
+- retry 3: 8 seconds
+- retry 4: 16 seconds
+- retry 5: 32 seconds
+
+After the configured retries are exhausted, the consumer group is marked as failed.
+
+## Consumer groups
+
+Each reactor class is a consumer group. The store tracks per-partition offsets so multiple reactors process the same events independently.
+
+The lifecycle methods (`stop_consumer_group`, `start_consumer_group`, `reset_consumer_group`, `consumer_group_active?`) accept either a String group ID or any object responding to `#group_id` (e.g. a reactor class).
 
 ```ruby
-class OrderProjector < Sourced::Projector::StateStored
-  consumer do |c|
-    c.batch_size = 100
+store = Sourced.store
+
+# Pass reactor classes directly
+store.stop_consumer_group(CourseDecider)
+store.start_consumer_group(CourseDecider)
+store.reset_consumer_group(CourseDecider)  # reprocess from beginning
+store.consumer_group_active?(CourseDecider)  # => true/false
+
+# Or use plain strings
+store.stop_consumer_group('CourseApp::CourseDecider')
+```
+
+When retries are configured via `Sourced.config.error_strategy`, failed consumer groups remain active but paused until their `retry_at` time. Once that time passes, they become claimable again automatically.
+
+### Lifecycle hooks via Router
+
+The Router provides lifecycle methods that wrap the Store operations and invoke optional callbacks on the reactor class. This lets reactors run cleanup or setup logic when their consumer group is stopped, reset, or started.
+
+```ruby
+# Accept a reactor class or a string group_id
+Sourced.stop_consumer_group(CourseDecider, 'maintenance window')
+Sourced.reset_consumer_group(CourseDecider)
+Sourced.start_consumer_group(CourseDecider)
+
+# String group_id works too — the router resolves it to the registered class
+Sourced.stop_consumer_group('CourseApp::CourseDecider')
+```
+
+These delegate to `Router#stop_consumer_group`, `Router#reset_consumer_group`, and `Router#start_consumer_group`, which:
+
+1. Resolve the argument to a registered reactor class (raising `ArgumentError` if the string doesn't match any registered reactor)
+2. Call the corresponding `Store` method
+3. Invoke the reactor's callback (`on_stop`, `on_reset`, `on_start`)
+
+#### Defining callbacks
+
+Override the no-op class methods on your reactor to hook into lifecycle events:
+
+```ruby
+class CourseDecider < Sourced::Decider
+  partition_by :course_name
+
+  # Called when the consumer group is stopped.
+  # `message` is the optional reason string passed to stop_consumer_group.
+  def self.on_stop(message = nil)
+    Rails.logger.info "CourseDecider stopped: #{message}"
+  end
+
+  # Called when the consumer group is reset (offsets cleared).
+  def self.on_reset
+    Rails.cache.delete_matched('course_projections/*')
+  end
+
+  # Called when the consumer group is started.
+  def self.on_start
+    Rails.logger.info 'CourseDecider started'
   end
 end
 ```
 
-When set, the reactor's `batch_size` takes precedence over the global `worker_batch_size`. When not set (default), the global value is used.
+Reactors without custom callbacks work fine — the defaults are no-ops.
 
-#### Partial ACK on failure
+## Monitoring
 
-When a message raises mid-batch, Sourced ACKs up to the last successfully processed message instead of retrying the entire batch. The failed message and any subsequent messages are retried in the next batch. This is handled automatically by `each_with_partial_ack` in the Consumer module, which all built-in reactor types use.
-
-**Actors and plain Consumer reactors** process each message independently (a new instance per message), so partial ACK is straightforward and safe with any batch size.
-
-**Projectors** use an evolve-all-sync-once optimization: all batch messages are evolved into a single instance's state, then synced once. Reactions are processed one by one — if a reaction fails mid-batch, all previously successful messages (including their reactions and a correct partial sync) are ACKed, and only the failed message onward is retried. On partial failure, the projector automatically rebuilds a fresh instance with only the successfully processed messages to produce a correct sync (via the `on_partial_sync` block in `sync_and_react`).
+`Store#stats` returns system-wide diagnostics for monitoring and debugging Sourced deployments.
 
 ```ruby
-class PaymentProcessor < Sourced::Projector::StateStored
-  consumer do |c|
-    c.batch_size = 10
-  end
-
-  reaction PaymentStarted do |state, evt|
-    # If this HTTP call succeeds for messages 1-3 but fails on message 4,
-    # messages 1-3 are fully ACKed (reactions + sync). Message 4 onward is retried.
-    response = PaymentGateway.post(:process_payment, state[:payment_info])
-    if response.ok?
-      dispatch ConfirmPayment, payment_id: response.body[:payment_id]
-    else
-      dispatch RejectPayment, errors: response.body[:errors]
-    end
-  end
-end
+stats = store.stats
+stats.max_position  # => 42 (latest position in the message log)
+stats.groups        # => array of per-consumer-group hashes
 ```
 
-### Reactors that require message history
+Each group hash contains:
 
-Reactors that declare the `:history` keyword in their `.handle_batch` (or `.handle`) signature will be provided the full message history for the stream being handled.
+| Key                  | Description                                                    |
+|----------------------|----------------------------------------------------------------|
+| `group_id`           | Consumer group identifier (e.g. `"CourseDecider"`)             |
+| `status`             | `"active"`, `"stopped"`, or `"failed"`                         |
+| `retry_at`           | `Time` of next retry, or `nil`                                 |
+| `error_context`      | Hash with error details (`{}` when healthy, see below)         |
+| `oldest_processed`   | `MIN(last_position)` across partitions where processing started |
+| `newest_processed`   | `MAX(last_position)` across partitions                          |
+| `partition_count`    | Number of offset rows (partitions) for this group              |
 
-This is how event-sourced Actors are implemented.
+### `error_context`
+
+The `error_context` hash is empty (`{}`) for healthy groups. When a group is stopped or has failed, it may contain:
+
+| Key                  | Present when | Description                          |
+|----------------------|--------------|--------------------------------------|
+| `:message`           | Stopped      | Operator-supplied reason for stopping |
+| `:exception_class`   | Failed       | Exception class name (e.g. `"RuntimeError"`) |
+| `:exception_message` | Failed       | Exception message string             |
+
+When retries are configured, `error_context` also accumulates retry state set by `GroupUpdater#retry_later`.
 
 ```ruby
-def self.handle(new_message, history:)
-  # evolve state from history,
-  # handle command, return new events, etc
-  []
-end
-```
-
-### `:replaying` flag
-
-Your `.handle` method can also declare a `:replaying` boolean, which tells the reactor whether the stream is replaying events, or handling new messages. Reactors use this to run or omit side-effects (for example, replaying Projectors don't run `reaction` blocks).
-
-```ruby
-def self.handle(new_message, history:, replaying:)
-  if replaying
-    # Omit side-effects
-  else
-    # Trigger side-effects
+stats = store.stats
+stats.groups.each do |g|
+  puts "#{g[:group_id]}: #{g[:status]} (#{g[:partition_count]} partitions, up to position #{g[:newest_processed]})"
+  if g[:status] == 'failed'
+    puts "  error: #{g[:error_context][:exception_class]}: #{g[:error_context][:exception_message]}"
   end
 end
 ```
+
+### `Store#read_offsets` — inspecting partition offsets
+
+`read_offsets` lists individual consumer group offsets with optional filtering and cursor-based pagination. Useful for inspecting the progress and claim status of each partition.
+
+```ruby
+result = store.read_offsets
+result.offsets       # => array of offset hashes
+result.total_count   # => total number of matching offsets (ignoring pagination)
+```
+
+#### Parameters
+
+| Parameter    | Type           | Default | Description                                              |
+|-------------|----------------|---------|----------------------------------------------------------|
+| `group_id:` | `String`, `nil` | `nil`   | Filter by consumer group. `nil` returns all groups.      |
+| `limit:`    | `Integer`       | `50`    | Max offsets per page.                                    |
+| `from_id:`  | `Integer`, `nil`| `nil`   | Cursor — return offsets with `id >= from_id` (inclusive). |
+
+#### Offset hash fields
+
+Each offset in the result is a Hash with:
+
+| Key              | Type          | Description                                          |
+|------------------|---------------|------------------------------------------------------|
+| `:id`            | `Integer`     | Offset primary key (used as pagination cursor)       |
+| `:group_name`    | `String`      | Consumer group identifier                            |
+| `:group_status`  | `String`      | `"active"`, `"stopped"`, or `"failed"`               |
+| `:partition_key` | `String`      | Partition identifier (e.g. `"device_id:dev-1"`)      |
+| `:last_position` | `Integer`     | Highest acked position for this partition             |
+| `:claimed`       | `Boolean`     | Whether a worker currently holds this partition       |
+| `:claimed_at`    | `String`, `nil`| ISO8601 timestamp of the claim                      |
+| `:claimed_by`    | `String`, `nil`| Worker ID holding the claim                         |
+
+#### Filtering by group
+
+```ruby
+result = store.read_offsets(group_id: 'CourseDecider')
+result.offsets.each do |o|
+  puts "#{o[:partition_key]}: position #{o[:last_position]}, claimed=#{o[:claimed]}"
+end
+```
+
+#### Pagination
+
+```ruby
+# First page
+page1 = store.read_offsets(limit: 20)
+
+# Next page using cursor
+page2 = store.read_offsets(limit: 20, from_id: page1.offsets.last[:id] + 1)
+```
+
+#### Auto-pagination with `to_enum`
+
+`OffsetsResult#to_enum` returns a lazy `Enumerator` that fetches subsequent pages automatically.
+
+```ruby
+# Iterate all offsets in pages of 20
+store.read_offsets(limit: 20).to_enum.each do |offset|
+  puts "#{offset[:group_name]} / #{offset[:partition_key]}: #{offset[:last_position]}"
+end
+
+# Works with Enumerable methods
+behind = store.read_offsets(limit: 50).to_enum.lazy.select { |o|
+  o[:last_position] < store.latest_position - 100
+}.to_a
+```
+
+#### Array destructuring
+
+```ruby
+offsets, total_count = store.read_offsets(group_id: 'CourseDecider')
+```
+
+## Topology introspection
+
+`Sourced.topology` analyses all registered reactors (deciders and projectors) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for projectors). Each node has at least `type`, `id`, `name`, `group_id`, and depending on kind, `consumes` / `produces` / `schema`.
+
+```ruby
+Sourced.register(CourseDecider)
+Sourced.register(EnrolmentDecider)
+Sourced.register(CourseCatalogProjector)
+
+Sourced.topology.each do |node|
+  puts "#{node.type}: #{node.name}"
+end
+# command: CourseApp::CreateCourse
+# event: CourseApp::CourseCreated
+# command: CourseApp::EnrolStudent
+# automation: reaction(CourseCreated)
+# readmodel: CourseApp::CourseCatalogProjector
+# ...
+```
+
+The graph is cached; `Sourced.register` invalidates the cache automatically, and you can force a rebuild with `Sourced.reset_topology`. Typical uses are generating [Event Modeling](https://eventmodeling.org/) diagrams, debugging "which reactor produces this event", or driving visual service-dependency tooling.
+
+```ruby
+# Which commands produce the `courses.created` event?
+Sourced.topology
+  .select { |n| n.type == 'command' && n.produces.include?('courses.created') }
+  .map(&:name)
+```
+
+`produces` / `consumes` are resolved statically by parsing reactor source with Prism, so they are only populated when the `prism` gem is available.
 
 ## Testing
 
-There's a couple of experimental RSpec helpers that allow testing Sourced reactors in GIVEN, WHEN, THEN style.
-
-*GIVEN* existing events A, B, C
-WHEN new command D is sent
-THEN I expect new events E and F
-
-### Single reactor
-
-Use `with_reactor` to unit-test the life-cycle of a single reactor.
+Sourced ships with RSpec helpers for Given-When-Then testing of deciders and projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
 
 ```ruby
 require 'sourced/testing/rspec'
 
-RSpec.describe Order do
+RSpec.configure do |config|
+  config.include Sourced::Testing::RSpec
+end
+```
+
+### Testing deciders
+
+`with_reactor` takes a decider class and partition attributes, then chains `.given` (history), `.when` (command), and `.then` (expected outcomes).
+
+```ruby
+RSpec.describe CourseDecider do
   include Sourced::Testing::RSpec
 
-  it 'adds product to order' do
-    with_reactor(Order, 'order-123')
-      .when(Order::AddProduct, product_id: 1, price: 100)
-      .then(Order::ProductAdded.build('order-123', product_id: 1, price: 100))
+  it 'creates a course' do
+    with_reactor(CourseDecider, course_name: 'Algebra')
+      .when(CreateCourse, course_id: 'c1', course_name: 'Algebra')
+      .then(CourseCreated, course_id: 'c1', course_name: 'Algebra')
   end
 
-  it 'is a noop if product already in order' do
-    with_reactor(Order, 'order-123')
-      .given(Order::ProductAdded, product_id: 1, price: 100)
-      .when(Order::AddProduct, product_id: 1, price: 100)
+  it 'rejects duplicate course names' do
+    with_reactor(CourseDecider, course_name: 'Algebra')
+      .given(CourseCreated, course_id: 'c1', course_name: 'Algebra')
+      .when(CreateCourse, course_id: 'c2', course_name: 'Algebra')
+      .then(RuntimeError, "Course 'Algebra' already exists")
+  end
+
+  it 'produces no events for a no-op command' do
+    with_reactor(CourseDecider, course_name: 'Algebra')
+      .when(SomeNoopCommand, course_name: 'Algebra')
       .then([])
   end
 end
 ```
 
-`#then` can also take a block, which will be given the low level `Sourced::Actions` objects returned by your `.handle()` interface.
+#### Multiple expected messages
 
-You can use this block to test reactors that trigger side effects.
+When a decider produces events and reactions, pass all expected messages as instances:
 
 ```ruby
-with_reactor(Webhooks, 'webhook-1')
-  .when(Webooks::Dispatch, name: 'Joe')
-  .then do |actions|
-    expect(api_request).to have_been_requested
+it 'produces event and reaction' do
+  with_reactor(EnrolmentDecider, course_id: 'c1')
+    .given(CourseCreated, course_id: 'c1', course_name: 'Algebra')
+    .when(EnrolStudent, course_id: 'c1', student_id: 's1')
+    .then(
+      StudentEnrolled.new(payload: { course_id: 'c1', student_id: 's1' }),
+      NotifyStudent.new(payload: { student_id: 's1' })
+    )
+end
+```
+
+#### Block form
+
+Pass a block to `.then` to receive the raw action pairs for custom assertions:
+
+```ruby
+it 'inspects action pairs' do
+  with_reactor(CourseDecider, course_name: 'Algebra')
+    .when(CreateCourse, course_id: 'c1', course_name: 'Algebra')
+    .then { |pairs|
+      actions, source_msg = pairs.first
+      append = Array(actions).find { |a| a.is_a?(Sourced::Actions::Append) }
+      expect(append.messages.first).to be_a(CourseCreated)
+    }
+end
+```
+
+#### `.then!` — run sync and after_sync actions
+
+Use `.then!` instead of `.then` to execute both `sync` and `after_sync` actions before assertions:
+
+```ruby
+it 'runs sync block' do
+  with_reactor(CourseDecider, course_name: 'Algebra')
+    .when(CreateCourse, course_id: 'c1', course_name: 'Algebra')
+    .then! { |pairs| ... }
+end
+```
+
+### Testing projectors
+
+Projectors use `.given` (events to evolve) and `.then` with a block that receives the projected state. `.when` is not supported — projectors don't handle commands.
+
+#### StateStored
+
+```ruby
+RSpec.describe ItemProjector do
+  include Sourced::Testing::RSpec
+
+  it 'builds state from events' do
+    with_reactor(ItemProjector, list_id: 'L1')
+      .given(ItemAdded, list_id: 'L1', name: 'Apple')
+      .given(ItemAdded, list_id: 'L1', name: 'Banana')
+      .then { |state| expect(state[:items]).to eq(['Apple', 'Banana']) }
   end
-```
 
-You can mix argument and block assertions with `.then()`
-
-```ruby
-with_reactor(Webhooks, 'webhook-1')
-  .when(Webooks::Dispatch, name: 'Joe')
-  .then do |_|
-    expect(api_request).to have_been_requested
+  it 'handles removal' do
+    with_reactor(ItemProjector, list_id: 'L1')
+      .given(ItemAdded, list_id: 'L1', name: 'Apple')
+      .and(ItemArchived, list_id: 'L1', name: 'Apple')
+      .then { |state| expect(state[:items]).to eq([]) }
   end
-  .then(Webhooks::Dispatched, reference: 'webhook-abc')
-```
 
-For reactors that have `sync` blocks for side-effects (ex. Projectors), use `#then!` to trigger those side-effects and assert their results.
-
-```ruby
-with_reactor(PlacedOrders, 'order-123')
-  .given(Order::Started)
-  .given(Order::ProductAdded, product_id: 1, price: 100, units: 2)
-  .given(Order::Placed)
-  .then! do |_|
-    expect(OrderRecord.find('order-123').total).to eq(200)
+  it 'runs sync actions with then!' do
+    with_reactor(ItemProjector, list_id: 'L1')
+      .given(ItemAdded, list_id: 'L1', name: 'Apple')
+      .then! { |state| expect(state[:synced]).to be true }
   end
-```
-
-### Testing exceptions
-
-`#then` also accepts an exception class or instance, to assert that a command handler raises a specific error.
-
-```ruby
-# Match on exception class
-with_reactor(Order, 'order-123')
-  .given(Order::Placed)
-  .when(Order::Place)
-  .then(Order::AlreadyPlacedError)
-
-# Match on exception class and message
-with_reactor(Order, 'order-123')
-  .given(Order::Placed)
-  .when(Order::Place)
-  .then(Order::AlreadyPlacedError.new('order already placed'))
-```
-
-When given an exception class, the test passes if any error of that type is raised. When given an exception instance, it also checks that the error message matches.
-
-### Multiple reactors (A.K.A "Sagas")
-
-Use `with_reactors` to test the collaboration of multiple reactors sending and picking up eachother's messages.
-
-```ruby
-it 'tests collaboration of reactors' do
-  order_stream = 'actor-1'
-  payment_stream = 'actor-1-payment'
-  telemetry_stream = Testing::Telemetry::STREAM_ID
-
-  # With these reactors
-  with_reactors(Order, Payment, Telemetry)
-    # GIVEN that these events exist in history
-    .given(Order::Started.build(order_stream, name: 'foo'))
-    # WHEN I dispatch this new command
-    .when(Order::StartPayment.build(order_stream))
-    # Then I expect
-    .then do |stage|
-      # The different reactors collaborated and
-      # left this message trail behind
-      # Backend#messages is only available in the TestBackend
-      expect(stage.backend.messages).to match_sourced_messages([
-        Order::Started.build(order_stream, name: 'foo'), 
-        Order::StartPayment.build(order_stream), 
-        Order::PaymentStarted.build(order_stream), 
-        Telemetry::Logged.build(telemetry_stream, source_stream: order_stream),
-        Payment::Process.build(payment_stream), 
-        Payment::Processed.build(payment_stream),
-        Telemetry::Logged.build(telemetry_stream, source_stream: payment_stream),
-      ])
-    end
 end
 ```
 
-`with_reactors` sets up its own in-memory backend, so you can test multi-reactor workflows in terms of what messages they produce without database or network requests, and there's no need for database setup or tear-down. Just test the behaviour!
+#### EventSourced
 
-The `.then` block can take an optional second argument, which will be passed as only the _new_ messages produced by the reactors, appended after any messages setup with `given`.
+Same API — the helper creates an instance, evolves from all given messages, and yields state:
 
 ```ruby
-.then do |stage, new_messages|
-  expect(new_messages).to match_sourced_messages([...])
+RSpec.describe CatalogProjector do
+  include Sourced::Testing::RSpec
+
+  it 'rebuilds state from full history' do
+    with_reactor(CatalogProjector, course_id: 'c1')
+      .given(CourseCreated, course_id: 'c1', course_name: 'Algebra')
+      .given(StudentEnrolled, course_id: 'c1', student_id: 's1')
+      .then { |state| expect(state[:students]).to eq(['s1']) }
+  end
 end
 ```
 
+### Message matching
 
+`.then` compares messages by **class** and **payload** only. Fields like `id`, `created_at`, `causation_id`, `correlation_id`, and `metadata` are ignored, so tests don't need to match auto-generated values.
 
-## Setup
+## Full example
 
-Sourced uses the Sequel gem for database access. It supports **PostgreSQL** (recommended for production) and **SQLite** (useful for development, scripts, and single-process apps).
+See `examples/app/` for a complete Sinatra application with:
+- Two deciders (course creation with name uniqueness, student enrolment with capacity limits)
+- An event-sourced projector writing JSON files
+- Synchronous command handling via `Sourced.handle!` in HTTP endpoints
+- Background worker processing via Falcon
 
-### PostgreSQL
+## Setup & configuration
 
-You'll need the `pg` and `sequel` gems.
-
-```ruby
-gem 'sourced', github: 'ismasan/sourced'
-gem 'pg'
-gem 'sequel'
-```
-
-Create a Postgres database and configure the backend.
+### Configuration
 
 ```ruby
-Sourced.configure do |config|
-  config.backend = Sequel.connect(ENV.fetch('DATABASE_URL'))
+require 'sourced'
 
-  # Worker and housekeeping options (shown with defaults)
-  config.worker_count = 2                       # Number of worker fibers
-  config.worker_batch_size = 50                 # Messages fetched per lock cycle (batch processing)
-  config.housekeeping_count = 1                 # Number of housekeeper fibers
-  config.housekeeping_interval = 3              # Seconds between scheduling cycles
-  config.housekeeping_heartbeat_interval = 5    # Seconds between worker heartbeats
-  config.housekeeping_claim_ttl_seconds = 120   # Seconds before stale claims are reaped
+Sourced.configure do |c|
+  # Pass a Sequel SQLite connection or a Sourced::Store instance
+  c.store = Sequel.sqlite('my_app.db')
+
+  # Optional settings
+  c.worker_count = 4           # background worker fibers (default: 2)
+  c.batch_size = 50            # messages per claim (default: 50)
+  c.catchup_interval = 5       # seconds between catch-up polls (default: 5)
+  c.max_drain_rounds = 10      # max drain iterations per pickup (default: 10)
+  c.claim_ttl_seconds = 120    # stale claim threshold (default: 120)
+  c.housekeeping_interval = 30 # heartbeat/reap cycle (default: 30)
 end
-
-Sourced.config.backend.install unless Sourced.config.backend.installed?
 ```
 
-Passing a `Sequel::Postgres::Database` connection auto-selects `PGBackend`, which supports PG-specific features: `LISTEN/NOTIFY` for real-time worker dispatch, advisory locks, and `FOR UPDATE SKIP LOCKED` for concurrent stream processing.
+### Database setup
 
-These options are used by both `Sourced::Supervisor` and the Falcon integration. When running workers alongside a web server (Falcon, or any other Async-compatible server), these control how many worker and housekeeper fibers are spawned per OS process. The `worker_batch_size` controls how many messages from the same stream are fetched and processed in a single lock cycle (see [Batch processing](#batch-processing)).
+`Store#install!` creates all required tables directly (useful for scripts, tests, and quick prototyping). For production apps using Sequel migrations, the store can export a migration file instead.
 
-### SQLite
-
-You'll need the `sqlite3` and `sequel` gems.
+#### Quick setup (e.g. scripts, tests)
 
 ```ruby
-gem 'sourced', github: 'ismasan/sourced'
-gem 'sqlite3'
-gem 'sequel'
+db = Sequel.sqlite('my_app.db')
+store = Sourced::Store.new(db)
+store.install!
 ```
 
-Configure with a Sequel SQLite connection.
+#### Exporting a Sequel migration
+
+Use `Store#copy_migration_to` to generate a migration file compatible with `Sequel::Migrator`:
 
 ```ruby
-Sourced.configure do |config|
-  # File-based database
-  config.backend = Sequel.sqlite('myapp.db')
+db = Sequel.sqlite('my_app.db')
+store = Sourced::Store.new(db)
 
-  # Or in-memory (useful for scripts and tests)
-  # config.backend = Sequel.sqlite
-end
+# Option 1: pass a directory (uses a default filename)
+store.copy_migration_to('db/migrations')
 
-Sourced.config.backend.install unless Sourced.config.backend.installed?
-```
-
-Passing a `Sequel::SQLite::Database` connection auto-selects `SQLiteBackend`. The SQLite backend sets up WAL mode and busy timeouts automatically.
-
-**Differences from PostgreSQL:**
-
-- **In-process pub/sub**: Uses an in-memory, thread/fiber-safe pub/sub (`PubSub::Test`) instead of PG `LISTEN/NOTIFY`. Worker dispatch is synchronous (the `InlineNotifier` pushes work to the `WorkQueue` inline when messages are appended), with the `CatchUpPoller` as a safety net.
-- No advisory locks or `SKIP LOCKED` — concurrency is handled via SQLite's transaction-level write locks.
-- Best suited for single-process deployments, development, scripts, and tests.
-
-See `examples/lite_cart.rb` for a complete working example.
-
-### Generating Sequel migrations
-
-If your app already uses Sequel's migrator, you can copy Sourced's migration into your migrations directory instead of using `backend.install`.
-
-```ruby
-backend = Sourced.config.backend
-backend.copy_migration_to("db/migrations")
-# => writes db/migrations/001_create_sourced_tables.rb
-```
-
-Or use a block to control the file name (e.g. timestamped migrations):
-
-```ruby
-backend.copy_migration_to do
+# Option 2: pass a block for full control over the path
+store.copy_migration_to do
   "db/migrations/#{Time.now.strftime('%Y%m%d%H%M%S')}_create_sourced_tables.rb"
 end
 ```
 
-The generated file is a standard `Sequel.migration { change { ... } }` that works with `Sequel::Migrator`. It respects the `prefix` and `schema` options passed when configuring the backend:
+Then run your migrations as usual:
+
+```bash
+sequel -m db/migrations sqlite://my_app.db
+```
+
+#### Custom table prefix
+
+By default, tables are prefixed with `sourced_` (e.g. `sourced_messages`, `sourced_consumer_groups`). Pass a `prefix:` to `Store.new` to customise this — for example when running multiple Sourced stores in the same database:
 
 ```ruby
-Sourced.configure do |config|
-  db = Sequel.connect(ENV.fetch('DATABASE_URL'))
-  config.backend = Sourced::Backends::SequelBackend.new(db, prefix: 'myapp', schema: 'events')
-end
-
-# Migration will create tables like events.myapp_messages, events.myapp_streams, etc.
-Sourced.config.backend.copy_migration_to("db/migrations")
+store = Sourced::Store.new(db, prefix: 'billing')
+store.install!
+# Creates: billing_messages, billing_key_pairs, billing_consumer_groups, ...
 ```
 
-Register your Actors and Reactors.
+The prefix is carried through to exported migrations automatically.
+
+#### Using the Installer directly
+
+The installer is also available as a standalone object, which is useful for Rake tasks or setup scripts:
 
 ```ruby
-Sourced.register(Leads::Actor)
-Sourced.register(Leads::Listings)
-Sourced.register(Webooks::Dispatcher)
+installer = Sourced::Installer.new(db, logger: Logger.new($stdout), prefix: 'sourced')
+installer.install       # create tables
+installer.installed?    # check if tables exist
+installer.uninstall     # drop tables (test env only)
+installer.copy_migration_to('db/migrations')
 ```
-
-### Running workers as a separate process
-
-When using a web server that doesn't share Sourced's Async event loop (e.g. Puma), or in non-web applications, run workers as a standalone process using `Sourced::Supervisor`:
-
-```ruby
-# worker.rb
-require_relative 'config/environment'
-# start workers with 10 worker fibers or threads per OS process
-# depending on Sourced.config.executor (:async, :thread, or custom)
-Sourced::Supervisor.start(count: 10)
-```
-
-This requires managing two processes in deployment: one for your web server, one for workers.
-
-### Running workers with Falcon
-
-If you use [Falcon](https://github.com/socketry/falcon) as your web server, you can run Sourced workers in the same process. Both Falcon and Sourced use the [Async](https://github.com/socketry/async) gem, so workers run as lightweight fibers alongside web requests — no separate worker process needed.
-
-This requires `Sourced.config.executor = :async` (the default). Do not change it to `:thread` when using Falcon, as workers must run as fibers to share Falcon's event loop.
-
-Add a `./falcon.rb` file to the root of your app, which requieres `sourced/falcon`  (no hard dependency on Falcon in sourced.gemspec):
-
-```ruby
-# falcon.rb
-#!/usr/bin/env falcon-host
-require 'bundler/setup'
-require 'sourced/falcon'
-require_relative 'config/environment' # <= YOUR app setup, Sourced.configure, register reactors, etc.
-
-service "my-app" do
-  include Sourced::Falcon::Environment
-  include Falcon::Environment::Rackup    # loads config.ru
-
-  # -- Falcon / Async options --
-  url "http://[::]:9292"                 # Server bind URL (default: "http://[::]:9292")
-  count 2                                # Number of OS processes to fork (default: Etc.nprocessors)
-  timeout 30                             # Connection timeout in seconds (default: nil)
-  verbose false                          # Enable verbose logging (default: false)
-  cache true                             # Enable HTTP response caching (default: false)
-
-  # Sourced worker options default to Sourced.config values.
-  # Override per-service if needed:
-  # sourced_worker_count 4
-  # sourced_worker_batch_size 50
-  # sourced_housekeeping_count 1
-  # sourced_housekeeping_interval 3
-  # sourced_housekeeping_heartbeat_interval 5
-  # sourced_housekeeping_claim_ttl_seconds 120
-end
-```
-
-Run with:
-
-```
-falcon host
-```
-
-Total Sourced workers = `count * sourced_worker_count`. For example, `count 2` and `sourced_worker_count 4` gives 8 worker fibers across 2 OS processes, all competing for events via database locks (same as running multiple Supervisors).
-
-Set `config.worker_count = 0` to run Falcon as a web-only process with no Sourced workers. This is useful if you want to run workers separately via `Sourced::Supervisor` while still using Falcon for HTTP, or if you explicitely don't want workers adding unnecessary pressure on the database.
-
-On shutdown (`Ctrl-C` / `SIGTERM`), Falcon signals workers to stop. Their poll loops exit gracefully with no stale claims.
-
-### How worker dispatch works
-
-Instead of each worker polling the database independently, Sourced uses a signal-driven dispatch model. Workers block on a shared `WorkQueue` waiting for signals, and two sources feed that queue:
-
-1. **Backend notifier** (real-time): The backend exposes a generic pub/sub notifier (`PGNotifier` for PostgreSQL, `InlineNotifier` for others). When messages are appended, the backend publishes a `messages_appended` event with the message types. When a stopped reactor is resumed, it publishes a `reactor_resumed` event with the consumer group ID. For PostgreSQL, these are delivered over PG `LISTEN/NOTIFY`; for other backends, they fire synchronously.
-
-2. **CatchUpPoller** (safety net): A single fiber pushes all registered reactors into the WorkQueue every few seconds (default 5). This covers startup catch-up, missed notifications, offset resets, and PG reconnections.
-
-The `Dispatcher` subscribes to the backend notifier and maps these events to reactor classes, pushing them onto the `WorkQueue`. For `messages_appended`, it resolves message types to interested reactors via an eager lookup table. For `reactor_resumed`, it resolves the group ID directly to the reactor class.
-
-When a worker pops a reactor from the queue, it enters a **bounded drain loop**: it processes up to `max_drain_rounds` batches (default 10) for that reactor, then re-enqueues the reactor if it hit the cap. This ensures no single reactor monopolizes workers, and multiple workers can drain the same reactor concurrently on different streams (via `SKIP LOCKED`).
-
-The `WorkQueue` caps pending entries per reactor (equal to the worker count), so notification bursts are coalesced without queue bloat.
-
-```
-Backend notifier ────┐
-  (PG LISTEN or       ├──▶ WorkQueue (capped/reactor) ──▶ Worker fibers
-   inline pub/sub)    │         │                           │
-CatchUpPoller (5s) ──┘         │◀── re-enqueue ────────────┘
-                                     (if max_drain_rounds hit)
-```
-
-This design preserves natural back-pressure (workers only fetch when ready), eliminates polling-interval lag for new messages, and handles both real-time and catch-up work in a single operating mode.
-
-## Custom attribute types and coercions.
-
-Define a module to hold your attribute types using [Plumb](https://github.com/ismasan/plumb)
-
-```ruby
-module Types
-  include Plumb::Types
-  
-  # Your own types here.
-  CorporateEmail = Email[/@apple\.com^/]
-end
-```
-
-Then you can use any [built-in Plumb types](https://github.com/ismasan/plumb?tab=readme-ov-file#built-in-types), as well as your own, when defining command or event structs (or any other data structures for your app).
-
-```ruby
-UpdateEmail = Sourced::Command.define('accounts.update_email') do
-  attribute :email, Types::CorporateEmail
-end
-```
-
-## Error handling
-
-Sourced workflows are eventually-consistent by default. This means that commands and events are handled in background processes, and any exceptions raised can't be immediatly surfaced back to the user (and, there might not be a user anyway!).
-
-Most "domain errors" in command handlers should be handled by the developer and recorded as domain events, so that the domain can react and/or compensate for them.
-
-To handle true _exceptions_ (code or data bugs, network or IO exceptions) Sourced provides a default error strategy that will "stop" the affected consumer group (the Postgres backend will log the exception and offending message in the `consumer_groups` table).
-
-You can configure the error strategy with retries and exponential backoff, as well as `on_retry` and `on_stop` callbacks.
-
-```ruby
-Sourced.configure do |config|
-  # config.backend = Sequel.connect(ENV.fetch('DATABASE_URL'))
-  config.error_strategy do |s|
-    s.retry(
-      # Retry up to 3 times
-      times: 3,
-      # Wait 5 seconds before retrying
-      after: 5, 
-      # Custom backoff: given after=5, retries in 5, 10 and 15 seconds before stopping
-      backoff: ->(retry_after, retry_count) { retry_after * retry_count }
-    )
-    
-    # Trigger this callback on each retry
-    s.on_retry do |n, exception, message, later|
-      LOGGER.info("Retrying #{n} times")
-    end
-
-    # Finally, trigger this callback
-    # after all retries have failed and the consumer group is stopped.
-    s.on_stop do |exception, message|
-      Sentry.capture_exception(exception)
-    end
-  end
-end
-```
-
-### Custom error strategy
-
-You can also configure your own error strategy. It must respond to `#call(exception, message, group)`
-
-```ruby
-CUSTOM_STRATEGY = proc do |exception, message, group|
-  case exception
-  when Faraday::Error
-    group.retry(Time.now + 10)
-  else
-    group.stop(exception)
-  end
-end
-
-Sourced.configure do |config|
-  # Configure backend, etc
-  config.error_strategy = CUSTOM_STRATEGY
-end
-```
-
-## Stopping and starting consumer groups.
-
-`Sourced.config.backend` provides an API for stopping and starting consumer groups. For example to resume groups that were stopped by raised exceptions, after the error has been corrected.
-
-```ruby
-Sourced.config.backend.stop_consumer_group('Carts::Listings')
-Sourced.config.backend.start_consumer_group('Carts::Listings')
-```
-
-## Topology
-
-`Sourced.topology` returns a flat array of node structs describing the message flow graph of all registered reactors. This is useful for building visualizations, documentation, or tooling that needs to understand how commands, events, automations and read models connect.
-
-```ruby
-Sourced.register(Cart)
-Sourced.register(CartListings)
-
-nodes = Sourced.topology
-# => [CommandNode, EventNode, AutomationNode, ReadModelNode, ...]
-```
-
-The result is memoized. Call `Sourced.reset_topology` to clear the cache after registering new reactors.
-
-### Node types
-
-#### CommandNode
-
-Represents a command handled by an actor. `produces` lists the event type strings that the command handler can emit (extracted via static analysis).
-
-```ruby
-# Fields: type, id, name, group_id, produces, schema
-{ type: "command", id: "carts.add_item", name: "Carts::AddItem",
-  group_id: "Carts::Cart", produces: ["carts.item_added"],
-  schema: { "type" => "object", "properties" => { ... } } }
-```
-
-#### EventNode
-
-Represents an event type. Deduplicated across reactors — the first reactor to reference an event owns its `group_id`.
-
-```ruby
-# Fields: type, id, name, group_id, produces, schema
-{ type: "event", id: "carts.item_added", name: "Carts::ItemAdded",
-  group_id: "Carts::Cart", produces: [],
-  schema: { "type" => "object", "properties" => { ... } } }
-```
-
-#### AutomationNode
-
-Represents a `.reaction` block. `consumes` lists what triggers the reaction (event types for actors, readmodel IDs for projectors). `produces` lists the command type strings dispatched by the reaction (extracted via static analysis).
-
-```ruby
-# Fields: type, id, name, group_id, consumes, produces
-# Actor reaction — consumes an event directly:
-{ type: "automation", id: "carts.item_added-Carts::Cart-aut",
-  name: "reaction(Carts::ItemAdded)", group_id: "Carts::Cart",
-  consumes: ["carts.item_added"], produces: ["carts.check_inventory"] }
-
-# Projector reaction — consumes the readmodel:
-{ type: "automation", id: "carts.item_added-Carts::CartListings-aut",
-  name: "reaction(Carts::ItemAdded)", group_id: "Carts::CartListings",
-  consumes: ["carts.cart_listings-rm"], produces: ["carts.notify_admin"] }
-```
-
-#### ReadModelNode
-
-Represents a projector as a consumer of events. `consumes` lists the event types the projector evolves. `produces` lists the IDs of any automation nodes derived from the projector's reactions.
-
-```ruby
-# Fields: type, id, name, group_id, consumes, produces, schema
-{ type: "readmodel", id: "carts.cart_listings-rm",
-  name: "Carts::CartListings", group_id: "Carts::CartListings",
-  consumes: ["carts.item_added", "carts.placed"],
-  produces: ["carts.item_added-Carts::CartListings-aut"],
-  schema: {} }
-```
-
-### How nodes link together
-
-The `produces` and `consumes` fields reference other node IDs, forming a directed graph:
-
-```
-CommandNode ──produces──▶ EventNode
-EventNode ──consumes──▶ AutomationNode (actor reactions)
-EventNode ──consumes──▶ ReadModelNode ──produces──▶ AutomationNode (projector reactions)
-AutomationNode ──produces──▶ CommandNode
-```
-
-### Catch-all reactions
-
-When a reactor uses a catch-all `reaction do ... end` (no event argument), the topology collapses all covered events into a single automation node named after the reactor, instead of one automation per event.
-
-```ruby
-class ReadyOrders < Sourced::Projector::StateStored
-  event Orders::PaymentConfirmed do |state, event|
-    # ...
-  end
-
-  event Orders::BuildConfirmed do |state, event|
-    # ...
-  end
-
-  # Catch-all: reacts to all evolved events
-  reaction do |state, event|
-    if state[:ready]
-      dispatch Orders::Release
-    end
-  end
-end
-```
-
-This produces a single automation node:
-
-```ruby
-{ type: "automation", id: "ready_orders-aut",
-  name: "reaction(ReadyOrders)", group_id: "ReadyOrders",
-  consumes: ["ready_orders-rm"], produces: ["orders.release"] }
-```
-
-Rather than separate automation nodes for `PaymentConfirmed` and `BuildConfirmed`.
-
-## Rails integration
-
-Soon.
-
-## Sourced vs. ActiveJob
-
-ActiveJob is a great way to handle background jobs in Rails. It's simple and easy to use. However, it's not designed for event sourcing.
-ActiveJob backends (and other job queues) are optimised for parallel processing of jobs, this means that multiple jobs for the same business entity may be processed in parallel without any ordering guarantees.
-
-<img width="832" height="493" alt="sourced-job-queue-diagram" src="https://github.com/user-attachments/assets/c51b03be-8794-4954-968a-87ecdd97d2f7" />
-
-Sourced's concurrency model is designed to process events for the same entity in order, while allowing for parallel processing of events for different entities.
-
-<img width="802" height="552" alt="sourced-ordered-streams-diagram" src="https://github.com/user-attachments/assets/ddfbff4b-11bb-4e0c-93e9-e0851c4721d9" />
-
-## Gotchas
-
-By default `Sourced` processes commands and events asynchronously through
-background workers. This can be confusing if you expect reactions to run
-automatically when you issue commands.
-
-For synchronous, all-or-nothing execution use [`Sourced::Unit`](#sourcedunit),
-which runs the full command → event → reaction chain inside a single transaction.
-
-```ruby
-# Synchronous execution with Unit
-unit = Sourced::Unit.new(Chat, backend: Sourced.config.backend)
-results = unit.handle(SendMessage.new(stream_id: 'chat-123', payload: { content: query }))
-results.events_for(Chat) # => [MessageSent, ...]
-```
-
-If you're using the `Sourced::CommandMethods` mixin directly (without a Unit),
-note that it persists events but does not trigger reactions. You'd need to
-explicitly call `#react` after issuing commands.
-
-```ruby
-chat = Sourced.load(Chat, 'chat-123')
-# Persists but does not call reactions
-_cmd, events = chat.send_message!(content: query)
-# Have to react manually
-commands = chat.react(events)
-```
-
-
-## Installation
-
-Install the gem and add to the application's Gemfile by executing:
-
-    $ bundle add sourced
-
-**Note**: this gem is under active development, so you probably want to install from Github:
-In your Gemfile:
-
-    $ gem 'sourced', github: 'ismasan/sourced'
-
-## Development
-
-After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake spec` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
-
-To install this gem onto your local machine, run `bundle exec rake install`. To release a new version, update the version number in `version.rb`, and then run `bundle exec rake release`, which will create a git tag for the version, push git commits and the created tag, and push the `.gem` file to [rubygems.org](https://rubygems.org).
-
-## Contributing
-
-Bug reports and pull requests are welcome on GitHub at https://github.com/ismasan/sourced.	

@@ -29,17 +29,15 @@ module Sourced
     #   AutoUUID.parse("test-uuid")  # => "test-uuid"
     AutoUUID = UUID::V4.default { SecureRandom.uuid }
 
-    # Turn "Foo::Bar::FooBar" into "foo_bar"
-    TrailingModuleName = String.transform(::String) { |v| v.split('::').last }
+    # Turn "Foo::Bar::FooBar" into "foo.bar.foo_bar"
     ModulesToDots = String.transform(::String) { |v| v.gsub('::', '.') }
     Underscore = String.build(::String) { |v|
       v
-        .gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')  # Handle sequences like "HTTPResponse" -> "HTTP_Response"
-        .gsub(/([a-z\d])([A-Z])/, '\1_\2')      # Handle transitions from lowercase to uppercase
-        .gsub(/-/, '_')                          # Replace hyphens with underscores
-        .downcase                                # Convert to lowercase
+        .gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
+        .gsub(/([a-z\d])([A-Z])/, '\1_\2')
+        .gsub(/-/, '_')
+        .downcase
     }
-    ModuleToMethodName = TrailingModuleName >> Underscore
     ModuleToMessageType = ModulesToDots >> Underscore
   end
 end

@@ -2,84 +2,65 @@
 
 require 'sourced/types'
 
-# A superclass and registry to define event types
-# for example for an event-driven or event-sourced system.
-# All events have an "envelope" set of attributes,
-# including unique ID, stream_id, type, timestamp, causation ID,
-# event subclasses have a type string (ex. 'users.name.updated') and an optional payload
-# This class provides a `.define` method to create new event types with a type and optional payload struct,
-# a `.from` method to instantiate the correct subclass from a hash, ex. when deserializing from JSON or a web request.
-# and a `#follow` method to produce new events based on a previous event's envelope, where the #causation_id and #correlation_id
-# are set to the parent event
-# @example
-#
-#  # Define event struct with type and payload
-#  UserCreated = Message.define('users.created') do
-#    attribute :name, Types::String
-#    attribute :email, Types::Email
-#  end
-#
-#  # Instantiate a full event with .new
-#  user_created = UserCreated.new(stream_id: 'user-1', payload: { name: 'Joe', email: '...' })
-#
-#  # Use the `.from(Hash) => Message` factory to lookup event class by `type` and produce the right instance
-#  user_created = Message.from(type: 'users.created', stream_id: 'user-1', payload: { name: 'Joe', email: '...' })
-#
-#  # Use #follow(payload Hash) => Message to produce events following a command or parent event
-#  create_user = CreateUser.new(...)
-#  user_created = create_user.follow(UserCreated, name: 'Joe', email: '...')
-#  user_created.causation_id == create_user.id
-#  user_created.correlation_id == create_user.correlation_id
-#  user_created.stream_id == create_user.stream_id
-#
-# ## Message registries
-# Each Message class has its own registry of sub-classes.
-# You can use the top-level Sourced::Message.from(hash) to instantiate all message types.
-# You can also scope the lookup by sub-class.
-# 
-# @example
-#
-#   class PublicCommand < Sourced::Message; end
-#   
-#   DoSomething = PublicCommand.define('commands.do_something')
-#
-#   # Use .from scoped to PublicCommand subclass
-#   # to ensure that only PublicCommand subclasses are accessible.
-#   cmd = PublicCommand.from(type: 'commands.do_something', payload: { ... })
-#
-# ## JSON Schemas
-# Plumb data structs support `.to_json_schema`, so you can document all events in the registry with something like
-#
-#   Message.subclasses.map(&:to_json_schema)
-#
 module Sourced
-  UnknownMessageError = Class.new(ArgumentError)
-  PastMessageDateError = Class.new(ArgumentError)
+  # A query condition for reading messages from the store.
+  # Matches on (message_type AND all attrs key-value pairs).
+  # Multiple conditions are OR'd when passed to {Store#read}.
+  QueryCondition = Data.define(:message_type, :attrs)
 
+  # Returned by {Store#read} and {Store#claim_next} for optimistic concurrency.
+  # Pass to {Store#append} via +guard:+ to detect conflicting writes.
+  ConsistencyGuard = Data.define(:conditions, :last_position)
+
+  # Base message class. Messages have no stream_id or seq — they go into a
+  # flat, globally-ordered log.
+  #
+  # Supports +causation_id+ and +correlation_id+ for tracing causal chains.
+  #
+  # Define message types via {.define}:
+  #
+  #   CourseCreated = Sourced::Message.define('course.created') do
+  #     attribute :course_name, String
+  #   end
+  #
   class Message < Types::Data
+    EMPTY_ARRAY = [].freeze
+
     attribute :id, Types::AutoUUID
-    attribute :stream_id, Types::String.present
     attribute :type, Types::String.present
-    attribute :created_at, Types::Forms::Time.default { Time.now } #Types::JSON::AutoUTCTime
     attribute? :causation_id, Types::UUID::V4
     attribute? :correlation_id, Types::UUID::V4
-    attribute :seq, Types::Integer.default(1)
+    attribute :created_at, Types::Forms::Time.default { Time.now }
     attribute :metadata, Types::Hash.default(Plumb::BLANK_HASH)
     attribute :payload, Types::Static[nil]
 
+    # Lookup table mapping type strings to message subclasses.
     class Registry
+      # @param message_class [Class] the root message class for this registry
       def initialize(message_class)
         @message_class = message_class
         @lookup = {}
       end
 
+      # @return [Array<String>] registered type strings
       def keys = @lookup.keys
+
+      # @return [Array<Class>] direct subclasses of the root message class
       def subclasses = message_class.subclasses
 
+      # Register a message class under a type string.
+      #
+      # @param key [String] message type string
+      # @param klass [Class] message subclass
       def []=(key, klass)
         @lookup[key] = klass
       end
 
+      # Look up a message class by type string.
+      # Searches this registry first, then recurses into subclass registries.
+      #
+      # @param key [String] message type string
+      # @return [Class, nil]
       def [](key)
         klass = lookup[key]
         return klass if klass
@@ -91,8 +72,15 @@ module Sourced
         nil
       end
 
-      def inspect
-        %(<#{self.class}:#{object_id} #{lookup.size} keys, #{subclasses.size} child registries>)
+      # All registered message classes across this registry and subclass registries.
+      #
+      # @return [Enumerator<Class>] if no block given
+      # @yield [Class] each registered message class
+      def all(&block)
+        return enum_for(:all) unless block
+
+        lookup.each_value(&block)
+        subclasses.each { |c| c.registry.all(&block) }
       end
 
       private
@@ -100,124 +88,166 @@ module Sourced
       attr_reader :lookup, :message_class
     end
 
+    # @return [Registry] the message type registry for this class
     def self.registry
       @registry ||= Registry.new(self)
     end
 
+    # Base class for typed message payloads.
     class Payload < Types::Data
+      # @param key [Symbol] attribute name
+      # @return [Object] attribute value
       def [](key) = attributes[key]
+
+      # @see Hash#fetch
       def fetch(...) = to_h.fetch(...)
     end
 
-    def self.define(type_str, payload_schema: nil, &payload_block)
+    # Define a new message type. Registers it in the {.registry} and
+    # optionally defines a typed payload.
+    #
+    # @param type_str [String] unique message type identifier (e.g. 'course.created')
+    # @yield optional block to define payload attributes via +attribute+ DSL
+    # @return [Class] the new message subclass
+    #
+    # @example
+    #   UserJoined = Sourced::Message.define('user.joined') do
+    #     attribute :course_name, String
+    #     attribute :user_id, String
+    #   end
+    def self.define(type_str, &payload_block)
       type_str.freeze unless type_str.frozen?
-      if registry[type_str]
-        Sourced.config.logger.warn("Message '#{type_str}' already defined")
-      end
 
       registry[type_str] = Class.new(self) do
         def self.node_name = :data
         define_singleton_method(:type) { type_str }
 
         attribute :type, Types::Static[type_str]
-        if payload_schema
-          const_set(:Payload, Payload[payload_schema])
-          attribute :payload, self::Payload
-        elsif block_given?
-          const_set(:Payload, Class.new(Payload, &payload_block))
-          attribute :payload, self::Payload
+        if block_given?
+          payload_class = Class.new(Payload, &payload_block)
+          const_set(:Payload, payload_class)
+          attribute :payload, payload_class
+          names = payload_class._schema.to_h.keys.map(&:to_sym).freeze
+          define_singleton_method(:payload_attribute_names) { names }
         end
       end
     end
 
+    # Instantiate the correct message subclass from a hash with a +:type+ key.
+    #
+    # @param attrs [Hash] must include +:type+ matching a registered type string
+    # @return [Message] instance of the appropriate subclass
+    # @raise [Sourced::UnknownMessageError] if the type string is not registered
     def self.from(attrs)
       klass = registry[attrs[:type]]
-      raise UnknownMessageError, "Unknown event type: #{attrs[:type]}" unless klass
+      raise Sourced::UnknownMessageError, "Unknown message type: #{attrs[:type]}" unless klass
 
       klass.new(attrs)
     end
 
-    def self.build(stream_id, payload = nil)
-      attrs = {stream_id:}
-      attrs[:payload] = payload if payload
-      parse(attrs)
+    def initialize(attrs = {})
+      attrs = attrs.merge(payload: {}) unless attrs[:payload]
+      super(attrs)
     end
 
-    def initialize(attrs = {})
-      unless attrs[:payload]
-        attrs = attrs.merge(payload: {})
-      end
-      super(attrs)
+    # Identity implementation of the +to_message+ contract — see
+    # {.===} and {Sourced::PositionedMessage#to_message}.
+    def to_message = self
+
+    # Make +case/when+ transparent to {Sourced::PositionedMessage} (or any
+    # wrapper implementing +#to_message+). Ruby's default +Module#===+
+    # is implemented in C and ignores +is_a?+ overrides, so wrapped
+    # messages would otherwise fall through the +else+ branch.
+    def self.===(other)
+      return true if super
+      return false unless other.respond_to?(:to_message)
+
+      unwrapped = other.to_message
+      !unwrapped.equal?(other) && super(unwrapped)
     end
 
     def with_metadata(meta = {})
       return self if meta.empty?
 
-      attrs = metadata.merge(meta)
-      with(metadata: attrs)
+      with(metadata: metadata.merge(meta))
     end
 
-    def follow(event_class, payload_attrs = nil)
-      follow_with_attributes(
-        event_class,
-        payload: payload_attrs
-      )
+    def with_payload(attrs = {})
+      hash = to_h
+      (hash[:payload] ||= {}).merge!(attrs)
+      self.class.new(hash)
     end
 
-    def follow_with_seq(event_class, seq, payload_attrs = nil)
-      follow_with_attributes(
-        event_class,
-        attrs: { seq: },
-        payload: payload_attrs
-      )
+    def at(datetime)
+      if datetime < created_at
+        raise Sourced::PastMessageDateError, "Message #{type} can't be delayed to a date in the past"
+      end
+
+      with(created_at: datetime)
     end
 
-    def follow_with_stream_id(event_class, stream_id, payload_attrs = nil)
-      follow_with_attributes(
-        event_class,
-        attrs: { stream_id: },
-        payload: payload_attrs
-      )
-    end
-
-    def follow_with_attributes(event_class, attrs: {}, payload: nil, metadata: nil)
-      meta = self.metadata
-      meta = meta.merge(metadata) if metadata
-      attrs = { stream_id:, causation_id: id, correlation_id:, metadata: meta }.merge(attrs)
-      attrs[:payload] = payload.to_h if payload
-      event_class.parse(attrs)
-    end
-
+    # Set causation and correlation IDs on another message, establishing
+    # a causal link from this message to +message+. Merges metadata.
+    #
+    # @param message [Message] the message to correlate
+    # @return [Message] a copy of +message+ with causation/correlation set
+    #
+    # @example
+    #   caused = source_event.correlate(SomeCommand.new(payload: { ... }))
+    #   caused.causation_id  # => source_event.id
+    #   caused.correlation_id # => source_event.correlation_id
     def correlate(message)
       attrs = {
         causation_id: id,
-        correlation_id:,
+        correlation_id: correlation_id,
         metadata: metadata.merge(message.metadata || Plumb::BLANK_HASH)
       }
       message.with(attrs)
     end
 
-    # A copy of a message with a new stream_id
-    # @param stream_id [String, #stream_id]
-    # @return [Message]
-    def to(stream_id)
-      stream_id = stream_id.stream_id if stream_id.respond_to?(:stream_id)
-      with(stream_id:)
+    # Returns the declared payload attribute names for this message class.
+    # Subclasses created via {.define} override this with a cached frozen array.
+    #
+    # @return [Array<Symbol>] attribute names (e.g. +[:course_name, :user_id]+)
+    def self.payload_attribute_names = EMPTY_ARRAY
+
+    # Build a {QueryCondition} for the intersection of this message's declared
+    # attributes and the given key-value pairs. Attributes not declared on this
+    # message class are silently ignored. Returns an array with a single condition
+    # containing all matching attrs, or an empty array if none match.
+    #
+    # @param attrs [Hash{Symbol => String}] partition attribute values
+    # @return [Array<QueryCondition>]
+    #
+    # @example
+    #   CourseCreated.to_conditions(course_name: 'Algebra', user_id: 'joe')
+    #   # => [QueryCondition('course.created', { course_name: 'Algebra' })]
+    #   # user_id ignored — CourseCreated doesn't declare it
+    def self.to_conditions(**attrs)
+      supported = payload_attribute_names
+      matched = attrs.select { |key, _| supported.include?(key) }
+                     .transform_values(&:to_s)
+      return [] if matched.empty?
+
+      [QueryCondition.new(message_type: type, attrs: matched)]
     end
 
-    def at(datetime)
-      if datetime < created_at
-        raise PastMessageDateError, "Message #{type} can't be delayed to a date in the past"
-      end
-      with(created_at: datetime)
-    end
+    # Auto-extract key-value pairs from all top-level payload attributes.
+    # Used by {Store#append} to index messages for querying.
+    #
+    # @return [Array<Array(String, String)>] pairs of [name, value], skipping nils
+    def extracted_keys
+      return [] unless payload
 
-    def to_json(*)
-      to_h.to_json(*)
+      payload.to_h.filter_map { |k, v|
+        [k.to_s, v.to_s] unless v.nil?
+      }
     end
 
     private
 
+    # Hook called by Plumb after schema parsing, when +:id+ has been resolved.
+    # Defaults +causation_id+ and +correlation_id+ to the message's own +id+.
     def prepare_attributes(attrs)
       attrs[:correlation_id] = attrs[:id] unless attrs[:correlation_id]
       attrs[:causation_id] = attrs[:id] unless attrs[:causation_id]

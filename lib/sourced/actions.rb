@@ -1,154 +1,119 @@
 # frozen_string_literal: true
 
 module Sourced
-  # Actions represent the side effects produced by command/event handlers.
-  # Each persistable action class implements {#execute}, which correlates messages
-  # against a source message and persists them via the backend.
-  # This provides a single place for the correlate-then-persist logic,
-  # used by both backend reactors and {Sourced::Unit} synchronous processing.
+  # Action builders and executable action types for reactors.
   module Actions
-    # Split a list of messages into
-    # {AppendNext} or {Schedule} actions
-    # based on their +created_at+ relative to now.
+    OK = :ok
+    RETRY = :retry
+
+    # Split produced messages into immediate append actions and delayed schedule actions.
     #
-    # @param messages [Array<Sourced::Message>]
-    # @return [Array<AppendNext, Schedule>]
-    def self.build_for(messages)
+    # @param messages [Sourced::Message, Array<Sourced::Message>] messages produced by a reactor
+    # @param guard [ConsistencyGuard, nil] optional concurrency guard for immediate appends
+    # @param source [Sourced::Message, nil] source message used for correlation when executing
+    # @return [Array<Append, Schedule>] executable actions in append/schedule groups
+    def self.build_for(messages, guard: nil, source: nil)
       actions = []
+      messages = Array(messages)
       return actions if messages.empty?
 
-      # TODO: I really need a uniform Clock object
+      # TODO: review use of Time.now
       now = Time.now
-      to_schedule, to_append = messages.partition { |e| e.created_at > now }
-      actions << AppendNext.new(to_append) if to_append.any?
-      to_schedule.group_by(&:created_at).each do |at, msgs|
-        actions << Schedule.new(msgs, at:)
+      to_schedule, to_append = messages.partition { |message| message.created_at > now }
+
+      actions << Append.new(to_append, guard:, source:) if to_append.any?
+      to_schedule.group_by(&:created_at).each do |at, scheduled_messages|
+        actions << Schedule.new(scheduled_messages, at:, source:)
       end
 
       actions
     end
 
-    RETRY = :retry
-    OK = :ok
+    # Append messages to the store with optional consistency guard.
+    # Auto-correlates messages at execution time.
+    #
+    # When +source:+ is provided, it overrides the runtime's source_message
+    # for correlation (e.g. reactions correlated with the event, not the command).
+    class Append
+      attr_reader :messages, :guard, :source
 
-    # ACK an arbitrary message ID
-    Ack = Data.define(:message_id)
-
-    # Append messages to the event store using Backend#append_next_to_stream,
-    # which auto-increments stream sequence numbers.
-    # Messages may target different streams and will be grouped by stream_id.
-    class AppendNext
-      include Enumerable
-
-      # @return [Array<Sourced::Message>]
-      attr_reader :messages
-
-      # @param messages [Array<Sourced::Message>]
-      def initialize(messages)
-        @messages = messages
-        freeze
+      # @param messages [Sourced::Message, Array<Sourced::Message>] messages to append
+      # @param guard [ConsistencyGuard, nil] optional optimistic concurrency guard
+      # @param source [Sourced::Message, nil] explicit correlation source
+      def initialize(messages, guard: nil, source: nil)
+        @messages = Array(messages)
+        @guard = guard
+        @source = source
       end
 
-      def ==(other)
-        other.is_a?(self.class) && messages == other.messages
-      end
-
-      # @yield [stream_id, message]
-      # @yieldparam stream_id [String]
-      # @yieldparam message [Sourced::Message]
-      # @return [Enumerator] if no block given
-      def each(&block)
-        return enum_for(:each) unless block_given?
-
-        messages.each do |message|
-          block.call(message.stream_id, message)
-        end
-      end
-
-      # Correlate messages against the source, then persist via backend.
-      #
-      # @param backend [#append_next_to_stream] the storage backend
-      # @param source_message [Sourced::Message] message that caused this action
-      # @return [Array<Sourced::Message>] correlated messages that were persisted
-      def execute(backend, source_message)
-        correlated = messages.map { |m| source_message.correlate(m) }
-        correlated.group_by(&:stream_id).each do |stream_id, stream_messages|
-          backend.append_next_to_stream(stream_id, stream_messages)
-        end
-        correlated
+      # @param store [Sourced::Store]
+      # @param source_message [Sourced::Message] default message to correlate from
+      # @return [Array<Sourced::Message>] correlated messages that were appended
+      def execute(store, source_message)
+        correlate_from = @source || source_message
+        to_append = messages.map { |m| correlate_from.correlate(m) }
+        store.append(to_append, guard:)
+        to_append
       end
     end
 
-    # Append messages to a specific stream in the event store,
-    # expecting messages to be in order and with correct sequence numbers.
-    # The backend will raise {Sourced::ConcurrentAppendError} if messages
-    # with the same sequence already exist (optimistic concurrency control).
-    class AppendAfter
-      # @return [String]
-      attr_reader :stream_id
-      # @return [Array<Sourced::Message>]
-      attr_reader :messages
-
-      # @param stream_id [String]
-      # @param messages [Array<Sourced::Message>]
-      def initialize(stream_id, messages)
-        @stream_id = stream_id
-        @messages = messages
-      end
-
-      # Correlate messages against the source, then persist via backend.
-      #
-      # @param backend [#append_to_stream] the storage backend
-      # @param source_message [Sourced::Message] message that caused this action
-      # @return [Array<Sourced::Message>] correlated messages that were persisted
-      def execute(backend, source_message)
-        correlated = messages.map { |m| source_message.correlate(m) }
-        backend.append_to_stream(stream_id, correlated)
-        correlated
-      end
-    end
-
-    # Schedule messages for future delivery at a specific time.
+    # Schedule messages for future promotion into the main log.
     class Schedule
-      # @return [Array<Sourced::Message>]
-      attr_reader :messages
-      # @return [Time]
-      attr_reader :at
+      attr_reader :messages, :at, :source
 
-      # @param messages [Array<Sourced::Message>]
-      # @param at [Time] when the messages should become available
-      def initialize(messages, at:)
-        @messages, @at = messages, at
+      # @param messages [Sourced::Message, Array<Sourced::Message>] messages to schedule
+      # @param at [Time] when the messages should become available for promotion
+      # @param source [Sourced::Message, nil] explicit correlation source
+      def initialize(messages, at:, source: nil)
+        @messages = Array(messages)
+        @at = at
+        @source = source
       end
 
-      # Correlate messages against the source, then schedule via backend.
-      #
-      # @param backend [#schedule_messages] the storage backend
-      # @param source_message [Sourced::Message] message that caused this action
+      # @param store [Sourced::Store]
+      # @param source_message [Sourced::Message] default message to correlate from
       # @return [Array<Sourced::Message>] correlated messages that were scheduled
-      def execute(backend, source_message)
-        correlated = messages.map { |m| source_message.correlate(m) }
-        backend.schedule_messages(correlated, at: at)
-        correlated
+      def execute(store, source_message)
+        correlate_from = @source || source_message
+        to_schedule = messages.map { |m| correlate_from.correlate(m) }
+        store.schedule_messages(to_schedule, at: at)
+        to_schedule
       end
     end
 
-    # Execute a synchronous side effect (e.g. cache write, HTTP call)
-    # within the current transaction. Does not persist messages.
+    # Execute a synchronous side effect within the current transaction.
     class Sync
       # @param work [#call] callable to execute
       def initialize(work)
         @work = work
       end
 
-      def call(...) = @work.call(...)
+      # @return [Object] the callable's return value
+      def call = @work.call
 
-      # Execute the work block. Backend and source_message are ignored.
-      #
-      # @param _backend [Object] unused
+      # @param _store [Object] unused
       # @param _source_message [Object] unused
       # @return [nil]
-      def execute(_backend, _source_message)
+      def execute(_store, _source_message)
+        call
+        nil
+      end
+    end
+
+    # Execute a side effect after the transaction commits.
+    class AfterSync
+      # @param work [#call] callable to execute
+      def initialize(work)
+        @work = work
+      end
+
+      # @return [Object] the callable's return value
+      def call = @work.call
+
+      # @param _store [Object] unused
+      # @param _source_message [Object] unused
+      # @return [nil]
+      def execute(_store, _source_message)
         call
         nil
       end

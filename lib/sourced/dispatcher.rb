@@ -1,41 +1,37 @@
 # frozen_string_literal: true
 
 require 'sourced/work_queue'
-require 'sourced/worker'
 require 'sourced/catchup_poller'
+require 'sourced/worker'
+require 'sourced/scheduled_message_poller'
+require 'sourced/stale_claim_reaper'
 
 module Sourced
   # Orchestrator that wires together the signal-driven dispatch pipeline:
-  # {WorkQueue}, {NotificationQueuer}, {CatchUpPoller}, backend notifier, and {Worker}s.
+  # {WorkQueue}, {NotificationQueuer}, {CatchUpPoller}, store notifier, and {Worker}s.
   #
-  # Does not own the process lifecycle — the caller ({Supervisor} or Falcon service)
-  # provides the task/fiber context via {#spawn_into}, and triggers shutdown
-  # via {#stop}.
+  # Does not own the process lifecycle — the caller provides the task/fiber
+  # context via {#spawn_into}, and triggers shutdown via {#stop}.
   #
-  # @example Usage with Supervisor
-  #   dispatcher = Dispatcher.new(router: Sourced::Router, worker_count: 4)
+  # @example Usage with a task runner
+  #   dispatcher = Sourced::Dispatcher.new(router: router, worker_count: 4)
   #   executor.start do |task|
   #     dispatcher.spawn_into(task)
   #   end
-  #   # On shutdown:
   #   dispatcher.stop
   #
   # @example With custom queue for testing
   #   queue = WorkQueue.new(max_per_reactor: 2, queue: Queue.new)
-  #   dispatcher = Dispatcher.new(router: router, work_queue: queue)
+  #   dispatcher = Sourced::Dispatcher.new(router: router, work_queue: queue)
   class Dispatcher
-    # Subscriber for the backend notifier pub/sub. Routes events to the {WorkQueue}
+    # Subscriber for the store notifier. Routes events to the {WorkQueue}
     # by resolving message types or group IDs to reactor classes.
     #
     # Handles two events:
-    # - +'messages_appended'+ — value is comma-separated type strings;
+    # - +'messages_appended'+ — comma-separated type strings;
     #   maps types to interested reactors and pushes them
-    # - +'reactor_resumed'+ — value is a consumer group ID;
+    # - +'reactor_resumed'+ — a consumer group ID;
     #   looks up the reactor and pushes it directly
-    #
-    # @example
-    #   queuer = NotificationQueuer.new(work_queue: queue, reactors: [OrderReactor])
-    #   backend.notifier.subscribe(queuer)
     class NotificationQueuer
       MESSAGES_APPENDED = 'messages_appended'
       REACTOR_RESUMED = 'reactor_resumed'
@@ -82,29 +78,45 @@ module Sourced
       # @return [Hash{String => Class}] mapping from group_id to reactor class
       def build_group_id_lookup(reactors)
         reactors.each_with_object({}) do |reactor, lookup|
-          lookup[reactor.consumer_info.group_id] = reactor
+          lookup[reactor.group_id] = reactor
         end
       end
     end
 
-    # @return [Array<Worker>] worker instances managed by this dispatcher
+    # @return [Array<Sourced::Worker>] worker instances managed by this dispatcher
     attr_reader :workers
 
-    # @param router [Router] the router providing async_reactors and backend
+    def self.spawn_into(task)
+      config = Sourced.config
+      dispatcher = Sourced::Dispatcher.new(
+        router: Sourced.router,
+        worker_count: config.worker_count,
+        batch_size: config.batch_size,
+        max_drain_rounds: config.max_drain_rounds,
+        catchup_interval: config.catchup_interval,
+        housekeeping_interval: config.housekeeping_interval,
+        claim_ttl_seconds: config.claim_ttl_seconds,
+        logger: config.logger
+      ).spawn_into(task)
+    end
+
+    # @param router [Sourced::Router] the router providing reactors and store
     # @param worker_count [Integer] number of worker fibers to spawn (default 2)
-    # @param batch_size [Integer] messages per backend fetch (default 1)
-    # @param max_drain_rounds [Integer] max drain iterations before a worker
-    #   re-enqueues a reactor (default 10)
+    # @param batch_size [Integer] max messages per claim (default 50)
+    # @param max_drain_rounds [Integer] max drain iterations before re-enqueue (default 10)
     # @param catchup_interval [Numeric] seconds between catch-up polls (default 5)
-    # @param work_queue [WorkQueue, nil] optional pre-built queue (useful for testing
-    #   with a plain +Queue.new+ to avoid Async dependency)
+    # @param housekeeping_interval [Numeric] seconds between heartbeat/reap cycles (default 30)
+    # @param claim_ttl_seconds [Integer] stale claim age threshold in seconds (default 120)
+    # @param work_queue [WorkQueue, nil] optional pre-built queue (useful for testing)
     # @param logger [Object] logger instance
     def initialize(
       router:,
       worker_count: 2,
-      batch_size: 1,
+      batch_size: 50,
       max_drain_rounds: 10,
       catchup_interval: 5,
+      housekeeping_interval: 30,
+      claim_ttl_seconds: 120,
       work_queue: nil,
       logger: Sourced.config.logger
     )
@@ -114,37 +126,49 @@ module Sourced
 
       return if worker_count.zero?
 
-      reactors = router.async_reactors.select { |r| r.handled_messages.any? }.to_a
+      reactors = router.reactors.select { |r| r.handled_messages.any? }.to_a
 
       @work_queue = work_queue || WorkQueue.new(max_per_reactor: worker_count)
 
       @workers = worker_count.times.map do |i|
         Worker.new(
           work_queue: @work_queue,
-          router: router,
+          router:,
           name: "worker-#{i}",
-          batch_size: batch_size,
-          max_drain_rounds: max_drain_rounds,
-          logger: logger
+          batch_size:,
+          max_drain_rounds:,
+          logger:
         )
       end
 
       notification_queuer = NotificationQueuer.new(work_queue: @work_queue, reactors: reactors)
-      @backend_notifier = router.backend.notifier
-      @backend_notifier.subscribe(notification_queuer)
+      @store_notifier = router.store.notifier
+      @store_notifier.subscribe(notification_queuer)
 
       @catchup_poller = CatchUpPoller.new(
         work_queue: @work_queue,
-        reactors: reactors,
+        reactors:,
         interval: catchup_interval,
-        logger: logger
+        logger:
+      )
+
+      @scheduled_message_poller = ScheduledMessagePoller.new(
+        store: router.store,
+        interval: catchup_interval,
+        logger:
+      )
+
+      @stale_claim_reaper = StaleClaimReaper.new(
+        store: router.store,
+        interval: housekeeping_interval,
+        ttl_seconds: claim_ttl_seconds,
+        worker_ids_provider: -> { @workers.map(&:name) },
+        logger:
       )
     end
 
     # Spawn all component fibers into the caller's task context.
-    # Spawns: backend notifier (LISTEN), catch-up poller, and N workers.
-    #
-    # Supports both the executor's Task (+#spawn+) and Async::Task (+#async+).
+    # Spawns: store notifier (e.g. PG LISTEN), catch-up poller, and N workers.
     #
     # @param task [Object] an executor task or Async::Task to spawn fibers into
     # @return [void]
@@ -153,32 +177,40 @@ module Sourced
 
       s = task.respond_to?(:spawn) ? :spawn : :async
 
-      # Backend notifier (PG LISTEN fiber — no-op for non-PG)
-      task.send(s) { @backend_notifier.start }
+      # Store notifier (start — no-op for InlineNotifier)
+      task.send(s) { @store_notifier.start }
 
       # CatchUp poller
       task.send(s) { @catchup_poller.run }
+
+      # Scheduled message poller
+      task.send(s) { @scheduled_message_poller.run }
+
+      # Stale claim reaper
+      task.send(s) { @stale_claim_reaper.run }
 
       # Workers
       @workers.each do |w|
         task.send(s) { w.run }
       end
+
+      self
     end
 
     # Stop all components and close the work queue.
-    # Stops in order: backend notifier, catch-up poller, workers, then
-    # pushes shutdown sentinels into the queue to unblock any waiting workers.
     #
     # @return [void]
     def stop
       return if @workers.empty?
 
-      @logger.info "Dispatcher: stopping #{@workers.size} workers"
-      @backend_notifier.stop
+      @logger.info "Sourced::Dispatcher: stopping #{@workers.size} workers"
+      @store_notifier.stop
       @catchup_poller.stop
+      @scheduled_message_poller.stop
+      @stale_claim_reaper.stop
       @workers.each(&:stop)
       @work_queue.close(@workers.size)
-      @logger.info 'Dispatcher: all components stopped'
+      @logger.info 'Sourced::Dispatcher: all components stopped'
     end
   end
 end

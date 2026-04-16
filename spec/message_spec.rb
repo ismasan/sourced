@@ -1,172 +1,477 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'sourced'
 
 module TestMessages
-  Command = Class.new(Sourced::Message)
-
-  Add = Command.define('test.add') do
-    attribute :value, Integer
+  DeviceRegistered = Sourced::Message.define('device.registered') do
+    attribute :device_id, String
+    attribute :name, String
   end
 
-  Added = Sourced::Message.define('test.added') do
-    attribute :value, Integer
+  AssetRegistered = Sourced::Message.define('asset.registered') do
+    attribute :asset_id, String
+    attribute :label, String
+  end
+
+  SystemUpdated = Sourced::Message.define('system.updated') do
+    attribute :version, String
+  end
+
+  OptionalFields = Sourced::Message.define('test.optional_fields') do
+    attribute? :required_field, String
+    attribute? :optional_field, String
   end
 end
 
 RSpec.describe Sourced::Message do
-  it 'has Payload as standalone schemas' do
-    payload = TestMessages::Add::Payload.new(value: 'aaa')
-    expect(payload.valid?).to be false
-    expect(payload.errors[:value]).not_to be(nil)
-  end
+  describe '.define' do
+    it 'creates a subclass with a type string' do
+      expect(TestMessages::DeviceRegistered.type).to eq('device.registered')
+    end
 
-  it 'requires a stream_id' do
-    msg = TestMessages::Add.new(payload: { value: 1 })
-    expect(msg.valid?).to be false
-    expect(msg.errors[:stream_id]).not_to be(nil)
+    it 'creates a typed payload' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      expect(msg.payload.device_id).to eq('dev-1')
+      expect(msg.payload.name).to eq('Sensor A')
+    end
 
-    msg = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
-    expect(msg.valid?).to be true
-  end
+    it 'auto-generates an id' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      expect(msg.id).not_to be_nil
+      expect(msg.id).to match(/\A[0-9a-f-]{36}\z/)
+    end
 
-  it 'validates payload' do
-    msg = TestMessages::Add.new(stream_id: '123', payload: { value: 'aaa' })
-    expect(msg.valid?).to be false
-    expect(msg.errors[:payload][:value]).not_to be(nil)
-  end
+    it 'sets created_at automatically' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      expect(msg.created_at).to be_a(Time)
+    end
 
-  it 'defines Payload#fetch and Payload#[]' do
-    msg = TestMessages::Add.new(stream_id: '123', payload: { value: 'aaa' })
-    expect(msg.payload[:value]).to eq('aaa')
-    expect(msg.payload.fetch(:value)).to eq('aaa')
+    it 'sets type on the instance' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      expect(msg.type).to eq('device.registered')
+    end
 
-    msg = TestMessages::Add.new(stream_id: '123')
-    expect(msg.payload[:value]).to be(nil)
-    expect(msg.payload.fetch(:value)).to be(nil)
-    expect do
-      msg.payload.fetch(:nope)
-    end.to raise_error(KeyError)
-  end
+    it 'defaults metadata to empty hash' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      expect(msg.metadata).to eq({})
+    end
 
-  it 'initializes an empty payload if the class defines one' do
-    msg = TestMessages::Add.new
-    expect(msg.payload).not_to be(nil)
-  end
+    it 'accepts metadata' do
+      msg = TestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' },
+        metadata: { user_id: 42 }
+      )
+      expect(msg.metadata[:user_id]).to eq(42)
+    end
 
-  it 'sets #type' do
-    msg = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
-    expect(msg.type).to eq('test.add')
-  end
+    it 'defaults causation_id and correlation_id to id' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      expect(msg.causation_id).to eq(msg.id)
+      expect(msg.correlation_id).to eq(msg.id)
+    end
 
-  it 'sets #causation_id and #correlation_id' do
-    msg = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
-    expect(msg.id).not_to be(nil)
-    expect(msg.causation_id).to eq(msg.id)
-    expect(msg.correlation_id).to eq(msg.id)
-  end
-
-  describe '.build' do
-    it 'builds instance with stream_id and payload' do
-      msg = TestMessages::Add.build('aaa', value: 2)
-      expect(msg).to be_a(TestMessages::Add)
-      expect(msg.stream_id).to eq('aaa')
-      expect(msg.payload.value).to eq(2)
+    it 'accepts explicit causation_id and correlation_id' do
+      msg = TestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' },
+        causation_id: 'cause-1',
+        correlation_id: 'corr-1'
+      )
+      expect(msg.causation_id).to eq('cause-1')
+      expect(msg.correlation_id).to eq('corr-1')
     end
   end
 
   describe '.from' do
-    it 'creates a message from a hash' do
-      msg = Sourced::Message.from(stream_id: '123', type: 'test.add', payload: { value: 1 })
-      expect(msg).to be_a(TestMessages::Add)
-      expect(msg.valid?).to be(true)
+    it 'instantiates the correct subclass from a hash' do
+      msg = Sourced::Message.from(type: 'device.registered', payload: { device_id: 'dev-1', name: 'Sensor A' })
+      expect(msg).to be_a(TestMessages::DeviceRegistered)
+      expect(msg.payload.device_id).to eq('dev-1')
     end
 
-    it 'raises a known exception if no type found' do
-      expect do
-        Sourced::Message.from(stream_id: '123', type: 'test.unknown', payload: { value: 1 })
-      end.to raise_error(Sourced::UnknownMessageError, 'Unknown event type: test.unknown')
-    end
-
-    it 'scopes message registries by sub-class' do
-      msg = TestMessages::Command.from(stream_id: '123', type: 'test.add', payload: { value: 1 })
-      expect(msg).to be_a(TestMessages::Add)
-
-      expect do
-        TestMessages::Command.from(stream_id: '123', type: 'test.added', payload: { value: 1 })
-      end.to raise_error(Sourced::UnknownMessageError, 'Unknown event type: test.added')
+    it 'raises UnknownMessageError for unknown types' do
+      expect {
+        Sourced::Message.from(type: 'unknown.type', payload: {})
+      }.to raise_error(Sourced::UnknownMessageError, /Unknown message type: unknown.type/)
     end
   end
 
-  describe '#follow' do
-    it 'creates a new message with causation_id and correlation_id' do
-      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
-      added = add.follow(TestMessages::Added, value: 2)
-      expect(added.causation_id).to eq(add.id)
-      expect(added.correlation_id).to eq(add.id)
+  describe '.registry' do
+    it 'stores defined message types' do
+      expect(Sourced::Message.registry['device.registered']).to eq(TestMessages::DeviceRegistered)
+      expect(Sourced::Message.registry['asset.registered']).to eq(TestMessages::AssetRegistered)
     end
 
-    it 'copies payload attributes' do
-      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
-      added = add.follow(TestMessages::Added, add.payload)
-      expect(added.payload.value).to eq(1)
+  end
+
+  describe '#extracted_keys' do
+    it 'extracts all top-level payload attributes as string pairs' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      keys = msg.extracted_keys
+      expect(keys).to contain_exactly(
+        ['device_id', 'dev-1'],
+        ['name', 'Sensor A']
+      )
     end
 
-    it 'copies metadata' do
-      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 }, metadata: { user_id: 10 })
-      added = add.follow(TestMessages::Added, add.payload)
-      expect(added.metadata[:user_id]).to eq(10)
+    it 'skips nil values' do
+      msg = TestMessages::OptionalFields.new(payload: { required_field: 'present', optional_field: nil })
+      keys = msg.extracted_keys
+      expect(keys).to eq([['required_field', 'present']])
+    end
+
+    it 'converts values to strings' do
+      msg = TestMessages::SystemUpdated.new(payload: { version: 'v2.0.5' })
+      keys = msg.extracted_keys
+      expect(keys).to eq([['version', 'v2.0.5']])
+    end
+
+    it 'returns empty array for messages without payload attributes' do
+      # Message base class with no payload definition
+      bare = Sourced::Message.define('test.bare')
+      msg = bare.new
+      expect(msg.extracted_keys).to eq([])
     end
   end
 
-  describe '#follow_with_seq' do
-    it 'creates a new message with custom seq, causation_id and correlation_id' do
-      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
-      added = add.follow_with_seq(TestMessages::Added, 2, value: 2)
-      expect(added.seq).to eq(2)
-      expect(added.causation_id).to eq(add.id)
-      expect(added.correlation_id).to eq(add.id)
+  describe '.payload_attribute_names' do
+    it 'returns attribute names for a defined message class' do
+      expect(TestMessages::DeviceRegistered.payload_attribute_names).to eq([:device_id, :name])
+    end
+
+    it 'returns empty array for a bare message class' do
+      bare = Sourced::Message.define('test.payload_attrs.bare')
+      expect(bare.payload_attribute_names).to eq([])
     end
   end
 
-  describe '#follow_with_stream_id' do
-    it 'creates a new message with custom stream_id, causation_id and correlation_id' do
-      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
-      added = add.follow_with_stream_id(TestMessages::Added, 'foo', value: 2)
-      expect(added.stream_id).to eq('foo')
-      expect(added.causation_id).to eq(add.id)
-      expect(added.correlation_id).to eq(add.id)
+  describe '.to_conditions' do
+    it 'returns one condition with only attributes the message class has' do
+      conditions = TestMessages::DeviceRegistered.to_conditions(device_id: 'dev-1', asset_id: 'asset-1')
+      expect(conditions.size).to eq(1)
+      expect(conditions.first.message_type).to eq('device.registered')
+      expect(conditions.first.attrs).to eq({ device_id: 'dev-1' })
+    end
+
+    it 'includes all matching attributes in one condition' do
+      conditions = TestMessages::DeviceRegistered.to_conditions(device_id: 'dev-1', name: 'Sensor A')
+      expect(conditions.size).to eq(1)
+      expect(conditions.first.attrs).to eq({ device_id: 'dev-1', name: 'Sensor A' })
+    end
+
+    it 'returns empty array when no attributes match' do
+      conditions = TestMessages::DeviceRegistered.to_conditions(course_name: 'Algebra')
+      expect(conditions).to eq([])
+    end
+  end
+
+  describe '#correlate' do
+    it 'sets causation_id to source message id' do
+      source = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      target = TestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'Label' })
+
+      correlated = source.correlate(target)
+      expect(correlated.causation_id).to eq(source.id)
+    end
+
+    it 'propagates correlation_id from source' do
+      source = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      target = TestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'Label' })
+
+      correlated = source.correlate(target)
+      expect(correlated.correlation_id).to eq(source.correlation_id)
+    end
+
+    it 'preserves correlation_id through a chain' do
+      first = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      second = first.correlate(TestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'Label' }))
+      third = second.correlate(TestMessages::SystemUpdated.new(payload: { version: 'v1' }))
+
+      expect(third.causation_id).to eq(second.id)
+      expect(third.correlation_id).to eq(first.id)
+    end
+
+    it 'merges metadata from both messages' do
+      source = TestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' },
+        metadata: { user_id: 42 }
+      )
+      target = TestMessages::AssetRegistered.new(
+        payload: { asset_id: 'asset-1', label: 'Label' },
+        metadata: { request_id: 'req-1' }
+      )
+
+      correlated = source.correlate(target)
+      expect(correlated.metadata).to eq({ user_id: 42, request_id: 'req-1' })
+    end
+
+    it 'returns a new instance without mutating the original' do
+      source = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      target = TestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'Label' })
+
+      correlated = source.correlate(target)
+      expect(correlated).not_to equal(target)
+      expect(correlated).to be_a(TestMessages::AssetRegistered)
+      expect(target.causation_id).to eq(target.id) # original unchanged
+    end
+  end
+
+  describe '#with_metadata' do
+    it 'merges new metadata into existing metadata' do
+      msg = TestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' },
+        metadata: { user_id: 42 }
+      )
+      updated = msg.with_metadata(request_id: 'req-1')
+      expect(updated.metadata).to eq({ user_id: 42, request_id: 'req-1' })
+    end
+
+    it 'returns self when given empty hash' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      expect(msg.with_metadata({})).to equal(msg)
+    end
+
+    it 'does not mutate the original message' do
+      msg = TestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' },
+        metadata: { user_id: 42 }
+      )
+      updated = msg.with_metadata(request_id: 'req-1')
+      expect(msg.metadata).to eq({ user_id: 42 })
+      expect(updated).not_to equal(msg)
+    end
+  end
+
+  describe '#with_payload' do
+    it 'merges new attributes into existing payload' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      updated = msg.with_payload(name: 'Sensor B')
+      expect(updated.payload.device_id).to eq('dev-1')
+      expect(updated.payload.name).to eq('Sensor B')
+    end
+
+    it 'preserves id and other attributes' do
+      msg = TestMessages::DeviceRegistered.new(
+        payload: { device_id: 'dev-1', name: 'Sensor A' },
+        metadata: { user_id: 42 }
+      )
+      updated = msg.with_payload(name: 'Sensor B')
+      expect(updated.id).to eq(msg.id)
+      expect(updated.metadata).to eq({ user_id: 42 })
+      expect(updated.type).to eq('device.registered')
+    end
+
+    it 'returns a new instance without mutating the original' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      updated = msg.with_payload(name: 'Sensor B')
+      expect(updated).not_to equal(msg)
+      expect(msg.payload.name).to eq('Sensor A')
+    end
+
+    it 'works with empty hash (returns equivalent copy)' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      updated = msg.with_payload({})
+      expect(updated.payload.device_id).to eq('dev-1')
+      expect(updated.payload.name).to eq('Sensor A')
+      expect(updated).not_to equal(msg)
     end
   end
 
   describe '#at' do
-    it 'creates a message with a created_at date in the future' do
-      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
-      delayed = add.at(add.created_at + 10)
-      expect(delayed.created_at).to eq(add.created_at + 10)
+    it 'returns new message with updated created_at' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      future = msg.created_at + 3600
+      updated = msg.at(future)
+      expect(updated.created_at).to eq(future)
+      expect(updated).not_to equal(msg)
     end
 
-    it 'does not allow setting a date lower than current' do
-      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
-      expect do
-        add.at(add.created_at - 10)
-      end.to raise_error(Sourced::PastMessageDateError)
+    it 'raises PastMessageDateError when given a past time' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      past = msg.created_at - 3600
+      expect { msg.at(past) }.to raise_error(Sourced::PastMessageDateError)
+    end
+
+    it 'does not mutate the original message' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
+      original_time = msg.created_at
+      msg.at(msg.created_at + 3600)
+      expect(msg.created_at).to eq(original_time)
     end
   end
 
-  describe '#to' do
-    it 'creates a message with a new #stream_id' do
-      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
-      add2 = add.to('222')
-      expect(add.stream_id).to eq('123')
-      expect(add2.stream_id).to eq('222')
+  describe 'Registry' do
+    describe '#keys' do
+      it 'returns array of registered type strings' do
+        keys = Sourced::Message.registry.keys
+        expect(keys).to include('device.registered', 'asset.registered', 'system.updated')
+      end
     end
 
-    it 'accepts a #stream_id interface' do
-      add = TestMessages::Add.new(stream_id: '123', payload: { value: 1 })
-      streamable = double('Streamable', stream_id: '222')
-      add2 = add.to(streamable)
-      expect(add2.stream_id).to eq('222')
+    describe '#all' do
+      let!(:test_cmd) { Sourced::Command.define('test.reg_all_cmd') { attribute :name, String } }
+      let!(:test_evt) { Sourced::Event.define('test.reg_all_evt') { attribute :name, String } }
+
+      it 'returns an Enumerator when no block given' do
+        expect(Sourced::Message.registry.all).to be_a(Enumerator)
+      end
+
+      it 'includes classes from subclass registries' do
+        all = Sourced::Message.registry.all.to_a
+        expect(all).to include(test_cmd)
+        expect(all).to include(test_evt)
+      end
+
+      it 'includes classes registered directly on Message' do
+        all = Sourced::Message.registry.all.to_a
+        expect(all).to include(TestMessages::DeviceRegistered)
+      end
+
+      it 'yields each class when block given' do
+        yielded = []
+        Sourced::Message.registry.all { |c| yielded << c }
+        expect(yielded).to include(test_cmd, test_evt)
+      end
+
+      it 'scoped to a subclass registry only includes that branch' do
+        cmd_all = Sourced::Command.registry.all.to_a
+        expect(cmd_all).to include(test_cmd)
+        expect(cmd_all).not_to include(test_evt)
+      end
+    end
+  end
+
+  describe 'Payload' do
+    let(:msg) { TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' }) }
+
+    describe '#[]' do
+      it 'returns attribute value by symbol key' do
+        expect(msg.payload[:device_id]).to eq('dev-1')
+        expect(msg.payload[:name]).to eq('Sensor A')
+      end
+    end
+
+    describe '#fetch' do
+      it 'returns attribute value for existing key' do
+        expect(msg.payload.fetch(:device_id)).to eq('dev-1')
+      end
+
+      it 'raises KeyError for missing key' do
+        expect { msg.payload.fetch(:missing) }.to raise_error(KeyError)
+      end
+
+      it 'supports default value' do
+        expect(msg.payload.fetch(:missing, 'default')).to eq('default')
+      end
+
+      it 'supports block fallback' do
+        expect(msg.payload.fetch(:missing) { 'from_block' }).to eq('from_block')
+      end
+    end
+  end
+
+  describe '#initialize default payload' do
+    it 'creates message without explicit payload arg' do
+      bare = Sourced::Message.define('test.init_default')
+      msg = bare.new
+      expect(msg.payload).to be_nil
+      expect(msg.id).not_to be_nil
+      expect(msg.type).to eq('test.init_default')
+    end
+  end
+
+  describe '#to_message' do
+    it 'returns self — identity implementation of the to_message contract' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      expect(msg.to_message).to equal(msg)
+    end
+  end
+
+  describe '.===' do
+    let(:msg) { TestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' }) }
+
+    it 'matches unwrapped instances like Module#===' do
+      expect(TestMessages::DeviceRegistered === msg).to be true
+      expect(TestMessages::AssetRegistered === msg).to be false
+    end
+
+    it 'matches messages wrapped in a to_message-aware delegator' do
+      wrapper = Class.new(SimpleDelegator) do
+        def to_message = __getobj__
+      end.new(msg)
+
+      expect(TestMessages::DeviceRegistered === wrapper).to be true
+      expect(TestMessages::AssetRegistered === wrapper).to be false
+    end
+
+    it 'makes case/when transparent across wrapped and unwrapped messages' do
+      classify = ->(m) do
+        case m
+        when TestMessages::DeviceRegistered then :device
+        when TestMessages::AssetRegistered then :asset
+        else :unknown
+        end
+      end
+
+      wrapper = Sourced::PositionedMessage.new(msg, 1)
+      expect(classify.call(msg)).to eq(:device)
+      expect(classify.call(wrapper)).to eq(:device)
+    end
+
+    it 'returns false for arbitrary non-message objects without looping' do
+      expect(TestMessages::DeviceRegistered === 'string').to be false
+      expect(TestMessages::DeviceRegistered === 42).to be false
+      expect(TestMessages::DeviceRegistered === Object.new).to be false
+    end
+  end
+
+  describe Sourced::ConsistencyGuard do
+    it 'is a Data struct with conditions and last_position' do
+      conditions = [Sourced::QueryCondition.new(message_type: 'device.registered', attrs: { device_id: 'dev-1' })]
+      guard = Sourced::ConsistencyGuard.new(conditions: conditions, last_position: 42)
+      expect(guard.conditions).to eq(conditions)
+      expect(guard.last_position).to eq(42)
+    end
+  end
+
+  describe 'Command and Event subclass registries' do
+    let!(:test_cmd) { Sourced::Command.define('test.do_something') { attribute :name, String } }
+    let!(:test_evt) { Sourced::Event.define('test.something_happened') { attribute :name, String } }
+
+    it 'registers Command types in Command registry' do
+      expect(Sourced::Command.registry['test.do_something']).to eq(test_cmd)
+    end
+
+    it 'registers Event types in Event registry' do
+      expect(Sourced::Event.registry['test.something_happened']).to eq(test_evt)
+    end
+
+    it 'does not register Command types in Event registry' do
+      expect(Sourced::Event.registry['test.do_something']).to be_nil
+    end
+
+    it 'Message.registry can look up types from subclass registries' do
+      expect(Sourced::Message.registry['test.do_something']).to eq(test_cmd)
+      expect(Sourced::Message.registry['test.something_happened']).to eq(test_evt)
+    end
+  end
+
+  describe Sourced::QueryCondition do
+    it 'is a Data struct with message_type and attrs hash' do
+      cond = Sourced::QueryCondition.new(
+        message_type: 'device.registered',
+        attrs: { device_id: 'dev-1' }
+      )
+      expect(cond.message_type).to eq('device.registered')
+      expect(cond.attrs).to eq({ device_id: 'dev-1' })
+    end
+
+    it 'supports multiple attrs for compound conditions' do
+      cond = Sourced::QueryCondition.new(
+        message_type: 'seat.selected',
+        attrs: { showing_id: 'show-1', seat_id: 'C7' }
+      )
+      expect(cond.attrs).to eq({ showing_id: 'show-1', seat_id: 'C7' })
     end
   end
 end

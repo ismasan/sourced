@@ -1,0 +1,179 @@
+# frozen_string_literal: true
+
+module Sourced
+  # Reactor base class for command-handling workflows in Sourced.
+  class Decider
+    include Sourced::Evolve
+    include Sourced::React
+    include Sourced::Sync
+    extend Sourced::Consumer
+
+    PREFIX = 'sourced_decide'
+
+    class << self
+      # @return [Array<Class>] command message classes handled by this decider
+      def handled_commands
+        @handled_commands ||= []
+      end
+
+      # Messages to claim: commands to decide on + events to react to.
+      # Evolve types are NOT included — they are only for context_for().
+      #
+      # @return [Array<Class>] command and reaction message classes
+      def handled_messages
+        handled_commands + handled_messages_for_react
+      end
+
+      # Register a command handler.
+      #
+      # @param message_class [Class] commands class to handle
+      # @yield [state, message] command handler block
+      # @return [void]
+      def command(message_class, &block)
+        handled_commands << message_class
+        define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
+      end
+
+      # Build executable actions for a batch of claimed messages.
+      #
+      # Each message in +new_messages+ routes through one of three branches:
+      #
+      # 1. **Command** — if the message class is in {.handled_commands}, the
+      #    decider runs {Decider#decide}, produces new events, and wraps them
+      #    in an {Actions::Append} (guarded by +history.guard+). Per-message
+      #    +sync+ / +after_sync+ actions are collected.
+      #
+      # 2. **Reaction-triggering event** — if the decider
+      #    {React#reacts_to? reacts to} this message (and the batch is not
+      #    replaying), its state is evolved with the event, {React#react} is
+      #    invoked, and any produced messages are wrapped in
+      #    {Actions::Append} / {Actions::Schedule} with +source: msg+ so
+      #    the infra layer correlates reaction messages against the event.
+      #
+      # 3. **Anything else** — yields +[Actions::OK, msg]+ (the message is
+      #    acked with no side effects). In practice this is unreachable
+      #    because claim filtering uses {.handled_messages}, but it's kept
+      #    as a safety net.
+      #
+      # ### Reactions are deferred
+      #
+      # Reactions do **not** run inline with the command that produced the
+      # triggering event. A command's batch only appends its events; the
+      # decider's own subscription (via +handled_messages_for_react+) picks
+      # those events up on the next claim cycle and runs the reaction in a
+      # separate +handle_batch+ invocation.
+      #
+      # Consequences:
+      #
+      # - The originating command's +after_sync+ fires as soon as its
+      #   events commit — no longer blocked by slow reactions.
+      # - Command and its reactions are in **separate transactions**. A
+      #   failing reaction does not roll back the command.
+      # - There is one extra claim-cycle of latency before reactions run
+      #   (sub-ms via +InlineNotifier+; up to +catchup_interval+ as
+      #   fallback).
+      # - +sync+ / +after_sync+ blocks also fire on reaction claims
+      #   (+messages: [evt]+, +events: []+) — inspectors that assume the
+      #   primary message is always a command will see different shapes.
+      #
+      # @param partition_values [Hash{Symbol => String}] partition key-value pairs
+      # @param new_messages [Array<PositionedMessage>] claimed messages to process
+      # @param history [ReadResult] prior partition history (evolved into state)
+      # @param replaying [Boolean] when +true+, the reaction branch is skipped
+      # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
+      def handle_batch(partition_values, new_messages, history:, replaying: false)
+        instance = new(partition_values)
+        instance.evolve(history.messages)
+
+        each_with_partial_ack(new_messages) do |msg|
+          if handled_commands.include?(msg.class)
+            raw_events = instance.decide(msg)
+            actions = Actions.build_for(raw_events, guard: history.guard, source: msg)
+            actions += instance.collect_actions(
+              state: instance.state, messages: [msg], events: raw_events
+            )
+
+            [actions, msg]
+          elsif !replaying && instance.reacts_to?(msg)
+            instance.evolve([msg])
+            reaction_msgs = Array(instance.react(msg))
+            actions = Actions.build_for(reaction_msgs, source: msg)
+            actions += instance.collect_actions(
+              state: instance.state, messages: [msg], events: []
+            )
+
+            [actions, msg]
+          else
+            [Actions::OK, msg]
+          end
+        end
+      end
+
+      # Build executable actions for a claimed batch.
+      #
+      # @param claim [ClaimResult] claimed partition batch
+      # @param history [ReadResult] event history for the partition
+      # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
+      def handle_claim(claim, history:)
+        values = partition_keys.to_h { |k| [k, claim.partition_value[k.to_s]] }
+        handle_batch(values, claim.messages, history:, replaying: claim.replaying)
+      end
+
+      # Copy registered command handlers into subclasses.
+      #
+      # @param subclass [Class] subclass being created
+      # @return [void]
+      def inherited(subclass)
+        super
+        handled_commands.each do |cmd_class|
+          subclass.handled_commands << cmd_class
+        end
+      end
+    end
+
+    attr_reader :partition_values
+
+    # @param partition_values [Hash{Symbol => String}] partition key-value pairs
+    def initialize(partition_values = {})
+      @partition_values = partition_values
+      @uncommitted_events = []
+    end
+
+    # Decide a command against the decider's current in-memory state.
+    #
+    # @param command [Sourced::Message] command to handle
+    # @return [Array<Sourced::Message>] newly produced events
+    def decide(command)
+      @uncommitted_events = []
+      method_name = Sourced.message_method_name(PREFIX, command.class.to_s)
+      send(method_name, state, command) if respond_to?(method_name)
+      @uncommitted_events.dup
+    end
+
+    # Produce a new event from within a command handler and apply it
+    # to the decider's in-memory state immediately.
+    #
+    # Accepts either a messages class or a symbol resolved via <tt>.[]</tt>.
+    #
+    # @param event_class [Class, Symbol] event class or symbolic event name
+    # @param payload [Hash] payload attributes for the event
+    # @return [Sourced::Message] the newly built event
+    #
+    # @example Produce by class
+    #   command RegisterDevice do |_state, cmd|
+    #     event DeviceRegistered, device_id: cmd.payload.device_id
+    #   end
+    #
+    # @example Produce by symbol
+    #   command RegisterDevice do |_state, cmd|
+    #     event :device_registered, device_id: cmd.payload.device_id
+    #   end
+    def event(event_class, payload = {})
+      event_class = self.class[event_class] if event_class.is_a?(Symbol)
+      evt = event_class.new(payload: payload)
+      @uncommitted_events << evt
+      evolve([evt])
+      evt
+    end
+  end
+end

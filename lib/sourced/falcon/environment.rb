@@ -2,13 +2,15 @@
 
 module Sourced
   module Falcon
-    # Environment mixin for configuring a combined Falcon web server + Sourced workers service.
+    # Environment mixin for configuring a combined Falcon web server + workers service.
     #
-    # Include this module in a Falcon service definition to get Sourced worker defaults
-    # alongside the standard Falcon server environment.
+    # Include this module in a Falcon service definition to get workers defaults
+    # alongside the standard Falcon server environment. All settings are read from
+    # {Sourced.config} — no per-service config methods needed.
     #
-    # Housekeeping settings are read from Sourced.config by default (configured in your
-    # boot/environment file). They can be overridden per-service in falcon.rb if needed.
+    # The Service automatically calls {Sourced.setup!} at the start of +run+ to
+    # re-establish database connections after Falcon forks (SQLite connections
+    # are not fork-safe). This replays the block passed to {Sourced.configure}.
     #
     # @example falcon.rb
     #   #!/usr/bin/env falcon-host
@@ -20,38 +22,11 @@ module Sourced
     #     include Falcon::Environment::Rackup
     #
     #     url "http://[::]:9292"
-    #     sourced_worker_count 4
     #   end
     module Environment
       include ::Falcon::Environment::Server
 
-      def service_class
-        Sourced::Falcon::Service
-      end
-
-      # Number of Sourced worker fibers to spawn per container process.
-      # @return [Integer]
-      def sourced_worker_count = Sourced.config.worker_count
-
-      # Number of housekeeper fibers to spawn per container process.
-      # @return [Integer]
-      def sourced_housekeeping_count = Sourced.config.housekeeping_count
-
-      # Seconds between housekeeper scheduling cycles.
-      # @return [Numeric]
-      def sourced_housekeeping_interval = Sourced.config.housekeeping_interval
-
-      # Seconds between worker heartbeats.
-      # @return [Numeric]
-      def sourced_housekeeping_heartbeat_interval = Sourced.config.housekeeping_heartbeat_interval
-
-      # Seconds before a claim is considered stale and can be reaped.
-      # @return [Numeric]
-      def sourced_housekeeping_claim_ttl_seconds = Sourced.config.housekeeping_claim_ttl_seconds
-
-      # Number of messages to fetch per lock cycle for batch processing.
-      # @return [Integer]
-      def sourced_worker_batch_size = Sourced.config.worker_batch_size
+      def service_class = Sourced::Falcon::Service
     end
   end
 end

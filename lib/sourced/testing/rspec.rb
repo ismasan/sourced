@@ -1,101 +1,44 @@
 # frozen_string_literal: true
 
-require 'sourced/message'
+require 'sourced'
+require 'sourced/store'
 
-# An RSpec module with helpers to test Sourced reactors
-# RSpec.describe Payment do
-#   subject(:payment) { Payment.new(id: 'payment-1') }
-#
-#   it 'starts a payment' do
-#     with_actor(payment)
-#       .when(Payment::Start, order_id: 'o1', amount: 1000)
-#       .then(Payment::Started.build(payment.id, order_id: 'o1', amount: 1000))
-#   end
-#
-#   it 'is a no-op if payment already started' do
-#     with_actor(payment)
-#       .given(Payment::Started, order_id: 'o1', amount: 1000)
-#       .when(Payment::Start, order_id: 'o1', amount: 1000)
-#       .then([])
-#   end
-#
-#   it 'confirms a started payment' do
-#     with_actor(payment)
-#       .given(Payment::Started, order_id: 'o1', amount: 1000)
-#       .when(Payment::Confirm)
-#       .then(Payment::Confirmed.build(payment.id))
-#   end
-#
-#   it 'does not confirm a payment that has not started' do
-#     with_actor(payment)
-#       .when(Payment::Confirm)
-#       .then([])
-#   end
-#
-#   # Evaluating block with .then
-#   it 'calls API' do
-#     with_actor(payment)
-#       .when(Payment::Confirm)
-#       .then do |actions|
-#         expect(api_request).to have_been_requested
-#       end
-#   end
-# end
 module Sourced
   module Testing
     module RSpec
-      ERROR = proc do |args|
-        raise ArgumentError, "no support for #{args.inspect}"
-      end
-
       NONE = [].freeze
 
-      module MessageBuilder
-        private
-
-        def stream_id = nil
-
-        def build_messages(*messages)
-          messages = build_message(*messages) do |arr|
-            Array(arr).map { |e| build_message(*e) }
-          end
-          Array(messages)
-        end
-
-        def build_message(*args, &fallback)
-          fallback ||= ERROR
-
-          case args
-          in [Class => klass, Hash => payload]
-            klass.build(stream_id, payload)
-          in [Class => klass]
-            klass.build(stream_id)
-          in [Sourced::Message => mm]
-            mm
-          in [NONE]
-            NONE
-          else
-            fallback.(args)
-          end
-        end
-
-        def run_sync_actions(actions)
-          return if @sync_run
-
-          actions.filter { |a| Sourced::Actions::Sync === a }.each(&:call)
-          @sync_run = true
-        end
-
-        def partition_actions(actions)
-          actions.partition do |a|
-            a.respond_to?(:messages)
-          end
-        end
+      # Entry point for reactors GWT tests.
+      #
+      # Works with any reactor that responds to the standard
+      # <tt>handle_batch(partition_values, new_messages, history:, replaying:)</tt>
+      # contract (Deciders, Projectors, DurableWorkflows).
+      #
+      # @param reactor_class [Class] a reactors class
+      # @param partition_attrs [Hash] partition key-value pairs (e.g. device_id: 'd1')
+      # @return [GWT]
+      #
+      # @example Decider
+      #   with_reactor(MyDecider, device_id: 'd1')
+      #     .given(DeviceRegistered, device_id: 'd1', name: 'Sensor')
+      #     .when(BindDevice, device_id: 'd1', asset_id: 'a1')
+      #     .then(DeviceBound, device_id: 'd1', asset_id: 'a1')
+      #
+      # @example Projector — assert state via block
+      #   with_reactor(MyProjector, list_id: 'L1')
+      #     .given(ItemAdded, list_id: 'L1', name: 'Apple')
+      #     .then { |r| expect(r.state[:items]).to eq(['Apple']) }
+      def with_reactor(reactor_class, **partition_attrs)
+        GWT.new(reactor_class, **partition_attrs)
       end
 
-      class MessageMatcher
-        MessageArray = Sourced::Types::Array[Sourced::Message]
+      # Uniform result yielded to +.then+ / +.then!+ block callbacks.
+      # Gives access to both the reactor's produced action pairs / messages
+      # (what deciders typically assert on) and the evolved state (what
+      # projectors typically assert on).
+      RunResult = Data.define(:pairs, :messages, :state)
 
+      class MessageMatcher
         def initialize(expected_messages)
           @expected_messages = Array(expected_messages)
           @errors = []
@@ -103,11 +46,6 @@ module Sourced
         end
 
         def matches?(actual_messages)
-          if !(MessageArray === actual_messages)
-            @errors << "expected an array of Sourced messages, but got #{actual_messages.inspect}"
-            return false
-          end
-
           if @expected_messages.size != actual_messages.size
             @errors << "Expected #{@expected_messages.size} messages, but got #{actual_messages.size}"
             @errors << actual_messages.inspect
@@ -116,8 +54,7 @@ module Sourced
 
           @expected_messages.each.with_index do |expected, idx|
             actual = actual_messages[idx]
-            @mismatching[idx] << "expected a #{expected.class}, got #{actual.class}" unless actual.class === expected
-            @mismatching[idx] << "expected stream_id '#{expected.stream_id}', got '#{actual.stream_id}'" unless expected.stream_id == actual.stream_id
+            @mismatching[idx] << "expected a #{expected.class}, got #{actual.class}" unless actual.class == expected.class
             @mismatching[idx] << "expected payload #{expected.payload.to_h.inspect}, got #{actual.payload.to_h.inspect}" unless expected.payload == actual.payload
           end
 
@@ -139,231 +76,206 @@ module Sourced
         end
       end
 
-      def match_sourced_messages(expected_messages)
-        MessageMatcher.new(expected_messages)
-      end
-
-      FinishedTestCase = Class.new(StandardError)
-
       class GWT
-        include MessageBuilder
-
-        def initialize(actor)
-          @actor = actor
-          @when = nil
-          @actual = nil
-          @sync_run = false
+        def initialize(reactor_class, **partition_attrs)
+          @reactor_class = reactor_class
+          @partition_values = partition_attrs
+          @given_messages = []
+          @when_messages = []
+          @asserted = false
         end
 
-        def given(*args)
-          raise FinishedTestCase, 'test case already asserted, cannot add more events to it' if @actual
+        # Accumulate history / context messages. These become +history.messages+
+        # passed to the reactor's +handle_batch+.
+        #
+        # @param klass_or_instance [Class, Sourced::Message]
+        # @param payload [Hash]
+        # @return [self]
+        def given(klass_or_instance = nil, **payload)
+          raise 'test case already asserted' if @asserted
 
-          message = build_message(*args)
-          @actor.evolve(message)
+          @given_messages << build_message(klass_or_instance, **payload)
           self
         end
 
-        def when(*args)
-          raise FinishedTestCase, 'test case already asserted, cannot add more events to it' if @actual
+        alias_method :and, :given
 
-          @when = build_message(*args)
+        # The batch of new messages to process via +handle_batch+. Can be
+        # called multiple times to supply several messages.
+        #
+        # @param klass_or_instance [Class, Sourced::Message]
+        # @param payload [Hash]
+        # @return [self]
+        def when(klass_or_instance = nil, **payload)
+          raise 'test case already asserted' if @asserted
+
+          @when_messages << build_message(klass_or_instance, **payload)
           self
         end
 
-        def and(...) = given(...)
-
-        # Like #then, but run any sync actions
-        def then!(*expected, &block)
-          run_then(true, *expected, &block)
+        # Assert expected outcomes.
+        #
+        #   - Pass message class + payload pairs (or instances) to assert
+        #     produced messages.
+        #   - Pass +[]+ or +NONE+ to assert no messages.
+        #   - Pass an Exception class (+ optional message) to assert the
+        #     reactor raised.
+        #   - Pass a block to receive a {RunResult} for custom assertions.
+        #
+        # @return [self]
+        def then(*expected, **payload, &block)
+          run_then(false, *expected, **payload, &block)
         end
 
-        def then(*expected, &block)
-          run_then(false, *expected, &block)
+        # Like #then, but runs Sync / AfterSync actions before computing
+        # the result yielded to the block (or before extracting messages).
+        def then!(*expected, **payload, &block)
+          run_then(true, *expected, **payload, &block)
         end
 
         private
 
-        def stream_id = @actor.id
+        def build_message(klass_or_instance, **payload)
+          if klass_or_instance.is_a?(Sourced::Message)
+            klass_or_instance
+          else
+            klass_or_instance.new(payload: payload)
+          end
+        end
 
-        def run_then(sync, *expected, &block)
-          # If expecting an exception class or instance, assert that handle raises it
-          if expected.size == 1 && exception_expectation?(expected[0])
-            expect_exception(expected[0])
+        def run_then(sync, *expected, **payload, &block)
+          @asserted = true
+
+          # Shorthand: .then(Class, key: val) → build message from class + payload
+          if expected.size == 1 && expected[0].is_a?(Class) && !(expected[0] < ::Exception) && payload.any?
+            expected = [expected[0].new(payload: payload)]
+          end
+
+          # Exception expectation
+          if expected.size >= 1 && exception_expectation?(expected[0])
+            expect_exception(expected[0], expected[1])
             return self
           end
 
-          # Actor instances maintain their own state (#given above calls #evolve on them)
-          # ReactorAdapter also keeps its own history via #evolve
-          # So here we satisfy the expected :history arg, but don't provide historical messages
-          @actual ||= @actor.handle(@when, history: [])
-          actions_with_messages, actions_without_messages = partition_actions(@actual)
-          run_sync_actions(actions_without_messages) if sync
+          pairs = run_handle_batch
+
+          if sync
+            pairs.each do |actions, _|
+              Array(actions).select { |a|
+                a.is_a?(Sourced::Actions::Sync) || a.is_a?(Sourced::Actions::AfterSync)
+              }.each(&:call)
+            end
+          end
 
           if block_given?
-            block.call(@actual)
+            block.call(RunResult.new(pairs: pairs, messages: extract_messages(pairs), state: compute_state(sync: sync)))
             return self
           end
 
-          expected = build_messages(*expected)
-          matcher = MessageMatcher.new(expected)
-          actual_messages = actions_with_messages.flat_map(&:messages)
-          if !matcher.matches?(actual_messages)
+          actual_messages = extract_messages(pairs)
+          expected_msgs = build_expected(*expected)
+
+          if expected_msgs.empty?
+            unless actual_messages.empty?
+              ::RSpec::Expectations.fail_with(
+                "Expected no messages, but got #{actual_messages.size}: #{actual_messages.inspect}"
+              )
+            end
+            return self
+          end
+
+          matcher = MessageMatcher.new(expected_msgs)
+          unless matcher.matches?(actual_messages)
             ::RSpec::Expectations.fail_with(matcher.failure_message)
           end
 
           self
         end
 
-        def exception_expectation?(arg)
-          case arg
-          when Class
-            arg < ::Exception
-          when ::Exception
-            true
-          else
-            false
+        def run_handle_batch
+          guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 0)
+          history = Sourced::ReadResult.new(messages: @given_messages, guard: guard)
+          @reactor_class.handle_batch(
+            @partition_values,
+            @when_messages,
+            history: history,
+            replaying: false
+          )
+        end
+
+        # Build an instance and evolve it with all known messages so the
+        # caller can assert on state regardless of reactor type. For reactors
+        # whose +handle_batch+ evolves its own instance (Decider, Projector,
+        # DurableWorkflow), this is an independent, predictable computation.
+        # When +sync+ is true, also runs the reactor's Sync / AfterSync
+        # blocks against this instance so their state mutations are visible.
+        def compute_state(sync: false)
+          instance = @reactor_class.new(@partition_values)
+          return nil unless instance.respond_to?(:evolve)
+
+          messages = @given_messages + @when_messages
+          instance.evolve(messages)
+          run_sync_on(instance, messages) if sync
+          instance.state
+        end
+
+        # Invoke Sync / AfterSync blocks against +instance+. Per-block
+        # kwarg signatures vary by reactor type (deciders expect +events:+,
+        # projectors expect +replaying:+); we inspect each block's
+        # parameters and pass only what it declares.
+        def run_sync_on(instance, messages)
+          all_args = { state: instance.state, messages: messages, events: [], replaying: false }
+          klass = instance.class
+          blocks = []
+          blocks.concat(klass.sync_blocks) if klass.respond_to?(:sync_blocks)
+          blocks.concat(klass.after_sync_blocks) if klass.respond_to?(:after_sync_blocks)
+          blocks.each do |block|
+            wanted = block.parameters.select { |type, _| type == :keyreq || type == :key }.map(&:last)
+            instance.instance_exec(**all_args.slice(*wanted), &block)
           end
         end
 
-        def expect_exception(expected)
-          exception_class = expected.is_a?(Class) ? expected : expected.class
+        def extract_messages(pairs)
+          pairs.flat_map { |actions, _|
+            Array(actions)
+              .select { |a| a.respond_to?(:messages) }
+              .flat_map(&:messages)
+          }
+        end
 
+        def build_expected(*args)
+          return [] if args == [[]] || args == [NONE]
+          return [] if args.empty?
+
+          args.map do |arg|
+            case arg
+            when Sourced::Message
+              arg
+            else
+              raise ArgumentError, "unsupported expected message: #{arg.inspect}"
+            end
+          end
+        end
+
+        def exception_expectation?(arg)
+          arg.is_a?(Class) && arg < ::Exception
+        end
+
+        def expect_exception(exception_class, message = nil)
           begin
-            @actor.handle(@when, history: [])
+            run_handle_batch
           rescue exception_class => e
-            if expected.is_a?(::Exception)
-              if e.message != expected.message
-                ::RSpec::Expectations.fail_with(
-                  "expected #{exception_class} with message #{expected.message.inspect}, " \
-                  "but got #{e.message.inspect}"
-                )
-              end
+            if message && e.message != message
+              ::RSpec::Expectations.fail_with(
+                "expected #{exception_class} with message #{message.inspect}, " \
+                "but got #{e.message.inspect}"
+              )
             end
             return
           end
 
           ::RSpec::Expectations.fail_with("expected #{exception_class} to be raised, but nothing was raised")
         end
-      end
-
-      # Make a base Reactor .handle() interface support #evolve, #decide
-      class ReactorAdapter
-        attr_reader :id
-
-        def initialize(reactor, id)
-          @reactor = reactor
-          @id = id
-          @history = []
-        end
-
-        def evolve(events)
-          @history += Array(events)
-        end
-
-        # Include :history for compatibility
-        # but we keep out own history
-        def handle(command, history: [])
-          @reactor.handle(command, history: [*@history, command])
-        end
-      end
-
-      ActorInterface = Sourced::Types::Interface[:decide, :evolve, :handle]
-
-      def with_reactor(*args)
-        actor = case args
-        in [ActorInterface => a]
-          a
-        in [Sourced::ReactorInterface => reactor, String => id]
-          ReactorAdapter.new(reactor, id)
-        in [Sourced::ReactorInterface => reactor]
-          ReactorAdapter.new(reactor, Sourced.new_stream_id)
-        end
-
-        GWT.new(actor)
-      end
-
-      class Stage
-        include MessageBuilder
-
-        attr_reader :router
-
-        def initialize(reactors, router: nil, logger: Logger.new(nil))
-          @reactors = reactors
-          @router ||= Sourced::Router.new(
-            backend: Sourced::Backends::TestBackend.new, 
-            logger:
-          )
-          @reactors.each do |r|
-            @router.register(r)
-          end
-          @stream_id = nil
-          @called = false
-          @when = nil
-          @sync_run = false
-          @given_count = 0
-        end
-
-        def with_stream(stream_id)
-          @stream_id = stream_id
-          self
-        end
-
-        def given(*args)
-          raise FinishedTestCase, 'test case already asserted, cannot add more events to it' if @called
-
-          message = build_message(*args)
-          @router.backend.append_next_to_stream(message.stream_id, [message])
-          @given_count += 1
-          self
-        end
-
-        def when(*args)
-          raise FinishedTestCase, 'test case already asserted, cannot add more events to it' if @called
-
-          @when = build_message(*args)
-          @router.backend.append_next_to_stream(@when.stream_id, [@when])
-          self
-        end
-
-        def and(...) = given(...)
-
-        def run
-          @called = true
-          router.drain
-
-          self
-        end
-
-        # Like #then, but run any sync actions
-        def then!(&block)
-          self.then(&block)
-        end
-
-        def then(&block)
-          run
-
-          if block_given?
-            if block.arity == 2
-              new_messages = backend.messages[(@given_count - 1)..]
-              block.call(self, new_messages)
-            else
-              block.call(self)
-            end
-            return self
-          end
-
-          self
-        end
-
-        def backend = router.backend
-
-        private
-
-        attr_reader :stream_id
-      end
-
-      def with_reactors(*reactors)
-        Stage.new(reactors)
       end
     end
   end

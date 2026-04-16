@@ -1,39 +1,13 @@
 # frozen_string_literal: true
 
+require 'set'
+
 module Sourced
-  # This mixin provides a .react macro to register
-  # message handlers for a class
-  # These message handlers are "reactions", ie. they react to
-  # messages by producing new commands which will initiate new Decider flows.
-  # More here: https://ismaelcelis.com/posts/decide-evolve-react-pattern-in-ruby/#3-react
-  #
-  # Example:
-  #
-  #  class Saga
-  #    include Sourced::React
-  #
-  #    # Host class must implement a #state method
-  #    # which will be passed to reaction handlers
-  #    attr_reader :state
-  #
-  #    def initialize(id:)
-  #      @state = { id: }
-  #    end
-  #
-  #    # React to an event and return a new command.
-  #    # This command will be scheduled for processing by a Decider.
-  #    # Using Sourced::Event#follow copies over metadata from the event
-  #    # including causation and correlation IDs.
-  #    reaction SomethingHappened do |state, event|
-  #      event.follow(DoSomethingElse, field1: 'value1')
-  #    end
-  #  end
-  #
-  #  saga = Saga.new(id: '123')
-  #  commands = saga.react([something_happened])
-  #
+  # React mixin for reactors.
+  # Supports the same dispatch-based reaction DSL as Sourced::React,
+  # adapted to Sourced's stream-less messages.
   module React
-    PREFIX = 'reaction'
+    PREFIX = 'sourced_reaction'
     EMPTY_ARRAY = [].freeze
 
     def self.included(base)
@@ -41,50 +15,46 @@ module Sourced
       base.extend ClassMethods
     end
 
-    # @param events [Array<Sourced::Event>]
-    # @return [Array<Sourced::Command>]
-    def react(events)
-      __handling_reactions(Array(events)) do |event|
-        method_name = Sourced.message_method_name(React::PREFIX, event.class.to_s)
+    # Run reaction handlers for one or more messages.
+    # Supports both explicit message returns and dispatch(...) calls.
+    def react(messages)
+      __handling_reactions(Array(messages)) do |message|
+        method_name = Sourced.message_method_name(PREFIX, message.class.to_s)
         if respond_to?(method_name)
-          Array(send(method_name, state, event)).compact
+          Array(send(method_name, state, message)).compact
         else
           EMPTY_ARRAY
         end
       end
     end
 
-    # TODO: O(1) lookup
     def reacts_to?(message)
       self.class.handled_messages_for_react.include?(message.class)
     end
 
     private
 
-    def __handling_reactions(events, &)
-      @__stream_dispatchers = []
-      events.each do |event|
-        @__event_for_reaction = event
-        yield event
+    def __handling_reactions(messages)
+      messages.flat_map do |message|
+        @__reaction_dispatchers = []
+        @__message_for_reaction = message
+        explicit = Array(yield(message)).compact.reject { |value| value.is_a?(Dispatcher) }
+        dispatched = @__reaction_dispatchers.map(&:message)
+        explicit + dispatched
       end
-      cmds = @__stream_dispatchers.map(&:message)
-      @__stream_dispatchers.clear
-      cmds
+    ensure
+      @__reaction_dispatchers = []
+      @__message_for_reaction = nil
     end
 
     class Dispatcher
       attr_reader :message
 
-      def initialize(msg)
-        @message = msg
+      def initialize(message)
+        @message = message
       end
 
       def inspect = %(<#{self.class} #{@message}>)
-
-      def to(stream_id)
-        @message = @message.to(stream_id)
-        self
-      end
 
       def at(datetime)
         @message = @message.at(datetime)
@@ -97,28 +67,47 @@ module Sourced
       end
     end
 
-    def dispatch(command_class, payload = {})
-      command_class = self.class[command_class] if command_class.is_a?(Symbol)
-      cmd = @__event_for_reaction
-            .follow(command_class, payload)
-            .with_metadata(producer: self.class.consumer_info.group_id)
+    # Queue a follow-up message from within a reaction block.
+    #
+    # The returned {Dispatcher} can be chained to delay the message
+    # or add metadata before it is appended.
+    #
+    # @param message_class [Class, Symbol] messages class, or a symbol
+    #   resolved via <tt>.[]</tt>
+    # @param payload [Hash] message payload attributes
+    # @return [Dispatcher] chainable wrapper around the dispatched message
+    #
+    # @example Dispatch by class
+    #   reaction StudentEnrolled do |_state, event|
+    #     dispatch(NotifyStudent, student_id: event.payload.student_id)
+    #   end
+    #
+    # @example Dispatch by symbol with delay and metadata
+    #   reaction StudentEnrolled do |_state, event|
+    #     dispatch(:notify_student, student_id: event.payload.student_id)
+    #       .with_metadata(channel: 'email')
+    #       .at(Time.now + 300)
+    #   end
+    def dispatch(message_class, payload = {})
+      message_class = self.class[message_class] if message_class.is_a?(Symbol)
+      message = @__message_for_reaction
+        .correlate(message_class.new(payload: payload))
+        .with_metadata(producer: self.class.group_id)
 
-      dispatcher = Dispatcher.new(cmd)
-      @__stream_dispatchers << dispatcher
+      dispatcher = Dispatcher.new(message)
+      @__reaction_dispatchers << dispatcher
       dispatcher
     end
 
     module ClassMethods
       def inherited(subclass)
         super
-        handled_messages_for_react.each do |evt_type|
-          subclass.handled_messages_for_react << evt_type
+        handled_messages_for_react.each do |klass|
+          subclass.handled_messages_for_react << klass
         end
-      end
-
-      # Override this with extend Sourced::Consumer
-      def consumer_info
-        Sourced::Consumer::ConsumerInfo.new(group_id: name)
+        catch_all_react_events.each do |klass|
+          subclass.catch_all_react_events << klass
+        end
       end
 
       def handled_messages_for_react
@@ -129,77 +118,47 @@ module Sourced
         @catch_all_react_events ||= Set.new
       end
 
-      # Define a reaction to an event
-      # @example
-      #   reaction SomethingHappened do |state, event|
-      #     stream = stream_for(event)
-      #     # stream = stream_for("new-stream-id")
-      #     stream.command DoSomethingElse
+      # Register a reaction handler for one or more messages types.
+      #
+      # Accepts message classes, symbols resolved via <tt>.[]</tt>,
+      # multiple arguments, or no arguments for a catch-all reaction across
+      # all evolve types without an explicit handler.
+      #
+      # @example React to a specific event class
+      #   reaction StudentEnrolled do |state, event|
+      #     dispatch(NotifyStudent, student_id: event.payload.student_id)
       #   end
       #
-      # The host class is expected to define a #state method
-      # These handlers will load the decider's state from past events, and yield the state and the event to the block.
-      # @example
-      #   reaction SomethingHappened do |state, event|
-      #     if state[:count] % 3 == 0
-      #       steam_for(event).command DoSomething
-      #     end
+      # @example React to a symbol-resolved message class
+      #   reaction :student_enrolled do |state, event|
+      #     dispatch(:notify_student, student_id: event.payload.student_id)
       #   end
-      #
-      # If no event class given, the handler is registered for all events 
-      # set to evolve in .handled_messaged_for_evolve, unless 
-      # specific reactions have already been registered for them
-      # The host class is expected to support .handled_messaged_for_evolve
-      # see Evolve mixin
-      # @example
-      #   reaction do |state, event|
-      #     LOGGER.info state
-      #   end
-      #
-      # @overload reaction do |state, event|
-      # @overload reaction(event_symbol) do |state, event|
-      #   @param event_symbol [Symbol] Symbolised message name
-      # @overload reaction(event_class) do |state, event|
-      #   @param event_class [Class] Must be subclass of Sourced::Message
-      # @overload reaction(*events) do |state, event|
-      #   @param *events [Array<Object>] List of event classes or symbols
-      # @return [void]
       def reaction(*args, &block)
         case args
         in []
-          handled_messages_for_evolve.each do |e|
-            method_name = Sourced.message_method_name(React::PREFIX, e.to_s)
-            if !instance_methods.include?(method_name.to_sym)
-              catch_all_react_events << e
-              reaction e, &block
-            end
+          handled_messages_for_evolve.each do |message_class|
+            method_name = Sourced.message_method_name(PREFIX, message_class.to_s)
+            next if instance_methods.include?(method_name.to_sym)
+
+            catch_all_react_events << message_class
+            reaction(message_class, &block)
           end
 
         in [Symbol => message_symbol]
-          message_class = __resolve_message_class(message_symbol).tap do |klass|
+          message_class = self[message_symbol].tap do |klass|
             raise(
               ArgumentError,
-              "Cannot resolve message symbol #{message_symbol.inspect} " \
-              "for #{self}.reaction"
+              "Cannot resolve message symbol #{message_symbol.inspect} for #{self}.reaction"
             ) unless klass
           end
 
           reaction(message_class, &block)
         in [Class => message_class] if message_class < Sourced::Message
           __validate_message_for_reaction!(message_class)
-          unless message_class.is_a?(Class) && message_class < Sourced::Message
-            raise(
-              ArgumentError,
-              "Invalid argument #{message_class.inspect} for #{self}.reaction"
-            )
-          end
-
-          self.handled_messages_for_react << message_class
-          define_method(Sourced.message_method_name(React::PREFIX, message_class.to_s), &block) if block_given?
-        in Array => args if args.none?(&:nil?)
-          args.each do |k|
-            reaction k, &block
-          end
+          handled_messages_for_react << message_class
+          define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block) if block_given?
+        in Array => values if values.none?(&:nil?)
+          values.each { |value| reaction(value, &block) }
         else
           raise(
             ArgumentError,
@@ -208,17 +167,8 @@ module Sourced
         end
       end
 
-      # Run this hook before registering a reaction
-      # Actor can override this to make sure that the same message is not
-      # also handled as a command
-      def __validate_message_for_reaction!(event_class)
-        # no-op.
-      end
-
-      private
-
-      def __resolve_message_class(message_symbol)
-        raise ArgumentError, "#{self} doesn't support resolving #{message_symbol.inspect} into a message class"
+      def __validate_message_for_reaction!(_message_class)
+        # no-op
       end
     end
   end
