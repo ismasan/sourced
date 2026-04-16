@@ -18,6 +18,7 @@ module Sourced
       messages = Array(messages)
       return actions if messages.empty?
 
+      # TODO: review use of Time.now
       now = Time.now
       to_schedule, to_append = messages.partition { |message| message.created_at > now }
 
@@ -58,13 +59,13 @@ module Sourced
       # @param source_message [Sourced::Message] default message to correlate from
       # @return [Array<Sourced::Message>] correlated messages that were appended
       def execute(store, source_message)
-        to_append = if @correlated
+        to_append = if correlated?
           messages
         else
           correlate_from = @source || source_message
           messages.map { |m| correlate_from.correlate(m) }
         end
-        store.append(to_append, guard: guard)
+        store.append(to_append, guard:)
         to_append
       end
     end

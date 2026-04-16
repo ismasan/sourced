@@ -20,7 +20,7 @@ module Sourced
 
       def build_action_pairs(instance, messages, replaying:)
         sync_actions = instance.collect_actions(
-          state: instance.state, messages: messages, replaying: replaying
+          state: instance.state, messages:, replaying:
         )
 
         reaction_pairs = if replaying
@@ -51,7 +51,7 @@ module Sourced
         def handle_batch(partition_values, new_messages, history: nil, replaying: false)
           instance = new(partition_values)
           instance.evolve(new_messages)
-          build_action_pairs(instance, new_messages, replaying: replaying)
+          build_action_pairs(instance, new_messages, replaying:)
         end
 
         # @param claim [ClaimResult] claimed partition batch
@@ -69,7 +69,7 @@ module Sourced
         def handle_batch(partition_values, new_messages, history:, replaying: false)
           instance = new(partition_values)
           instance.evolve(history.messages)
-          build_action_pairs(instance, new_messages, replaying: replaying)
+          build_action_pairs(instance, new_messages, replaying:)
         end
 
         # @param claim [ClaimResult] claimed partition batch
