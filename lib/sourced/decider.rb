@@ -34,6 +34,53 @@ module Sourced
         define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
       end
 
+      # Build executable actions for a batch of claimed messages.
+      #
+      # Each message in +new_messages+ routes through one of three branches:
+      #
+      # 1. **Command** — if the message class is in {.handled_commands}, the
+      #    decider runs {Decider#decide}, produces new events, and wraps them
+      #    in an {Actions::Append} (guarded by +history.guard+). Per-message
+      #    +sync+ / +after_sync+ actions are collected.
+      #
+      # 2. **Reaction-triggering event** — if the decider
+      #    {React#reacts_to? reacts to} this message (and the batch is not
+      #    replaying), its state is evolved with the event, {React#react} is
+      #    invoked, and any produced messages are wrapped in
+      #    {Actions::Append} / {Actions::Schedule} with +source: msg+ so
+      #    the infra layer correlates reaction messages against the event.
+      #
+      # 3. **Anything else** — yields +[Actions::OK, msg]+ (the message is
+      #    acked with no side effects). In practice this is unreachable
+      #    because claim filtering uses {.handled_messages}, but it's kept
+      #    as a safety net.
+      #
+      # ### Reactions are deferred
+      #
+      # Reactions do **not** run inline with the command that produced the
+      # triggering event. A command's batch only appends its events; the
+      # decider's own subscription (via +handled_messages_for_react+) picks
+      # those events up on the next claim cycle and runs the reaction in a
+      # separate +handle_batch+ invocation.
+      #
+      # Consequences:
+      #
+      # - The originating command's +after_sync+ fires as soon as its
+      #   events commit — no longer blocked by slow reactions.
+      # - Command and its reactions are in **separate transactions**. A
+      #   failing reaction does not roll back the command.
+      # - There is one extra claim-cycle of latency before reactions run
+      #   (sub-ms via +InlineNotifier+; up to +catchup_interval+ as
+      #   fallback).
+      # - +sync+ / +after_sync+ blocks also fire on reaction claims
+      #   (+messages: [evt]+, +events: []+) — inspectors that assume the
+      #   primary message is always a command will see different shapes.
+      #
+      # @param partition_values [Hash{Symbol => String}] partition key-value pairs
+      # @param new_messages [Array<PositionedMessage>] claimed messages to process
+      # @param history [ReadResult] prior partition history (evolved into state)
+      # @param replaying [Boolean] when +true+, the reaction branch is skipped
+      # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
       def handle_batch(partition_values, new_messages, history:, replaying: false)
         instance = new(partition_values)
         instance.evolve(history.messages)
@@ -41,20 +88,20 @@ module Sourced
         each_with_partial_ack(new_messages) do |msg|
           if handled_commands.include?(msg.class)
             raw_events = instance.decide(msg)
+            # TODO: correlation should be handled by infra layer, not reactors.
             correlated_events = raw_events.map { |e| msg.correlate(e) }
-            actions = []
-            actions.concat(
-              Actions.build_for(correlated_events, guard: history.guard, correlated: true)
-            )
-
-            correlated_events.each do |evt|
-              next unless instance.reacts_to?(evt)
-              reaction_msgs = Array(instance.react(evt))
-              actions.concat(Actions.build_for(reaction_msgs, source: evt))
-            end
-
+            actions = Actions.build_for(correlated_events, guard: history.guard, correlated: true)
             actions += instance.collect_actions(
               state: instance.state, messages: [msg], events: raw_events
+            )
+
+            [actions, msg]
+          elsif !replaying && instance.reacts_to?(msg)
+            instance.evolve([msg])
+            reaction_msgs = Array(instance.react(msg))
+            actions = Actions.build_for(reaction_msgs, source: msg)
+            actions += instance.collect_actions(
+              state: instance.state, messages: [msg], events: []
             )
 
             [actions, msg]
@@ -71,7 +118,7 @@ module Sourced
       # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
       def handle_claim(claim, history:)
         values = partition_keys.to_h { |k| [k, claim.partition_value[k.to_s]] }
-        handle_batch(values, claim.messages, history:)
+        handle_batch(values, claim.messages, history:, replaying: claim.replaying)
       end
 
       # Copy registered command handlers into subclasses.

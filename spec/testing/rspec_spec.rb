@@ -152,12 +152,21 @@ RSpec.describe Sourced::Testing::RSpec do
   include Sourced::Testing::RSpec
 
   describe 'Decider' do
-    it 'given history + when command → then expected messages (event + reaction)' do
+    it 'given history + when command → then event (reactions are deferred)' do
       with_reactor(GWTTestDecider, device_id: 'd1')
         .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
         .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
         .then(
-          GWTTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' }),
+          GWTTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
+        )
+    end
+
+    it 'when reaction-triggering event → then reaction message' do
+      # Reactions run on a separate claim cycle from the originating command.
+      with_reactor(GWTTestDecider, device_id: 'd1')
+        .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+        .when(GWTTestMessages::DeviceBound, device_id: 'd1', asset_id: 'a1')
+        .then(
           GWTTestMessages::NotifyBound.new(payload: { device_id: 'd1' })
         )
     end
@@ -210,8 +219,7 @@ RSpec.describe Sourced::Testing::RSpec do
         .given(reg)
         .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
         .then(
-          GWTTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' }),
-          GWTTestMessages::NotifyBound.new(payload: { device_id: 'd1' })
+          GWTTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
         )
     end
 

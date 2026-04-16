@@ -360,6 +360,12 @@ RSpec.describe Sourced::Dispatcher do
         DispatcherTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
       )
 
+      # First claim: process the command, append DeviceBound (reaction deferred).
+      expect(router.handle_next_for(DispatchTestDecider)).to be true
+      expect(db[:sourced_scheduled_messages].count).to eq(0)
+
+      # Second claim: the Decider re-claims DeviceBound and runs its reaction,
+      # which schedules DelayedNotify.
       expect(router.handle_next_for(DispatchTestDecider)).to be true
       expect(db[:sourced_scheduled_messages].count).to eq(1)
 

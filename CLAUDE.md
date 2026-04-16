@@ -30,7 +30,9 @@ Sourced is a Ruby library for **aggregateless, stream-less event sourcing**. Mes
 
 ### Message flow
 
-`Command → Decider.decide → Events → Store.append → Router claims → Reactor.handle_claim → (Projections / Reactions / Sync actions)`
+`Command → Decider.decide → Events → Store.append → Router claims → Reactor.handle_claim → (Projections / Sync actions)`
+
+Reactions are **deferred**: a Decider's `react` blocks don't run inline with the command that produced the triggering event. When the Decider appends events, its own subscription (`handled_messages_for_react`) picks them up on the next claim cycle and runs the reaction in a separate `handle_batch`. Consequence: the originating command's `after_sync` commits as soon as its events commit, not after reactions finish. Trade-off: command and reactions are no longer in the same transaction — a failing reaction does not roll back the command.
 
 All reactors implement `.handle_claim(claim, history:)` and/or `.handle_batch(partition_values, new_messages, history:, replaying:)` with a uniform signature so GWT helpers and partial-ack logic work across types.
 

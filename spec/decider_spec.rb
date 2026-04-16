@@ -179,21 +179,73 @@ RSpec.describe Sourced::Decider do
       actions, source_msg = pairs.first
       expect(source_msg).to eq(cmd_positioned)
 
-      # Actions: Append(events with guard), Append(reactions), possibly sync
+      # Reactions are deferred: command claim produces only the event Append (+ after_sync).
+      # The reaction runs when DeviceBound is re-claimed by this Decider.
       append_actions = Array(actions).select { |a| a.is_a?(Sourced::Actions::Append) }
-      expect(append_actions.size).to be >= 1
+      expect(append_actions.size).to eq(1)
 
-      # First append has the events with guard
       event_append = append_actions.first
       expect(event_append.messages.first).to be_a(DeciderTestMessages::DeviceBound)
       expect(event_append.guard).to eq(guard)
 
-      # Second append has the reactions (no guard)
-      if append_actions.size > 1
-        reaction_append = append_actions[1]
-        expect(reaction_append.messages.first).to be_a(DeciderTestMessages::NotifyBound)
-        expect(reaction_append.guard).to be_nil
-      end
+      # No reaction Append in this pass.
+      reaction_types = append_actions.flat_map { |a| a.messages.map(&:class) }
+      expect(reaction_types).not_to include(DeciderTestMessages::NotifyBound)
+    end
+
+    it 'runs deferred reactions when the triggering event is re-claimed' do
+      # History: device was already registered and bound (state reflects both)
+      reg = DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      bound = DeciderTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      history_msgs = [Sourced::PositionedMessage.new(reg, 1)]
+      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 2)
+      history = Sourced::ReadResult.new(messages: history_msgs, guard: guard)
+
+      bound_positioned = Sourced::PositionedMessage.new(bound, 2)
+      claim = Sourced::ClaimResult.new(
+        offset_id: 2, key_pair_ids: [], partition_key: 'device_id:d1',
+        partition_value: { 'device_id' => 'd1' },
+        messages: [bound_positioned], replaying: false, guard: guard
+      )
+
+      pairs = TestDeviceDecider.handle_claim(claim, history: history)
+      expect(pairs.size).to eq(1)
+
+      actions, source_msg = pairs.first
+      expect(source_msg).to eq(bound_positioned)
+
+      append_actions = Array(actions).select { |a| a.is_a?(Sourced::Actions::Append) }
+      expect(append_actions.size).to eq(1)
+
+      reaction_append = append_actions.first
+      expect(reaction_append.messages.first).to be_a(DeciderTestMessages::NotifyBound)
+      expect(reaction_append.source).to eq(bound_positioned)
+      expect(reaction_append.guard).to be_nil
+
+      after_sync = Array(actions).find { |a| a.is_a?(Sourced::Actions::AfterSync) }
+      expect(after_sync).not_to be_nil
+    end
+
+    it 'skips reactions on replaying claims' do
+      reg = DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      bound = DeciderTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      history_msgs = [Sourced::PositionedMessage.new(reg, 1)]
+      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 2)
+      history = Sourced::ReadResult.new(messages: history_msgs, guard: guard)
+
+      bound_positioned = Sourced::PositionedMessage.new(bound, 2)
+      claim = Sourced::ClaimResult.new(
+        offset_id: 2, key_pair_ids: [], partition_key: 'device_id:d1',
+        partition_value: { 'device_id' => 'd1' },
+        messages: [bound_positioned], replaying: true, guard: guard
+      )
+
+      pairs = TestDeviceDecider.handle_claim(claim, history: history)
+      expect(pairs.size).to eq(1)
+
+      actions, source_msg = pairs.first
+      expect(actions).to eq(Sourced::Actions::OK)
+      expect(source_msg).to eq(bound_positioned)
     end
 
     it 'includes after_sync actions in action pairs' do
@@ -239,17 +291,20 @@ RSpec.describe Sourced::Decider do
       expect(source_msg).to eq(reg_positioned)
     end
 
-    it 'returns schedule actions for delayed reaction dispatches' do
+    it 'returns schedule actions for delayed reaction dispatches on reaction-event re-claim' do
+      # Reactions are deferred, so the delayed-dispatch only appears when
+      # DeviceBound is re-claimed by the Decider, not on the command claim.
       reg = DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      bound = DeciderTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
       history_msgs = [Sourced::PositionedMessage.new(reg, 1)]
-      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 1)
+      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 2)
       history = Sourced::ReadResult.new(messages: history_msgs, guard: guard)
 
-      cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      bound_positioned = Sourced::PositionedMessage.new(bound, 2)
       claim = Sourced::ClaimResult.new(
-        offset_id: 1, key_pair_ids: [], partition_key: 'device_id:d1',
+        offset_id: 2, key_pair_ids: [], partition_key: 'device_id:d1',
         partition_value: { 'device_id' => 'd1' },
-        messages: [Sourced::PositionedMessage.new(cmd, 2)],
+        messages: [bound_positioned],
         replaying: false,
         guard: guard
       )
