@@ -1,3 +1,5 @@
+** Notice:** this is the main, _stream-based_ implementation. For the version shown at [Wrocloverb](https://wrocloverb.com), see stream-less rewrite in [this branch](https://github.com/ismasan/sourced/tree/ccc).
+
 # sourced
 
 **WORK IN PROGRESS**
