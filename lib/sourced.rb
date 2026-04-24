@@ -141,11 +141,13 @@ module Sourced
   end
 
   # Load a reactor instance from its event history using AND-filtered partition reads.
-  def self.load(reactor_class, store: nil, **values)
+  # Pass +upto:+ (partition-local rank) to evolve over at most the first N matching
+  # messages in the partition — useful for time-travel, deterministic replay, or debugging.
+  def self.load(reactor_class, store: nil, upto: nil, **values)
     store ||= self.store
     partition_attrs = reactor_class.partition_keys.to_h { |k| [k, values[k]] }
     handled_types = reactor_class.handled_messages_for_evolve.map(&:type).uniq
-    read_result = store.read_partition(partition_attrs, handled_types:)
+    read_result = store.read_partition(partition_attrs, handled_types:, upto: upto)
     instance = reactor_class.new(values)
 
     instance.evolve(read_result.messages)

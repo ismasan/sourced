@@ -376,8 +376,13 @@ module Sourced
     # @param partition_attrs [Hash{Symbol|String => String}] partition attribute values
     # @param handled_types [Array<String>] message type strings to include
     # @param after_position [Integer] fetch messages after this position (exclusive, default 0)
+    # @param upto [Integer, nil] partition-local cutoff: return at most the first +upto+
+    #   matching messages (SQL LIMIT). Counts ranks within the partition, not global positions.
+    #   When the partition has more messages than +upto+, the guard's last_position is set to
+    #   the global position of the last returned message so further partition writes are
+    #   detected as conflicts.
     # @return [ReadResult] messages and a guard for optimistic concurrency
-    def read_partition(partition_attrs, handled_types:, after_position: 0)
+    def read_partition(partition_attrs, handled_types:, after_position: 0, upto: nil)
       # Resolve key_pair_ids for each partition attribute
       key_pair_ids = partition_attrs.filter_map do |name, value|
         db[@key_pairs_table].where(name: name.to_s, value: value.to_s).get(:id)
@@ -389,7 +394,7 @@ module Sourced
         return ReadResult.new(messages: [], guard:)
       end
 
-      messages = fetch_partition_messages(key_pair_ids, after_position, handled_types)
+      messages = fetch_partition_messages(key_pair_ids, after_position, handled_types, upto: upto)
 
       # Build guard conditions from handled_types, scoped to partition attrs.
       # These use OR semantics so the guard detects any concurrent write
@@ -400,10 +405,16 @@ module Sourced
         klass&.to_conditions(**partition_sym)
       end.flatten
 
-      # The guard's last_position must cover the full OR-context, not just
-      # the AND-filtered messages. Otherwise a message that passes the OR
-      # conditions but was excluded by AND filtering would look like a conflict.
-      last_pos = max_position_for(guard_conditions, after_position: after_position)
+      # When upto truncates the partition (we returned exactly `upto` messages and
+      # there may be more), anchor the guard at the last returned message's global
+      # position so later partition writes register as conflicts.
+      # Otherwise, use the broader OR-context max so a message that passes the OR
+      # conditions but was excluded by AND filtering doesn't look like a conflict.
+      last_pos = if upto && messages.size == upto && messages.any?
+                   messages.last.position
+                 else
+                   max_position_for(guard_conditions, after_position: after_position)
+                 end
 
       guard = ConsistencyGuard.new(conditions: guard_conditions, last_position: last_pos)
       ReadResult.new(messages: messages, guard: guard)
@@ -1136,7 +1147,7 @@ module Sourced
     # @param handled_types [Array<String>] message type strings
     # @param limit [Integer, nil] max messages to return (nil = unlimited)
     # @return [Array<PositionedMessage>]
-    def fetch_partition_messages(key_pair_ids, last_position, handled_types, limit: nil)
+    def fetch_partition_messages(key_pair_ids, last_position, handled_types, limit: nil, upto: nil)
       return [] if key_pair_ids.empty?
 
       kp_ids_list = key_pair_ids.map { |id| db.literal(id) }.join(', ')
@@ -1172,7 +1183,8 @@ module Sourced
           )
         ORDER BY m.position ASC
       SQL
-      sql += " LIMIT #{db.literal(limit)}" if limit
+      effective_limit = [limit, upto].compact.min
+      sql += " LIMIT #{db.literal(effective_limit)}" if effective_limit
 
       db.fetch(sql).map { |row| deserialize(row) }
     end

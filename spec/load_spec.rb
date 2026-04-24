@@ -191,6 +191,83 @@ RSpec.describe 'Sourced.load' do
         store.append(new_msg, guard: read_result.guard)
       }.to raise_error(Sourced::ConcurrentAppendError)
     end
+
+    describe 'with upto: (partition-local rank)' do
+      # joe's partition has 3 matching messages (StudentEnrolled, two AssignmentSubmitted).
+      # jane's StudentEnrolled is excluded by AND filtering.
+      it 'loads only the first N partition-matching messages' do
+        instance, _read_result = Sourced.load(
+          LoadTestDecider, store: store, upto: 1,
+          course_id: 'algebra', student_id: 'joe'
+        )
+
+        expect(instance.state[:enrolled]).to be true
+        expect(instance.state[:grades]).to eq([])
+      end
+
+      it 'counts partition messages, not global positions (upto: 2 → first 2 matches)' do
+        instance, read_result = Sourced.load(
+          LoadTestDecider, store: store, upto: 2,
+          course_id: 'algebra', student_id: 'joe'
+        )
+
+        expect(read_result.messages.size).to eq(2)
+        expect(instance.state[:grades]).to eq(%w[A])
+      end
+
+      it 'returns all partition messages when upto equals the partition size' do
+        instance, read_result = Sourced.load(
+          LoadTestDecider, store: store, upto: 3,
+          course_id: 'algebra', student_id: 'joe'
+        )
+
+        expect(read_result.messages.size).to eq(3)
+        expect(instance.state[:grades]).to eq(%w[A B])
+      end
+
+      it 'returns all partition messages when upto exceeds the partition size' do
+        instance, read_result = Sourced.load(
+          LoadTestDecider, store: store, upto: 9999,
+          course_id: 'algebra', student_id: 'joe'
+        )
+
+        expect(read_result.messages.size).to eq(3)
+        expect(instance.state[:grades]).to eq(%w[A B])
+      end
+
+      it 'returns empty when upto is 0' do
+        instance, read_result = Sourced.load(
+          LoadTestDecider, store: store, upto: 0,
+          course_id: 'algebra', student_id: 'joe'
+        )
+
+        expect(instance.state[:enrolled]).to be false
+        expect(read_result.messages).to be_empty
+      end
+
+      it 'guard last_position anchors at the last returned message when truncated' do
+        _instance, read_result = Sourced.load(
+          LoadTestDecider, store: store, upto: 2,
+          course_id: 'algebra', student_id: 'joe'
+        )
+
+        expect(read_result.guard.last_position).to eq(read_result.messages.last.position)
+      end
+
+      it 'guard detects unseen partition messages as conflicts when truncated' do
+        _instance, read_result = Sourced.load(
+          LoadTestDecider, store: store, upto: 2,
+          course_id: 'algebra', student_id: 'joe'
+        )
+
+        new_msg = LoadTestMessages::AssignmentSubmitted.new(
+          payload: { course_id: 'algebra', student_id: 'joe', grade: 'C' }
+        )
+        expect {
+          store.append(new_msg, guard: read_result.guard)
+        }.to raise_error(Sourced::ConcurrentAppendError)
+      end
+    end
   end
 
   describe 'loading a Projector' do
