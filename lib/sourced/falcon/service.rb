@@ -20,7 +20,7 @@ module Sourced
 
         Async do |task|
           server.run
-          Sourced::Dispatcher.spawn_into(task)
+          Sourced::Dispatcher.start(task)
           task.children.each(&:wait)
         end
 

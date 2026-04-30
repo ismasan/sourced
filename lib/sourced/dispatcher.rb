@@ -11,12 +11,12 @@ module Sourced
   # {WorkQueue}, {NotificationQueuer}, {CatchUpPoller}, store notifier, and {Worker}s.
   #
   # Does not own the process lifecycle — the caller provides the task/fiber
-  # context via {#spawn_into}, and triggers shutdown via {#stop}.
+  # context via {#start}, and triggers shutdown via {#stop}.
   #
   # @example Usage with a task runner
   #   dispatcher = Sourced::Dispatcher.new(router: router, worker_count: 4)
   #   executor.start do |task|
-  #     dispatcher.spawn_into(task)
+  #     dispatcher.start(task)
   #   end
   #   dispatcher.stop
   #
@@ -86,7 +86,7 @@ module Sourced
     # @return [Array<Sourced::Worker>] worker instances managed by this dispatcher
     attr_reader :workers
 
-    def self.spawn_into(task)
+    def self.start(task)
       config = Sourced.config
       dispatcher = Sourced::Dispatcher.new(
         router: Sourced.router,
@@ -97,7 +97,7 @@ module Sourced
         housekeeping_interval: config.housekeeping_interval,
         claim_ttl_seconds: config.claim_ttl_seconds,
         logger: config.logger
-      ).spawn_into(task)
+      ).start(task)
     end
 
     # @param router [Sourced::Router] the router providing reactors and store
@@ -172,7 +172,7 @@ module Sourced
     #
     # @param task [Object] an executor task or Async::Task to spawn fibers into
     # @return [void]
-    def spawn_into(task)
+    def start(task)
       return if @workers.empty?
 
       s = task.respond_to?(:spawn) ? :spawn : :async

@@ -292,14 +292,14 @@ RSpec.describe Sourced::Dispatcher do
       task = double('Task')
       # 1 notifier + 1 catchup_poller + 1 scheduled_message_poller + 1 stale_claim_reaper + 2 workers = 6 spawns
       expect(task).to receive(:spawn).exactly(6).times
-      dispatcher.spawn_into(task)
+      dispatcher.start(task)
     end
 
     it 'spawns via #async when task does not respond to spawn' do
       task = Object.new
       def task.async; end
       expect(task).to receive(:async).exactly(6).times
-      dispatcher.spawn_into(task)
+      dispatcher.start(task)
     end
 
     it '#stop stops all components' do

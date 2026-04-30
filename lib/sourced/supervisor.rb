@@ -71,7 +71,7 @@ module Sourced
       )
 
       @executor.start do |task|
-        @dispatcher.spawn_into(task)
+        @dispatcher.start(task)
       end
     end
 
