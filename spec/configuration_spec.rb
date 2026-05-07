@@ -203,6 +203,26 @@ RSpec.describe Sourced::Configuration do
       config = described_class.new
       expect { config.error_strategy = 'not callable' }.to raise_error(ArgumentError)
     end
+
+    it 'configures a new ErrorStrategy when called with a block' do
+      config = described_class.new
+      config.error_strategy do |s|
+        s.retry(times: 5, after: 10)
+      end
+
+      expect(config.error_strategy).to be_a(Sourced::ErrorStrategy)
+      expect(config.error_strategy.max_retries).to eq(5)
+      expect(config.error_strategy.retry_after).to eq(10)
+    end
+
+    it 'replaces a previously assigned strategy when called with a block' do
+      config = described_class.new
+      config.error_strategy = ->(_e, _m, _g) {}
+      config.error_strategy { |s| s.retry(times: 2) }
+
+      expect(config.error_strategy).to be_a(Sourced::ErrorStrategy)
+      expect(config.error_strategy.max_retries).to eq(2)
+    end
   end
 
   describe '#setup!' do

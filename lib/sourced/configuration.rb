@@ -60,7 +60,11 @@ module Sourced
       @error_strategy = strategy
     end
 
-    attr_reader :error_strategy
+    def error_strategy(&block)
+      return @error_strategy unless block_given?
+
+      @error_strategy = ErrorStrategy.new(&block)
+    end
 
     def setup!
       return if @setup

@@ -662,7 +662,7 @@ require 'sourced'
 Sourced.configure do |c|
   c.store = Sequel.sqlite('my_app.db')
 
-  c.error_strategy = Sourced::ErrorStrategy.new do |s|
+  c.error_strategy do |s|
     s.retry(
       times: 5,
       after: 2,
