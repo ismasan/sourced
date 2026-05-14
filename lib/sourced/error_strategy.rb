@@ -15,15 +15,15 @@ module Sourced
   #       LOGGER.info("Retrying #{n} times")
   #     end
   #
-  #     s.on_fail do |exception, _message|
+  #     s.on_fail do |retry_count, exception, _message|
   #       Sentry.capture_exception(exception)
   #     end
   #   end
   class ErrorStrategy
     MAX_RETRIES = 0
-    RETRY_AFTER = 3 # seconds
-    BACKOFF = ->(retry_after, retry_count) { retry_after * retry_count }
-    NOOP_CALLBACK = ->(*_) {}
+    # seconds
+    RETRY_AFTER = 3
+    BACKOFF = -> (retry_after, retry_count) { retry_after * retry_count }
 
     attr_reader :max_retries, :retry_after
 
@@ -31,10 +31,13 @@ module Sourced
       @max_retries = MAX_RETRIES
       @retry_after = RETRY_AFTER
       @backoff = BACKOFF
-      @on_retry = NOOP_CALLBACK
-      @on_fail = NOOP_CALLBACK
+      @on_retry = []
+      @on_fail = []
 
       yield(self) if block_given?
+
+      @on_retry.freeze
+      @on_fail.freeze
       freeze
     end
 
@@ -50,11 +53,13 @@ module Sourced
     end
 
     def on_retry(callable = nil, &blk)
-      @on_retry = callable || blk
+      @on_retry << (callable || blk)
+      self
     end
 
     def on_fail(callable = nil, &blk)
-      @on_fail = callable || blk
+      @on_fail << (callable || blk)
+      self
     end
 
     # The Error Strategy interface
@@ -66,12 +71,12 @@ module Sourced
       retry_count = group.error_context[:retry_count] || 1
       if retry_count <= max_retries
         now = Time.now
-        later = now + (backoff.call(retry_after, retry_count))
-        @on_retry.call(retry_count, exception, message, later)
+        retry_at = now + (backoff.call(retry_after, retry_count))
+        @on_retry.each { |fn| fn.call(retry_count, exception, message, retry_at) }
         retry_count += 1
-        group.retry(later, retry_count:)
+        group.retry(retry_at, retry_count:)
       else
-        @on_fail.call(exception, message)
+        @on_fail.each { |fn| fn.call(retry_count, exception, message) }
         group.fail(exception:)
       end
     end

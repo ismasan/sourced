@@ -676,9 +676,9 @@ Sourced.configure do |c|
       )
     end
 
-    s.on_fail do |exception, message|
+    s.on_fail do |retry_count, exception, message|
       LOGGER.error(
-        "Sourced failing consumer group after retries for #{message.type} (#{message.id}): " \
+        "Sourced failing consumer group after #{retry_count} retries for #{message.type} (#{message.id}): " \
         "#{exception.class}: #{exception.message}"
       )
     end
