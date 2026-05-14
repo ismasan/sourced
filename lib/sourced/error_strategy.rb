@@ -87,11 +87,17 @@ module Sourced
       if retry_count <= max_retries
         now = Time.now
         retry_at = now + (backoff.call(retry_after, retry_count))
-        @on_retry.each { |fn| fn.call(retry_count:, exception:, message:, retry_at:) }
+        safe_dispatch do
+          @on_retry.each { |fn| fn.call(retry_count:, exception:, message:, retry_at:) }
+        end
+
         retry_count += 1
         group.retry(retry_at, retry_count:)
       else
-        @on_fail.each { |fn| fn.call(retry_count:, exception:, message:) }
+        safe_dispatch do
+          @on_fail.each { |fn| fn.call(retry_count:, exception:, message:) }
+        end
+
         group.fail(exception:)
       end
     end
@@ -99,5 +105,13 @@ module Sourced
     private
 
     attr_reader :backoff
+
+    def safe_dispatch(&)
+      begin
+        yield
+      rescue StandardError => e
+        Console.error(exception: e)
+      end
+    end
   end
 end
