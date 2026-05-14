@@ -11,13 +11,16 @@ module Sourced
   #   strategy = Sourced::ErrorStrategy.new do |s|
   #     s.retry(times: 3, after: 5, backoff: ->(retry_after, retry_count) { retry_after * retry_count })
   #
-  #     s.on_retry do |n, exception, message, later|
-  #       LOGGER.info("Retrying #{n} times")
+  #     s.on_retry do |retry_count:, exception:, message:, retry_at:|
+  #       LOGGER.info("Retrying #{retry_count} times, next at #{retry_at}")
   #     end
   #
-  #     s.on_fail do |retry_count, exception, _message|
+  #     s.on_fail do |retry_count:, exception:, message:|
   #       Sentry.capture_exception(exception)
   #     end
+  #
+  # Subscribers can also be objects that implement #report_retry / #report_failure
+  # (with the same keyword signatures) — useful for instrumentation adapters.
   #   end
   class ErrorStrategy
     MAX_RETRIES = 0
@@ -53,12 +56,24 @@ module Sourced
     end
 
     def on_retry(callable = nil, &blk)
-      @on_retry << (callable || blk)
+      callable ||= blk
+      callable = callable.method(:report_retry) if callable.respond_to?(:report_retry)
+      unless callable.respond_to?(:call)
+        raise ArgumentError, "on_retry expects a #call or #report_retry interface, but got #{callable.inspect}"
+      end
+
+      @on_retry << callable
       self
     end
 
     def on_fail(callable = nil, &blk)
-      @on_fail << (callable || blk)
+      callable ||= blk
+      callable = callable.method(:report_failure) if callable.respond_to?(:report_failure)
+      unless callable.respond_to?(:call)
+        raise ArgumentError, "on_fail expects a #call or #report_failure interface, but got #{callable.inspect}"
+      end
+
+      @on_fail << callable
       self
     end
 
@@ -72,11 +87,11 @@ module Sourced
       if retry_count <= max_retries
         now = Time.now
         retry_at = now + (backoff.call(retry_after, retry_count))
-        @on_retry.each { |fn| fn.call(retry_count, exception, message, retry_at) }
+        @on_retry.each { |fn| fn.call(retry_count:, exception:, message:, retry_at:) }
         retry_count += 1
         group.retry(retry_at, retry_count:)
       else
-        @on_fail.each { |fn| fn.call(retry_count, exception, message) }
+        @on_fail.each { |fn| fn.call(retry_count:, exception:, message:) }
         group.fail(exception:)
       end
     end

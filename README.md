@@ -669,14 +669,14 @@ Sourced.configure do |c|
       backoff: ->(retry_after, retry_count) { retry_after * (2**(retry_count - 1)) }
     )
 
-    s.on_retry do |retry_count, exception, message, later|
+    s.on_retry do |retry_count:, exception:, message:, retry_at:|
       LOGGER.warn(
         "Sourced retry ##{retry_count} for #{message.type} (#{message.id}) " \
-        "at #{later}: #{exception.class}: #{exception.message}"
+        "at #{retry_at}: #{exception.class}: #{exception.message}"
       )
     end
 
-    s.on_fail do |retry_count, exception, message|
+    s.on_fail do |retry_count:, exception:, message:|
       LOGGER.error(
         "Sourced failing consumer group after #{retry_count} retries for #{message.type} (#{message.id}): " \
         "#{exception.class}: #{exception.message}"
