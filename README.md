@@ -568,39 +568,20 @@ This registers the reactor's consumer group with the store and adds it to the gl
 
 ## Background processing
 
-### Falcon (recommended)
+### Running inside a web server
 
-`Sourced::Falcon` provides a ready-made Falcon service that runs both the web server and Sourced background workers as sibling fibers. No separate worker process needed.
+To run Sourced workers in the same process as your web app, call `Sourced.setup!` on boot (or, for forking servers, in each child after fork) and start a `Sourced::Dispatcher` in the server's async context. `Sourced.setup!` re-establishes fresh database connections, which is necessary because SQLite (and pooled) connections are not fork-safe.
 
 ```ruby
-# falcon.rb
-#!/usr/bin/env falcon-host
-require_relative 'domain'
-require_relative 'app'
-require 'sourced/falcon'
+# In your server's per-worker boot / after-fork hook:
+Sourced.setup!
 
-service "my-app" do
-  include Sourced::Falcon::Environment
-  include Falcon::Environment::Rackup
-
-  url "http://localhost:9292"
-  count 1
+Async do |task|
+  Sourced::Dispatcher.start(task)
 end
 ```
 
-Start with:
-
-```bash
-bundle exec falcon host
-```
-
-The service automatically calls `Sourced.setup!` in each forked process, which replays the `Sourced.configure` block to create fresh database connections. This is necessary because SQLite connections are not fork-safe.
-
-#### How it works
-
-- `Sourced::Falcon::Environment` — mixin that sets the `service_class` to `Sourced::Falcon::Service`. Include it in your Falcon service definition alongside `Falcon::Environment::Rackup`.
-- `Sourced::Falcon::Service` — extends `Falcon::Service::Server`. On `run`, it calls `Sourced.setup!`, starts the web server, and spawns a `Sourced::Dispatcher` with all settings from `Sourced.config`. On `stop`, it shuts down the dispatcher before the server.
-- No separate HouseKeeper fibers are needed — the `StaleClaimReaper` is embedded in the Sourced Dispatcher.
+The `Dispatcher` reads all settings (`worker_count`, `batch_size`, etc.) from `Sourced.config`, and embeds the `StaleClaimReaper`, so no separate housekeeper fibers are needed.
 
 ### Supervisor (standalone)
 
@@ -1071,7 +1052,7 @@ See `examples/app/` for a complete Sinatra application with:
 - Two deciders (course creation with name uniqueness, student enrolment with capacity limits)
 - An event-sourced projector writing JSON files
 - Synchronous command handling via `Sourced.handle!` in HTTP endpoints
-- Background worker processing via Falcon
+- Background worker processing in the same process as the web server
 
 ## Setup & configuration
 

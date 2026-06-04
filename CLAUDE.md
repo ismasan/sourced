@@ -26,7 +26,6 @@ Sourced is a Ruby library for **aggregateless, stream-less event sourcing**. Mes
 - **CommandContext** (`lib/sourced/command_context.rb`) — builds commands from raw attributes; supports per-message and `any` hooks.
 - **Topology** (`lib/sourced/topology.rb`) — graph of reactors / message flows.
 - **Installer + migrations** (`lib/sourced/installer.rb`, `lib/sourced/migrations/`) — Sequel migration template for installing store tables.
-- **Falcon integration** (`lib/sourced/falcon/`) — `Environment` + `Service` for deferred post-fork setup.
 
 ### Message flow
 
@@ -78,7 +77,7 @@ Sourced.register(SomeDecider)
 Sourced.register(SomeProjector)
 ```
 
-- `Sourced.configure` stores the block and calls `setup!`; re-runnable post-fork to re-establish DB connections (used by Falcon integration).
+- `Sourced.configure` stores the block, applies it to the reused `Sourced.config`, and calls `config.setup!` (does not freeze). `Sourced.setup!` re-applies the block, re-establishes DB connections via `config.disconnect!`, and freezes the config — call it on boot/after-fork to make connections fork-safe.
 - `Sourced.store`, `Sourced.router`, `Sourced.topology`, `Sourced.reset!` — module-level accessors.
 - `Sourced.handle!(ReactorClass, command)` — synchronous command dispatch (for web controllers): validates, loads history via partition read, decides, appends with guard, advances registered offsets. Returns `HandleResult(command, reactor, events)`.
 - `Sourced.load(ReactorClass, **partition_values)` — loads a reactor instance by evolving over AND-filtered partition history. Returns `[instance, read_result]`.
@@ -171,7 +170,6 @@ In reactions: `dispatch(Cmd, ...).at(time)`.
 - Dispatch: `lib/sourced/{dispatcher,worker,work_queue,stale_claim_reaper,scheduled_message_poller,inline_notifier}.rb`
 - Router/topology: `lib/sourced/{router,topology}.rb`
 - Messages: `lib/sourced/message.rb` (includes `QueryCondition`, `ConsistencyGuard`)
-- Falcon: `lib/sourced/falcon/{environment,service}.rb`
 - Testing: `lib/sourced/testing/rspec.rb`
 
 ## Local scratch (untracked)
