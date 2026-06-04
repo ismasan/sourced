@@ -47,12 +47,17 @@ module Sourced
   # Re-run the configure block on the reused Configuration, dropping the existing
   # store/router first so fresh database connections are established. Safe to call
   # after a process fork. Config-only settings (e.g. error_strategy callbacks
-  # registered outside the configure block) are preserved.
+  # registered outside the configure block) are preserved, and reactors registered
+  # via {.register} are re-registered on the rebuilt router (and their consumer
+  # groups re-registered against the fresh store connection).
   def self.setup!
+    reactors = config.router&.reactors&.dup || []
     config.disconnect!
     @configure_block&.call(config)
     config.setup!
+    reactors.each { |reactor| config.router.register(reactor) }
     config.freeze
+    @topology = nil
   end
 
   # Register a reactor class with the global router.

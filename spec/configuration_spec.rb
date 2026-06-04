@@ -128,6 +128,19 @@ RSpec.describe Sourced::Configuration do
       expect(Sourced.config).to be_frozen
     end
 
+    it 're-registers reactors on the rebuilt router (survive fork re-setup)' do
+      Sourced.configure {}
+      Sourced.register(reactor_class)
+      expect(Sourced.config.router.reactors).to include(reactor_class)
+
+      Sourced.setup!
+
+      # Router was rebuilt around a fresh store, but the reactor is still
+      # registered (and its consumer group re-registered against the new store).
+      expect(Sourced.config.router.reactors).to eq([reactor_class])
+      expect(Sourced.config.store.consumer_group_active?(reactor_class)).to be(true)
+    end
+
     it 'preserves error_strategy callbacks registered outside the configure block' do
       Sourced.configure do |c|
         c.error_strategy.retry(times: 2)
