@@ -110,6 +110,34 @@ RSpec.describe Sourced::Configuration do
       expect(Sourced.config).to be_frozen
     end
 
+    it 'accumulates multiple configure blocks and replays all of them' do
+      first_calls = 0
+      second_calls = 0
+
+      Sourced.configure do |c|
+        first_calls += 1
+        c.worker_count = 4
+      end
+      Sourced.configure do |c|
+        second_calls += 1
+        c.batch_size = 100
+      end
+
+      # Each block applied immediately to the shared config instance.
+      expect(first_calls).to eq(1)
+      expect(second_calls).to eq(1)
+      expect(Sourced.config.worker_count).to eq(4)
+      expect(Sourced.config.batch_size).to eq(100)
+
+      Sourced.setup!
+
+      # Both blocks re-ran against the same config.
+      expect(first_calls).to eq(2)
+      expect(second_calls).to eq(2)
+      expect(Sourced.config.worker_count).to eq(4)
+      expect(Sourced.config.batch_size).to eq(100)
+    end
+
     it 'creates a new store connection on each call' do
       Sourced.configure {}
       store1 = Sourced.config.store

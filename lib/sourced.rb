@@ -35,25 +35,33 @@ module Sourced
     @config ||= Configuration.new
   end
 
-  # Configure the Sourced module. Stores the block for re-running after fork
-  # (see {.setup!}), then runs it immediately.
+  # Configure the Sourced module. Blocks accumulate across calls (so different
+  # layers can each contribute configuration) and are all re-run on {.setup!}.
+  # This block is also applied immediately to the reused {.config} instance.
   # @yieldparam config [Configuration]
   def self.configure(&block)
-    @configure_block = block
-    @configure_block.call(config)
+    configure_blocks << block
+    block.call(config)
     config.setup!
   end
 
-  # Re-run the configure block on the reused Configuration, dropping the existing
+  # The accumulated configure blocks, replayed in registration order by {.setup!}.
+  # @return [Array<Proc>]
+  def self.configure_blocks
+    @configure_blocks ||= []
+  end
+  private_class_method :configure_blocks
+
+  # Re-run all configure blocks on the reused Configuration, dropping the existing
   # store/router first so fresh database connections are established. Safe to call
   # after a process fork. Config-only settings (e.g. error_strategy callbacks
-  # registered outside the configure block) are preserved, and reactors registered
+  # registered outside the configure blocks) are preserved, and reactors registered
   # via {.register} are re-registered on the rebuilt router (and their consumer
   # groups re-registered against the fresh store connection).
   def self.setup!
     reactors = config.router&.reactors&.dup || []
     config.disconnect!
-    @configure_block&.call(config)
+    configure_blocks.each { |block| block.call(config) }
     config.setup!
     reactors.each { |reactor| config.router.register(reactor) }
     config.freeze
@@ -94,7 +102,7 @@ module Sourced
   # Reset the global configuration. For test teardown.
   def self.reset!
     @config = nil
-    @configure_block = nil
+    @configure_blocks = nil
     @topology = nil
   end
 
