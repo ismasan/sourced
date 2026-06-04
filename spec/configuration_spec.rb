@@ -26,7 +26,7 @@ RSpec.describe Sourced::Configuration do
   end
 
   describe 'Sourced.configure' do
-    it 'yields the config and freezes it after setup' do
+    it 'yields the config and leaves it mutable (does not freeze)' do
       Sourced.configure do |c|
         c.worker_count = 4
         c.batch_size = 100
@@ -34,7 +34,7 @@ RSpec.describe Sourced::Configuration do
 
       expect(Sourced.config.worker_count).to eq(4)
       expect(Sourced.config.batch_size).to eq(100)
-      expect(Sourced.config).to be_frozen
+      expect(Sourced.config).not_to be_frozen
     end
 
     it 'calls setup! which creates store and router' do
@@ -92,7 +92,7 @@ RSpec.describe Sourced::Configuration do
       end
     end
 
-    it 'replays the configure block on a fresh Configuration' do
+    it 'replays the configure block on the reused Configuration' do
       call_count = 0
       Sourced.configure do |c|
         call_count += 1
@@ -105,7 +105,7 @@ RSpec.describe Sourced::Configuration do
       Sourced.setup!
 
       expect(call_count).to eq(2)
-      expect(Sourced.config).not_to be(original_config)
+      expect(Sourced.config).to be(original_config)
       expect(Sourced.config.worker_count).to eq(8)
       expect(Sourced.config).to be_frozen
     end
@@ -126,6 +126,30 @@ RSpec.describe Sourced::Configuration do
       expect(Sourced.config.store).to be_a(Sourced::Store)
       expect(Sourced.config.router).to be_a(Sourced::Router)
       expect(Sourced.config).to be_frozen
+    end
+
+    it 'preserves error_strategy callbacks registered outside the configure block' do
+      Sourced.configure do |c|
+        c.error_strategy.retry(times: 2)
+      end
+
+      fired = []
+      Sourced.config.error_strategy.on_retry { |retry_count:, **| fired << retry_count }
+
+      Sourced.setup!
+
+      # Block retry config re-applied, and the externally-registered callback
+      # survives the re-setup and still fires.
+      strategy = Sourced.config.error_strategy
+      expect(strategy.max_retries).to eq(2)
+      expect(strategy).to be_frozen
+
+      group = instance_double('Group')
+      allow(group).to receive(:error_context).and_return(retry_count: 1)
+      allow(group).to receive(:retry)
+      strategy.call(RuntimeError.new('boom'), double('Message'), group)
+
+      expect(fired).to eq([1])
     end
   end
 
@@ -204,24 +228,27 @@ RSpec.describe Sourced::Configuration do
       expect { config.error_strategy = 'not callable' }.to raise_error(ArgumentError)
     end
 
-    it 'configures a new ErrorStrategy when called with a block' do
+    it 'is configured by mutating the strategy in place' do
       config = described_class.new
-      config.error_strategy do |s|
-        s.retry(times: 5, after: 10)
-      end
+      config.error_strategy.retry(times: 5, after: 10)
 
       expect(config.error_strategy).to be_a(Sourced::ErrorStrategy)
       expect(config.error_strategy.max_retries).to eq(5)
       expect(config.error_strategy.retry_after).to eq(10)
     end
 
-    it 'replaces a previously assigned strategy when called with a block' do
+    it 'stays mutable so callbacks can be registered after retry config' do
       config = described_class.new
-      config.error_strategy = ->(_e, _m, _g) {}
-      config.error_strategy { |s| s.retry(times: 2) }
+      config.error_strategy.retry(times: 3)
+      expect { config.error_strategy.on_retry { } }.not_to raise_error
+    end
 
-      expect(config.error_strategy).to be_a(Sourced::ErrorStrategy)
-      expect(config.error_strategy.max_retries).to eq(2)
+    it 'is frozen when the configuration is frozen' do
+      config = described_class.new
+      config.freeze
+
+      expect(config.error_strategy).to be_frozen
+      expect { config.error_strategy.on_fail { } }.to raise_error(FrozenError)
     end
   end
 

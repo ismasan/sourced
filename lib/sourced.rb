@@ -40,16 +40,19 @@ module Sourced
   # @yieldparam config [Configuration]
   def self.configure(&block)
     @configure_block = block
-    setup!
+    @configure_block.call(config)
+    config.setup!
   end
 
-  # Run (or re-run) the configure block on a fresh Configuration.
-  # Safe to call after a process fork to re-establish database connections.
+  # Re-run the configure block on the reused Configuration, dropping the existing
+  # store/router first so fresh database connections are established. Safe to call
+  # after a process fork. Config-only settings (e.g. error_strategy callbacks
+  # registered outside the configure block) are preserved.
   def self.setup!
-    @config = Configuration.new
-    @configure_block&.call(@config)
-    @config.setup!
-    @config.freeze
+    config.disconnect!
+    @configure_block&.call(config)
+    config.setup!
+    config.freeze
   end
 
   # Register a reactor class with the global router.

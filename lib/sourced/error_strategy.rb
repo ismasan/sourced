@@ -7,21 +7,24 @@ module Sourced
   # It can be configured to retry a number of times with a delay between retries.
   # It can also register callbacks to be called on retry and on failure.
   #
+  # The strategy is mutable after construction: retry policy and callbacks can be
+  # configured separately, from different layers. It becomes immutable once frozen
+  # (see {Configuration#freeze}).
+  #
   # @example retry with exponential back off and callbacks
-  #   strategy = Sourced::ErrorStrategy.new do |s|
-  #     s.retry(times: 3, after: 5, backoff: ->(retry_after, retry_count) { retry_after * retry_count })
+  #   strategy = Sourced::ErrorStrategy.new
+  #   strategy.retry(times: 3, after: 5, backoff: ->(retry_after, retry_count) { retry_after * retry_count })
   #
-  #     s.on_retry do |retry_count:, exception:, message:, retry_at:|
-  #       LOGGER.info("Retrying #{retry_count} times, next at #{retry_at}")
-  #     end
+  #   strategy.on_retry do |retry_count:, exception:, message:, retry_at:|
+  #     LOGGER.info("Retrying #{retry_count} times, next at #{retry_at}")
+  #   end
   #
-  #     s.on_fail do |retry_count:, exception:, message:|
-  #       Sentry.capture_exception(exception)
-  #     end
+  #   strategy.on_fail do |retry_count:, exception:, message:|
+  #     Sentry.capture_exception(exception)
+  #   end
   #
   # Subscribers can also be objects that implement #report_retry / #report_failure
   # (with the same keyword signatures) — useful for instrumentation adapters.
-  #   end
   class ErrorStrategy
     MAX_RETRIES = 0
     # seconds
@@ -30,18 +33,21 @@ module Sourced
 
     attr_reader :max_retries, :retry_after
 
-    def initialize(&setup)
+    def initialize
       @max_retries = MAX_RETRIES
       @retry_after = RETRY_AFTER
       @backoff = BACKOFF
       @on_retry = []
       @on_fail = []
+    end
 
-      yield(self) if block_given?
-
+    # Freeze the strategy and its callback lists. Called by {Configuration#freeze}
+    # once configuration is finalized, making the strategy immutable for processing.
+    # @return [self]
+    def freeze
       @on_retry.freeze
       @on_fail.freeze
-      freeze
+      super
     end
 
     # @option times [Integer] number of retries. Default: 0

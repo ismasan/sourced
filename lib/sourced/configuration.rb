@@ -28,6 +28,12 @@ module Sourced
 
     attr_reader :store, :router
 
+    # The mutable error strategy. Configure retry policy and register callbacks
+    # directly on it (possibly from different layers); it freezes when the
+    # configuration is frozen (see {#freeze}).
+    # @return [ErrorStrategy, #call]
+    attr_reader :error_strategy
+
     def initialize
       @logger = Logger.new($stdout)
       @worker_count = 2
@@ -60,10 +66,12 @@ module Sourced
       @error_strategy = strategy
     end
 
-    def error_strategy(&block)
-      return @error_strategy unless block_given?
-
-      @error_strategy = ErrorStrategy.new(&block)
+    # Deep-freeze: also freeze the error strategy so it can't be reconfigured
+    # once the configuration is finalized.
+    # @return [self]
+    def freeze
+      @error_strategy.freeze
+      super
     end
 
     def setup!
@@ -76,6 +84,17 @@ module Sourced
       @store.install!
       @router ||= Router.new(store: @store)
       @setup = true
+    end
+
+    # Drop the store and router and mark the configuration as un-setup, so the
+    # next {#setup!} (after re-running the configure block) establishes fresh
+    # database connections. Used by {Sourced.setup!} after a process fork.
+    # @return [self]
+    def disconnect!
+      @store = nil
+      @router = nil
+      @setup = false
+      self
     end
   end
 end

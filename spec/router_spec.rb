@@ -270,9 +270,8 @@ RSpec.describe Sourced::Router do
         RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
       )
 
-      retry_strategy = Sourced::ErrorStrategy.new do |s|
-        s.retry(times: 3, after: 5)
-      end
+      retry_strategy = Sourced::ErrorStrategy.new
+      retry_strategy.retry(times: 3, after: 5)
       allow(Sourced).to receive_message_chain(:config, :error_strategy).and_return(retry_strategy)
 
       allow(RouterTestDecider).to receive(:handle_claim).and_raise(RuntimeError, 'boom')

@@ -656,35 +656,48 @@ So retries are built in already, but they are opt-in via the error strategy conf
 
 ### Example: exponential backoff retries
 
+The error strategy is mutable, so retry policy and callbacks can be configured
+separately. Set the retry policy in the `Sourced.configure` block:
+
 ```ruby
 require 'sourced'
 
 Sourced.configure do |c|
   c.store = Sequel.sqlite('my_app.db')
 
-  c.error_strategy do |s|
-    s.retry(
-      times: 5,
-      after: 2,
-      backoff: ->(retry_after, retry_count) { retry_after * (2**(retry_count - 1)) }
-    )
-
-    s.on_retry do |retry_count:, exception:, message:, retry_at:|
-      LOGGER.warn(
-        "Sourced retry ##{retry_count} for #{message.type} (#{message.id}) " \
-        "at #{retry_at}: #{exception.class}: #{exception.message}"
-      )
-    end
-
-    s.on_fail do |retry_count:, exception:, message:|
-      LOGGER.error(
-        "Sourced failing consumer group after #{retry_count} retries for #{message.type} (#{message.id}): " \
-        "#{exception.class}: #{exception.message}"
-      )
-    end
-  end
+  c.error_strategy.retry(
+    times: 5,
+    after: 2,
+    backoff: ->(retry_after, retry_count) { retry_after * (2**(retry_count - 1)) }
+  )
 end
 ```
+
+Callbacks can be registered anywhere else — for example from a framework
+integration or instrumentation layer — by mutating `Sourced.config.error_strategy`
+directly. They remain registered until the configuration is frozen (which
+`Sourced.setup!` does at worker boot):
+
+```ruby
+Sourced.config.error_strategy.on_retry do |retry_count:, exception:, message:, retry_at:|
+  LOGGER.warn(
+    "Sourced retry ##{retry_count} for #{message.type} (#{message.id}) " \
+    "at #{retry_at}: #{exception.class}: #{exception.message}"
+  )
+end
+
+Sourced.config.error_strategy.on_fail do |retry_count:, exception:, message:|
+  LOGGER.error(
+    "Sourced failing consumer group after #{retry_count} retries for #{message.type} (#{message.id}): " \
+    "#{exception.class}: #{exception.message}"
+  )
+end
+```
+
+`on_retry` / `on_fail` also accept any callable, or an object responding to
+`#report_retry` / `#report_failure` (with the same keyword signatures) — handy
+for instrumentation adapters. Multiple callbacks can be registered and fire in
+registration order.
 
 With the configuration above, failures retry after:
 

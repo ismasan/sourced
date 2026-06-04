@@ -27,35 +27,32 @@ RSpec.describe Sourced::ErrorStrategy do
       expect(group).not_to have_received(:retry)
     end
 
-    it 'is frozen after construction' do
-      expect(strategy).to be_frozen
+    it 'is mutable after construction' do
+      expect(strategy).not_to be_frozen
     end
   end
 
   describe '#retry configuration' do
     it 'sets max_retries and retry_after' do
-      strategy = described_class.new do |s|
-        s.retry(times: 4, after: 10)
-      end
+      strategy = described_class.new
+      strategy.retry(times: 4, after: 10)
 
       expect(strategy.max_retries).to eq(4)
       expect(strategy.retry_after).to eq(10)
     end
 
     it 'returns self for chaining' do
-      described_class.new do |s|
-        expect(s.retry(times: 1)).to be(s)
-      end
+      strategy = described_class.new
+      expect(strategy.retry(times: 1)).to be(strategy)
     end
   end
 
   describe '#on_retry and #on_fail subscribers' do
     it 'accepts a block that receives keyword arguments' do
       captured = nil
-      strategy = described_class.new do |s|
-        s.retry(times: 1)
-        s.on_retry { |**kwargs| captured = kwargs }
-      end
+      strategy = described_class.new
+      strategy.retry(times: 1)
+      strategy.on_retry { |**kwargs| captured = kwargs }
       allow(group).to receive(:error_context).and_return(retry_count: 1)
 
       Timecop.freeze(Time.utc(2026, 1, 1)) do
@@ -72,9 +69,8 @@ RSpec.describe Sourced::ErrorStrategy do
     it 'accepts a callable' do
       captured = nil
       callback = ->(**kwargs) { captured = kwargs }
-      strategy = described_class.new do |s|
-        s.on_fail(callback)
-      end
+      strategy = described_class.new
+      strategy.on_fail(callback)
 
       strategy.call(exception, message, group)
       expect(captured).to eq(retry_count: 1, exception: exception, message: message)
@@ -82,11 +78,10 @@ RSpec.describe Sourced::ErrorStrategy do
 
     it 'invokes multiple on_retry subscribers in registration order' do
       calls = []
-      strategy = described_class.new do |s|
-        s.retry(times: 2)
-        s.on_retry { |retry_count:, **| calls << [:a, retry_count] }
-        s.on_retry { |retry_count:, **| calls << [:b, retry_count] }
-      end
+      strategy = described_class.new
+      strategy.retry(times: 2)
+      strategy.on_retry { |retry_count:, **| calls << [:a, retry_count] }
+      strategy.on_retry { |retry_count:, **| calls << [:b, retry_count] }
       allow(group).to receive(:error_context).and_return(retry_count: 1)
 
       strategy.call(exception, message, group)
@@ -95,10 +90,9 @@ RSpec.describe Sourced::ErrorStrategy do
 
     it 'invokes multiple on_fail subscribers' do
       calls = []
-      strategy = described_class.new do |s|
-        s.on_fail { |retry_count:, exception:, message:| calls << [:a, retry_count, exception, message] }
-        s.on_fail { |retry_count:, exception:, message:| calls << [:b, retry_count, exception, message] }
-      end
+      strategy = described_class.new
+      strategy.on_fail { |retry_count:, exception:, message:| calls << [:a, retry_count, exception, message] }
+      strategy.on_fail { |retry_count:, exception:, message:| calls << [:b, retry_count, exception, message] }
 
       strategy.call(exception, message, group)
       expect(calls).to eq([
@@ -108,17 +102,24 @@ RSpec.describe Sourced::ErrorStrategy do
     end
 
     it 'returns self from on_retry / on_fail for chaining' do
-      described_class.new do |s|
-        expect(s.on_retry { }).to be(s)
-        expect(s.on_fail  { }).to be(s)
-      end
+      strategy = described_class.new
+      expect(strategy.on_retry { }).to be(strategy)
+      expect(strategy.on_fail  { }).to be(strategy)
     end
 
-    it 'rejects new subscribers added after construction' do
-      strategy = described_class.new do |s|
-        s.on_retry { }
-        s.on_fail  { }
-      end
+    it 'accepts new subscribers added after construction' do
+      calls = []
+      strategy = described_class.new
+      strategy.on_fail { calls << :first }
+      strategy.on_fail { calls << :second }
+
+      strategy.call(exception, message, group)
+      expect(calls).to eq(%i[first second])
+    end
+
+    it 'rejects new subscribers once frozen' do
+      strategy = described_class.new
+      strategy.freeze
 
       expect { strategy.on_retry { } }.to raise_error(FrozenError)
       expect { strategy.on_fail  { } }.to raise_error(FrozenError)
@@ -133,10 +134,9 @@ RSpec.describe Sourced::ErrorStrategy do
         end
       end.new
 
-      strategy = described_class.new do |s|
-        s.retry(times: 1)
-        s.on_retry(reporter)
-      end
+      strategy = described_class.new
+      strategy.retry(times: 1)
+      strategy.on_retry(reporter)
       allow(group).to receive(:error_context).and_return(retry_count: 1)
 
       Timecop.freeze(Time.utc(2026, 1, 1)) do
@@ -154,9 +154,8 @@ RSpec.describe Sourced::ErrorStrategy do
         end
       end.new
 
-      strategy = described_class.new do |s|
-        s.on_fail(reporter)
-      end
+      strategy = described_class.new
+      strategy.on_fail(reporter)
 
       strategy.call(exception, message, group)
       expect(reporter.calls).to eq([[1, exception, message]])
@@ -164,17 +163,13 @@ RSpec.describe Sourced::ErrorStrategy do
 
     it 'raises ArgumentError when on_retry receives something without #call or #report_retry' do
       expect {
-        described_class.new do |s|
-          s.on_retry(Object.new)
-        end
+        described_class.new.on_retry(Object.new)
       }.to raise_error(ArgumentError, /on_retry expects a #call or #report_retry/)
     end
 
     it 'raises ArgumentError when on_fail receives something without #call or #report_failure' do
       expect {
-        described_class.new do |s|
-          s.on_fail(Object.new)
-        end
+        described_class.new.on_fail(Object.new)
       }.to raise_error(ArgumentError, /on_fail expects a #call or #report_failure/)
     end
   end
@@ -184,10 +179,9 @@ RSpec.describe Sourced::ErrorStrategy do
       backoff = ->(retry_after, retry_count) { retry_after * (2**(retry_count - 1)) }
       captured = nil
 
-      strategy = described_class.new do |s|
-        s.retry(times: 3, after: 5, backoff: backoff)
-        s.on_retry { |**kwargs| captured = kwargs }
-      end
+      strategy = described_class.new
+      strategy.retry(times: 3, after: 5, backoff: backoff)
+      strategy.on_retry { |**kwargs| captured = kwargs }
 
       allow(group).to receive(:error_context).and_return(retry_count: 2)
 
@@ -208,10 +202,9 @@ RSpec.describe Sourced::ErrorStrategy do
 
     it 'fails the group when retry_count exceeds max_retries, forwarding retry_count to on_fail' do
       captured = nil
-      strategy = described_class.new do |s|
-        s.retry(times: 2)
-        s.on_fail { |**kwargs| captured = kwargs }
-      end
+      strategy = described_class.new
+      strategy.retry(times: 2)
+      strategy.on_fail { |**kwargs| captured = kwargs }
 
       allow(group).to receive(:error_context).and_return(retry_count: 3)
 
@@ -224,10 +217,9 @@ RSpec.describe Sourced::ErrorStrategy do
 
     it 'treats a missing error_context retry_count as 1' do
       captured = nil
-      strategy = described_class.new do |s|
-        s.retry(times: 1)
-        s.on_retry { |**kwargs| captured = kwargs }
-      end
+      strategy = described_class.new
+      strategy.retry(times: 1)
+      strategy.on_retry { |**kwargs| captured = kwargs }
       allow(group).to receive(:error_context).and_return({})
 
       strategy.call(exception, message, group)
