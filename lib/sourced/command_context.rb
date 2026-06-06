@@ -84,7 +84,7 @@ module Sourced
     #     ctx.build(PlaceOrder, payload: { item: 'hat' })
     #
     # @raise [ArgumentError] if arguments don't match either form
-    # @raise [Sourced::UnknownMessageError] if the type string is not registered in the scope
+    # @raise [Sourced::Message::UnknownMessageError] if the type string is not registered in the scope
     def build(*args)
       cmd = case args
             in [Class => klass, Hash => attrs]

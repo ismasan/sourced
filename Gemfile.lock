@@ -12,6 +12,7 @@ PATH
     sourced (0.0.1)
       async
       plumb (>= 0.0.17)
+      sourced-message
 
 GEM
   remote: https://rubygems.org/
@@ -33,10 +34,15 @@ GEM
       irb (~> 1.10)
       reline (>= 0.3.8)
     diff-lcs (1.5.1)
+    et-orbi (1.4.0)
+      tzinfo
     fiber-annotation (0.2.0)
     fiber-local (1.1.0)
       fiber-storage
     fiber-storage (1.0.1)
+    fugit (1.12.2)
+      et-orbi (~> 1.4)
+      raabro (~> 1.4)
     io-console (0.7.2)
     io-event (1.14.2)
     irb (1.14.0)
@@ -61,6 +67,7 @@ GEM
       concurrent-ruby
     psych (5.1.2)
       stringio
+    raabro (1.4.0)
     racc (1.8.1)
     rainbow (3.1.1)
     rake (13.2.1)
@@ -99,12 +106,17 @@ GEM
     ruby-progressbar (1.13.0)
     sequel (5.84.0)
       bigdecimal
+    sourced-message (0.1.0)
+      fugit
+      plumb (>= 0.0.17)
     sqlite3 (2.8.0)
       mini_portile2 (~> 2.8.0)
     sqlite3 (2.8.0-arm64-darwin)
     stringio (3.2.0)
     timecop (0.9.10)
     traces (0.18.2)
+    tzinfo (2.0.6)
+      concurrent-ruby (~> 1.0)
     unicode-display_width (3.1.4)
       unicode-emoji (~> 4.0, >= 4.0.4)
     unicode-emoji (4.2.0)

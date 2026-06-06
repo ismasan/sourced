@@ -13,8 +13,6 @@ module Sourced
   class Error < StandardError; end
 
   ConcurrentAppendError = Class.new(Error)
-  UnknownMessageError = Class.new(ArgumentError)
-  PastMessageDateError = Class.new(ArgumentError)
 
   # Raised when a batch is partially processed before a message raises.
   # Carries the action_pairs for successfully processed messages,
@@ -191,6 +189,7 @@ end
 
 require 'sourced/configuration'
 require 'sourced/message'
+require 'sourced/message_ext'
 require 'sourced/actions'
 require 'sourced/consumer'
 require 'sourced/evolve'

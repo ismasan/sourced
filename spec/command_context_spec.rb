@@ -45,14 +45,14 @@ RSpec.describe Sourced::CommandContext do
       ctx = described_class.new(metadata: { user_id: 10 })
       expect do
         ctx.build('type' => 'nope', 'payload' => { 'value' => 1 })
-      end.to raise_error(Sourced::UnknownMessageError)
+      end.to raise_error(Sourced::Message::UnknownMessageError)
     end
 
     it 'raises UnknownMessageError for event types when scoped to Command' do
       ctx = described_class.new(metadata: { user_id: 10 })
       expect do
         ctx.build('type' => 'ccc_ctest.added', 'payload' => {})
-      end.to raise_error(Sourced::UnknownMessageError)
+      end.to raise_error(Sourced::Message::UnknownMessageError)
     end
 
     it 'allows scoping to a custom command subclass' do

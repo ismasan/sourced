@@ -92,7 +92,7 @@ RSpec.describe Sourced::Message do
     it 'raises UnknownMessageError for unknown types' do
       expect {
         Sourced::Message.from(type: 'unknown.type', payload: {})
-      }.to raise_error(Sourced::UnknownMessageError, /Unknown message type: unknown.type/)
+      }.to raise_error(Sourced::Message::UnknownMessageError, /Unknown message type: unknown.type/)
     end
   end
 
@@ -289,7 +289,7 @@ RSpec.describe Sourced::Message do
     it 'raises PastMessageDateError when given a past time' do
       msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
       past = msg.created_at - 3600
-      expect { msg.at(past) }.to raise_error(Sourced::PastMessageDateError)
+      expect { msg.at(past) }.to raise_error(Sourced::Message::PastMessageDateError)
     end
 
     it 'does not mutate the original message' do
