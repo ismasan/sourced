@@ -121,6 +121,7 @@ module Sourced
       @db.run('PRAGMA journal_mode = WAL')
       @db.run('PRAGMA busy_timeout = 5000')
 
+      @prefix = prefix
       @installer = Installer.new(db, logger: @logger, prefix: prefix)
 
       # Source table name symbols from the installer
@@ -137,6 +138,23 @@ module Sourced
       # Populated by register_consumer_group.
       # { group_id => { cg_id: Integer, partition_by: Array<String> | nil } }
       @registered_groups = {}
+    end
+
+    # @return [String]
+    def inspect
+      db_desc =
+        begin
+          db.opts[:database] || db.url || db.adapter_scheme
+        rescue StandardError
+          db.class.name
+        end
+      format(
+        '#<%s db=%s prefix=%p installed=%s>',
+        self.class.name,
+        db_desc,
+        @prefix,
+        installed?
+      )
     end
 
     # Whether all required tables exist.
