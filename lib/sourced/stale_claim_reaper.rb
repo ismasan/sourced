@@ -70,6 +70,9 @@ module Sourced
     def reap
       released = @store.release_stale_claims(ttl_seconds: @ttl_seconds)
       @logger.info "Sourced::StaleClaimReaper: released #{released} stale claims" if released > 0
+
+      reaped = @store.release_empty_queue_offsets
+      @logger.info "Sourced::StaleClaimReaper: reaped #{reaped} drained queue offsets" if reaped > 0
     end
   end
 end

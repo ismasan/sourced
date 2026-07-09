@@ -62,7 +62,7 @@ GEM
     parser (3.3.7.1)
       ast (~> 2.4.1)
       racc
-    plumb (0.0.17)
+    plumb (0.0.18)
       bigdecimal
       concurrent-ruby
     psych (5.1.2)

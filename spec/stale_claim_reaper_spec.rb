@@ -194,6 +194,35 @@ RSpec.describe Sourced::StaleClaimReaper do
       expect(store).to receive(:release_stale_claims).with(ttl_seconds: 60).and_return(0)
       reaper.send(:reap)
     end
+
+    it 'also reaps drained queue offsets' do
+      reaper = described_class.new(
+        store: store,
+        interval: 30,
+        ttl_seconds: 60,
+        logger: logger
+      )
+
+      allow(store).to receive(:release_stale_claims).and_return(0)
+      expect(store).to receive(:release_empty_queue_offsets).and_return(0)
+      reaper.send(:reap)
+    end
+
+    it 'removes a drained queue offset end-to-end' do
+      reaper = described_class.new(store: store, interval: 30, ttl_seconds: 60, logger: logger)
+
+      store.register_consumer_group('q-group', partition_by: 'device_id', queue_mode: true)
+      store.append(
+        StaleClaimReaperTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+      claim = store.claim_next('q-group', partition_by: 'device_id',
+        handled_types: ['reaper_test.device.registered'], worker_id: 'w1')
+      store.ack_and_delete('q-group', offset_id: claim.offset_id, positions: claim.messages.map(&:position))
+
+      expect(db[:sourced_offsets].count).to eq(1)
+      reaper.send(:reap)
+      expect(db[:sourced_offsets].count).to eq(0)
+    end
   end
 
   describe '#run and #stop' do

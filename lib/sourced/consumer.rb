@@ -65,6 +65,23 @@ module Sourced
       @group_id = id
     end
 
+    # Opt this reactor into queue (delete-on-ack) semantics. In queue mode the
+    # store deletes a message after it is successfully acked instead of advancing
+    # a cursor over it. The reactor must exclusively own its handled message types
+    # (enforced at registration). Per-partition ordering is preserved via the
+    # normal claim mechanism.
+    #
+    # @param value [Boolean]
+    # @return [void]
+    def queue_mode(value = true)
+      @queue_mode = value
+    end
+
+    # @return [Boolean] whether this reactor uses queue (delete-on-ack) semantics
+    def queue_mode?
+      @queue_mode ||= false
+    end
+
     # Message types this consumer evolves from. Used by {#context_for}
     # to build query conditions for history reads.
     # Defaults to empty; overridden by Sourced::Evolve mixin.

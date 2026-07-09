@@ -35,6 +35,12 @@ module RouterTestMessages
     attribute :device_id, String
     attribute :event_type, String
   end
+
+  # Queue-mode worker messages
+  QueueJob = Sourced::Message.define('router_test.queue_job') do
+    attribute :queue_id, String
+    attribute :name, String
+  end
 end
 
 # Test decider for router specs
@@ -103,6 +109,43 @@ class RouterTestAuditReactor
       )
       [Sourced::Actions::Append.new(audit), msg]
     end
+  end
+end
+
+# Queue-mode worker: deletes its messages on ack. Fails on a job named 'fail'.
+class RouterTestQueueWorker
+  extend Sourced::Consumer
+
+  partition_by :queue_id
+  consumer_group 'router-test-queue'
+  queue_mode
+
+  def self.handled_messages
+    [RouterTestMessages::QueueJob]
+  end
+
+  def self.handle_claim(claim)
+    each_with_partial_ack(claim.messages) do |msg|
+      raise 'boom' if msg.payload.name == 'fail'
+
+      [Sourced::Actions::OK, msg]
+    end
+  end
+end
+
+# Non-queue reactor that overlaps RouterTestQueueWorker's message type.
+class RouterTestQueueObserver
+  extend Sourced::Consumer
+
+  partition_by :queue_id
+  consumer_group 'router-test-queue-observer'
+
+  def self.handled_messages
+    [RouterTestMessages::QueueJob]
+  end
+
+  def self.handle_claim(claim)
+    [Sourced::Actions::OK, claim.messages.last]
   end
 end
 
@@ -551,6 +594,77 @@ RSpec.describe Sourced::Router do
         'router_test.device.bound',
         'router_test.device.registered'
       ])
+    end
+  end
+
+  describe 'queue_mode reactors' do
+    def append_job(queue_id, name)
+      store.append(RouterTestMessages::QueueJob.new(payload: { queue_id: queue_id, name: name }))
+    end
+
+    it 'deletes processed messages on ack instead of advancing a cursor' do
+      router.register(RouterTestQueueWorker)
+      append_job('q1', 'a')
+      append_job('q1', 'b')
+
+      expect(router.handle_next_for(RouterTestQueueWorker)).to be true
+
+      expect(db[:sourced_messages].where(message_type: 'router_test.queue_job').count).to eq(0)
+      # offset row kept as the partition lock
+      expect(db[:sourced_offsets].count).to eq(1)
+    end
+
+    it 'leaves the partition claimable for new messages after deletion' do
+      router.register(RouterTestQueueWorker)
+      append_job('q1', 'a')
+      router.handle_next_for(RouterTestQueueWorker)
+
+      append_job('q1', 'c')
+      expect(router.handle_next_for(RouterTestQueueWorker)).to be true
+      expect(db[:sourced_messages].where(message_type: 'router_test.queue_job').count).to eq(0)
+    end
+
+    it 'on partial batch failure deletes only successful messages; failed + remainder survive' do
+      router.register(RouterTestQueueWorker)
+      allow(RouterTestQueueWorker).to receive(:on_exception) # swallow terminal handling
+      append_job('q1', 'a')
+      append_job('q1', 'fail')
+      append_job('q1', 'c')
+
+      router.handle_next_for(RouterTestQueueWorker)
+
+      remaining = store.read(RouterTestMessages::QueueJob.to_conditions(queue_id: 'q1')).messages
+      expect(remaining.map { |m| m.payload.name }).to eq(%w[fail c])
+    end
+
+    it 'keeps messages on full failure (release), allowing retry' do
+      router.register(RouterTestQueueWorker)
+      allow(RouterTestQueueWorker).to receive(:on_exception)
+      append_job('q1', 'fail')
+
+      router.handle_next_for(RouterTestQueueWorker)
+
+      remaining = store.read(RouterTestMessages::QueueJob.to_conditions(queue_id: 'q1')).messages
+      expect(remaining.map { |m| m.payload.name }).to eq(%w[fail])
+    end
+
+    describe 'exclusive ownership validation' do
+      it 'raises when a queue-mode reactor overlaps an already-registered reactor' do
+        router.register(RouterTestQueueObserver)
+        expect { router.register(RouterTestQueueWorker) }
+          .to raise_error(ArgumentError, /exclusive ownership.*router_test\.queue_job/m)
+      end
+
+      it 'raises when a reactor overlaps an already-registered queue-mode reactor' do
+        router.register(RouterTestQueueWorker)
+        expect { router.register(RouterTestQueueObserver) }
+          .to raise_error(ArgumentError, /exclusive ownership.*router_test\.queue_job/m)
+      end
+
+      it 'allows a queue-mode reactor with no overlap' do
+        router.register(RouterTestDecider)
+        expect { router.register(RouterTestQueueWorker) }.not_to raise_error
+      end
     end
   end
 end

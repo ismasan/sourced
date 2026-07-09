@@ -13,10 +13,12 @@ module Sourced
     end
 
     def register(reactor_class)
+      validate_exclusive_ownership!(reactor_class)
       @reactors << reactor_class
       store.register_consumer_group(
         reactor_class.group_id,
-        partition_by: reactor_class.partition_keys.map(&:to_s)
+        partition_by: reactor_class.partition_keys.map(&:to_s),
+        queue_mode: reactor_class.queue_mode?
       )
       @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
     end
@@ -48,11 +50,11 @@ module Sourced
           return true
         end
 
-        execute_actions(action_pairs, claim, reactor_class.group_id)
+        execute_actions(action_pairs, claim, reactor_class)
         true
 
       rescue Sourced::PartialBatchError => e
-        execute_actions(e.action_pairs, claim, reactor_class.group_id)
+        execute_actions(e.action_pairs, claim, reactor_class)
         store.updating_consumer_group(reactor_class.group_id) do |group|
           reactor_class.on_exception(e, e.failed_message, group)
         end
@@ -137,6 +139,31 @@ module Sourced
 
     private
 
+    # Enforce that a queue-mode reactor exclusively owns its message types.
+    #
+    # In queue (delete-on-ack) mode a message is deleted once the reactor acks it,
+    # so no other reactor may handle the same types. Raises if the reactor being
+    # registered is queue-mode and overlaps any already-registered reactor, or if
+    # it overlaps an already-registered queue-mode reactor.
+    #
+    # @param reactor_class [Class] the reactor being registered
+    # @raise [ArgumentError] on a message-type overlap involving a queue-mode reactor
+    def validate_exclusive_ownership!(reactor_class)
+      new_types = reactor_class.handled_messages.map(&:type)
+
+      @reactors.each do |existing|
+        next unless reactor_class.queue_mode? || existing.queue_mode?
+
+        overlap = new_types & existing.handled_messages.map(&:type)
+        next if overlap.empty?
+
+        offender = reactor_class.queue_mode? ? reactor_class : existing
+        raise ArgumentError, <<~MSG.strip
+          Cannot register #{reactor_class.name}: queue-mode reactor #{offender.name} requires exclusive ownership of its message types, but #{reactor_class.name} and #{existing.name} both handle: #{overlap.sort.join(', ')}
+        MSG
+      end
+    end
+
     # Resolve a reactor class or group_id string to a registered reactor class.
     #
     # @param reactor_or_id [Class, String] a reactor class (returned as-is) or a +group_id+ string
@@ -149,11 +176,13 @@ module Sourced
         raise(ArgumentError, "No reactor registered with group_id '#{reactor_or_id}'")
     end
 
-    def execute_actions(action_pairs, claim, group_id)
+    def execute_actions(action_pairs, claim, reactor_class)
+      group_id = reactor_class.group_id
       after_sync_actions = []
 
       store.db.transaction do
         last_position = nil
+        acked_positions = []
         Array(action_pairs).each do |(actions, source_message)|
           Array(actions).each do |action|
             if action.is_a?(Actions::AfterSync)
@@ -162,11 +191,18 @@ module Sourced
               action.execute(store, source_message)
             end
           end
-          last_position = source_message.position if source_message.respond_to?(:position)
+          if source_message.respond_to?(:position)
+            last_position = source_message.position
+            acked_positions << source_message.position
+          end
         end
 
         if last_position
-          store.ack(group_id, offset_id: claim.offset_id, position: last_position)
+          if reactor_class.queue_mode?
+            store.ack_and_delete(group_id, offset_id: claim.offset_id, positions: acked_positions)
+          else
+            store.ack(group_id, offset_id: claim.offset_id, position: last_position)
+          end
         else
           store.release(group_id, offset_id: claim.offset_id)
         end

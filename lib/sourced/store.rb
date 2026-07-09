@@ -454,20 +454,22 @@ module Sourced
     #
     # @param group_id [String] unique identifier for the consumer group
     # @param partition_by [Array<String, Symbol>, nil] attribute names defining partitions
+    # @param queue_mode [Boolean] when true, the group uses queue (delete-on-ack) semantics
     # @return [void]
-    def register_consumer_group(group_id, partition_by: nil)
+    def register_consumer_group(group_id, partition_by: nil, queue_mode: false)
       partition_by_sorted = partition_by ? Array(partition_by).map(&:to_s).sort : nil
       partition_by_json = partition_by_sorted ? JSON.dump(partition_by_sorted) : nil
+      delivery_mode = queue_mode ? 'queue' : 'log'
       now = Time.now.iso8601
       db.run(<<~SQL)
-        INSERT INTO #{@consumer_groups_table} (group_id, status, highest_position, partition_by, created_at, updated_at)
-        VALUES (#{db.literal(group_id)}, '#{ACTIVE}', 0, #{db.literal(partition_by_json)}, #{db.literal(now)}, #{db.literal(now)})
-        ON CONFLICT(group_id) DO UPDATE SET partition_by = #{db.literal(partition_by_json)}, updated_at = #{db.literal(now)}
+        INSERT INTO #{@consumer_groups_table} (group_id, status, highest_position, partition_by, delivery_mode, created_at, updated_at)
+        VALUES (#{db.literal(group_id)}, '#{ACTIVE}', 0, #{db.literal(partition_by_json)}, #{db.literal(delivery_mode)}, #{db.literal(now)}, #{db.literal(now)})
+        ON CONFLICT(group_id) DO UPDATE SET partition_by = #{db.literal(partition_by_json)}, delivery_mode = #{db.literal(delivery_mode)}, updated_at = #{db.literal(now)}
       SQL
 
       # Cache for hot-path use in append
       cg = db[@consumer_groups_table].where(group_id: group_id).first
-      @registered_groups[group_id] = { cg_id: cg[:id], partition_by: partition_by_sorted }
+      @registered_groups[group_id] = { cg_id: cg[:id], partition_by: partition_by_sorted, queue_mode: queue_mode }
     end
 
     # Whether the consumer group exists and is active.
@@ -537,6 +539,13 @@ module Sourced
       group_id = resolve_group_id(group_id)
       cg = db[@consumer_groups_table].where(group_id: group_id).first
       return unless cg
+
+      # Queue (delete-on-ack) groups have nothing to replay — processed messages
+      # were deleted. Resetting offsets would only orphan the partition locks.
+      if cg[:delivery_mode] == 'queue'
+        logger.warn "Sourced: reset_consumer_group is a no-op for queue-mode group #{group_id} (messages are deleted on ack, nothing to replay)"
+        return
+      end
 
       db[@offsets_table].where(consumer_group_id: cg[:id]).delete
       db[@consumer_groups_table].where(id: cg[:id]).update(
@@ -687,6 +696,48 @@ module Sourced
       end
     end
 
+    # Acknowledge processing in queue (delete-on-ack) mode: delete the processed
+    # message rows, then advance the offset and release the claim exactly like
+    # {#ack}. Intended to run inside the caller's transaction so the deletes and
+    # the ack commit atomically.
+    #
+    # The offset row is kept (it remains the per-partition claim/lock and a
+    # progress high-water mark). Message link rows in the message_key_pairs table
+    # are removed automatically via the foreign-key cascade. Shared key_pairs rows
+    # are left in place.
+    #
+    # @param group_id [String] consumer group identifier
+    # @param offset_id [Integer] offset ID from the claim result
+    # @param positions [Array<Integer>] positions of the processed messages to delete
+    # @return [void]
+    def ack_and_delete(group_id, offset_id:, positions:)
+      cg = db[@consumer_groups_table].where(group_id: group_id).first
+      return unless cg
+
+      positions = Array(positions)
+      return if positions.empty?
+
+      last_position = positions.max
+
+      # message_key_pairs link rows cascade-delete via the FK.
+      db[@messages_table].where(position: positions).delete
+
+      db[@offsets_table].where(id: offset_id, consumer_group_id: cg[:id]).update(
+        last_position: last_position,
+        claimed: 0,
+        claimed_at: nil,
+        claimed_by: nil
+      )
+
+      # Advance the high watermark (never decrease)
+      if last_position > cg[:highest_position]
+        db[@consumer_groups_table].where(id: cg[:id]).update(
+          highest_position: last_position,
+          updated_at: Time.now.iso8601
+        )
+      end
+    end
+
     # Release a claim without advancing the offset. Use for error recovery
     # so the partition can be re-claimed and retried.
     #
@@ -740,6 +791,46 @@ module Sourced
         .where(claimed: 1)
         .where(claimed_by: stale_worker_ids)
         .update(claimed: 0, claimed_at: nil, claimed_by: nil)
+    end
+
+    # Delete drained partition offsets for queue (delete-on-ack) groups.
+    #
+    # An offset is drained when its group uses queue semantics, it is currently
+    # unclaimed, it has at least one partition key (only partitioned offsets are
+    # reaped — a non-partitioned group's single offset is kept), and no remaining
+    # message matches all of its partition key_pairs (AND semantics).
+    #
+    # The reap race is benign: if a new message arrives for a just-reaped
+    # partition, {#claim_next} re-discovers and recreates the offset on the next
+    # cycle. Deleting the offset cascades to offset_key_pairs.
+    #
+    # @return [Integer] number of offsets deleted
+    def release_empty_queue_offsets
+      drained_ids = db.fetch(<<~SQL).map { |r| r[:id] }
+        SELECT o.id
+        FROM #{@offsets_table} o
+        JOIN #{@consumer_groups_table} cg ON o.consumer_group_id = cg.id
+        WHERE cg.delivery_mode = 'queue'
+          AND o.claimed = 0
+          AND EXISTS (
+            SELECT 1 FROM #{@offset_key_pairs_table} WHERE offset_id = o.id
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM #{@offset_key_pairs_table} okp
+            JOIN #{@message_key_pairs_table} mkp ON okp.key_pair_id = mkp.key_pair_id
+            JOIN #{@messages_table} m ON mkp.message_position = m.position
+            WHERE okp.offset_id = o.id
+            GROUP BY m.position
+            HAVING COUNT(*) = (
+              SELECT COUNT(*) FROM #{@offset_key_pairs_table} WHERE offset_id = o.id
+            )
+          )
+      SQL
+
+      return 0 if drained_ids.empty?
+
+      db[@offsets_table].where(id: drained_ids).delete
     end
 
     # Advance a consumer group's offset for a specific partition to at least +position+.

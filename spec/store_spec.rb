@@ -893,6 +893,25 @@ RSpec.describe Sourced::Store do
       expect { store.register_consumer_group('my-group') }.not_to raise_error
       expect(db[:sourced_consumer_groups].where(group_id: 'my-group').count).to eq(1)
     end
+
+    it 'defaults delivery_mode to log' do
+      store.register_consumer_group('my-group')
+      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
+      expect(row[:delivery_mode]).to eq('log')
+    end
+
+    it 'persists delivery_mode queue when queue_mode is true' do
+      store.register_consumer_group('my-group', queue_mode: true)
+      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
+      expect(row[:delivery_mode]).to eq('queue')
+    end
+
+    it 'updates delivery_mode on re-registration' do
+      store.register_consumer_group('my-group', queue_mode: true)
+      store.register_consumer_group('my-group', queue_mode: false)
+      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
+      expect(row[:delivery_mode]).to eq('log')
+    end
   end
 
   describe '#consumer_group_active?' do
@@ -1062,6 +1081,21 @@ RSpec.describe Sourced::Store do
       expect(db[:sourced_offsets].count).to be > 0
       store.reset_consumer_group(reactor)
       expect(db[:sourced_offsets].count).to eq(0)
+    end
+
+    it 'is a no-op for queue-mode groups (offsets kept)' do
+      store.register_consumer_group('queue-group', queue_mode: true)
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      store.claim_next('queue-group',
+        partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'],
+        worker_id: 'w-1')
+
+      expect(db[:sourced_offsets].count).to be > 0
+      store.reset_consumer_group('queue-group')
+      expect(db[:sourced_offsets].count).to be > 0
     end
   end
 
@@ -1797,6 +1831,174 @@ RSpec.describe Sourced::Store do
       r2 = store.claim_next(group_id, partition_by: 'device_id',
         handled_types: ['store_test.device.registered'], worker_id: 'w-1')
       expect(r2).to be_nil
+    end
+  end
+
+  describe '#ack_and_delete' do
+    let(:group_id) { 'queue-test' }
+    let(:handled_types) { ['store_test.device.registered'] }
+
+    before do
+      store.register_consumer_group(group_id, partition_by: 'device_id', queue_mode: true)
+    end
+
+    def claim
+      store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+    end
+
+    it 'deletes the processed messages and their key-pair links' do
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
+      ])
+
+      result = claim
+      positions = result.messages.map(&:position)
+      store.ack_and_delete(group_id, offset_id: result.offset_id, positions: positions)
+
+      expect(db[:sourced_messages].where(position: positions).count).to eq(0)
+      expect(db[:sourced_message_key_pairs].where(message_position: positions).count).to eq(0)
+    end
+
+    it 'keeps shared key_pairs rows' do
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      result = claim
+      store.ack_and_delete(group_id, offset_id: result.offset_id, positions: result.messages.map(&:position))
+
+      expect(db[:sourced_key_pairs].where(name: 'device_id', value: 'dev-1').count).to eq(1)
+    end
+
+    it 'keeps the offset row, releases the claim, and advances last_position' do
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      result = claim
+      last = result.messages.last.position
+      store.ack_and_delete(group_id, offset_id: result.offset_id, positions: [last])
+
+      offset = db[:sourced_offsets].where(id: result.offset_id).first
+      expect(offset).not_to be_nil
+      expect(offset[:last_position]).to eq(last)
+      expect(offset[:claimed]).to eq(0)
+      expect(offset[:claimed_at]).to be_nil
+      expect(offset[:claimed_by]).to be_nil
+    end
+
+    it 'advances the consumer group highest_position' do
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      result = claim
+      last = result.messages.last.position
+      store.ack_and_delete(group_id, offset_id: result.offset_id, positions: [last])
+
+      cg = db[:sourced_consumer_groups].where(group_id: group_id).first
+      expect(cg[:highest_position]).to eq(last)
+    end
+
+    it 'a subsequent claim returns only undeleted messages, in order' do
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      r1 = claim
+      store.ack_and_delete(group_id, offset_id: r1.offset_id, positions: r1.messages.map(&:position))
+
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'C' })
+      ])
+      r2 = claim
+      expect(r2.messages.map { |m| m.payload.name }).to eq(%w[B C])
+    end
+
+    it 'preserves per-partition ordering across partitions' do
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A1' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B1' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A2' })
+      ])
+
+      # Claim and delete dev-1's batch
+      dev1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(dev1.partition_value).to eq({ 'device_id' => 'dev-1' })
+      expect(dev1.messages.map { |m| m.payload.name }).to eq(%w[A1 A2])
+      store.ack_and_delete(group_id, offset_id: dev1.offset_id, positions: dev1.messages.map(&:position))
+
+      # dev-2 still claimable and intact
+      dev2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-2')
+      expect(dev2.partition_value).to eq({ 'device_id' => 'dev-2' })
+      expect(dev2.messages.map { |m| m.payload.name }).to eq(%w[B1])
+    end
+
+    it 'never reuses positions after deleting the highest (AUTOINCREMENT)' do
+      first = store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      result = claim
+      store.ack_and_delete(group_id, offset_id: result.offset_id, positions: [first])
+
+      second = store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
+      )
+      expect(second).to be > first
+    end
+  end
+
+  describe '#release_empty_queue_offsets' do
+    let(:handled_types) { ['store_test.device.registered'] }
+
+    it 'deletes drained queue offsets (unclaimed, no remaining messages)' do
+      store.register_consumer_group('queue-group', partition_by: 'device_id', queue_mode: true)
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      result = store.claim_next('queue-group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.ack_and_delete('queue-group', offset_id: result.offset_id, positions: result.messages.map(&:position))
+
+      expect(db[:sourced_offsets].count).to eq(1)
+      reaped = store.release_empty_queue_offsets
+      expect(reaped).to eq(1)
+      expect(db[:sourced_offsets].count).to eq(0)
+      expect(db[:sourced_offset_key_pairs].count).to eq(0)
+    end
+
+    it 'keeps queue offsets that still have pending messages' do
+      store.register_consumer_group('queue-group', partition_by: 'device_id', queue_mode: true)
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      store.claim_next('queue-group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.release('queue-group', offset_id: db[:sourced_offsets].first[:id])
+
+      expect(store.release_empty_queue_offsets).to eq(0)
+      expect(db[:sourced_offsets].count).to eq(1)
+    end
+
+    it 'never touches event-log (non-queue) offsets' do
+      store.register_consumer_group('log-group', partition_by: 'device_id')
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      result = store.claim_next('log-group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.ack('log-group', offset_id: result.offset_id, position: result.messages.last.position)
+
+      expect(store.release_empty_queue_offsets).to eq(0)
+      expect(db[:sourced_offsets].count).to eq(1)
+    end
+
+    it 'leaves claimed queue offsets alone' do
+      store.register_consumer_group('queue-group', partition_by: 'device_id', queue_mode: true)
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      result = store.claim_next('queue-group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      # Delete the message but leave the claim held (simulating an in-flight worker)
+      db[:sourced_messages].where(position: result.messages.map(&:position)).delete
+
+      expect(store.release_empty_queue_offsets).to eq(0)
+      expect(db[:sourced_offsets].count).to eq(1)
     end
   end
 
