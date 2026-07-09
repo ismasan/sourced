@@ -10,8 +10,7 @@ module Sourced
       @store = store
       @reactors = []
       @needs_history = {}
-      @index_basis = {}   # message type string => :id | :payload
-      @action_runner = ActionRunner.new(store, index_resolver: method(:index_basis_for))
+      @action_runner = ActionRunner.new(store)
     end
 
     # Register a reactor. Reactors are duck-typed: only +handled_messages+ and
@@ -41,23 +40,14 @@ module Sourced
       validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
 
       @reactors << reactor_class
-      handled_types.each { |t| @index_basis[t] = partition_keys == [:id] ? :id : :payload }
 
       store.register_consumer_group(
         reactor_class.group_id,
         partition_by: partition_keys.map(&:to_s),
-        exclusive: exclusive
+        exclusive: exclusive,
+        handled_types: handled_types
       )
       @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
-    end
-
-    # How appended messages of +type+ should be indexed, based on the registered
-    # consumer's partition basis. Used by {ActionRunner} for follow-up appends.
-    #
-    # @param type [String] message type string
-    # @return [Symbol] +:id+ or +:payload+
-    def index_basis_for(type)
-      @index_basis[type] || :payload
     end
 
     def handle_next_for(reactor_class, worker_id: 'default', batch_size: nil)

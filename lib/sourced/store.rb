@@ -138,6 +138,11 @@ module Sourced
       # Populated by register_consumer_group.
       # { group_id => { cg_id: Integer, partition_by: Array<String> | nil } }
       @registered_groups = {}
+
+      # How each message type should be indexed, derived from its consuming
+      # group's partitioning. { type_string => :id }. Types absent here default
+      # to :payload. Populated by register_consumer_group.
+      @type_index_basis = {}
     end
 
     # @return [String]
@@ -189,12 +194,14 @@ module Sourced
     #
     # @param messages [Sourced::Message, Array<Sourced::Message>] one or more messages to append
     # @param guard [ConsistencyGuard, nil] optional guard for conflict detection
-    # @param index_by [Symbol] which message attributes to index as key_pairs:
-    #   +:payload+ (default) indexes payload attributes; +:id+ indexes the message id
-    #   (used by id-partitioned queue consumers).
+    # @param index_by [Symbol, nil] override for which message attributes to index as
+    #   key_pairs: +:payload+ indexes payload attributes; +:id+ indexes the message id.
+    #   When nil (default), the basis is resolved per message from its consuming group
+    #   (see {#register_consumer_group}) — id-partitioned types index by id, all else
+    #   by payload — so every append path indexes consistently.
     # @return [Integer] the last assigned position
     # @raise [Sourced::ConcurrentAppendError] if conflicting messages found after guard position
-    def append(messages, guard: nil, index_by: :payload)
+    def append(messages, guard: nil, index_by: nil)
       messages = Array(messages)
       return latest_position if messages.empty?
 
@@ -224,7 +231,8 @@ module Sourced
           # Upsert key pairs and link to message in 2 statements (was 3):
           # 1. INSERT OR IGNORE the key_pair
           # 2. INSERT message_key_pair with key_pair_id resolved via subquery
-          effective_keys(msg, index_by).each do |name, value|
+          basis = index_by || @type_index_basis[msg.type] || :payload
+          effective_keys(msg, basis).each do |name, value|
             db.run("INSERT OR IGNORE INTO #{@key_pairs_table} (name, value) VALUES (#{db.literal(name)}, #{db.literal(value)})")
             db.run(<<~SQL)
               INSERT INTO #{@message_key_pairs_table} (message_position, key_pair_id)
@@ -459,8 +467,10 @@ module Sourced
     # @param partition_by [Array<String, Symbol>, nil] attribute names defining partitions
     # @param exclusive [Boolean] when true, the group exclusively owns its message
     #   types and uses queue (delete-on-ack) semantics
+    # @param handled_types [Array<String>] message type strings this group consumes.
+    #   Used to derive per-type index basis (:id for id-partitioned groups).
     # @return [void]
-    def register_consumer_group(group_id, partition_by: nil, exclusive: false)
+    def register_consumer_group(group_id, partition_by: nil, exclusive: false, handled_types: [])
       partition_by_sorted = partition_by ? Array(partition_by).map(&:to_s).sort : nil
       partition_by_json = partition_by_sorted ? JSON.dump(partition_by_sorted) : nil
       delivery_mode = exclusive ? 'queue' : 'log'
@@ -470,6 +480,13 @@ module Sourced
         VALUES (#{db.literal(group_id)}, '#{ACTIVE}', 0, #{db.literal(partition_by_json)}, #{db.literal(delivery_mode)}, #{db.literal(now)}, #{db.literal(now)})
         ON CONFLICT(group_id) DO UPDATE SET partition_by = #{db.literal(partition_by_json)}, delivery_mode = #{db.literal(delivery_mode)}, updated_at = #{db.literal(now)}
       SQL
+
+      # id-partitioned groups' message types must be indexed by id so their
+      # messages are claimable regardless of which code path appends them
+      # (append, handle!, workflows, scheduled-message promotion).
+      if partition_by_sorted == ['id']
+        Array(handled_types).each { |t| @type_index_basis[t] = :id }
+      end
 
       # Cache for hot-path use in append
       cg = db[@consumer_groups_table].where(group_id: group_id).first
@@ -809,25 +826,27 @@ module Sourced
         .update(claimed: 0, claimed_at: nil, claimed_by: nil)
     end
 
-    # Delete drained partition offsets for queue (delete-on-ack) groups.
+    # Delete drained partition offsets — offsets whose partition has no remaining
+    # messages, which only happens once a reactor has deleted them on ack
+    # (regardless of delivery mode: any reactor may delete via a +delete: true+
+    # action).
     #
-    # An offset is drained when its group uses queue semantics, it is currently
-    # unclaimed, it has at least one partition key (only partitioned offsets are
-    # reaped — a non-partitioned group's single offset is kept), and no remaining
-    # message matches all of its partition key_pairs (AND semantics).
+    # An offset is drained when it is currently unclaimed, it has at least one
+    # partition key (only partitioned offsets are reaped — a non-partitioned
+    # group's single offset is kept), and no remaining message matches all of its
+    # partition key_pairs (AND semantics). A retain (non-deleting) reactor's
+    # partitions always have messages, so they are never matched here.
     #
     # The reap race is benign: if a new message arrives for a just-reaped
     # partition, {#claim_next} re-discovers and recreates the offset on the next
     # cycle. Deleting the offset cascades to offset_key_pairs.
     #
     # @return [Integer] number of offsets deleted
-    def release_empty_queue_offsets
+    def release_drained_offsets
       drained_ids = db.fetch(<<~SQL).map { |r| r[:id] }
         SELECT o.id
         FROM #{@offsets_table} o
-        JOIN #{@consumer_groups_table} cg ON o.consumer_group_id = cg.id
-        WHERE cg.delivery_mode = 'queue'
-          AND o.claimed = 0
+        WHERE o.claimed = 0
           AND EXISTS (
             SELECT 1 FROM #{@offset_key_pairs_table} WHERE offset_id = o.id
           )

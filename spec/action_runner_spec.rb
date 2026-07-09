@@ -18,8 +18,7 @@ end
 RSpec.describe Sourced::ActionRunner do
   let(:db) { Sequel.sqlite }
   let(:store) { Sourced::Store.new(db) }
-  let(:interpreter) { described_class.new(store, index_resolver: index_resolver) }
-  let(:index_resolver) { ->(_type) { :payload } }
+  let(:interpreter) { described_class.new(store) }
   let(:source) { InterpreterTestMessages::DoThing.new(payload: { thing_id: 't1' }) }
   let(:after_syncs) { [] }
 
@@ -81,12 +80,12 @@ RSpec.describe Sourced::ActionRunner do
     end
   end
 
-  describe 'index_by resolution' do
-    let(:index_resolver) { ->(_type) { :id } }
+  describe 'index_by resolution (delegated to the store)' do
+    it 'indexes appended messages by id when their type is registered id-partitioned' do
+      store.register_consumer_group('q', partition_by: ['id'], exclusive: true,
+        handled_types: [InterpreterTestMessages::ThingDone.type])
 
-    it 'indexes appended messages by id when the resolver says :id' do
-      evt = new_event
-      interpreter.run({ type: :append, messages: [evt] }, source, after_syncs)
+      interpreter.run({ type: :append, messages: [new_event] }, source, after_syncs)
 
       names = db[:sourced_key_pairs].select_map(:name).uniq
       expect(names).to include('id')

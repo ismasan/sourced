@@ -1946,7 +1946,7 @@ RSpec.describe Sourced::Store do
     end
   end
 
-  describe '#release_empty_queue_offsets' do
+  describe '#release_drained_offsets' do
     let(:handled_types) { ['store_test.device.registered'] }
 
     it 'deletes drained queue offsets (unclaimed, no remaining messages)' do
@@ -1958,7 +1958,7 @@ RSpec.describe Sourced::Store do
       store.ack_and_delete('queue-group', offset_id: result.offset_id, positions: result.messages.map(&:position))
 
       expect(db[:sourced_offsets].count).to eq(1)
-      reaped = store.release_empty_queue_offsets
+      reaped = store.release_drained_offsets
       expect(reaped).to eq(1)
       expect(db[:sourced_offsets].count).to eq(0)
       expect(db[:sourced_offset_key_pairs].count).to eq(0)
@@ -1972,20 +1972,36 @@ RSpec.describe Sourced::Store do
       store.claim_next('queue-group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       store.release('queue-group', offset_id: db[:sourced_offsets].first[:id])
 
-      expect(store.release_empty_queue_offsets).to eq(0)
+      expect(store.release_drained_offsets).to eq(0)
       expect(db[:sourced_offsets].count).to eq(1)
     end
 
-    it 'never touches event-log (non-queue) offsets' do
+    it 'keeps a retain (non-deleting) offset whose partition still has messages' do
       store.register_consumer_group('log-group', partition_by: 'device_id')
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
       result = store.claim_next('log-group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      # ack retains the message (event-log semantics) -> partition not drained
       store.ack('log-group', offset_id: result.offset_id, position: result.messages.last.position)
 
-      expect(store.release_empty_queue_offsets).to eq(0)
+      expect(store.release_drained_offsets).to eq(0)
       expect(db[:sourced_offsets].count).to eq(1)
+    end
+
+    it 'reaps a drained offset for a non-exclusive (log) group that deleted its messages' do
+      # Deletion is decoupled from exclusivity: a log-mode reactor may delete via
+      # a :delete action. Its drained offset must still be reaped (no leak).
+      store.register_consumer_group('log-group', partition_by: 'device_id')
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      result = store.claim_next('log-group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.delete_messages(result.messages.map(&:position))
+      store.ack('log-group', offset_id: result.offset_id, position: result.messages.last.position)
+
+      expect(store.release_drained_offsets).to eq(1)
+      expect(db[:sourced_offsets].count).to eq(0)
     end
 
     it 'leaves claimed queue offsets alone' do
@@ -1997,7 +2013,7 @@ RSpec.describe Sourced::Store do
       # Delete the message but leave the claim held (simulating an in-flight worker)
       db[:sourced_messages].where(position: result.messages.map(&:position)).delete
 
-      expect(store.release_empty_queue_offsets).to eq(0)
+      expect(store.release_drained_offsets).to eq(0)
       expect(db[:sourced_offsets].count).to eq(1)
     end
   end
@@ -2012,6 +2028,23 @@ RSpec.describe Sourced::Store do
       )
       names = db[:sourced_key_pairs].select_map(:name).uniq
       expect(names).to eq(['id'])
+    end
+
+    it 'resolves index basis from the registered group (no explicit index_by needed)' do
+      store.register_consumer_group('q', partition_by: ['id'], exclusive: true, handled_types: handled_types)
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      expect(db[:sourced_key_pairs].select_map(:name).uniq).to eq(['id'])
+    end
+
+    it 'indexes promoted scheduled messages by id for an id-partitioned type' do
+      store.register_consumer_group('q', partition_by: ['id'], exclusive: true, handled_types: handled_types)
+      msg = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      store.schedule_messages([msg], at: Time.now - 1)
+      store.update_schedule! # promotes via append — must still index by id
+
+      expect(db[:sourced_key_pairs].select_map(:name).uniq).to eq(['id'])
     end
 
     it 'gives each message its own partition (one offset per message), claimed by disjoint workers' do
@@ -2044,7 +2077,7 @@ RSpec.describe Sourced::Store do
 
       expect(db[:sourced_messages].count).to eq(1) # m2 remains
 
-      expect(store.release_empty_queue_offsets).to eq(1) # c1's drained offset
+      expect(store.release_drained_offsets).to eq(1) # c1's drained offset
       expect(store.prune_orphan_key_pairs).to eq(1)      # c1's orphaned id key_pair
       expect(db[:sourced_key_pairs].where(name: 'id').count).to eq(1) # m2's id remains
     end

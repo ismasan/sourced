@@ -71,8 +71,8 @@ module Sourced
       released = @store.release_stale_claims(ttl_seconds: @ttl_seconds)
       @logger.info "Sourced::StaleClaimReaper: released #{released} stale claims" if released > 0
 
-      reaped = @store.release_empty_queue_offsets
-      @logger.info "Sourced::StaleClaimReaper: reaped #{reaped} drained queue offsets" if reaped > 0
+      reaped = @store.release_drained_offsets
+      @logger.info "Sourced::StaleClaimReaper: reaped #{reaped} drained offsets" if reaped > 0
 
       pruned = @store.prune_orphan_key_pairs
       @logger.info "Sourced::StaleClaimReaper: pruned #{pruned} orphan key_pairs" if pruned && pruned > 0

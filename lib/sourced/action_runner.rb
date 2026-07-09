@@ -12,16 +12,13 @@ module Sourced
   # Correlation (causation/correlation ids) is applied here at execution time.
   #
   # @example
-  #   interp = ActionRunner.new(store, index_resolver: ->(type) { :payload })
+  #   runner = ActionRunner.new(store)
   #   after_syncs = []
-  #   delete = interp.run(signal, source_message, after_syncs)
+  #   delete = runner.run(signal, source_message, after_syncs)
   class ActionRunner
     # @param store [Sourced::Store]
-    # @param index_resolver [#call] maps a message type string to +:id+ or +:payload+
-    #   to decide how appended messages are indexed. Defaults to +:payload+.
-    def initialize(store, index_resolver: nil)
+    def initialize(store)
       @store = store
-      @index_resolver = index_resolver || ->(_type) { :payload }
     end
 
     # Run a single signal for a source message.
@@ -64,10 +61,8 @@ module Sourced
       to_append = Array(signal[:messages]).map { |m| correlate_from.correlate(m) }
       return if to_append.empty?
 
-      # Index each appended message according to its consuming reactor's basis.
-      to_append.group_by { |m| @index_resolver.call(m.type) }.each do |basis, group|
-        @store.append(group, guard: signal[:guard], index_by: basis)
-      end
+      # The store resolves each message's index basis from its consuming group.
+      @store.append(to_append, guard: signal[:guard])
     end
 
     def schedule(signal, source_message)

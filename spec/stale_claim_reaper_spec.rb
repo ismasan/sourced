@@ -204,7 +204,7 @@ RSpec.describe Sourced::StaleClaimReaper do
       )
 
       allow(store).to receive(:release_stale_claims).and_return(0)
-      expect(store).to receive(:release_empty_queue_offsets).and_return(0)
+      expect(store).to receive(:release_drained_offsets).and_return(0)
       reaper.send(:reap)
     end
 
