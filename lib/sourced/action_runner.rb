@@ -37,10 +37,10 @@ module Sourced
       case normalize(signal)
       in { type: :append } => s
         append(s, source_message)
-        truthy(s[:delete])
+        !!s[:delete]
       in { type: :schedule } => s
         schedule(s, source_message)
-        truthy(s[:delete])
+        !!s[:delete]
       in { type: :sync, work: }
         work.call
         false
@@ -48,7 +48,7 @@ module Sourced
         after_syncs << work
         false
       in { type: :ack } => s
-        truthy(s[:delete])
+        !!s[:delete]
       end
     end
 
@@ -58,8 +58,6 @@ module Sourced
     def normalize(signal)
       signal.is_a?(Hash) ? signal : signal.deconstruct_keys(nil)
     end
-
-    def truthy(value) = value ? true : false
 
     def append(signal, source_message)
       correlate_from = signal[:source] || source_message

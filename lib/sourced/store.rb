@@ -723,8 +723,7 @@ module Sourced
 
       last_position = positions.max
 
-      # message_key_pairs link rows cascade-delete via the FK.
-      db[@messages_table].where(position: positions).delete
+      delete_messages(positions)
 
       db[@offsets_table].where(id: offset_id, consumer_group_id: cg[:id]).update(
         last_position: last_position,

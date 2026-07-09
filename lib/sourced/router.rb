@@ -11,6 +11,7 @@ module Sourced
       @reactors = []
       @needs_history = {}
       @index_basis = {}   # message type string => :id | :payload
+      @action_runner = ActionRunner.new(store, index_resolver: method(:index_basis_for))
     end
 
     # Register a reactor. Reactors are duck-typed: only +handled_messages+ and
@@ -35,7 +36,7 @@ module Sourced
           "omit it, to become an id-partitioned queue — one partition per message.)"
       end
 
-      partition_keys = declared_keys.empty? ? [:id] : declared_keys
+      partition_keys = effective_partition_keys(reactor_class)
       handled_types = reactor_class.handled_messages.map(&:type).uniq
       validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
 
@@ -226,7 +227,7 @@ module Sourced
     # reactor explicitly marked for deletion via a +delete: true+ signal.
     def execute_actions(action_pairs, claim, reactor)
       group_id = reactor.group_id
-      interpreter = ActionRunner.new(store, index_resolver: method(:index_basis_for))
+      interpreter = @action_runner
       after_sync_works = []
 
       store.db.transaction do
