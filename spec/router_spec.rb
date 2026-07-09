@@ -754,6 +754,21 @@ RSpec.describe Sourced::Router do
         .to raise_error(ArgumentError, /must declare `partition_by`/)
     end
 
+    it 'raises for an explicitly id-partitioned reactor that is not exclusive' do
+      # `partition_by :id` id-indexes its messages, which must be sole-owned —
+      # so it is only allowed for exclusive reactors, same as omitting partition_by.
+      klass = Class.new do
+        extend Sourced::Consumer
+        consumer_group 'explicit-id-non-exclusive'
+        partition_by :id
+        def self.handled_messages = [RouterQueueMessages::DoThing]
+        def self.handle_claim(_claim) = []
+      end
+
+      expect { router.register(klass) }
+        .to raise_error(ArgumentError, /must declare `partition_by`/)
+    end
+
     it 'processes a command, appends a follow-up, and deletes the source; then processes the follow-up' do
       router.register(FakeCommander)
       store.append(RouterQueueMessages::DoThing.new(payload: { n: 1 }), index_by: :id)

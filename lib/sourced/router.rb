@@ -26,16 +26,20 @@ module Sourced
     # get an id-partitioned queue (one partition per message).
     def register(reactor_class)
       ReactorDefaults.apply(reactor_class)
-      declared_keys = Array(reactor_class.partition_keys)
       exclusive = reactor_class.exclusive?
+      partition_keys = effective_partition_keys(reactor_class)
 
-      if declared_keys.empty? && !exclusive
+      # id-partitioning (declared as `partition_by :id`, or implied by omitting
+      # partition_by) indexes messages by id and must be sole-owned, so it is only
+      # allowed for exclusive reactors. This keeps id-indexing safe: a type is
+      # only id-indexed when its lone exclusive owner is id-partitioned.
+      if partition_keys == [:id] && !exclusive
         raise ArgumentError,
           "#{reactor_class} must declare `partition_by`. (Only an `exclusive` reactor may " \
-          "omit it, to become an id-partitioned queue — one partition per message.)"
+          "be id-partitioned — one partition per message — whether by omitting " \
+          "partition_by or declaring `partition_by :id`.)"
       end
 
-      partition_keys = effective_partition_keys(reactor_class)
       handled_types = reactor_class.handled_messages.map(&:type).uniq
       validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
 
