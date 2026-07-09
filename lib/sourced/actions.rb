@@ -1,18 +1,43 @@
 # frozen_string_literal: true
 
 module Sourced
-  # Action builders and executable action types for reactors.
+  # Action builders and declarative action signals for reactors.
+  #
+  # Actions are *inert data*: they describe an intent (append these messages,
+  # schedule those, run this side effect, delete the source on ack) but never
+  # touch the store themselves. {Sourced::ActionRunner} is the only code
+  # that routes a signal to a store operation.
+  #
+  # Every action value object implements +deconstruct_keys+ so it pattern-matches
+  # identically to the equivalent plain Hash. This lets third-party reactors
+  # (e.g. Sidereal Commanders) return plain Hash signals without depending on
+  # Sourced's classes:
+  #
+  #   { type: :append, messages: [...], delete: true }
+  #
+  # matches the same interpreter branch as +Sourced::Actions::Append.new(...)+.
   module Actions
-    OK = :ok
     RETRY = :retry
+
+    # A no-op finalize signal: acknowledge the source message with no side effects.
+    # Destructures to +{ type: :ack, delete: false }+ like any other signal, so the
+    # interpreter needs no special case for it.
+    class Ack
+      def deconstruct_keys(_keys)
+        { type: :ack, delete: false }
+      end
+    end
+
+    OK = Ack.new.freeze
 
     # Split produced messages into immediate append actions and delayed schedule actions.
     #
     # @param messages [Sourced::Message, Array<Sourced::Message>] messages produced by a reactor
     # @param guard [ConsistencyGuard, nil] optional concurrency guard for immediate appends
     # @param source [Sourced::Message, nil] source message used for correlation when executing
+    # @param delete [Boolean] whether the source message should be deleted on ack
     # @return [Array<Append, Schedule>] executable actions in append/schedule groups
-    def self.build_for(messages, guard: nil, source: nil)
+    def self.build_for(messages, guard: nil, source: nil, delete: false)
       actions = []
       messages = Array(messages)
       return actions if messages.empty?
@@ -21,68 +46,62 @@ module Sourced
       now = Time.now
       to_schedule, to_append = messages.partition { |message| message.created_at > now }
 
-      actions << Append.new(to_append, guard:, source:) if to_append.any?
+      actions << Append.new(to_append, guard:, source:, delete:) if to_append.any?
       to_schedule.group_by(&:created_at).each do |at, scheduled_messages|
-        actions << Schedule.new(scheduled_messages, at:, source:)
+        actions << Schedule.new(scheduled_messages, at:, source:, delete:)
       end
 
       actions
     end
 
     # Append messages to the store with optional consistency guard.
-    # Auto-correlates messages at execution time.
+    # Correlation happens in the interpreter at execution time.
     #
     # When +source:+ is provided, it overrides the runtime's source_message
     # for correlation (e.g. reactions correlated with the event, not the command).
     class Append
-      attr_reader :messages, :guard, :source
+      attr_reader :messages, :guard, :source, :delete
 
       # @param messages [Sourced::Message, Array<Sourced::Message>] messages to append
       # @param guard [ConsistencyGuard, nil] optional optimistic concurrency guard
       # @param source [Sourced::Message, nil] explicit correlation source
-      def initialize(messages, guard: nil, source: nil)
+      # @param delete [Boolean] delete the source message on ack
+      def initialize(messages, guard: nil, source: nil, delete: false)
         @messages = Array(messages)
         @guard = guard
         @source = source
+        @delete = delete
       end
 
-      # @param store [Sourced::Store]
-      # @param source_message [Sourced::Message] default message to correlate from
-      # @return [Array<Sourced::Message>] correlated messages that were appended
-      def execute(store, source_message)
-        correlate_from = @source || source_message
-        to_append = messages.map { |m| correlate_from.correlate(m) }
-        store.append(to_append, guard:)
-        to_append
+      def deconstruct_keys(_keys)
+        { type: :append, messages: @messages, guard: @guard, source: @source, delete: @delete }
       end
     end
 
     # Schedule messages for future promotion into the main log.
     class Schedule
-      attr_reader :messages, :at, :source
+      attr_reader :messages, :at, :source, :delete
 
       # @param messages [Sourced::Message, Array<Sourced::Message>] messages to schedule
       # @param at [Time] when the messages should become available for promotion
       # @param source [Sourced::Message, nil] explicit correlation source
-      def initialize(messages, at:, source: nil)
+      # @param delete [Boolean] delete the source message on ack
+      def initialize(messages, at:, source: nil, delete: false)
         @messages = Array(messages)
         @at = at
         @source = source
+        @delete = delete
       end
 
-      # @param store [Sourced::Store]
-      # @param source_message [Sourced::Message] default message to correlate from
-      # @return [Array<Sourced::Message>] correlated messages that were scheduled
-      def execute(store, source_message)
-        correlate_from = @source || source_message
-        to_schedule = messages.map { |m| correlate_from.correlate(m) }
-        store.schedule_messages(to_schedule, at: at)
-        to_schedule
+      def deconstruct_keys(_keys)
+        { type: :schedule, messages: @messages, at: @at, source: @source, delete: @delete }
       end
     end
 
     # Execute a synchronous side effect within the current transaction.
     class Sync
+      attr_reader :work
+
       # @param work [#call] callable to execute
       def initialize(work)
         @work = work
@@ -91,17 +110,15 @@ module Sourced
       # @return [Object] the callable's return value
       def call = @work.call
 
-      # @param _store [Object] unused
-      # @param _source_message [Object] unused
-      # @return [nil]
-      def execute(_store, _source_message)
-        call
-        nil
+      def deconstruct_keys(_keys)
+        { type: :sync, work: @work }
       end
     end
 
     # Execute a side effect after the transaction commits.
     class AfterSync
+      attr_reader :work
+
       # @param work [#call] callable to execute
       def initialize(work)
         @work = work
@@ -110,12 +127,8 @@ module Sourced
       # @return [Object] the callable's return value
       def call = @work.call
 
-      # @param _store [Object] unused
-      # @param _source_message [Object] unused
-      # @return [nil]
-      def execute(_store, _source_message)
-        call
-        nil
+      def deconstruct_keys(_keys)
+        { type: :after_sync, work: @work }
       end
     end
   end

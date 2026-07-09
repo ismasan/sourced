@@ -211,7 +211,7 @@ RSpec.describe Sourced::StaleClaimReaper do
     it 'removes a drained queue offset end-to-end' do
       reaper = described_class.new(store: store, interval: 30, ttl_seconds: 60, logger: logger)
 
-      store.register_consumer_group('q-group', partition_by: 'device_id', queue_mode: true)
+      store.register_consumer_group('q-group', partition_by: 'device_id', exclusive: true)
       store.append(
         StaleClaimReaperTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       )

@@ -65,21 +65,24 @@ module Sourced
       @group_id = id
     end
 
-    # Opt this reactor into queue (delete-on-ack) semantics. In queue mode the
-    # store deletes a message after it is successfully acked instead of advancing
-    # a cursor over it. The reactor must exclusively own its handled message types
-    # (enforced at registration). Per-partition ordering is preserved via the
-    # normal claim mechanism.
+    # Declare this reactor as the exclusive owner of its handled message types:
+    # the router validates that no other reactor handles the same types. This is
+    # a routing concern only — it does not delete messages. Deletion happens
+    # solely when an action carries +delete: true+.
+    #
+    # Declaring +exclusive+ also lets a reactor omit +partition_by+ to become an
+    # id-partitioned queue (one partition per message). Reactors that delete
+    # their handled messages should be exclusive so no other reactor is starved.
     #
     # @param value [Boolean]
     # @return [void]
-    def queue_mode(value = true)
-      @queue_mode = value
+    def exclusive(value = true)
+      @exclusive = value
     end
 
-    # @return [Boolean] whether this reactor uses queue (delete-on-ack) semantics
-    def queue_mode?
-      @queue_mode ||= false
+    # @return [Boolean] whether this reactor exclusively owns its message types
+    def exclusive?
+      @exclusive ||= false
     end
 
     # Message types this consumer evolves from. Used by {#context_for}

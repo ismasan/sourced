@@ -73,6 +73,9 @@ module Sourced
 
       reaped = @store.release_empty_queue_offsets
       @logger.info "Sourced::StaleClaimReaper: reaped #{reaped} drained queue offsets" if reaped > 0
+
+      pruned = @store.prune_orphan_key_pairs
+      @logger.info "Sourced::StaleClaimReaper: pruned #{pruned} orphan key_pairs" if pruned && pruned > 0
     end
   end
 end
