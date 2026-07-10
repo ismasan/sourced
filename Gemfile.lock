@@ -12,7 +12,9 @@ PATH
     sourced (0.0.1)
       async
       plumb (>= 0.0.17)
+      sequel
       sourced-message
+      sqlite3
 
 GEM
   remote: https://rubygems.org/
