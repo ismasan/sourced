@@ -82,13 +82,13 @@ RSpec.describe Sourced::ActionRunner do
 
   describe 'index_by resolution (delegated to the store)' do
     it 'indexes appended messages by id when their type is registered id-partitioned' do
-      store.register_consumer_group('q', partition_by: ['id'], exclusive: true,
+      store.register_consumer_group('q', partition_by: ['__id'], exclusive: true,
         handled_types: [InterpreterTestMessages::ThingDone.type])
 
       interpreter.run({ type: :append, messages: [new_event] }, source, after_syncs)
 
       names = db[:sourced_key_pairs].select_map(:name).uniq
-      expect(names).to include('id')
+      expect(names).to include('__id')
       expect(names).not_to include('thing_id')
     end
   end

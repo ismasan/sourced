@@ -733,7 +733,7 @@ RSpec.describe Sourced::Router do
     it 'registers a class that does not extend Consumer, partitioned by id' do
       router.register(FakeCommander)
       row = db[:sourced_consumer_groups].where(group_id: 'FakeCommander').first
-      expect(JSON.parse(row[:partition_by])).to eq(['id'])
+      expect(JSON.parse(row[:partition_by])).to eq(['__id'])
       expect(row[:delivery_mode]).to eq('queue')
     end
 
@@ -755,12 +755,12 @@ RSpec.describe Sourced::Router do
     end
 
     it 'raises for an explicitly id-partitioned reactor that is not exclusive' do
-      # `partition_by :id` id-indexes its messages, which must be sole-owned —
+      # `partition_by :__id` id-indexes its messages, which must be sole-owned —
       # so it is only allowed for exclusive reactors, same as omitting partition_by.
       klass = Class.new do
         extend Sourced::Consumer
         consumer_group 'explicit-id-non-exclusive'
-        partition_by :id
+        partition_by :__id
         def self.handled_messages = [RouterQueueMessages::DoThing]
         def self.handle_claim(_claim) = []
       end
@@ -782,7 +782,7 @@ RSpec.describe Sourced::Router do
       id_links = db[:sourced_message_key_pairs]
         .join(:sourced_key_pairs, id: :key_pair_id)
         .where(Sequel[:sourced_message_key_pairs][:message_position] => next_pos,
-               Sequel[:sourced_key_pairs][:name] => 'id')
+               Sequel[:sourced_key_pairs][:name] => '__id')
         .count
       expect(id_links).to eq(1)
 
@@ -803,7 +803,7 @@ RSpec.describe Sourced::Router do
 
       # after reactivating the group, the retained message is re-claimable
       store.start_consumer_group('FakeCommander')
-      claim = store.claim_next('FakeCommander', partition_by: ['id'],
+      claim = store.claim_next('FakeCommander', partition_by: ['__id'],
         handled_types: ['router_q.do_thing'], worker_id: 'w2')
       expect(claim.messages.size).to eq(1)
     end

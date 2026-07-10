@@ -481,10 +481,10 @@ module Sourced
         ON CONFLICT(group_id) DO UPDATE SET partition_by = #{db.literal(partition_by_json)}, delivery_mode = #{db.literal(delivery_mode)}, updated_at = #{db.literal(now)}
       SQL
 
-      # id-partitioned groups' message types must be indexed by id so their
-      # messages are claimable regardless of which code path appends them
-      # (append, handle!, workflows, scheduled-message promotion).
-      if partition_by_sorted == ['id']
+      # id-partitioned groups (reserved "__id" key) must have their message types
+      # indexed by id so they are claimable regardless of which code path appends
+      # them (append, handle!, workflows, scheduled-message promotion).
+      if partition_by_sorted == ['__id']
         Array(handled_types).each { |t| @type_index_basis[t] = :id }
       end
 
@@ -1059,24 +1059,25 @@ module Sourced
     end
 
     # The [name, value] key pairs to index for a message, per +index_by+.
-    # +:id+ indexes only the message id (id-partitioned queue consumers);
-    # +:payload+ (default) indexes payload attributes.
+    # +:id+ indexes the message id under the reserved key name "__id" (chosen to
+    # not collide with a payload attribute); +:payload+ (default) indexes payload
+    # attributes.
     #
     # @param msg [Sourced::Message]
     # @param index_by [Symbol]
     # @return [Enumerable<Array(String, String)>]
     def effective_keys(msg, index_by)
       case index_by
-      when :id then [['id', msg.id]]
+      when :id then [['__id', msg.id]]
       else msg.extracted_keys
       end
     end
 
-    # Whether a group's partition is by message id (the queue fast case).
-    # Such groups skip eager offset creation and rely on lazy discovery, since
-    # id is high-cardinality (one partition per message).
+    # Whether a group's partition is by message id (the queue fast case) — the
+    # reserved "__id" key. Such groups skip eager offset creation and rely on lazy
+    # discovery, since message id is high-cardinality (one partition per message).
     def id_partitioned?(partition_by)
-      partition_by == ['id']
+      partition_by == ['__id']
     end
 
     # Create offsets eagerly for all registered consumer groups.

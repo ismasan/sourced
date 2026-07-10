@@ -29,15 +29,16 @@ module Sourced
       exclusive = reactor_class.exclusive?
       partition_keys = effective_partition_keys(reactor_class)
 
-      # id-partitioning (declared as `partition_by :id`, or implied by omitting
-      # partition_by) indexes messages by id and must be sole-owned, so it is only
-      # allowed for exclusive reactors. This keeps id-indexing safe: a type is
-      # only id-indexed when its lone exclusive owner is id-partitioned.
-      if partition_keys == [:id] && !exclusive
+      # id-partitioning (declared as `partition_by :__id`, or implied by omitting
+      # partition_by) indexes messages by Message#id (key name "__id", chosen to
+      # not collide with a payload attribute) and must be sole-owned, so it is only
+      # allowed for exclusive reactors. This keeps id-indexing safe: a type is only
+      # id-indexed when its lone exclusive owner is id-partitioned.
+      if partition_keys == [:__id] && !exclusive
         raise ArgumentError,
           "#{reactor_class} must declare `partition_by`. (Only an `exclusive` reactor may " \
           "be id-partitioned — one partition per message — whether by omitting " \
-          "partition_by or declaring `partition_by :id`.)"
+          "partition_by or declaring `partition_by :__id`.)"
       end
 
       handled_types = reactor_class.handled_messages.map(&:type).uniq
@@ -171,10 +172,11 @@ module Sourced
     private
 
     # A registered reactor's effective partition keys: its declared keys, or
-    # +[:id]+ for an exclusive reactor that declared none (validated in #register).
+    # +[:__id]+ (partition by Message#id) for an exclusive reactor that declared
+    # none (validated in #register).
     def effective_partition_keys(reactor)
       keys = Array(reactor.partition_keys)
-      keys.empty? ? [:id] : keys
+      keys.empty? ? [:__id] : keys
     end
 
     # Enforce that an exclusive reactor is the sole handler of its message types.

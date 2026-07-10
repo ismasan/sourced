@@ -2027,36 +2027,36 @@ RSpec.describe Sourced::Store do
         index_by: :id
       )
       names = db[:sourced_key_pairs].select_map(:name).uniq
-      expect(names).to eq(['id'])
+      expect(names).to eq(['__id'])
     end
 
     it 'resolves index basis from the registered group (no explicit index_by needed)' do
-      store.register_consumer_group('q', partition_by: ['id'], exclusive: true, handled_types: handled_types)
+      store.register_consumer_group('q', partition_by: ['__id'], exclusive: true, handled_types: handled_types)
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      expect(db[:sourced_key_pairs].select_map(:name).uniq).to eq(['id'])
+      expect(db[:sourced_key_pairs].select_map(:name).uniq).to eq(['__id'])
     end
 
     it 'indexes promoted scheduled messages by id for an id-partitioned type' do
-      store.register_consumer_group('q', partition_by: ['id'], exclusive: true, handled_types: handled_types)
+      store.register_consumer_group('q', partition_by: ['__id'], exclusive: true, handled_types: handled_types)
       msg = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       store.schedule_messages([msg], at: Time.now - 1)
       store.update_schedule! # promotes via append — must still index by id
 
-      expect(db[:sourced_key_pairs].select_map(:name).uniq).to eq(['id'])
+      expect(db[:sourced_key_pairs].select_map(:name).uniq).to eq(['__id'])
     end
 
     it 'gives each message its own partition (one offset per message), claimed by disjoint workers' do
-      store.register_consumer_group('q', partition_by: ['id'], exclusive: true)
+      store.register_consumer_group('q', partition_by: ['__id'], exclusive: true)
       m1 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       m2 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
       store.append(m1, index_by: :id)
       store.append(m2, index_by: :id)
 
-      c1 = store.claim_next('q', partition_by: ['id'], handled_types: handled_types, worker_id: 'w1')
-      c2 = store.claim_next('q', partition_by: ['id'], handled_types: handled_types, worker_id: 'w2')
-      c3 = store.claim_next('q', partition_by: ['id'], handled_types: handled_types, worker_id: 'w3')
+      c1 = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w1')
+      c2 = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w2')
+      c3 = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w3')
 
       expect(c1.messages.size).to eq(1)
       expect(c2.messages.size).to eq(1)
@@ -2066,20 +2066,20 @@ RSpec.describe Sourced::Store do
     end
 
     it 'delete + reap prunes the drained offset and the orphaned id key_pair' do
-      store.register_consumer_group('q', partition_by: ['id'], exclusive: true)
+      store.register_consumer_group('q', partition_by: ['__id'], exclusive: true)
       m1 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       m2 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
       store.append(m1, index_by: :id)
       store.append(m2, index_by: :id)
 
-      c1 = store.claim_next('q', partition_by: ['id'], handled_types: handled_types, worker_id: 'w1')
+      c1 = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w1')
       store.ack_and_delete('q', offset_id: c1.offset_id, positions: c1.messages.map(&:position))
 
       expect(db[:sourced_messages].count).to eq(1) # m2 remains
 
       expect(store.release_drained_offsets).to eq(1) # c1's drained offset
       expect(store.prune_orphan_key_pairs).to eq(1)      # c1's orphaned id key_pair
-      expect(db[:sourced_key_pairs].where(name: 'id').count).to eq(1) # m2's id remains
+      expect(db[:sourced_key_pairs].where(name: '__id').count).to eq(1) # m2's id remains
     end
   end
 
