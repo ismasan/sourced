@@ -49,7 +49,6 @@ Sequel.migration do
       Integer :discovery_position, null: false, default: 0
       Integer :last_nil_types_max_pos, null: false, default: 0
       String :partition_by
-      String :delivery_mode, null: false, default: 'log'
       String :error_context
       String :retry_at
       String :created_at, null: false

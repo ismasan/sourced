@@ -473,12 +473,11 @@ module Sourced
     def register_consumer_group(group_id, partition_by: nil, exclusive: false, handled_types: [])
       partition_by_sorted = partition_by ? Array(partition_by).map(&:to_s).sort : nil
       partition_by_json = partition_by_sorted ? JSON.dump(partition_by_sorted) : nil
-      delivery_mode = exclusive ? 'queue' : 'log'
       now = Time.now.iso8601
       db.run(<<~SQL)
-        INSERT INTO #{@consumer_groups_table} (group_id, status, highest_position, partition_by, delivery_mode, created_at, updated_at)
-        VALUES (#{db.literal(group_id)}, '#{ACTIVE}', 0, #{db.literal(partition_by_json)}, #{db.literal(delivery_mode)}, #{db.literal(now)}, #{db.literal(now)})
-        ON CONFLICT(group_id) DO UPDATE SET partition_by = #{db.literal(partition_by_json)}, delivery_mode = #{db.literal(delivery_mode)}, updated_at = #{db.literal(now)}
+        INSERT INTO #{@consumer_groups_table} (group_id, status, highest_position, partition_by, created_at, updated_at)
+        VALUES (#{db.literal(group_id)}, '#{ACTIVE}', 0, #{db.literal(partition_by_json)}, #{db.literal(now)}, #{db.literal(now)})
+        ON CONFLICT(group_id) DO UPDATE SET partition_by = #{db.literal(partition_by_json)}, updated_at = #{db.literal(now)}
       SQL
 
       # id-partitioned groups (reserved "__id" key) must have their message types
@@ -561,10 +560,11 @@ module Sourced
       cg = db[@consumer_groups_table].where(group_id: group_id).first
       return unless cg
 
-      # Queue (delete-on-ack) groups have nothing to replay — processed messages
-      # were deleted. Resetting offsets would only orphan the partition locks.
-      if cg[:delivery_mode] == 'queue'
-        logger.warn "Sourced: reset_consumer_group is a no-op for queue-mode group #{group_id} (messages are deleted on ack, nothing to replay)"
+      # Exclusive (delete-on-ack) groups have nothing to replay — processed
+      # messages were deleted. Resetting offsets would only orphan the partition
+      # locks. Derived from the registered group (exclusivity isn't persisted).
+      if @registered_groups[group_id]&.fetch(:exclusive, false)
+        logger.warn "Sourced: reset_consumer_group is a no-op for exclusive group #{group_id} (messages are deleted on ack, nothing to replay)"
         return
       end
 

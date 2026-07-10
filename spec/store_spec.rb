@@ -894,24 +894,6 @@ RSpec.describe Sourced::Store do
       expect(db[:sourced_consumer_groups].where(group_id: 'my-group').count).to eq(1)
     end
 
-    it 'defaults delivery_mode to log' do
-      store.register_consumer_group('my-group')
-      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
-      expect(row[:delivery_mode]).to eq('log')
-    end
-
-    it 'persists delivery_mode queue when exclusive is true' do
-      store.register_consumer_group('my-group', exclusive: true)
-      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
-      expect(row[:delivery_mode]).to eq('queue')
-    end
-
-    it 'updates delivery_mode on re-registration' do
-      store.register_consumer_group('my-group', exclusive: true)
-      store.register_consumer_group('my-group', exclusive: false)
-      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
-      expect(row[:delivery_mode]).to eq('log')
-    end
   end
 
   describe '#consumer_group_active?' do

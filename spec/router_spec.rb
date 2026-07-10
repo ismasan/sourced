@@ -734,7 +734,6 @@ RSpec.describe Sourced::Router do
       router.register(FakeCommander)
       row = db[:sourced_consumer_groups].where(group_id: 'FakeCommander').first
       expect(JSON.parse(row[:partition_by])).to eq(['__id'])
-      expect(row[:delivery_mode]).to eq('queue')
     end
 
     it 'raises when a reactor declares neither partition_by nor exclusive (never silently deletes)' do
