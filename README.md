@@ -83,18 +83,18 @@ store.append(new_events, guard: result.guard)
 
 ### Delayed messages
 
-Any message can be stamped with a future time via `#at(time)`. Scheduled messages live in a separate `sourced_scheduled_messages` table and are promoted into the main log when their `available_at` passes.
+Scheduling is transparent: stamp a message with a future time via `#at(time)` and just `append` it. `append` is the single write path — a message dated in the future is deferred to a separate `sourced_scheduled_messages` table and promoted into the main log when its time passes; a message dated now or in the past is appended immediately.
 
 ```ruby
 cmd = SendReminder.new(payload: { course_id: 'c1' }).at(Time.now + 3600)
-store.schedule_messages([cmd])
+store.append(cmd)  # created_at in the future → deferred, not appended for immediate consumption
 
 # Normally the ScheduledMessagePoller (started by the Dispatcher) promotes
 # due messages automatically. In tests or scripts, do it manually:
 store.update_schedule!  # => number of messages promoted
 ```
 
-In a reaction handler, `dispatch(Cmd, ...).at(time)` uses this pipeline under the hood — see [Reactions](#reactions).
+There is no separate scheduling method — appending a future-dated message *is* scheduling it. In a reaction handler, `dispatch(Cmd, ...).at(time)` produces a future-dated message, so the same `append` pipeline schedules it — see [Reactions](#reactions).
 
 ### Partition reads
 
@@ -566,6 +566,74 @@ Sourced.register(CourseCatalogProjector)
 
 This registers the reactor's consumer group with the store and adds it to the global router.
 
+## The reactor protocol
+
+Deciders, projectors and workflows are conveniences over a small duck-typed protocol. **Any class that responds to `handled_messages` and `handle_claim` is a reactor** — it can be registered and driven by the runtime without subclassing or even depending on Sourced. This is how a message handler from another framework can run on Sourced as a durable queue.
+
+```ruby
+class MyWorker
+  # The message types this reactor claims.
+  def self.handled_messages = [DoThing]
+
+  # Process a claimed batch. Return one [signals, source_message] pair per
+  # message: `signals` is one action signal (or a list of them), and
+  # `source_message` is the message they came from — used for correlation and
+  # to advance the offset cursor on ack.
+  def self.handle_claim(claim)
+    claim.messages.map do |cmd|
+      run(cmd)
+      [[{ type: :append, messages: [DoNext.new(payload: { n: cmd.payload.n })] },
+        { type: :ack }], cmd]
+    end
+  end
+end
+
+Sourced.register(MyWorker)
+```
+
+A **signal** is inert data — a plain `Hash` or a `Sourced::Actions` value object that destructures to the same shape:
+
+| Signal | Effect |
+|---|---|
+| `{ type: :append, messages: [...], guard:, delete: }` | append messages (future-dated ones are scheduled — see [Delayed messages](#delayed-messages)) |
+| `{ type: :sync, work: -> { } }` | run a side effect inside the transaction |
+| `{ type: :after_sync, work: -> { } }` | run a side effect after commit |
+| `{ type: :ack, delete: false }` | acknowledge the source message; `delete: true` removes it (see below) |
+
+The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name), `partition_keys` (`[]`), `exclusive?` (`false`), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate.
+
+## Delete-on-ack queues
+
+By default the log is append-only and each reactor keeps its own offset cursor, so **many reactors consume the same message independently**. A reactor can instead act as a **durable work queue**, where each message is claimed once and deleted when handled.
+
+Two ingredients:
+
+- **`exclusive`** — declares the reactor the *sole owner* of its handled message types. The Router raises if another registered reactor also handles one of them, so nothing is left consuming a message the queue deletes. It is a routing marker only — it does not itself delete anything.
+- **`delete: true`** on an `:ack` signal — the *only* thing that deletes the source message. Deletion is never implied by partitioning or exclusivity, so forgetting a `partition_by` can never silently drop a message.
+
+An `exclusive` reactor with **no `partition_by`** is partitioned by `Message#id` — one partition per message: a concurrent, unordered queue (the id is indexed under the reserved key `__id`). Id-partitioning is only allowed for `exclusive` reactors; non-exclusive ones must declare a real `partition_by`.
+
+```ruby
+# A concurrent, delete-on-ack job queue. No partition_by → one partition per
+# message, so jobs run in parallel and unordered. No Sourced base class needed.
+class Jobs
+  def self.exclusive?      = true
+  def self.handled_messages = [RunJob]
+
+  def self.handle_claim(claim)
+    claim.messages.map do |cmd|
+      run(cmd.payload)
+      # append any follow-ups here, then delete the handled job on ack:
+      [[{ type: :ack, delete: true }], cmd]
+    end
+  end
+end
+
+Sourced.register(Jobs)
+```
+
+Reactors that use the `Sourced::Consumer` mixin (for `partition_by`, `each_with_partial_ack`, and lifecycle hooks) can be queues too — declare `exclusive` and return `{ type: :ack, delete: true }` from `handle_claim`. When a queue drains, the `StaleClaimReaper` reclaims the emptied partition offsets and prunes orphaned id key-pairs.
+
 ## Background processing
 
 ### Running inside a web server
@@ -605,7 +673,7 @@ supervisor.start
 2. **Dispatcher** routes notifications to a `WorkQueue`, mapping message types to interested reactors
 3. **Workers** pop reactors from the queue, claim a partition via `Router#handle_next_for`, process messages, and ack
 4. **CatchUpPoller** periodically pushes all reactors as a safety net (handles missed notifications)
-5. **Store#schedule_messages** persists delayed messages in a separate `sourced_scheduled_messages` table keyed by `available_at`
+5. **Store#append** persists future-dated messages in a separate `sourced_scheduled_messages` table keyed by `available_at`, appending the rest immediately
 6. **ScheduledMessagePoller** runs on an interval and promotes any messages whose `available_at` is in the past into the main log
 7. **StaleClaimReaper** releases claims held by dead workers
 

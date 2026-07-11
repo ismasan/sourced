@@ -65,6 +65,26 @@ module Sourced
       @group_id = id
     end
 
+    # Declare this reactor as the exclusive owner of its handled message types:
+    # the router validates that no other reactor handles the same types. This is
+    # a routing concern only — it does not delete messages. Deletion happens
+    # solely when an action carries +delete: true+.
+    #
+    # Declaring +exclusive+ also lets a reactor omit +partition_by+ to become an
+    # id-partitioned queue (one partition per message). Reactors that delete
+    # their handled messages should be exclusive so no other reactor is starved.
+    #
+    # @param value [Boolean]
+    # @return [void]
+    def exclusive(value = true)
+      @exclusive = value
+    end
+
+    # @return [Boolean] whether this reactor exclusively owns its message types
+    def exclusive?
+      @exclusive ||= false
+    end
+
     # Message types this consumer evolves from. Used by {#context_for}
     # to build query conditions for history reads.
     # Defaults to empty; overridden by Sourced::Evolve mixin.

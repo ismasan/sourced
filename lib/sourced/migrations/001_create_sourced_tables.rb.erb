@@ -25,7 +25,7 @@ Sequel.migration do
     end
 
     create_table?(:<%= message_key_pairs_table %>) do
-      foreign_key :message_position, :<%= messages_table %>, key: :position
+      foreign_key :message_position, :<%= messages_table %>, key: :position, on_delete: :cascade
       foreign_key :key_pair_id, :<%= key_pairs_table %>
       primary_key %i[message_position key_pair_id]
 

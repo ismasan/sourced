@@ -283,7 +283,7 @@ RSpec.describe Sourced::Projector do
       expect(append_actions.first.messages.first).to be_a(ProjectorTestMessages::NotifyArchive)
     end
 
-    it 'returns schedule actions for delayed reactions' do
+    it 'wraps delayed reactions in an append action carrying a future-dated message' do
       msgs = [
         Sourced::PositionedMessage.new(
           ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 1
@@ -293,11 +293,13 @@ RSpec.describe Sourced::Projector do
 
       pairs = TestDelayedItemProjector.handle_claim(claim)
 
-      schedule_actions = pairs.flat_map { |actions, _| Array(actions) }
-        .select { |action| action.is_a?(Sourced::Actions::Schedule) }
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |action| action.is_a?(Sourced::Actions::Append) }
 
-      expect(schedule_actions.size).to eq(1)
-      expect(schedule_actions.first.messages.first).to be_a(ProjectorTestMessages::DelayedNotifyArchive)
+      delayed = append_actions.flat_map(&:messages)
+        .find { |m| m.is_a?(ProjectorTestMessages::DelayedNotifyArchive) }
+      expect(delayed).not_to be_nil
+      expect(delayed.created_at).to be > Time.now
     end
 
     it 'skips reactions when replaying' do

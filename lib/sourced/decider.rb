@@ -46,9 +46,10 @@ module Sourced
       # 2. **Reaction-triggering event** — if the decider
       #    {React#reacts_to? reacts to} this message (and the batch is not
       #    replaying), its state is evolved with the event, {React#react} is
-      #    invoked, and any produced messages are wrapped in
-      #    {Actions::Append} / {Actions::Schedule} with +source: msg+ so
-      #    the infra layer correlates reaction messages against the event.
+      #    invoked, and any produced messages are wrapped in an
+      #    {Actions::Append} with +source: msg+ so the infra layer correlates
+      #    reaction messages against the event (future-dated ones are deferred
+      #    to the scheduled_messages table by {Sourced::Store#append}).
       #
       # 3. **Anything else** — yields +[Actions::OK, msg]+ (the message is
       #    acked with no side effects). In practice this is unreachable

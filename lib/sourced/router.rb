@@ -10,23 +10,58 @@ module Sourced
       @store = store
       @reactors = []
       @needs_history = {}
+      @action_runner = ActionRunner.new(store)
     end
 
+    # Register a reactor. Reactors are duck-typed: only +handled_messages+ and
+    # +handle_claim+ are required. Optional methods (+group_id+ — defaults to the
+    # class name, +partition_keys+, +exclusive?+, +context_for+, lifecycle hooks)
+    # get defaults so a plain class (e.g. a Sidereal Commander adapter) can
+    # register without depending on Sourced.
+    #
+    # Deletion is never dictated by partitioning or exclusivity — it happens only
+    # when a reactor's action carries +delete: true+ (see {ActionRunner}).
+    # +exclusive+ governs routing (sole ownership of the handled types).
+    # A reactor must declare +partition_by+; an +exclusive+ reactor may omit it to
+    # get an id-partitioned queue (one partition per message).
     def register(reactor_class)
+      ReactorDefaults.apply(reactor_class)
+      exclusive = reactor_class.exclusive?
+      partition_keys = effective_partition_keys(reactor_class)
+
+      # id-partitioning (declared as `partition_by :__id`, or implied by omitting
+      # partition_by) indexes messages by Message#id (key name "__id", chosen to
+      # not collide with a payload attribute) and must be sole-owned, so it is only
+      # allowed for exclusive reactors. This keeps id-indexing safe: a type is only
+      # id-indexed when its lone exclusive owner is id-partitioned.
+      if partition_keys == [:__id] && !exclusive
+        raise ArgumentError,
+          "#{reactor_class} must declare `partition_by`. (Only an `exclusive` reactor may " \
+          "be id-partitioned — one partition per message — whether by omitting " \
+          "partition_by or declaring `partition_by :__id`.)"
+      end
+
+      handled_types = reactor_class.handled_messages.map(&:type).uniq
+      validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
+
       @reactors << reactor_class
+
       store.register_consumer_group(
         reactor_class.group_id,
-        partition_by: reactor_class.partition_keys.map(&:to_s)
+        partition_by: partition_keys.map(&:to_s),
+        exclusive: exclusive,
+        handled_types: handled_types
       )
       @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
     end
 
     def handle_next_for(reactor_class, worker_id: 'default', batch_size: nil)
+      group_id = reactor_class.group_id
       handled_types = reactor_class.handled_messages.map(&:type).uniq
 
       claim = store.claim_next(
-        reactor_class.group_id,
-        partition_by: reactor_class.partition_keys.map(&:to_s),
+        group_id,
+        partition_by: effective_partition_keys(reactor_class).map(&:to_s),
         handled_types: handled_types,
         worker_id: worker_id,
         batch_size: batch_size
@@ -37,32 +72,31 @@ module Sourced
         kwargs = {}
         if @needs_history[reactor_class]
           attrs = claim.partition_value.transform_keys(&:to_sym)
-          conditions = reactor_class.context_for(attrs)
-          kwargs[:history] = store.read(conditions)
+          kwargs[:history] = store.read(reactor_class.context_for(attrs))
         end
 
         action_pairs = reactor_class.handle_claim(claim, **kwargs)
 
         if action_pairs == Actions::RETRY
-          store.release(reactor_class.group_id, offset_id: claim.offset_id)
+          store.release(group_id, offset_id: claim.offset_id)
           return true
         end
 
-        execute_actions(action_pairs, claim, reactor_class.group_id)
+        execute_actions(action_pairs, claim, reactor_class)
         true
 
       rescue Sourced::PartialBatchError => e
-        execute_actions(e.action_pairs, claim, reactor_class.group_id)
-        store.updating_consumer_group(reactor_class.group_id) do |group|
+        execute_actions(e.action_pairs, claim, reactor_class)
+        store.updating_consumer_group(group_id) do |group|
           reactor_class.on_exception(e, e.failed_message, group)
         end
         true
       rescue Sourced::ConcurrentAppendError
-        store.release(reactor_class.group_id, offset_id: claim.offset_id)
+        store.release(group_id, offset_id: claim.offset_id)
         true
       rescue StandardError => e
-        store.release(reactor_class.group_id, offset_id: claim.offset_id)
-        store.updating_consumer_group(reactor_class.group_id) do |group|
+        store.release(group_id, offset_id: claim.offset_id)
+        store.updating_consumer_group(group_id) do |group|
           reactor_class.on_exception(e, claim.messages.first, group)
         end
         true
@@ -85,9 +119,9 @@ module Sourced
     # @example Stop with a string group_id
     #   router.stop_consumer_group('CourseDecider')
     def stop_consumer_group(reactor_or_id, message = nil)
-      reactor_class = resolve_reactor_class(reactor_or_id)
-      store.stop_consumer_group(reactor_class.group_id, message)
-      reactor_class.on_stop(message)
+      reactor = resolve_reactor_class(reactor_or_id)
+      store.stop_consumer_group(reactor.group_id, message)
+      reactor.on_stop(message)
     end
 
     # Reset a consumer group and invoke the reactor's {Consumer#on_reset} callback.
@@ -104,9 +138,9 @@ module Sourced
     # @example
     #   router.reset_consumer_group(CourseDecider)
     def reset_consumer_group(reactor_or_id)
-      reactor_class = resolve_reactor_class(reactor_or_id)
-      store.reset_consumer_group(reactor_class.group_id)
-      reactor_class.on_reset
+      reactor = resolve_reactor_class(reactor_or_id)
+      store.reset_consumer_group(reactor.group_id)
+      reactor.on_reset
     end
 
     # Start a consumer group and invoke the reactor's {Consumer#on_start} callback.
@@ -121,9 +155,9 @@ module Sourced
     # @example
     #   router.start_consumer_group(CourseDecider)
     def start_consumer_group(reactor_or_id)
-      reactor_class = resolve_reactor_class(reactor_or_id)
-      store.start_consumer_group(reactor_class.group_id)
-      reactor_class.on_start
+      reactor = resolve_reactor_class(reactor_or_id)
+      store.start_consumer_group(reactor.group_id)
+      reactor.on_start
     end
 
     def drain(limit = Float::INFINITY)
@@ -137,6 +171,41 @@ module Sourced
 
     private
 
+    # A registered reactor's effective partition keys: its declared keys, or
+    # +[:__id]+ (partition by Message#id) for an exclusive reactor that declared
+    # none (validated in #register).
+    def effective_partition_keys(reactor)
+      keys = Array(reactor.partition_keys)
+      keys.empty? ? [:__id] : keys
+    end
+
+    # Enforce that an exclusive reactor is the sole handler of its message types.
+    # A message deleted once the exclusive reactor acks it must not be needed by
+    # any other reactor.
+    #
+    # @raise [ArgumentError] on a message-type overlap involving an exclusive reactor
+    def validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
+      @reactors.each do |existing|
+        existing_exclusive = existing.exclusive?
+        next unless exclusive || existing_exclusive
+
+        overlap = handled_types & existing.handled_messages.map(&:type)
+        next if overlap.empty?
+
+        offender = exclusive ? reactor_class : existing
+        raise ArgumentError, <<~MSG.strip
+          Cannot register #{reactor_class}: exclusive reactor #{offender} requires sole ownership of its message types, but #{reactor_class} and #{existing} both handle: #{overlap.sort.join(', ')}
+        MSG
+      end
+    end
+
+    # Normalize a pair's +signals+ into an array, without Hash-splatting a single
+    # Hash signal into pairs (which +Array()+ would do).
+    def wrap_signals(signals)
+      return [] if signals.nil?
+      signals.is_a?(Array) ? signals : [signals]
+    end
+
     # Resolve a reactor class or group_id string to a registered reactor class.
     #
     # @param reactor_or_id [Class, String] a reactor class (returned as-is) or a +group_id+ string
@@ -149,30 +218,40 @@ module Sourced
         raise(ArgumentError, "No reactor registered with group_id '#{reactor_or_id}'")
     end
 
-    def execute_actions(action_pairs, claim, group_id)
-      after_sync_actions = []
+    # Interpret the reactor's returned action signals against the store, then
+    # finalize the claim: advance the offset cursor and delete any messages the
+    # reactor explicitly marked for deletion via a +delete: true+ signal.
+    def execute_actions(action_pairs, claim, reactor)
+      group_id = reactor.group_id
+      interpreter = @action_runner
+      after_sync_works = []
 
       store.db.transaction do
         last_position = nil
-        Array(action_pairs).each do |(actions, source_message)|
-          Array(actions).each do |action|
-            if action.is_a?(Actions::AfterSync)
-              after_sync_actions << action
-            elsif action != Actions::OK
-              action.execute(store, source_message)
-            end
+        flagged_deletes = []
+
+        Array(action_pairs).each do |(signals, source_message)|
+          delete_requested = false
+          wrap_signals(signals).each do |signal|
+            delete_requested = true if interpreter.run(signal, source_message, after_sync_works)
           end
-          last_position = source_message.position if source_message.respond_to?(:position)
+          if source_message.respond_to?(:position)
+            last_position = source_message.position
+            flagged_deletes << source_message.position if delete_requested
+          end
         end
 
         if last_position
+          # Deletion is driven solely by :delete signals — never by the reactor's
+          # partitioning or exclusivity.
+          store.delete_messages(flagged_deletes) if flagged_deletes.any?
           store.ack(group_id, offset_id: claim.offset_id, position: last_position)
         else
           store.release(group_id, offset_id: claim.offset_id)
         end
       end
 
-      after_sync_actions.each(&:call)
+      after_sync_works.each(&:call)
     end
   end
 end

@@ -12,7 +12,9 @@ PATH
     sourced (0.0.1)
       async
       plumb (>= 0.0.17)
+      sequel
       sourced-message
+      sqlite3
 
 GEM
   remote: https://rubygems.org/
@@ -62,7 +64,7 @@ GEM
     parser (3.3.7.1)
       ast (~> 2.4.1)
       racc
-    plumb (0.0.17)
+    plumb (0.0.18)
       bigdecimal
       concurrent-ruby
     psych (5.1.2)

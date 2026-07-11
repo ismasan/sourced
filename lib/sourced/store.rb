@@ -138,6 +138,11 @@ module Sourced
       # Populated by register_consumer_group.
       # { group_id => { cg_id: Integer, partition_by: Array<String> | nil } }
       @registered_groups = {}
+
+      # How each message type should be indexed, derived from its consuming
+      # group's partitioning. { type_string => :id }. Types absent here default
+      # to :payload. Populated by register_consumer_group.
+      @type_index_basis = {}
     end
 
     # @return [String]
@@ -189,82 +194,100 @@ module Sourced
     #
     # @param messages [Sourced::Message, Array<Sourced::Message>] one or more messages to append
     # @param guard [ConsistencyGuard, nil] optional guard for conflict detection
+    # @param index_by [Symbol, nil] override for which message attributes to index as
+    #   key_pairs: +:payload+ indexes payload attributes; +:id+ indexes the message id.
+    #   When nil (default), the basis is resolved per message from its consuming group
+    #   (see {#register_consumer_group}) — id-partitioned types index by id, all else
+    #   by payload — so every append path indexes consistently.
     # @return [Integer] the last assigned position
     # @raise [Sourced::ConcurrentAppendError] if conflicting messages found after guard position
-    def append(messages, guard: nil)
+    def append(messages, guard: nil, index_by: nil)
       messages = Array(messages)
       return latest_position if messages.empty?
+
+      now = Time.now
+      # Messages dated in the future are deferred to the scheduled_messages table
+      # and promoted into the log when due (see {#update_schedule!}); the rest are
+      # appended immediately. This makes #append the single write path — a
+      # future-dated message (e.g. built with Message#at) is transparently
+      # scheduled rather than appended for immediate consumption.
+      to_schedule, to_append = messages.partition { |msg| msg.created_at > now }
 
       last_position = nil
 
       db.transaction do
-        if guard
-          conflicts = check_conflicts(guard.conditions, guard.last_position)
-          raise Sourced::ConcurrentAppendError, "Conflicting messages found after position #{guard.last_position}" if conflicts.any?
-        end
+        # Schedule + append commit atomically: a guard conflict below rolls back
+        # the scheduled inserts too.
+        schedule_messages(to_schedule) if to_schedule.any?
 
-        messages.each do |msg|
-          payload_json = msg.payload ? JSON.dump(msg.payload.to_h) : '{}'
-          metadata_json = msg.metadata.empty? ? nil : JSON.dump(msg.metadata)
-
-          # insert returns last_insert_rowid on SQLite — no need for a separate SELECT
-          last_position = db[@messages_table].insert(
-            message_id: msg.id,
-            message_type: msg.type,
-            causation_id: msg.causation_id,
-            correlation_id: msg.correlation_id,
-            payload: payload_json,
-            metadata: metadata_json,
-            created_at: msg.created_at.iso8601
-          )
-
-          # Upsert key pairs and link to message in 2 statements (was 3):
-          # 1. INSERT OR IGNORE the key_pair
-          # 2. INSERT message_key_pair with key_pair_id resolved via subquery
-          msg.extracted_keys.each do |name, value|
-            db.run("INSERT OR IGNORE INTO #{@key_pairs_table} (name, value) VALUES (#{db.literal(name)}, #{db.literal(value)})")
-            db.run(<<~SQL)
-              INSERT INTO #{@message_key_pairs_table} (message_position, key_pair_id)
-              SELECT #{db.literal(last_position)}, id
-              FROM #{@key_pairs_table}
-              WHERE name = #{db.literal(name)} AND value = #{db.literal(value)}
-            SQL
+        unless to_append.empty?
+          if guard
+            conflicts = check_conflicts(guard.conditions, guard.last_position)
+            raise Sourced::ConcurrentAppendError, "Conflicting messages found after position #{guard.last_position}" if conflicts.any?
           end
-        end
 
-        ensure_offsets_for_registered_groups(messages)
+          to_append.each do |msg|
+            payload_json = msg.payload ? JSON.dump(msg.payload.to_h) : '{}'
+            metadata_json = msg.metadata.empty? ? nil : JSON.dump(msg.metadata)
+
+            # insert returns last_insert_rowid on SQLite — no need for a separate SELECT
+            last_position = db[@messages_table].insert(
+              message_id: msg.id,
+              message_type: msg.type,
+              causation_id: msg.causation_id,
+              correlation_id: msg.correlation_id,
+              payload: payload_json,
+              metadata: metadata_json,
+              created_at: msg.created_at.iso8601
+            )
+
+            # Upsert key pairs and link to message in 2 statements (was 3):
+            # 1. INSERT OR IGNORE the key_pair
+            # 2. INSERT message_key_pair with key_pair_id resolved via subquery
+            basis = index_by || @type_index_basis[msg.type] || :payload
+            effective_keys(msg, basis).each do |name, value|
+              db.run("INSERT OR IGNORE INTO #{@key_pairs_table} (name, value) VALUES (#{db.literal(name)}, #{db.literal(value)})")
+              db.run(<<~SQL)
+                INSERT INTO #{@message_key_pairs_table} (message_position, key_pair_id)
+                SELECT #{db.literal(last_position)}, id
+                FROM #{@key_pairs_table}
+                WHERE name = #{db.literal(name)} AND value = #{db.literal(value)}
+              SQL
+            end
+          end
+
+          # Only immediate messages advance offsets; scheduled ones get offsets
+          # when promoted (re-appended) by #update_schedule!.
+          ensure_offsets_for_registered_groups(to_append)
+        end
       end
 
-      notifier.notify_new_messages(messages.map(&:type).uniq)
+      # Scheduled messages are announced when promoted, not now.
+      notifier.notify_new_messages(to_append.map(&:type).uniq) if to_append.any?
 
-      last_position
+      to_append.empty? ? latest_position : last_position
     end
 
-    # Persist messages for future promotion into the main log.
+    # Persist future-dated messages for later promotion into the main log.
+    # Each message's own +created_at+ is its availability time. Private: this is
+    # an implementation detail of {#append} (which partitions future-dated
+    # messages here) and always runs inside {#append}'s transaction.
     #
-    # @param messages [Sourced::Message, Array<Sourced::Message>] one or more delayed messages
-    # @param at [Time] when the messages should become available
-    # @return [Boolean] false when no messages were provided, true otherwise
-    def schedule_messages(messages, at:)
-      messages = Array(messages)
-      return false if messages.empty?
-
+    # @param messages [Array<Sourced::Message>] future-dated messages to defer
+    # @return [void]
+    private def schedule_messages(messages)
       now = Time.now
       rows = messages.map do |message|
         data = message.to_h
         data[:metadata] = message.metadata.merge(scheduled_at: now)
         {
           created_at: now.iso8601,
-          available_at: at.iso8601,
+          available_at: message.created_at.iso8601,
           message: JSON.dump(data)
         }
       end
 
-      db.transaction do
-        db[@scheduled_messages_table].multi_insert(rows)
-      end
-
-      true
+      db[@scheduled_messages_table].multi_insert(rows)
     end
 
     # Promote due scheduled messages into the main log.
@@ -454,8 +477,12 @@ module Sourced
     #
     # @param group_id [String] unique identifier for the consumer group
     # @param partition_by [Array<String, Symbol>, nil] attribute names defining partitions
+    # @param exclusive [Boolean] when true, the group exclusively owns its message
+    #   types and uses queue (delete-on-ack) semantics
+    # @param handled_types [Array<String>] message type strings this group consumes.
+    #   Used to derive per-type index basis (:id for id-partitioned groups).
     # @return [void]
-    def register_consumer_group(group_id, partition_by: nil)
+    def register_consumer_group(group_id, partition_by: nil, exclusive: false, handled_types: [])
       partition_by_sorted = partition_by ? Array(partition_by).map(&:to_s).sort : nil
       partition_by_json = partition_by_sorted ? JSON.dump(partition_by_sorted) : nil
       now = Time.now.iso8601
@@ -465,9 +492,16 @@ module Sourced
         ON CONFLICT(group_id) DO UPDATE SET partition_by = #{db.literal(partition_by_json)}, updated_at = #{db.literal(now)}
       SQL
 
+      # id-partitioned groups (reserved "__id" key) must have their message types
+      # indexed by id so they are claimable regardless of which code path appends
+      # them (append, handle!, workflows, scheduled-message promotion).
+      if partition_by_sorted == ['__id']
+        Array(handled_types).each { |t| @type_index_basis[t] = :id }
+      end
+
       # Cache for hot-path use in append
       cg = db[@consumer_groups_table].where(group_id: group_id).first
-      @registered_groups[group_id] = { cg_id: cg[:id], partition_by: partition_by_sorted }
+      @registered_groups[group_id] = { cg_id: cg[:id], partition_by: partition_by_sorted, exclusive: exclusive }
     end
 
     # Whether the consumer group exists and is active.
@@ -537,6 +571,14 @@ module Sourced
       group_id = resolve_group_id(group_id)
       cg = db[@consumer_groups_table].where(group_id: group_id).first
       return unless cg
+
+      # Exclusive (delete-on-ack) groups have nothing to replay — processed
+      # messages were deleted. Resetting offsets would only orphan the partition
+      # locks. Derived from the registered group (exclusivity isn't persisted).
+      if @registered_groups[group_id]&.fetch(:exclusive, false)
+        logger.warn "Sourced: reset_consumer_group is a no-op for exclusive group #{group_id} (messages are deleted on ack, nothing to replay)"
+        return
+      end
 
       db[@offsets_table].where(consumer_group_id: cg[:id]).delete
       db[@consumer_groups_table].where(id: cg[:id]).update(
@@ -687,6 +729,60 @@ module Sourced
       end
     end
 
+    # Acknowledge processing in queue (delete-on-ack) mode: delete the processed
+    # message rows, then advance the offset and release the claim exactly like
+    # {#ack}. Intended to run inside the caller's transaction so the deletes and
+    # the ack commit atomically.
+    #
+    # The offset row is kept (it remains the per-partition claim/lock and a
+    # progress high-water mark). Message link rows in the message_key_pairs table
+    # are removed automatically via the foreign-key cascade. Shared key_pairs rows
+    # are left in place.
+    #
+    # @param group_id [String] consumer group identifier
+    # @param offset_id [Integer] offset ID from the claim result
+    # @param positions [Array<Integer>] positions of the processed messages to delete
+    # @return [void]
+    def ack_and_delete(group_id, offset_id:, positions:)
+      cg = db[@consumer_groups_table].where(group_id: group_id).first
+      return unless cg
+
+      positions = Array(positions)
+      return if positions.empty?
+
+      last_position = positions.max
+
+      delete_messages(positions)
+
+      db[@offsets_table].where(id: offset_id, consumer_group_id: cg[:id]).update(
+        last_position: last_position,
+        claimed: 0,
+        claimed_at: nil,
+        claimed_by: nil
+      )
+
+      # Advance the high watermark (never decrease)
+      if last_position > cg[:highest_position]
+        db[@consumer_groups_table].where(id: cg[:id]).update(
+          highest_position: last_position,
+          updated_at: Time.now.iso8601
+        )
+      end
+    end
+
+    # Delete messages by position. Their message_key_pairs cascade away via the FK.
+    # Does not touch offsets — the caller advances the cursor separately (e.g. via
+    # {#ack}). Intended to run inside the caller's transaction.
+    #
+    # @param positions [Array<Integer>] positions to delete
+    # @return [Integer] number of messages deleted
+    def delete_messages(positions)
+      positions = Array(positions)
+      return 0 if positions.empty?
+
+      db[@messages_table].where(position: positions).delete
+    end
+
     # Release a claim without advancing the offset. Use for error recovery
     # so the partition can be re-claimed and retried.
     #
@@ -740,6 +836,65 @@ module Sourced
         .where(claimed: 1)
         .where(claimed_by: stale_worker_ids)
         .update(claimed: 0, claimed_at: nil, claimed_by: nil)
+    end
+
+    # Delete drained partition offsets — offsets whose partition has no remaining
+    # messages, which only happens once a reactor has deleted them on ack
+    # (regardless of delivery mode: any reactor may delete via a +delete: true+
+    # action).
+    #
+    # An offset is drained when it is currently unclaimed, it has at least one
+    # partition key (only partitioned offsets are reaped — a non-partitioned
+    # group's single offset is kept), and no remaining message matches all of its
+    # partition key_pairs (AND semantics). A retain (non-deleting) reactor's
+    # partitions always have messages, so they are never matched here.
+    #
+    # The reap race is benign: if a new message arrives for a just-reaped
+    # partition, {#claim_next} re-discovers and recreates the offset on the next
+    # cycle. Deleting the offset cascades to offset_key_pairs.
+    #
+    # @return [Integer] number of offsets deleted
+    def release_drained_offsets
+      drained_ids = db.fetch(<<~SQL).map { |r| r[:id] }
+        SELECT o.id
+        FROM #{@offsets_table} o
+        WHERE o.claimed = 0
+          AND EXISTS (
+            SELECT 1 FROM #{@offset_key_pairs_table} WHERE offset_id = o.id
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM #{@offset_key_pairs_table} okp
+            JOIN #{@message_key_pairs_table} mkp ON okp.key_pair_id = mkp.key_pair_id
+            JOIN #{@messages_table} m ON mkp.message_position = m.position
+            WHERE okp.offset_id = o.id
+            GROUP BY m.position
+            HAVING COUNT(*) = (
+              SELECT COUNT(*) FROM #{@offset_key_pairs_table} WHERE offset_id = o.id
+            )
+          )
+      SQL
+
+      return 0 if drained_ids.empty?
+
+      db[@offsets_table].where(id: drained_ids).delete
+    end
+
+    # Delete key_pairs no longer referenced by any message or offset.
+    #
+    # id-partitioned queue consumers index a unique key_pair per message
+    # (name='id'). When the message is deleted its message_key_pairs cascade away,
+    # but the key_pairs row lingers — high cardinality, so it must be pruned or it
+    # leaks. Payload key_pairs are low-cardinality and typically stay referenced.
+    # The offset_key_pairs guard keeps a partition's key while its (briefly still
+    # present) drained offset references it.
+    #
+    # @return [Integer] number of key_pairs deleted
+    def prune_orphan_key_pairs
+      db[@key_pairs_table]
+        .exclude(id: db[@message_key_pairs_table].select(:key_pair_id))
+        .exclude(id: db[@offset_key_pairs_table].select(:key_pair_id))
+        .delete
     end
 
     # Advance a consumer group's offset for a specific partition to at least +position+.
@@ -915,6 +1070,38 @@ module Sourced
       group_id.respond_to?(:group_id) ? group_id.group_id : group_id
     end
 
+    # The [name, value] key pairs to index for a message, per +index_by+.
+    # +:id+ indexes the message id under the reserved key name "__id" (chosen to
+    # not collide with a payload attribute); +:payload+ (default) indexes payload
+    # attributes.
+    #
+    # The +__id+ key is *always* indexed, even on the payload path. An
+    # id-partitioned reactor (+partition_by ['__id']+) can only discover a message
+    # through its +__id+ key pair, and +index_by+ is resolved from the appending
+    # process's registered groups (+@type_index_basis+). A process that appends
+    # without having registered that group — e.g. a CLI or console dispatching a
+    # command into a running app — would otherwise index by payload only, leaving
+    # the message permanently invisible to the reactor's discovery scan. Indexing
+    # +__id+ unconditionally makes id-partitioned claim work regardless of which
+    # process (and thus which registration state) performed the append.
+    #
+    # @param msg [Sourced::Message]
+    # @param index_by [Symbol]
+    # @return [Enumerable<Array(String, String)>]
+    def effective_keys(msg, index_by)
+      case index_by
+      when :id then [['__id', msg.id]]
+      else [['__id', msg.id], *msg.extracted_keys]
+      end
+    end
+
+    # Whether a group's partition is by message id (the queue fast case) — the
+    # reserved "__id" key. Such groups skip eager offset creation and rely on lazy
+    # discovery, since message id is high-cardinality (one partition per message).
+    def id_partitioned?(partition_by)
+      partition_by == ['__id']
+    end
+
     # Create offsets eagerly for all registered consumer groups.
     # Called inside the append transaction after messages and key_pairs are inserted.
     #
@@ -923,8 +1110,15 @@ module Sourced
     def ensure_offsets_for_registered_groups(messages)
       return if @registered_groups.empty?
 
-      # Collect all partition attribute names across registered groups
-      attr_names = @registered_groups.each_value.flat_map { |gi| gi[:partition_by] || [] }.uniq
+      # Collect partition attribute names across eagerly-offset groups.
+      # id-partitioned (queue) groups are excluded: id is high-cardinality, so
+      # they use lazy discovery in claim_next instead of eager per-message offsets.
+      eager_groups = @registered_groups.each_value.reject do |gi|
+        gi[:partition_by].nil? || gi[:partition_by].empty? || id_partitioned?(gi[:partition_by])
+      end
+      return if eager_groups.empty?
+
+      attr_names = eager_groups.flat_map { |gi| gi[:partition_by] }.uniq
 
       # Pre-fetch relevant key_pair IDs in one query, keyed by "name:value"
       kp_id_cache = {}
@@ -932,9 +1126,8 @@ module Sourced
         kp_id_cache["#{row[:name]}:#{row[:value]}"] = row[:id]
       end
 
-      @registered_groups.each_value do |group_info|
+      eager_groups.each do |group_info|
         partition_by = group_info[:partition_by]
-        next unless partition_by
 
         cg_id = group_info[:cg_id]
         seen = Set.new
@@ -949,6 +1142,11 @@ module Sourced
           seen << pk
 
           kp_ids = partition_by.map { |attr| kp_id_cache["#{attr}:#{values[attr]}"] }
+          # A key_pair may be missing if the message was appended with a different
+          # index_by (e.g. :id), so its payload attrs were never indexed. Skip —
+          # such a message isn't claimable by this group anyway.
+          next if kp_ids.any?(&:nil?)
+
           create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids)
         end
       end

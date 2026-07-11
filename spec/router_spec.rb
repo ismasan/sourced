@@ -35,6 +35,12 @@ module RouterTestMessages
     attribute :device_id, String
     attribute :event_type, String
   end
+
+  # Queue-mode worker messages
+  QueueJob = Sourced::Message.define('router_test.queue_job') do
+    attribute :queue_id, String
+    attribute :name, String
+  end
 end
 
 # Test decider for router specs
@@ -103,6 +109,100 @@ class RouterTestAuditReactor
       )
       [Sourced::Actions::Append.new(audit), msg]
     end
+  end
+end
+
+# Exclusive worker: deletes its messages on ack. Fails on a job named 'fail'.
+class RouterTestQueueWorker
+  extend Sourced::Consumer
+
+  partition_by :queue_id
+  consumer_group 'router-test-queue'
+  exclusive
+
+  def self.handled_messages
+    [RouterTestMessages::QueueJob]
+  end
+
+  def self.handle_claim(claim)
+    each_with_partial_ack(claim.messages) do |msg|
+      raise 'boom' if msg.payload.name == 'fail'
+
+      # explicitly delete the handled message on ack (queue semantics)
+      [{ type: :ack, delete: true }, msg]
+    end
+  end
+end
+
+# Messages for the duck-typed (Sidereal-Commander-shaped) reactor.
+module RouterQueueMessages
+  DoThing = Sourced::Command.define('router_q.do_thing') do
+    attribute :n, Integer
+  end
+
+  DoNext = Sourced::Command.define('router_q.do_next') do
+    attribute :n, Integer
+  end
+end
+
+# Mimics a Sidereal Commander adapter: does NOT `extend Sourced::Consumer` and
+# depends only on the shared message library. Returns plain-Hash action signals.
+# No partition_keys → Router partitions by message id. Exclusive → deletes on ack.
+class FakeCommander
+  HANDLED = [RouterQueueMessages::DoThing, RouterQueueMessages::DoNext].freeze
+
+  def self.processed
+    @processed ||= []
+  end
+
+  def self.reset!
+    @processed = []
+  end
+
+  # no .group_id → Router defaults it to the class name ('FakeCommander')
+  def self.exclusive? = true
+  def self.handled_messages = HANDLED
+
+  def self.handle_claim(claim)
+    claim.messages.map do |cmd|
+      signals = []
+      case cmd.type
+      when 'router_q.do_thing'
+        raise 'boom' if cmd.payload.n == 99 # simulate a handler failure
+
+        processed << [:thing, cmd.payload.n]
+        # dispatch a follow-up command (like a Sidereal handler)
+        signals << { type: :append, messages: [RouterQueueMessages::DoNext.new(payload: { n: cmd.payload.n })] }
+      else
+        processed << [:next, cmd.payload.n]
+      end
+      # explicitly delete the handled command on ack (queue semantics)
+      signals << { type: :ack, delete: true }
+      [signals, cmd]
+    end
+  end
+end
+
+# Same as FakeCommander but NOT exclusive — invalid (no partition_keys).
+class NonExclusiveCommander
+  def self.group_id = 'non-exclusive-commander'
+  def self.handled_messages = [RouterQueueMessages::DoThing]
+  def self.handle_claim(claim) = []
+end
+
+# Non-queue reactor that overlaps RouterTestQueueWorker's message type.
+class RouterTestQueueObserver
+  extend Sourced::Consumer
+
+  partition_by :queue_id
+  consumer_group 'router-test-queue-observer'
+
+  def self.handled_messages
+    [RouterTestMessages::QueueJob]
+  end
+
+  def self.handle_claim(claim)
+    [Sourced::Actions::OK, claim.messages.last]
   end
 end
 
@@ -551,6 +651,160 @@ RSpec.describe Sourced::Router do
         'router_test.device.bound',
         'router_test.device.registered'
       ])
+    end
+  end
+
+  describe 'exclusive (delete-on-ack) reactors' do
+    def append_job(queue_id, name)
+      store.append(RouterTestMessages::QueueJob.new(payload: { queue_id: queue_id, name: name }))
+    end
+
+    it 'deletes processed messages on ack instead of advancing a cursor' do
+      router.register(RouterTestQueueWorker)
+      append_job('q1', 'a')
+      append_job('q1', 'b')
+
+      expect(router.handle_next_for(RouterTestQueueWorker)).to be true
+
+      expect(db[:sourced_messages].where(message_type: 'router_test.queue_job').count).to eq(0)
+      # offset row kept as the partition lock
+      expect(db[:sourced_offsets].count).to eq(1)
+    end
+
+    it 'leaves the partition claimable for new messages after deletion' do
+      router.register(RouterTestQueueWorker)
+      append_job('q1', 'a')
+      router.handle_next_for(RouterTestQueueWorker)
+
+      append_job('q1', 'c')
+      expect(router.handle_next_for(RouterTestQueueWorker)).to be true
+      expect(db[:sourced_messages].where(message_type: 'router_test.queue_job').count).to eq(0)
+    end
+
+    it 'on partial batch failure deletes only successful messages; failed + remainder survive' do
+      router.register(RouterTestQueueWorker)
+      allow(RouterTestQueueWorker).to receive(:on_exception) # swallow terminal handling
+      append_job('q1', 'a')
+      append_job('q1', 'fail')
+      append_job('q1', 'c')
+
+      router.handle_next_for(RouterTestQueueWorker)
+
+      remaining = store.read(RouterTestMessages::QueueJob.to_conditions(queue_id: 'q1')).messages
+      expect(remaining.map { |m| m.payload.name }).to eq(%w[fail c])
+    end
+
+    it 'keeps messages on full failure (release), allowing retry' do
+      router.register(RouterTestQueueWorker)
+      allow(RouterTestQueueWorker).to receive(:on_exception)
+      append_job('q1', 'fail')
+
+      router.handle_next_for(RouterTestQueueWorker)
+
+      remaining = store.read(RouterTestMessages::QueueJob.to_conditions(queue_id: 'q1')).messages
+      expect(remaining.map { |m| m.payload.name }).to eq(%w[fail])
+    end
+
+    describe 'exclusive ownership validation' do
+      it 'raises when an exclusive reactor overlaps an already-registered reactor' do
+        router.register(RouterTestQueueObserver)
+        expect { router.register(RouterTestQueueWorker) }
+          .to raise_error(ArgumentError, /sole ownership.*router_test\.queue_job/m)
+      end
+
+      it 'raises when a reactor overlaps an already-registered exclusive reactor' do
+        router.register(RouterTestQueueWorker)
+        expect { router.register(RouterTestQueueObserver) }
+          .to raise_error(ArgumentError, /sole ownership.*router_test\.queue_job/m)
+      end
+
+      it 'allows an exclusive reactor with no overlap' do
+        router.register(RouterTestDecider)
+        expect { router.register(RouterTestQueueWorker) }.not_to raise_error
+      end
+    end
+  end
+
+  # A third-party reactor (Sidereal Commander shape): plain class, no
+  # `extend Sourced::Consumer`, plain-Hash signals, no partition_keys.
+  describe 'duck-typed queue reactor (Sidereal Commander shape)' do
+    before { FakeCommander.reset! }
+
+    it 'registers a class that does not extend Consumer, partitioned by id' do
+      router.register(FakeCommander)
+      row = db[:sourced_consumer_groups].where(group_id: 'FakeCommander').first
+      expect(JSON.parse(row[:partition_by])).to eq(['__id'])
+    end
+
+    it 'raises when a reactor declares neither partition_by nor exclusive (never silently deletes)' do
+      expect { router.register(NonExclusiveCommander) }
+        .to raise_error(ArgumentError, /must declare `partition_by`/)
+    end
+
+    it 'raises for a Consumer reactor that forgot partition_by (never silently deletes)' do
+      klass = Class.new do
+        extend Sourced::Consumer
+        consumer_group 'forgot-partition'
+        def self.handled_messages = [RouterQueueMessages::DoThing]
+        def self.handle_claim(_claim) = []
+      end
+
+      expect { router.register(klass) }
+        .to raise_error(ArgumentError, /must declare `partition_by`/)
+    end
+
+    it 'raises for an explicitly id-partitioned reactor that is not exclusive' do
+      # `partition_by :__id` id-indexes its messages, which must be sole-owned —
+      # so it is only allowed for exclusive reactors, same as omitting partition_by.
+      klass = Class.new do
+        extend Sourced::Consumer
+        consumer_group 'explicit-id-non-exclusive'
+        partition_by :__id
+        def self.handled_messages = [RouterQueueMessages::DoThing]
+        def self.handle_claim(_claim) = []
+      end
+
+      expect { router.register(klass) }
+        .to raise_error(ArgumentError, /must declare `partition_by`/)
+    end
+
+    it 'processes a command, appends a follow-up, and deletes the source; then processes the follow-up' do
+      router.register(FakeCommander)
+      store.append(RouterQueueMessages::DoThing.new(payload: { n: 1 }), index_by: :id)
+
+      # 1st claim: handle DoThing, append DoNext (id-indexed), delete DoThing
+      expect(router.handle_next_for(FakeCommander)).to be true
+      expect(db[:sourced_messages].where(message_type: 'router_q.do_thing').count).to eq(0)
+      next_pos = db[:sourced_messages].where(message_type: 'router_q.do_next').get(:position)
+      expect(next_pos).not_to be_nil
+      # follow-up was indexed by id (so it is claimable by the same queue reactor)
+      id_links = db[:sourced_message_key_pairs]
+        .join(:sourced_key_pairs, id: :key_pair_id)
+        .where(Sequel[:sourced_message_key_pairs][:message_position] => next_pos,
+               Sequel[:sourced_key_pairs][:name] => '__id')
+        .count
+      expect(id_links).to eq(1)
+
+      # 2nd claim: handle DoNext, delete it
+      expect(router.handle_next_for(FakeCommander)).to be true
+      expect(db[:sourced_messages].count).to eq(0)
+
+      expect(FakeCommander.processed).to eq([[:thing, 1], [:next, 1]])
+    end
+
+    it 'keeps the command on failure (release) for retry' do
+      router.register(FakeCommander)
+      store.append(RouterQueueMessages::DoThing.new(payload: { n: 99 }), index_by: :id)
+
+      router.handle_next_for(FakeCommander) # raises internally → release + group failed (default strategy)
+      expect(db[:sourced_messages].where(message_type: 'router_q.do_thing').count).to eq(1)
+      expect(FakeCommander.processed).to be_empty
+
+      # after reactivating the group, the retained message is re-claimable
+      store.start_consumer_group('FakeCommander')
+      claim = store.claim_next('FakeCommander', partition_by: ['__id'],
+        handled_types: ['router_q.do_thing'], worker_id: 'w2')
+      expect(claim.messages.size).to eq(1)
     end
   end
 end
