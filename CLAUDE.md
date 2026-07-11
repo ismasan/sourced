@@ -146,14 +146,21 @@ end
 
 ### Delete-on-ack queue reactor
 
-A reactor can act as a durable queue: `exclusive` + no `partition_by` (id-partitioned), and emit a `delete: true` action to remove each message on ack.
+A reactor can act as a durable queue: `exclusive` + no `partition_by` (id-partitioned), overriding `handle_claim` to return a `delete: true` ack that removes each handled message. **The Decider/Projector command DSL never emits `delete: true`** (it only builds `Append`/`OK`), so a queue drives `handle_claim` directly — either a `Sourced::Consumer` reactor or a plain duck-typed one (below).
 
 ```ruby
-class Jobs < Sourced::Decider
+class Jobs
+  extend Sourced::Consumer
   exclusive                 # sole owner of its types; no partition_by → id-partitioned
-  command RunJob do |_state, cmd|
-    # ... do work, optionally dispatch follow-ups ...
-    event JobDone, job_id: cmd.payload.job_id
+
+  def self.handled_messages = [RunJob]
+
+  def self.handle_claim(claim)
+    each_with_partial_ack(claim.messages) do |cmd|
+      run(cmd.payload)      # ... do work, optionally append follow-ups ...
+      # deletion is explicit — the returned ack carries delete: true:
+      [{ type: :ack, delete: true }, cmd]
+    end
   end
 end
 ```
