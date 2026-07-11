@@ -291,9 +291,10 @@ RSpec.describe Sourced::Decider do
       expect(source_msg).to eq(reg_positioned)
     end
 
-    it 'returns schedule actions for delayed reaction dispatches on reaction-event re-claim' do
+    it 'wraps delayed reaction dispatches in an append action carrying a future-dated message' do
       # Reactions are deferred, so the delayed-dispatch only appears when
       # DeviceBound is re-claimed by the Decider, not on the command claim.
+      # The store defers the future-dated message to scheduled_messages on append.
       reg = DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       bound = DeciderTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
       history_msgs = [Sourced::PositionedMessage.new(reg, 1)]
@@ -311,10 +312,12 @@ RSpec.describe Sourced::Decider do
 
       pairs = TestDelayedReactionDecider.handle_claim(claim, history: history)
       actions = pairs.first.first
-      schedule_action = Array(actions).find { |action| action.is_a?(Sourced::Actions::Schedule) }
+      append_action = Array(actions).find { |action| action.is_a?(Sourced::Actions::Append) }
 
-      expect(schedule_action).not_to be_nil
-      expect(schedule_action.messages.first).to be_a(DeciderTestMessages::DelayedNotifyBound)
+      expect(append_action).not_to be_nil
+      delayed = append_action.messages.find { |m| m.is_a?(DeciderTestMessages::DelayedNotifyBound) }
+      expect(delayed).not_to be_nil
+      expect(delayed.created_at).to be > Time.now
     end
 
     it 'invariant violation propagates as error' do

@@ -335,7 +335,13 @@ module Sourced
 
       if message.is_a?(self.class::WaitStarted)
         evt = self.class::WaitEnded.new(payload: { workflow_id: id })
-        return Actions::Schedule.new([evt], at: message.payload.at)
+        # Fire WaitEnded when the wait elapses: date it into the future so the
+        # store defers it to scheduled_messages (promoted when due). If the wait
+        # target is already past (e.g. a very short wait, or replay), append it
+        # immediately — it's due now.
+        at = message.payload.at
+        evt = evt.at(at) if at > Time.now
+        return Actions::Append.new([evt])
       end
 
       @initial_context = deep_dup(@context)

@@ -30,28 +30,19 @@ module Sourced
 
     OK = Ack.new.freeze
 
-    # Split produced messages into immediate append actions and delayed schedule actions.
+    # Wrap produced messages in a single append action. Scheduling is handled by
+    # the store: {Sourced::Store#append} defers any future-dated message (built
+    # with {Sourced::Message#at}) into the scheduled_messages table, so there is
+    # no separate schedule action here.
     #
     # @param messages [Sourced::Message, Array<Sourced::Message>] messages produced by a reactor
-    # @param guard [ConsistencyGuard, nil] optional concurrency guard for immediate appends
+    # @param guard [ConsistencyGuard, nil] optional concurrency guard
     # @param source [Sourced::Message, nil] source message used for correlation when executing
     # @param delete [Boolean] whether the source message should be deleted on ack
-    # @return [Array<Append, Schedule>] executable actions in append/schedule groups
+    # @return [Array<Append>] a one-element array (empty when no messages)
     def self.build_for(messages, guard: nil, source: nil, delete: false)
-      actions = []
       messages = Array(messages)
-      return actions if messages.empty?
-
-      # TODO: review use of Time.now
-      now = Time.now
-      to_schedule, to_append = messages.partition { |message| message.created_at > now }
-
-      actions << Append.new(to_append, guard:, source:, delete:) if to_append.any?
-      to_schedule.group_by(&:created_at).each do |at, scheduled_messages|
-        actions << Schedule.new(scheduled_messages, at:, source:, delete:)
-      end
-
-      actions
+      messages.empty? ? [] : [Append.new(messages, guard:, source:, delete:)]
     end
 
     # Append messages to the store with optional consistency guard.
@@ -75,26 +66,6 @@ module Sourced
 
       def deconstruct_keys(_keys)
         { type: :append, messages: @messages, guard: @guard, source: @source, delete: @delete }
-      end
-    end
-
-    # Schedule messages for future promotion into the main log.
-    class Schedule
-      attr_reader :messages, :at, :source, :delete
-
-      # @param messages [Sourced::Message, Array<Sourced::Message>] messages to schedule
-      # @param at [Time] when the messages should become available for promotion
-      # @param source [Sourced::Message, nil] explicit correlation source
-      # @param delete [Boolean] delete the source message on ack
-      def initialize(messages, at:, source: nil, delete: false)
-        @messages = Array(messages)
-        @at = at
-        @source = source
-        @delete = delete
-      end
-
-      def deconstruct_keys(_keys)
-        { type: :schedule, messages: @messages, at: @at, source: @source, delete: @delete }
       end
     end
 

@@ -168,17 +168,39 @@ RSpec.describe Sourced::Store do
     end
   end
 
-  describe '#schedule_messages and #update_schedule!' do
-    it 'stores delayed messages outside the main log until due' do
+  describe '#append scheduling and #update_schedule!' do
+    it 'defers future-dated messages outside the main log until due' do
       now = Time.now
       delayed = StoreTestMessages::DeviceRegistered.new(
         payload: { device_id: 'dev-1', name: 'Sensor A' }
       ).at(now + 60)
 
-      expect(store.schedule_messages([delayed], at: delayed.created_at)).to be true
+      store.append(delayed)
+
       expect(store.latest_position).to eq(0)
       expect(db[:sourced_scheduled_messages].count).to eq(1)
       expect(store.update_schedule!).to eq(0)
+    end
+
+    it 'appends past/now-dated messages immediately (no scheduling)' do
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      expect(store.latest_position).to eq(1)
+      expect(db[:sourced_scheduled_messages].count).to eq(0)
+    end
+
+    it 'splits a mixed batch: immediate ones to the log, future ones to the schedule' do
+      now = Time.now
+      immediate = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      future = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }).at(now + 60)
+
+      store.append([immediate, future])
+
+      expect(store.latest_position).to eq(1)
+      expect(db[:sourced_messages].count).to eq(1)
+      expect(db[:sourced_scheduled_messages].count).to eq(1)
     end
 
     it 'promotes due messages into the flat log and preserves metadata' do
@@ -188,7 +210,7 @@ RSpec.describe Sourced::Store do
         metadata: { source: 'test' }
       ).at(now + 2)
 
-      store.schedule_messages([due], at: due.created_at)
+      store.append(due)
 
       Timecop.freeze(now + 3) do
         expect(store.update_schedule!).to eq(1)
@@ -210,8 +232,27 @@ RSpec.describe Sourced::Store do
       expect(Time.parse(msg.metadata[:scheduled_at])).to be_a(Time)
     end
 
-    it 'returns false when asked to schedule no messages' do
-      expect(store.schedule_messages([], at: Time.now + 5)).to be false
+    it 'rolls back scheduling when a guard conflict aborts the append' do
+      now = Time.now
+      cond = Sourced::QueryCondition.new(
+        message_type: 'store_test.device.registered',
+        attrs: { device_id: 'dev-1' }
+      )
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+      _events, guard = store.read([cond])
+
+      # Concurrent write invalidates the guard.
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A v2' }))
+
+      immediate = StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'a1' })
+      future = StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'a2' }).at(now + 60)
+
+      expect {
+        store.append([immediate, future], guard: guard)
+      }.to raise_error(Sourced::ConcurrentAppendError)
+
+      # The whole call is atomic: the future message was NOT scheduled.
+      expect(db[:sourced_scheduled_messages].count).to eq(0)
     end
   end
 
@@ -2021,10 +2062,11 @@ RSpec.describe Sourced::Store do
     end
 
     it 'indexes promoted scheduled messages by id for an id-partitioned type' do
+      now = Time.now
       store.register_consumer_group('q', partition_by: ['__id'], exclusive: true, handled_types: handled_types)
-      msg = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
-      store.schedule_messages([msg], at: Time.now - 1)
-      store.update_schedule! # promotes via append — must still index by id
+      msg = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }).at(now + 60)
+      store.append(msg) # deferred to scheduled_messages (future-dated)
+      Timecop.freeze(now + 61) { store.update_schedule! } # promotes via append — must still index by id
 
       expect(db[:sourced_key_pairs].select_map(:name).uniq).to eq(['__id'])
     end

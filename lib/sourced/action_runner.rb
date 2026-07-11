@@ -35,9 +35,6 @@ module Sourced
       in { type: :append } => s
         append(s, source_message)
         !!s[:delete]
-      in { type: :schedule } => s
-        schedule(s, source_message)
-        !!s[:delete]
       in { type: :sync, work: }
         work.call
         false
@@ -61,16 +58,9 @@ module Sourced
       to_append = Array(signal[:messages]).map { |m| correlate_from.correlate(m) }
       return if to_append.empty?
 
-      # The store resolves each message's index basis from its consuming group.
+      # The store resolves each message's index basis from its consuming group,
+      # and defers any future-dated message into the scheduled_messages table.
       @store.append(to_append, guard: signal[:guard])
-    end
-
-    def schedule(signal, source_message)
-      correlate_from = signal[:source] || source_message
-      to_schedule = Array(signal[:messages]).map { |m| correlate_from.correlate(m) }
-      return if to_schedule.empty?
-
-      @store.schedule_messages(to_schedule, at: signal[:at])
     end
   end
 end

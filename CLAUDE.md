@@ -18,8 +18,8 @@ Sourced is a Ruby library for **aggregateless, stream-less event sourcing**. Mes
   - `DurableWorkflow` (`lib/sourced/durable_workflow.rb`) — long-running workflows with step memoisation via `durable`/`wait`/`context`/`execute` and `catch(:halt)`.
   - Plain `Consumer` reactors (extend `Sourced::Consumer` directly) for side-effect-only handlers.
 - **Reactor protocol** — the Router is **duck-typed**: any class responding to `handled_messages` and `handle_claim(claim, …)` can be registered without extending `Sourced::Consumer` or depending on Sourced (e.g. a third-party command handler). Missing optional methods (`group_id` → class name, `partition_keys` → `[]`, `exclusive?` → false, `on_exception`, `context_for`, lifecycle hooks) are filled in by `ReactorDefaults`.
-- **Actions / signals** (`lib/sourced/actions.rb`) — a reactor's `handle_claim` returns `[[signals, source_message], …]` pairs. Each signal is **inert data**: a plain Hash (`{type: :append|:schedule|:sync|:after_sync|:ack, …}`) or a `Sourced::Actions` value object that `deconstruct_keys` to the same shape. A `delete: true` flag marks the source message for deletion on ack.
-- **ActionRunner** (`lib/sourced/action_runner.rb`) — the only code that touches the store on behalf of actions. Routes each signal to `append`/`schedule_messages`/sync work, applying correlation. Third-party reactors emit plain-Hash signals with no Sourced dependency.
+- **Actions / signals** (`lib/sourced/actions.rb`) — a reactor's `handle_claim` returns `[[signals, source_message], …]` pairs. Each signal is **inert data**: a plain Hash (`{type: :append|:sync|:after_sync|:ack, …}`) or a `Sourced::Actions` value object that `deconstruct_keys` to the same shape. A `delete: true` flag marks the source message for deletion on ack. There is **no separate `:schedule` signal** — a future-dated message (built with `Message#at`) in an `:append` is transparently deferred by the store (see below).
+- **ActionRunner** (`lib/sourced/action_runner.rb`) — the only code that touches the store on behalf of actions. Routes each signal to `append`/sync work, applying correlation. Third-party reactors emit plain-Hash signals with no Sourced dependency.
 - **ReactorDefaults** (`lib/sourced/reactor_defaults.rb`) — `ReactorDefaults.apply(reactor)` defines missing optional protocol methods directly on the reactor class (only where absent, so the reactor's own definitions win). Chosen over a `SimpleDelegator` wrapper so the reactor stays a real class and `Injector` signature reflection keeps working.
 - **Mixins**: `Sourced::Evolve` (state evolution from history), `Sourced::React` (event → command/event reactions), `Sourced::Sync` (post-append side effects).
 - **Router** (`lib/sourced/router.rb`) — registers reactors (applies defaults, validates exclusive ownership), dispatches claimed batches via the `ActionRunner`, manages consumer-group lifecycle hooks.
@@ -176,17 +176,20 @@ end
 
 ### Scheduled / delayed messages
 
+Scheduling is transparent: `append` a future-dated message (via `Message#at`) and the store defers it to the `scheduled_messages` table, promoting it into the log when due. There is no separate public scheduling method.
+
 ```ruby
 cmd = SendReminder.new(payload: { course_id: 'c1' }).at(Time.now + 3600)
-store.schedule_messages([cmd])
+store.append(cmd)        # created_at in the future → deferred to scheduled_messages
 store.update_schedule!   # manual promotion (normally done by ScheduledMessagePoller)
 ```
 
-In reactions: `dispatch(Cmd, ...).at(time)`.
+In reactions: `dispatch(Cmd, ...).at(time)` (the produced message is future-dated, so `append` schedules it).
 
 ## Store API highlights
 
-- `append(messages, guard: nil, index_by: nil)` — writes + auto-indexes keys; `index_by` is an optional override, otherwise the basis is resolved per message from the owning group. Raises `ConcurrentAppendError` if guard is violated.
+- `append(messages, guard: nil, index_by: nil)` — the single write path. Immediate messages are written + auto-indexed (`index_by` optionally overrides the basis, otherwise resolved per message from the owning group); **future-dated messages (`created_at > now`) are transparently deferred to `scheduled_messages`** and promoted when due. Raises `ConcurrentAppendError` if guard is violated (rolls back any scheduling in the same call).
+- `update_schedule!` — promote due scheduled messages into the log (the `ScheduledMessagePoller` calls this).
 - `read(conditions, after_position:, limit:)` → `ReadResult(messages, guard)`.
 - `read_partition(partition_attrs, handled_types:)` — AND-filtered read for loading reactor state.
 - `read_all(after_position:, limit:, order: :asc, conditions: nil)` → `ReadAllResult` (lazy pagination via `to_enum`).

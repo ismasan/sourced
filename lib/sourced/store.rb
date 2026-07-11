@@ -205,77 +205,89 @@ module Sourced
       messages = Array(messages)
       return latest_position if messages.empty?
 
+      now = Time.now
+      # Messages dated in the future are deferred to the scheduled_messages table
+      # and promoted into the log when due (see {#update_schedule!}); the rest are
+      # appended immediately. This makes #append the single write path — a
+      # future-dated message (e.g. built with Message#at) is transparently
+      # scheduled rather than appended for immediate consumption.
+      to_schedule, to_append = messages.partition { |msg| msg.created_at > now }
+
       last_position = nil
 
       db.transaction do
-        if guard
-          conflicts = check_conflicts(guard.conditions, guard.last_position)
-          raise Sourced::ConcurrentAppendError, "Conflicting messages found after position #{guard.last_position}" if conflicts.any?
-        end
+        # Schedule + append commit atomically: a guard conflict below rolls back
+        # the scheduled inserts too.
+        schedule_messages(to_schedule) if to_schedule.any?
 
-        messages.each do |msg|
-          payload_json = msg.payload ? JSON.dump(msg.payload.to_h) : '{}'
-          metadata_json = msg.metadata.empty? ? nil : JSON.dump(msg.metadata)
-
-          # insert returns last_insert_rowid on SQLite — no need for a separate SELECT
-          last_position = db[@messages_table].insert(
-            message_id: msg.id,
-            message_type: msg.type,
-            causation_id: msg.causation_id,
-            correlation_id: msg.correlation_id,
-            payload: payload_json,
-            metadata: metadata_json,
-            created_at: msg.created_at.iso8601
-          )
-
-          # Upsert key pairs and link to message in 2 statements (was 3):
-          # 1. INSERT OR IGNORE the key_pair
-          # 2. INSERT message_key_pair with key_pair_id resolved via subquery
-          basis = index_by || @type_index_basis[msg.type] || :payload
-          effective_keys(msg, basis).each do |name, value|
-            db.run("INSERT OR IGNORE INTO #{@key_pairs_table} (name, value) VALUES (#{db.literal(name)}, #{db.literal(value)})")
-            db.run(<<~SQL)
-              INSERT INTO #{@message_key_pairs_table} (message_position, key_pair_id)
-              SELECT #{db.literal(last_position)}, id
-              FROM #{@key_pairs_table}
-              WHERE name = #{db.literal(name)} AND value = #{db.literal(value)}
-            SQL
+        unless to_append.empty?
+          if guard
+            conflicts = check_conflicts(guard.conditions, guard.last_position)
+            raise Sourced::ConcurrentAppendError, "Conflicting messages found after position #{guard.last_position}" if conflicts.any?
           end
-        end
 
-        ensure_offsets_for_registered_groups(messages)
+          to_append.each do |msg|
+            payload_json = msg.payload ? JSON.dump(msg.payload.to_h) : '{}'
+            metadata_json = msg.metadata.empty? ? nil : JSON.dump(msg.metadata)
+
+            # insert returns last_insert_rowid on SQLite — no need for a separate SELECT
+            last_position = db[@messages_table].insert(
+              message_id: msg.id,
+              message_type: msg.type,
+              causation_id: msg.causation_id,
+              correlation_id: msg.correlation_id,
+              payload: payload_json,
+              metadata: metadata_json,
+              created_at: msg.created_at.iso8601
+            )
+
+            # Upsert key pairs and link to message in 2 statements (was 3):
+            # 1. INSERT OR IGNORE the key_pair
+            # 2. INSERT message_key_pair with key_pair_id resolved via subquery
+            basis = index_by || @type_index_basis[msg.type] || :payload
+            effective_keys(msg, basis).each do |name, value|
+              db.run("INSERT OR IGNORE INTO #{@key_pairs_table} (name, value) VALUES (#{db.literal(name)}, #{db.literal(value)})")
+              db.run(<<~SQL)
+                INSERT INTO #{@message_key_pairs_table} (message_position, key_pair_id)
+                SELECT #{db.literal(last_position)}, id
+                FROM #{@key_pairs_table}
+                WHERE name = #{db.literal(name)} AND value = #{db.literal(value)}
+              SQL
+            end
+          end
+
+          # Only immediate messages advance offsets; scheduled ones get offsets
+          # when promoted (re-appended) by #update_schedule!.
+          ensure_offsets_for_registered_groups(to_append)
+        end
       end
 
-      notifier.notify_new_messages(messages.map(&:type).uniq)
+      # Scheduled messages are announced when promoted, not now.
+      notifier.notify_new_messages(to_append.map(&:type).uniq) if to_append.any?
 
-      last_position
+      to_append.empty? ? latest_position : last_position
     end
 
-    # Persist messages for future promotion into the main log.
+    # Persist future-dated messages for later promotion into the main log.
+    # Each message's own +created_at+ is its availability time. Private: this is
+    # an implementation detail of {#append} (which partitions future-dated
+    # messages here) and always runs inside {#append}'s transaction.
     #
-    # @param messages [Sourced::Message, Array<Sourced::Message>] one or more delayed messages
-    # @param at [Time] when the messages should become available
-    # @return [Boolean] false when no messages were provided, true otherwise
-    def schedule_messages(messages, at:)
-      messages = Array(messages)
-      return false if messages.empty?
-
+    # @param messages [Array<Sourced::Message>] future-dated messages to defer
+    # @return [void]
+    private def schedule_messages(messages)
       now = Time.now
       rows = messages.map do |message|
         data = message.to_h
         data[:metadata] = message.metadata.merge(scheduled_at: now)
         {
           created_at: now.iso8601,
-          available_at: at.iso8601,
+          available_at: message.created_at.iso8601,
           message: JSON.dump(data)
         }
       end
 
-      db.transaction do
-        db[@scheduled_messages_table].multi_insert(rows)
-      end
-
-      true
+      db[@scheduled_messages_table].multi_insert(rows)
     end
 
     # Promote due scheduled messages into the main log.
