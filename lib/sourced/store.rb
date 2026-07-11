@@ -1075,13 +1075,23 @@ module Sourced
     # not collide with a payload attribute); +:payload+ (default) indexes payload
     # attributes.
     #
+    # The +__id+ key is *always* indexed, even on the payload path. An
+    # id-partitioned reactor (+partition_by ['__id']+) can only discover a message
+    # through its +__id+ key pair, and +index_by+ is resolved from the appending
+    # process's registered groups (+@type_index_basis+). A process that appends
+    # without having registered that group — e.g. a CLI or console dispatching a
+    # command into a running app — would otherwise index by payload only, leaving
+    # the message permanently invisible to the reactor's discovery scan. Indexing
+    # +__id+ unconditionally makes id-partitioned claim work regardless of which
+    # process (and thus which registration state) performed the append.
+    #
     # @param msg [Sourced::Message]
     # @param index_by [Symbol]
     # @return [Enumerable<Array(String, String)>]
     def effective_keys(msg, index_by)
       case index_by
       when :id then [['__id', msg.id]]
-      else msg.extracted_keys
+      else [['__id', msg.id], *msg.extracted_keys]
       end
     end
 

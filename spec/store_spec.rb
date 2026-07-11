@@ -97,20 +97,23 @@ RSpec.describe Sourced::Store do
       expect(pos).to eq(2)
     end
 
-    it 'extracts and indexes key pairs' do
+    it 'extracts and indexes key pairs (plus the always-present __id key)' do
       msg = StoreTestMessages::DeviceRegistered.new(
         payload: { device_id: 'dev-1', name: 'Sensor A' }
       )
       store.append(msg)
 
+      # __id is always indexed so id-partitioned reactors can claim the message
+      # regardless of which process appended it (see Store#effective_keys).
       key_pairs = db[:sourced_key_pairs].all
       expect(key_pairs.map { |r| [r[:name], r[:value]] }).to contain_exactly(
+        ['__id', msg.id],
         ['device_id', 'dev-1'],
         ['name', 'Sensor A']
       )
 
       join_rows = db[:sourced_message_key_pairs].all
-      expect(join_rows.size).to eq(2)
+      expect(join_rows.size).to eq(3)
     end
 
     it 'deduplicates key pairs across messages' do
@@ -2059,6 +2062,22 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
       expect(db[:sourced_key_pairs].select_map(:name).uniq).to eq(['__id'])
+    end
+
+    it 'claims a message appended by another process that never registered the id-partitioned group' do
+      # A CLI/console dispatching into a running app is a *separate process*, so
+      # it has its own Store with an empty @type_index_basis and appends via the
+      # default (payload) basis. The reserved __id key must still be indexed, or
+      # the id-partitioned reactor could never discover/claim the message.
+      store.register_consumer_group('q', partition_by: ['__id'], exclusive: true, handled_types: handled_types)
+
+      other_process = Sourced::Store.new(db) # never registered the group
+      msg = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      other_process.append(msg)
+
+      claim = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w1')
+      expect(claim).not_to be_nil
+      expect(claim.messages.map(&:id)).to eq([msg.id])
     end
 
     it 'indexes promoted scheduled messages by id for an id-partitioned type' do
