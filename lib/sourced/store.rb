@@ -1351,44 +1351,47 @@ module Sourced
     def find_and_claim_partition(cg_id, handled_types, worker_id)
       types_list = handled_types.map { |t| db.literal(t) }.join(', ')
 
-      row = nil
-      db[@offsets_table]
-        .where(consumer_group_id: cg_id, claimed: 0)
-        .select(:id, :partition_key, :last_position)
-        .order(:last_position)
-        .each do |offset|
-
-        pending = db.fetch(<<~SQL).first
-          SELECT 1
-          FROM #{@offset_key_pairs_table} okp
-          JOIN #{@message_key_pairs_table} mkp ON okp.key_pair_id = mkp.key_pair_id
-          JOIN #{@messages_table} m ON mkp.message_position = m.position
-          WHERE okp.offset_id = #{db.literal(offset[:id])}
-            AND m.position > #{db.literal(offset[:last_position])}
-            AND m.message_type IN (#{types_list})
-          GROUP BY m.position
-          HAVING COUNT(*) = (
-            SELECT COUNT(*) FROM #{@offset_key_pairs_table} WHERE offset_id = #{db.literal(offset[:id])}
+      # Single query for the lowest-last_position unclaimed offset that has a
+      # pending message. A correlated EXISTS applies the AND-match (a message
+      # qualifies only when it is indexed under *every* one of the offset's
+      # key_pairs), and both joins are index-backed
+      # (message_key_pairs(key_pair_id, message_position), offset_key_pairs PK).
+      # This replaces an N-round-trip Ruby loop — one subquery per unclaimed
+      # offset — which mattered once the eager path stopped short-circuiting and
+      # scans on every poll.
+      offset = db.fetch(<<~SQL).first
+        SELECT o.id, o.partition_key, o.last_position
+        FROM #{@offsets_table} o
+        WHERE o.consumer_group_id = #{db.literal(cg_id)}
+          AND o.claimed = 0
+          AND EXISTS (
+            SELECT 1
+            FROM #{@offset_key_pairs_table} okp
+            JOIN #{@message_key_pairs_table} mkp ON okp.key_pair_id = mkp.key_pair_id
+            JOIN #{@messages_table} m ON mkp.message_position = m.position
+            WHERE okp.offset_id = o.id
+              AND m.position > o.last_position
+              AND m.message_type IN (#{types_list})
+            GROUP BY m.position
+            HAVING COUNT(*) = (
+              SELECT COUNT(*) FROM #{@offset_key_pairs_table} WHERE offset_id = o.id
+            )
           )
-          LIMIT 1
-        SQL
+        ORDER BY o.last_position
+        LIMIT 1
+      SQL
 
-        if pending
-          row = { offset_id: offset[:id], partition_key: offset[:partition_key], last_position: offset[:last_position] }
-          break
-        end
-      end
-
-      return nil unless row
+      return nil unless offset
 
       now = Time.now.iso8601
       updated = db[@offsets_table]
-        .where(id: row[:offset_id], claimed: 0)
+        .where(id: offset[:id], claimed: 0)
         .update(claimed: 1, claimed_at: now, claimed_by: worker_id)
 
+      # Lost the race to a sibling worker between SELECT and UPDATE.
       return nil if updated == 0
 
-      row
+      { offset_id: offset[:id], partition_key: offset[:partition_key], last_position: offset[:last_position] }
     end
 
     # Fetch messages for a partition using conditional AND semantics.
