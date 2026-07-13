@@ -563,7 +563,15 @@ module Sourced
       group_id = resolve_group_id(group_id)
       db[@consumer_groups_table]
         .where(group_id: group_id)
-        .update(status: ACTIVE, retry_at: nil, error_context: nil, updated_at: Time.now.iso8601)
+        .update(
+          status: ACTIVE,
+          retry_at: nil,
+          error_context: nil,
+          # Reset the scan latch/watermark so the group rescans on resume.
+          # 0 is "dirty" for partitioned groups and "no latch" for legacy ones.
+          last_nil_types_max_pos: 0,
+          updated_at: Time.now.iso8601
+        )
       notifier.notify_reactor_resumed(group_id)
     end
 
@@ -649,23 +657,41 @@ module Sourced
       group_info = @registered_groups[group_id]
 
       if group_info&.fetch(:partition_by, nil)
-        # Eager path: offsets created by append are the authoritative record of
-        # claimable work, so scan them directly. We deliberately do NOT apply the
-        # `last_nil_types_max_pos` short-circuit here. That watermark is derived
-        # from `handled_types`, which for a Decider excludes its evolve types, and
-        # it is never invalidated by append or release. So it can latch at the
-        # position of partitions that are still pending (e.g. a concurrent burst
-        # whose offsets weren't yet visible when a sibling worker polled nil) and
-        # then silently strand them, because processing those commands only ever
-        # emits events — never a new command to lift the watermark above it.
-        # `find_and_claim_partition` is an indexed scan and correct by construction.
+        # Partitioned path (eager offsets and id-partitioned queues). For these
+        # groups `last_nil_types_max_pos` holds a sign-encoded scan version
+        # maintained by the dirty-triggers installed with the schema (see the
+        # migration template): >= 0 means claimable work may have changed since
+        # the last empty scan, < 0 means an empty scan completed at version
+        # -value and nothing has changed since — so an idle poll is O(1) instead
+        # of a scan over every unclaimed offset.
+        #
+        # The old form of this gate compared the version against MAX(position)
+        # over handled_types — which for a Decider excludes its evolve types and
+        # was never invalidated by append or release, so it could latch while
+        # partitions were still pending and strand them forever. Trigger-driven
+        # invalidation closes that: anything that can create claimable work
+        # (message insert, claim release) bumps the version at the DB level,
+        # regardless of which process or code path performs the write.
+        scan_version = cg[:last_nil_types_max_pos]
+        return nil if scan_version.negative?
+
         claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
         unless claimed
           discover_new_partitions(cg[:id], partition_by, handled_types)
           claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
         end
 
-        return nil unless claimed
+        unless claimed
+          # Latch clean via compare-and-set: only if the version is unchanged
+          # since we read it before scanning. A concurrent trigger bump during
+          # the scan (new message, released claim) makes the WHERE miss, so the
+          # group stays dirty and the next poll rescans. Versions are strictly
+          # monotonic (abs + 1), so a stale read can never alias a newer state.
+          db[@consumer_groups_table]
+            .where(id: cg[:id], last_nil_types_max_pos: scan_version)
+            .update(last_nil_types_max_pos: -(scan_version + 1))
+          return nil
+        end
       else
         # Legacy path: offsets are created on demand, so the messages table is
         # the source of truth and the message-position short-circuit is sound.

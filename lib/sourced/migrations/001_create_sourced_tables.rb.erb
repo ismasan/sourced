@@ -78,9 +78,52 @@ Sequel.migration do
       String :id, primary_key: true, null: false
       String :last_seen, null: false
     end
+
+    # Claim-scan invalidation triggers.
+    #
+    # For partitioned (eager/queue) groups, `last_nil_types_max_pos` holds a
+    # sign-encoded scan version: >= 0 means claimable work may have changed since
+    # the last empty scan (claim_next must scan offsets), < 0 means an empty scan
+    # completed at version -value and nothing has changed since (claim_next
+    # returns nil in O(1)). `abs(value) + 1` keeps the version strictly
+    # monotonic, so claim_next's compare-and-set latch can never mistake a
+    # concurrent invalidation for the value it read before scanning (no ABA).
+    #
+    # Triggers live in the database — not in Store code — so invalidation holds
+    # for every writer: any process (including ones that never registered the
+    # group), the scheduled-message promoter, stale-claim reaping, or raw SQL.
+    # Groups with NULL partition_by (legacy lazy-discovery) keep the column's
+    # original max-position watermark semantics and are excluded.
+    #
+    # 1. Any new message may create claimable work for any partitioned group.
+    run <<~SQL
+      CREATE TRIGGER IF NOT EXISTS trg_<%= prefix %>_ccc_dirty_on_message
+      AFTER INSERT ON <%= messages_table %>
+      BEGIN
+        UPDATE <%= consumer_groups_table %>
+        SET last_nil_types_max_pos = abs(last_nil_types_max_pos) + 1
+        WHERE partition_by IS NOT NULL;
+      END
+    SQL
+
+    # 2. Releasing a claim (ack, ack_and_delete, release, stale-claim reaping)
+    #    can expose a remainder: messages past the acked position that a
+    #    sibling's nil scan skipped while the partition was claimed.
+    run <<~SQL
+      CREATE TRIGGER IF NOT EXISTS trg_<%= prefix %>_ccc_dirty_on_release
+      AFTER UPDATE OF claimed ON <%= offsets_table %>
+      WHEN OLD.claimed = 1 AND NEW.claimed = 0
+      BEGIN
+        UPDATE <%= consumer_groups_table %>
+        SET last_nil_types_max_pos = abs(last_nil_types_max_pos) + 1
+        WHERE id = NEW.consumer_group_id AND partition_by IS NOT NULL;
+      END
+    SQL
   end
 
   down do
+    run 'DROP TRIGGER IF EXISTS trg_<%= prefix %>_ccc_dirty_on_message'
+    run 'DROP TRIGGER IF EXISTS trg_<%= prefix %>_ccc_dirty_on_release'
     drop_table?(:<%= offset_key_pairs_table %>)
     drop_table?(:<%= offsets_table %>)
     drop_table?(:<%= consumer_groups_table %>)

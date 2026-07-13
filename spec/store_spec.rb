@@ -75,6 +75,11 @@ RSpec.describe Sourced::Store do
       expect(db.table_exists?(:sourced_workers)).to be true
     end
 
+    it 'creates the claim-scan invalidation triggers' do
+      triggers = db[:sqlite_master].where(type: 'trigger').select_map(:name)
+      expect(triggers).to include('trg_sourced_ccc_dirty_on_message', 'trg_sourced_ccc_dirty_on_release')
+    end
+
     it 'is idempotent' do
       expect { store.install! }.not_to raise_error
     end
@@ -2867,6 +2872,92 @@ RSpec.describe Sourced::Store do
       expect(result).not_to be_nil
       expect(result.messages.size).to eq(1)
       expect(result.partition_value).to eq({ 'device_id' => 'dev-1' })
+    end
+
+    describe 'nil-scan gate (trigger-invalidated scan version)' do
+      # For partitioned groups, last_nil_types_max_pos holds a sign-encoded scan
+      # version: >= 0 dirty (scan), < 0 latched-clean at version -value (skip).
+      # DB triggers bump it on message insert and on claim release.
+      let(:handled) { ['store_test.device.registered'] }
+
+      def claim(worker: 'w-1', batch_size: nil)
+        store.claim_next(group_id, partition_by: 'device_id', handled_types: handled, worker_id: worker, batch_size: batch_size)
+      end
+
+      def gate_version
+        db[:sourced_consumer_groups].where(group_id: group_id).get(:last_nil_types_max_pos)
+      end
+
+      before do
+        store.register_consumer_group(group_id, partition_by: [:device_id])
+      end
+
+      it 'latches clean after an empty scan and short-circuits while nothing changes' do
+        expect(claim).to be_nil
+        version = gate_version
+        expect(version).to be_negative
+
+        # Second poll short-circuits on the latch: version untouched.
+        expect(claim).to be_nil
+        expect(gate_version).to eq(version)
+      end
+
+      it 'an append re-opens a latched gate (message trigger)' do
+        expect(claim).to be_nil
+        expect(gate_version).to be_negative
+
+        store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+        expect(gate_version).to be_positive
+
+        result = claim
+        expect(result).not_to be_nil
+        expect(result.partition_value).to eq({ 'device_id' => 'dev-1' })
+      end
+
+      it 'a partial ack re-opens the gate so the batch remainder is claimable (release trigger)' do
+        store.append([
+          StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+          StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
+        ])
+
+        r1 = claim(batch_size: 1)
+        expect(r1.messages.size).to eq(1)
+
+        # Sibling polls while the partition is claimed: nothing claimable → latch.
+        expect(claim(worker: 'w-2')).to be_nil
+        expect(gate_version).to be_negative
+
+        # Partial ack releases the claim; the trigger re-opens the gate so the
+        # remainder isn't stranded behind the sibling's latch.
+        store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+        r2 = claim(worker: 'w-2')
+        expect(r2).not_to be_nil
+        expect(r2.messages.map { |m| m.payload.name }).to eq(['B'])
+      end
+
+      it 'a release re-opens the gate (release trigger)' do
+        store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+
+        r1 = claim
+        expect(r1).not_to be_nil
+
+        expect(claim(worker: 'w-2')).to be_nil
+        expect(gate_version).to be_negative
+
+        store.release(group_id, offset_id: r1.offset_id)
+        r2 = claim(worker: 'w-2')
+        expect(r2).not_to be_nil
+        expect(r2.messages.size).to eq(1)
+      end
+
+      it 'start_consumer_group marks the group dirty so it rescans on resume' do
+        expect(claim).to be_nil
+        expect(gate_version).to be_negative
+
+        store.stop_consumer_group(group_id)
+        store.start_consumer_group(group_id)
+        expect(gate_version).to eq(0)
+      end
     end
 
     it 'claim_next falls back to discovery for pre-existing messages' do
