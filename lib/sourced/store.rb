@@ -645,26 +645,37 @@ module Sourced
         .first
       return nil unless cg
 
-      # Short-circuit: no new messages since the last nil claim.
-      types_max_pos = db[@messages_table]
-        .where(message_type: handled_types)
-        .max(:position) || 0
-
-      return nil if types_max_pos <= cg[:last_nil_types_max_pos]
-
       claimed = nil
       group_info = @registered_groups[group_id]
 
       if group_info&.fetch(:partition_by, nil)
-        # Eager path: offsets were created by append. Try fast claim first,
-        # fall back to discovery only for catch-up (new group against existing log).
+        # Eager path: offsets created by append are the authoritative record of
+        # claimable work, so scan them directly. We deliberately do NOT apply the
+        # `last_nil_types_max_pos` short-circuit here. That watermark is derived
+        # from `handled_types`, which for a Decider excludes its evolve types, and
+        # it is never invalidated by append or release. So it can latch at the
+        # position of partitions that are still pending (e.g. a concurrent burst
+        # whose offsets weren't yet visible when a sibling worker polled nil) and
+        # then silently strand them, because processing those commands only ever
+        # emits events — never a new command to lift the watermark above it.
+        # `find_and_claim_partition` is an indexed scan and correct by construction.
         claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
         unless claimed
           discover_new_partitions(cg[:id], partition_by, handled_types)
           claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
         end
+
+        return nil unless claimed
       else
-        # Legacy path: lazy discovery
+        # Legacy path: offsets are created on demand, so the messages table is
+        # the source of truth and the message-position short-circuit is sound.
+        types_max_pos = db[@messages_table]
+          .where(message_type: handled_types)
+          .max(:position) || 0
+
+        # Short-circuit: no new messages since the last nil claim.
+        return nil if types_max_pos <= cg[:last_nil_types_max_pos]
+
         has_offsets = db[@offsets_table].where(consumer_group_id: cg[:id]).limit(1).any?
         if has_offsets && types_max_pos <= cg[:discovery_position]
           claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
@@ -673,13 +684,13 @@ module Sourced
           discover_new_partitions(cg[:id], partition_by, handled_types)
           claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
         end
-      end
 
-      unless claimed
-        # Remember types_max_pos so next poll short-circuits instantly
-        db[@consumer_groups_table].where(id: cg[:id])
-          .update(last_nil_types_max_pos: types_max_pos)
-        return nil
+        unless claimed
+          # Remember types_max_pos so next poll short-circuits instantly
+          db[@consumer_groups_table].where(id: cg[:id])
+            .update(last_nil_types_max_pos: types_max_pos)
+          return nil
+        end
       end
 
       key_pair_ids = db[@offset_key_pairs_table]

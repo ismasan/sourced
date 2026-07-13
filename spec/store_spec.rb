@@ -2836,6 +2836,39 @@ RSpec.describe Sourced::Store do
       expect(result.partition_value).to eq({ 'device_id' => 'dev-1' })
     end
 
+    it 'claim_next does not strand eager offsets when last_nil_types_max_pos is latched at/above their position' do
+      # Regression: under a concurrent append burst a poll can record
+      # last_nil_types_max_pos == the max handled-type position while eager
+      # offsets for those very messages are still pending (their appends were
+      # not yet visible to the polling worker's snapshot). Because a decider's
+      # handled_types exclude its evolve types, processing those messages only
+      # emits events — never a new command — so the watermark never rises again
+      # and the short-circuit would strand the partitions forever.
+      store.register_consumer_group(group_id, partition_by: [:device_id])
+
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      # Simulate the latch: pin the watermark at the pending message's position.
+      max_pos = db[:sourced_messages].max(:position)
+      db[:sourced_consumer_groups]
+        .where(group_id: group_id)
+        .update(last_nil_types_max_pos: max_pos)
+
+      result = store.claim_next(
+        group_id,
+        partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'],
+        worker_id: 'w-1'
+      )
+
+      # The eager path must ignore the watermark and claim the pending partition.
+      expect(result).not_to be_nil
+      expect(result.messages.size).to eq(1)
+      expect(result.partition_value).to eq({ 'device_id' => 'dev-1' })
+    end
+
     it 'claim_next falls back to discovery for pre-existing messages' do
       # Append BEFORE registering — no eager offsets
       store.append(
