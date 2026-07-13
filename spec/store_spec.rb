@@ -85,6 +85,17 @@ RSpec.describe Sourced::Store do
     end
   end
 
+  describe '#optimize!' do
+    it 'populates SQLite planner statistics' do
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      store.optimize!
+      expect(db[:sqlite_stat1].count).to be > 0
+    end
+  end
+
   describe '#append' do
     it 'appends a single message and returns position' do
       msg = StoreTestMessages::DeviceRegistered.new(

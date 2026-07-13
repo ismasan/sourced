@@ -175,6 +175,30 @@ module Sourced
     # @return [void]
     def install!
       installer.install
+      optimize!
+    end
+
+    # Refresh SQLite planner statistics (sqlite_stat1) with a bounded ANALYZE.
+    #
+    # Without statistics the planner guesses, and for {#find_and_claim_partition}
+    # it guesses wrong: it drives the pending-work EXISTS from the low-selectivity
+    # message_type index, degrading an idle scan to ~O(offsets × messages) — in
+    # practice a hang on large stores. With statistics it picks the key_pair-first
+    # plan, which is fully index-backed.
+    #
+    # `analysis_limit` caps rows scanned per index, making this cheap enough to run
+    # at boot ({#install!}) and periodically ({StaleClaimReaper}) — the approximate
+    # stats it produces are ample for the planner's join-order choice. Both
+    # statements are pinned to one pooled connection: analysis_limit is
+    # per-connection, so running them on separate connections would leave the
+    # ANALYZE unbounded.
+    #
+    # @return [void]
+    def optimize!
+      db.synchronize do |conn|
+        conn.execute('PRAGMA analysis_limit = 400')
+        conn.execute('ANALYZE')
+      end
     end
 
     # Drop all tables. Test-only guard.

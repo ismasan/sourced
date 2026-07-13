@@ -27,12 +27,16 @@ module Sourced
     # @param interval [Numeric] seconds between heartbeat/reap cycles (default 30)
     # @param ttl_seconds [Integer] age threshold for stale claims (default 120)
     # @param worker_ids_provider [Proc] returns Array<String> of active worker IDs
+    # @param optimize_interval [Numeric] seconds between {Store#optimize!} runs
+    #   keeping SQLite planner statistics fresh as the log grows (default 3600)
     # @param logger [Object] logger instance
-    def initialize(store:, interval: 30, ttl_seconds: 120, worker_ids_provider: -> { [] }, logger: Sourced.config.logger)
+    def initialize(store:, interval: 30, ttl_seconds: 120, worker_ids_provider: -> { [] }, optimize_interval: 3600, logger: Sourced.config.logger)
       @store = store
       @interval = interval
       @ttl_seconds = ttl_seconds
       @worker_ids_provider = worker_ids_provider
+      @optimize_interval = optimize_interval
+      @last_optimized_at = Time.now
       @logger = logger
       @running = false
     end
@@ -76,6 +80,19 @@ module Sourced
 
       pruned = @store.prune_orphan_key_pairs
       @logger.info "Sourced::StaleClaimReaper: pruned #{pruned} orphan key_pairs" if pruned && pruned > 0
+
+      optimize
+    end
+
+    # Periodically refresh SQLite planner statistics. Store#optimize! is bounded
+    # by analysis_limit, so this is cheap even on large stores; without fresh
+    # stats the claim scan's query plan degrades badly (see Store#optimize!).
+    def optimize
+      return unless Time.now - @last_optimized_at >= @optimize_interval
+
+      @last_optimized_at = Time.now
+      @store.optimize!
+      @logger.info 'Sourced::StaleClaimReaper: refreshed store statistics (ANALYZE)'
     end
   end
 end
