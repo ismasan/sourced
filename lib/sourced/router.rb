@@ -226,7 +226,13 @@ module Sourced
       interpreter = @action_runner
       after_sync_works = []
 
-      store.db.transaction do
+      # IMMEDIATE: the interpreted signals read (guarded #append's conflict
+      # check) before they write (appends, acks, deletes). A DEFERRED begin
+      # would pin a read snapshot and risk SQLITE_BUSY_SNAPSHOT under WAL if a
+      # concurrent connection commits mid-transaction. Taking the write lock up
+      # front makes other writers wait via busy_timeout instead. This outer
+      # begin governs the mode; nested #append transactions are SAVEPOINTs.
+      store.db.transaction(mode: :immediate) do
         last_position = nil
         flagged_deletes = []
 

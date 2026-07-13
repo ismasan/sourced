@@ -4,6 +4,7 @@ require 'spec_helper'
 require 'sourced'
 require 'sourced/store'
 require 'sequel'
+require 'tmpdir'
 
 # Define test messages for store specs (namespaced to avoid collisions)
 module StoreTestMessages
@@ -334,6 +335,88 @@ RSpec.describe Sourced::Store do
       msg2 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A v2' })
       pos = store.append(msg2)
       expect(pos).to eq(2)
+    end
+  end
+
+  describe '#append concurrency (WAL BUSY_SNAPSHOT)', skip: (Process.respond_to?(:fork) ? false : 'requires fork') do
+    # A guarded #append runs inside a transaction that READS (the guard's
+    # conflict check) and then WRITES (the inserts). Under WAL, if that
+    # transaction begins DEFERRED, its read pins a snapshot; if another
+    # connection commits before the write, SQLite refuses to upgrade the
+    # stale snapshot and raises SQLITE_BUSY_SNAPSHOT (a Sequel::SerializationFailure
+    # NOT covered by busy_timeout). Beginning the write transaction IMMEDIATE
+    # takes the write lock up front, so the concurrent writer waits instead.
+    #
+    # The concurrent writer runs in a *separate process* (via fork), matching the
+    # real scenario: a second script appending while workers process. It must be
+    # a separate process rather than a thread — the sqlite3 gem holds the GVL
+    # while waiting out busy_timeout, so an in-process waiter would starve the
+    # very thread that needs to run to release the lock.
+    it 'does not raise BUSY_SNAPSHOT when a separate process commits mid-transaction' do
+      Dir.mktmpdir do |dir|
+        db_path = File.join(dir, 'busy_snapshot.db')
+
+        store = Sourced::Store.new(Sequel.sqlite(db_path))
+        store.install!
+
+        # Seed a message so the guard has a real partition condition to read.
+        store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' }))
+        _events, guard = store.read([
+          Sourced::QueryCondition.new(
+            message_type: 'store_test.device.registered',
+            attrs: { device_id: 'dev-1' }
+          )
+        ])
+
+        go_r, go_w     = IO.pipe # parent -> child: snapshot taken, you may commit
+        done_r, done_w = IO.pipe # child -> parent: I have committed
+
+        # Never share a SQLite handle across fork. Empty the pool before forking;
+        # both parent and child reconnect lazily on next use. Other SQLite handles
+        # elsewhere in the suite are still open at fork time — the sqlite3 gem
+        # safely auto-closes the child's inherited copies; silence its warning.
+        require 'sqlite3'
+        SQLite3::ForkSafety.suppress_warnings! if defined?(SQLite3::ForkSafety)
+        store.db.disconnect
+
+        child = fork do
+          go_w.close; done_r.close
+          go_r.read(1) # wait until the parent has pinned its read snapshot
+          child_store = Sourced::Store.new(Sequel.sqlite(db_path))
+          child_store.append(StoreTestMessages::AssetRegistered.new(payload: { asset_id: 'a-9', label: 'X' }))
+          done_w.write('x')
+          exit!(0) # skip at_exit / RSpec teardown in the child
+        end
+        go_r.close; done_w.close
+
+        # After the parent's guard read pins the snapshot, release the child and
+        # wait (bounded) for it to commit. Without the fix, the child (holding no
+        # contended lock) commits immediately and the parent's following write
+        # hits BUSY_SNAPSHOT. With the fix, the parent already holds the write
+        # lock, so the child blocks; the wait times out and the parent commits
+        # first — the child commits afterwards.
+        allow(store).to receive(:check_conflicts).and_wrap_original do |orig, *args|
+          result = orig.call(*args)
+          go_w.write('x'); go_w.close
+          IO.select([done_r], nil, nil, 2)
+          result
+        end
+
+        appended = nil
+        error = nil
+        begin
+          appended = store.append(
+            StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'a-9' }),
+            guard: guard
+          )
+        rescue StandardError => e
+          error = e
+        end
+        Process.wait(child)
+
+        expect(error).to be_nil, "expected no BUSY_SNAPSHOT, got #{error&.class}: #{error&.message}"
+        expect(appended).to be_a(Integer)
+      end
     end
   end
 

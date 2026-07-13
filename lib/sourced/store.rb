@@ -117,9 +117,7 @@ module Sourced
       @notifier = notifier || Sourced::InlineNotifier.new
       @logger = logger || Sourced.config.logger
       Sequel.extension(:fiber_concurrency)
-      @db.run('PRAGMA foreign_keys = ON')
-      @db.run('PRAGMA journal_mode = WAL')
-      @db.run('PRAGMA busy_timeout = 5000')
+      configure_connection_pragmas!
 
       @prefix = prefix
       @installer = Installer.new(db, logger: @logger, prefix: prefix)
@@ -143,6 +141,32 @@ module Sourced
       # group's partitioning. { type_string => :id }. Types absent here default
       # to :payload. Populated by register_consumer_group.
       @type_index_basis = {}
+    end
+
+    # Apply the store's required SQLite PRAGMAs.
+    #
+    # +foreign_keys+ and +busy_timeout+ are *per-connection* settings that reset
+    # to their defaults on every new connection, so they must be applied to every
+    # pooled connection — not just the first one this method happens to touch.
+    # An +after_connect+ hook guarantees that for all future connections; we also
+    # apply them directly to cover any connection already open on the passed-in db.
+    #
+    # +journal_mode = WAL+ is a persistent, database-level property (and a no-op
+    # for +:memory:+), so setting it once is enough. We deliberately do NOT
+    # +disconnect+ to force the hook onto existing connections: a +:memory:+
+    # database lives entirely within its connection, so dropping it would discard
+    # all data.
+    private def configure_connection_pragmas!
+      previous = @db.pool.after_connect if @db.pool.respond_to?(:after_connect)
+      @db.pool.after_connect = proc do |conn, *args|
+        previous&.call(conn, *args)
+        conn.execute('PRAGMA foreign_keys = ON')
+        conn.execute('PRAGMA busy_timeout = 5000')
+      end
+
+      @db.run('PRAGMA foreign_keys = ON')
+      @db.run('PRAGMA busy_timeout = 5000')
+      @db.run('PRAGMA journal_mode = WAL')
     end
 
     # @return [String]
@@ -215,7 +239,12 @@ module Sourced
 
       last_position = nil
 
-      db.transaction do
+      # IMMEDIATE: this transaction reads (the guard conflict check) before it
+      # writes (the inserts). Under WAL a DEFERRED begin would pin a read
+      # snapshot on that first read and then raise SQLITE_BUSY_SNAPSHOT if
+      # another connection commits before the write. Taking the write lock up
+      # front makes concurrent writers wait (via busy_timeout) instead.
+      db.transaction(mode: :immediate) do
         # Schedule + append commit atomically: a guard conflict below rolls back
         # the scheduled inserts too.
         schedule_messages(to_schedule) if to_schedule.any?
@@ -299,7 +328,11 @@ module Sourced
     def update_schedule!
       now = Time.now
 
-      db.transaction do
+      # IMMEDIATE: reads due rows, then writes them into the log via #append —
+      # a read-then-write transaction that would otherwise risk BUSY_SNAPSHOT
+      # under WAL (see #append). The nested #append transaction is a SAVEPOINT,
+      # so this outer mode governs the actual BEGIN.
+      db.transaction(mode: :immediate) do
         rows = db[@scheduled_messages_table]
           .where { available_at <= now.iso8601 }
           .order(:id)
