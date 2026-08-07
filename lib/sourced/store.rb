@@ -4,6 +4,7 @@ require 'json'
 require 'set'
 require 'sourced/inline_notifier'
 require 'sourced/installer'
+require 'sourced/message_codec'
 
 module Sourced
   # Wraps a Message with a storage position. Delegates all message methods.
@@ -108,14 +109,22 @@ module Sourced
     # @return [Sourced::Installer]
     attr_reader :installer
 
+    # Serializes messages to and from the JSON columns. Assignable so that
+    # {Configuration#codec=} can hand an app-configured codec to a store that
+    # was already built.
+    # @return [Sourced::MessageCodec]
+    attr_accessor :message_codec
+
     # @param db [Sequel::SQLite::Database] a Sequel SQLite connection
     # @param notifier [#notify_new_messages, #notify_reactor_resumed, nil] optional notifier for dispatch signals
     # @param logger [Logger, nil] optional logger (defaults to Sourced.config.logger)
     # @param prefix [String] table name prefix (default 'sourced')
-    def initialize(db, notifier: nil, logger: nil, prefix: 'sourced')
+    # @param message_codec [Sourced::MessageCodec] message serializer (defaults to the shared one)
+    def initialize(db, notifier: nil, logger: nil, prefix: 'sourced', message_codec: MessageCodec.default)
       @db = db
       @notifier = notifier || Sourced::InlineNotifier.new
       @logger = logger || Sourced.config.logger
+      @message_codec = message_codec
       Sequel.extension(:fiber_concurrency)
       # foreign_keys and busy_timeout are already applied on every connection by
       # Sequel's SQLite adapter defaults; we set them explicitly for clarity.
@@ -274,7 +283,11 @@ module Sourced
           end
 
           to_append.each do |msg|
-            payload_json = msg.payload ? JSON.dump(msg.payload.to_h) : '{}'
+            # The codec turns native Ruby values (Dates, Times, Symbols, …) into
+            # JSON-native ones; a payload that is already JSON-native passes
+            # through the identity codec its class compiled to.
+            encoded_payload = message_codec.encode_payload(msg)
+            payload_json = encoded_payload ? JSON.dump(encoded_payload) : '{}'
             metadata_json = msg.metadata.empty? ? nil : JSON.dump(msg.metadata)
 
             # insert returns last_insert_rowid on SQLite — no need for a separate SELECT
@@ -325,8 +338,10 @@ module Sourced
     private def schedule_messages(messages)
       now = Time.now
       rows = messages.map do |message|
-        data = message.to_h
-        data[:metadata] = message.metadata.merge(scheduled_at: now)
+        # The whole message is one JSON document here, so it goes through the
+        # codec's #dump rather than #encode_payload.
+        data = message_codec.dump(message)
+        data[:metadata] = message.metadata.merge(scheduled_at: now.iso8601)
         {
           created_at: now.iso8601,
           available_at: message.created_at.iso8601,
@@ -362,7 +377,7 @@ module Sourced
         messages = rows.map do |row|
           data = JSON.parse(row[:message], symbolize_names: true)
           data[:created_at] = now
-          Message.from(data)
+          message_codec.load(data)
         end
 
         append(messages)
@@ -1591,16 +1606,18 @@ module Sourced
     end
 
     # Deserialize a database row into a {PositionedMessage}.
-    # Looks up the message class from the registry; falls back to base {Message}.
+    # The codec resolves the message class from the registry and decodes the
+    # payload.
     #
     # @param row [Hash] database row with :position, :message_id, :message_type, :causation_id, :correlation_id, :payload, :metadata, :created_at
     # @return [PositionedMessage]
+    # @raise [Sourced::Message::UnknownMessageError] if the row's message type isn't registered
+    # @raise [MessageCodec::DecodeError] if the stored payload no longer satisfies its schema
     def deserialize(row)
       payload = JSON.parse(row[:payload], symbolize_names: true)
       metadata = row[:metadata] ? JSON.parse(row[:metadata], symbolize_names: true) : {}
 
-      klass = Message.registry[row[:message_type]]
-      attrs = {
+      msg = message_codec.load(
         id: row[:message_id],
         type: row[:message_type],
         causation_id: row[:causation_id],
@@ -1608,13 +1625,7 @@ module Sourced
         created_at: row[:created_at],
         metadata: metadata,
         payload: payload
-      }
-
-      msg = if klass
-              klass.new(attrs)
-            else
-              Message.new(attrs)
-            end
+      )
 
       PositionedMessage.new(msg, row[:position])
     end

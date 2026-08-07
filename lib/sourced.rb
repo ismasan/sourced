@@ -190,6 +190,8 @@ end
 require 'sourced/configuration'
 require 'sourced/message'
 require 'sourced/message_ext'
+require 'sourced/codec'
+require 'sourced/message_codec'
 require 'sourced/actions'
 require 'sourced/action_runner'
 require 'sourced/reactor_defaults'

@@ -3,6 +3,7 @@
 require 'logger'
 require 'sourced/error_strategy'
 require 'sourced/async_executor'
+require 'sourced/message_codec'
 
 module Sourced
   class Configuration
@@ -28,6 +29,11 @@ module Sourced
 
     attr_reader :store, :router
 
+    # Serializes messages to and from the store's JSON columns, using {#codec}.
+    # @see #codec=
+    # @return [MessageCodec]
+    attr_reader :message_codec
+
     # The mutable error strategy. Configure retry policy and register callbacks
     # directly on it (possibly from different layers); it freezes when the
     # configuration is frozen (see {#freeze}).
@@ -46,6 +52,7 @@ module Sourced
       @store = nil
       @router = nil
       @error_strategy = ErrorStrategy.new
+      @message_codec = MessageCodec.default
       @setup = false
     end
 
@@ -55,9 +62,38 @@ module Sourced
       @store = case s.class.name
       when 'Sequel::SQLite::Database'
         require 'sourced/store'
-        Store.new(s)
+        Store.new(s, message_codec: @message_codec)
       else StoreInterface.parse(s)
       end
+    end
+
+    # Set the wire format used to serialize message payloads. Expects a
+    # {Plumb::Codec} subclass — normally a subclass of {Sourced::Codec} adding
+    # encoders for the app's own types:
+    #
+    #   class MyCodec < Sourced::Codec
+    #     encoder MoneyEncoder
+    #   end
+    #
+    #   Sourced.configure { |config| config.codec = MyCodec }
+    #
+    # Pushes the new codec at an already-built store, so this and {#store=} can
+    # be set in either order.
+    #
+    # @param codec_class [Class<Plumb::Codec>]
+    def codec=(codec_class)
+      self.message_codec = MessageCodec.new(codec_class)
+    end
+
+    # @return [Class<Plumb::Codec>] the wire format messages are serialized with
+    def codec = @message_codec.codec
+
+    # Install a preconfigured {MessageCodec} — e.g. one scoped to its own
+    # message registry. {#codec=} is the usual way in.
+    # @param message_codec [MessageCodec]
+    def message_codec=(message_codec)
+      @message_codec = message_codec
+      @store.message_codec = @message_codec if @store.respond_to?(:message_codec=)
     end
 
     def error_strategy=(strategy)
@@ -79,12 +115,20 @@ module Sourced
 
       unless @store
         require 'sourced/store'
-        @store = Store.new(Sequel.sqlite)
+        @store = Store.new(Sequel.sqlite, message_codec: @message_codec)
       end
       @store.install!
       @router ||= Router.new(store: @store)
+      compile_codecs!
       @setup = true
     end
+
+    # Compile codecs for every message class defined so far: warms the cache so
+    # no request pays for it, and fails the boot if any message type can't be
+    # serialized by the configured codec (see {MessageCodec#compile!}).
+    # @return [void]
+    # @raise [Plumb::TypeError] naming the message type and attribute
+    private def compile_codecs! = @message_codec.compile!
 
     # Drop the store and router and mark the configuration as un-setup, so the
     # next {#setup!} (after re-running the configure block) establishes fresh
