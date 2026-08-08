@@ -234,7 +234,7 @@ RSpec.describe Sourced::Configuration do
 
     it 'accepts any object implementing StoreInterface' do
       fake_store = double('CustomStore',
-        installed?: true, install!: nil, append: nil, read: nil,
+        setup!: nil, append: nil, read: nil,
         read_partition: nil, claim_next: nil, ack: nil, release: nil,
         register_consumer_group: nil, worker_heartbeat: nil,
         release_stale_claims: nil, notifier: nil
@@ -320,6 +320,88 @@ RSpec.describe Sourced::Configuration do
       config.store = store
       config.setup!
       expect(config.store).to be(store)
+    end
+
+    it 'asks the store to compile its codecs for registered message types' do
+      klass = CodecSpecHelpers.unregistered_message('configuration_test.warm') do
+        attribute :name, String
+      end
+      config = described_class.new
+      config.store = Sequel.sqlite
+      config.store.message_codec = Sourced::Store::MessageCodec.new(
+        Plumb::Codec::JSON,
+        registry: CodecSpecHelpers::Registry.new([klass])
+      )
+
+      expect(config.store.message_codec.registered?('configuration_test.warm')).to be(false)
+      config.setup!
+      expect(config.store.message_codec.registered?('configuration_test.warm')).to be(true)
+    end
+
+    it 'refuses to boot when a message type cannot be serialized by the store' do
+      unserializable = CodecSpecHelpers.unregistered_message('configuration_test.unserializable') do
+        attribute :thing, Sourced::Types::Any[Object]
+      end
+      config = described_class.new
+      config.store = Sequel.sqlite
+      config.store.message_codec = Sourced::Store::MessageCodec.new(
+        Plumb::Codec::JSON,
+        registry: CodecSpecHelpers::Registry.new([unserializable])
+      )
+
+      expect { config.setup! }.to raise_error(Plumb::TypeError, /field `thing`/)
+    end
+
+    it 'asks the store to prepare itself, whatever that means for it' do
+      # A store says what being ready means for it, and may need nothing.
+      custom_store = Class.new do
+        attr_reader :setups
+
+        def initialize = @setups = 0
+        def setup! = @setups += 1
+        def notifier = nil
+        %i[append read read_partition claim_next ack release
+           register_consumer_group worker_heartbeat release_stale_claims].each do |m|
+          define_method(m) { |*, **| nil }
+        end
+      end.new
+      config = described_class.new
+      config.store = custom_store
+
+      expect { config.setup! }.not_to raise_error
+      expect(custom_store.setups).to eq(1)
+      expect(config.store).to be(custom_store)
+    end
+  end
+
+  describe '#codec=' do
+    let(:app_codec) { Class.new(Plumb::Codec::JSON) }
+
+    it 'defaults to Plumb::Codec::JSON' do
+      expect(described_class.new.codec).to be(Plumb::Codec::JSON)
+    end
+
+    it 'hands the format to a store configured afterwards' do
+      config = described_class.new
+      config.codec = app_codec
+      config.store = Sequel.sqlite
+
+      expect(config.codec).to be(app_codec)
+      expect(config.store.message_codec.codec).to be(app_codec)
+    end
+
+    it 'hands the format to a store configured beforehand' do
+      config = described_class.new
+      config.store = Sequel.sqlite
+      config.codec = app_codec
+
+      expect(config.store.message_codec.codec).to be(app_codec)
+    end
+
+    it 'reaches the store built by setup!' do
+      Sourced.configure { |c| c.codec = app_codec }
+
+      expect(Sourced.store.message_codec.codec).to be(app_codec)
     end
   end
 

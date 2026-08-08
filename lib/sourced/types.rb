@@ -46,10 +46,9 @@ module Sourced
     # JSON columns — {Sourced::DurableWorkflow}'s workflow context and step
     # outputs are the built-in example.
     #
-    # Deliberately narrower than +Types::Any+: a Date or a Symbol here would be
-    # written as a String and read back as a String, silently. This type rejects
-    # them at append time instead. For values with a known type, declare the
-    # type — the codec encodes and decodes it (see {Sourced::Codec}).
+    # Values a JSON document can't carry, such as a Date or a Symbol, are
+    # rejected at append time. For values with a known type, declare the type
+    # and the store's codec encodes and decodes it.
     JSONData = String | Integer | Float | True | False | Nil |
                Array[Any.defer { JSONData }] |
                Hash[Symbol | String, Any.defer { JSONData }]

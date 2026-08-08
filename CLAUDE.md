@@ -17,6 +17,7 @@ Sourced is a Ruby library for **aggregateless, stream-less event sourcing**. Mes
   - `Projector` (`lib/sourced/projector.rb`) — builds read models. Two flavors: `Projector::StateStored` and `Projector::EventSourced`.
   - `DurableWorkflow` (`lib/sourced/durable_workflow.rb`) — long-running workflows with step memoisation via `durable`/`wait`/`context`/`execute` and `catch(:halt)`.
   - Plain `Consumer` reactors (extend `Sourced::Consumer` directly) for side-effect-only handlers.
+- **Store lifecycle** — `StoreInterface` requires `setup!`, not `install!`/`installed?`: creating tables is one store's answer to "prepare yourself", not the contract. `Store#setup!` = `install!` + `message_codec.compile!`, idempotent, called once by `Configuration#setup!`. `install!` / `installed?` remain public on `Store` for scripts and specs.
 - **Reactor protocol** — the Router is **duck-typed**: any class responding to `handled_messages` and `handle_claim(claim, …)` can be registered without extending `Sourced::Consumer` or depending on Sourced (e.g. a third-party command handler). Missing optional methods (`group_id` → class name, `partition_keys` → `[]`, `exclusive?` → false, `on_exception`, `context_for`, lifecycle hooks) are filled in by `ReactorDefaults`.
 - **Actions / signals** (`lib/sourced/actions.rb`) — a reactor's `handle_claim` returns `[[signals, source_message], …]` pairs. Each signal is **inert data**: a plain Hash (`{type: :append|:sync|:after_sync|:ack, …}`) or a `Sourced::Actions` value object that `deconstruct_keys` to the same shape. A `delete: true` flag marks the source message for deletion on ack. There is **no separate `:schedule` signal** — a future-dated message (built with `Message#at`) in an `:append` is transparently deferred by the store (see below).
 - **ActionRunner** (`lib/sourced/action_runner.rb`) — the only code that touches the store on behalf of actions. Routes each signal to `append`/sync work, applying correlation. Third-party reactors emit plain-Hash signals with no Sourced dependency.
@@ -139,6 +140,25 @@ end
 
 `Sourced::Command` and `Sourced::Event` each have their own `Registry` (both reachable from `Sourced::Message.registry` via recursive lookup).
 
+Attributes use **native Ruby types** (`Date`, `Time`, `Symbol`, `BigDecimal`, `URI`, `Range`) — never coercing types. The codec (below) handles JSON translation at the store boundary. Free-form attributes take `Sourced::Types::JSONData` (any JSON value, recursively), not `Types::Any`, which no codec can encode.
+
+### Codecs (`lib/sourced/{codec,message_codec}.rb`)
+
+Three layers, with deliberately different ownership:
+
+- **Format — global.** `Plumb::Codec::JSON` decides how Ruby values travel (`Date` → `"2026-01-02"`, `Time` → ISO 8601 at microsecond precision). It's the default `config.codec`; Sourced wraps it in nothing. Apps subclass it to register encoders for their own value types and set `config.codec = MyCodec`. One format, every callsite.
+- **Registry use — store-private.** `Sourced::Store::MessageCodec` (`lib/sourced/store/message_codec.rb`) wraps a Plumb codec **instance** (a registry of `[decoder, encoder]` pairs) and registers each message class's **payload type** under its message type string. It's namespaced under `Store` because it exists for *this* store's layout. `Configuration` never names it: it passes the format (`Store.new(db, codec:)`, `store.codec =`) and the store decides what to build from it. Nothing in `Configuration::StoreInterface` mentions serialization either — a store with a different layout owns a different serializer, or none.
+- **Envelope — the store's own code.** `Store#append` writes `id`/`type`/`causation_id`/`correlation_id`/`created_at` straight into columns and only sends `payload` through the codec; `deserialize` rebuilds attrs from the row and calls `message_codec.decode`; `schedule_messages` assembles a whole-message document inline, because that table has a different layout. Sending the envelope through the codec instead costs ~7.7 µs/message on reads (measured) to rebuild what the store just took apart — see `plans/message-codecs.md`.
+
+Other notes:
+
+- **Payload scope is free for JSON-native payloads**: a codec composition returns the *original node* when nothing needs rewriting, so the decoder *is* the payload class.
+- **Registration happens only in `compile!`**, which builds the Plumb registry with the block form (`Codec.new { … }`), so it is frozen once every type is in. Encoding or decoding a type that wasn't compiled raises `Plumb::Codec::NoEntryError` — a bug, not a cue to compile mid-request. `compile!` rebuilds, so calling it again picks up types defined since. Specs that build stores directly rely on a `before(:suite)` hook compiling `MessageCodec.default`, mirroring the once-per-process compile at boot.
+- **Boot check**: `Configuration#setup!` calls `store.setup!` — the store's generic "prepare yourself" hook (in `StoreInterface`), which for `Store` means creating tables *and* compiling its serializer. A message type the store can't persist raises `Plumb::TypeError` naming the message and attribute, and **the app fails to boot**. Specs needing a deliberately-unserializable message type must keep it *out* of the global registry — see `CodecSpecHelpers.unregistered_message` in `spec/spec_helper.rb`, since one registered example would fail every other spec's `setup!`.
+- **Sharing**: `Store::MessageCodec.for(codec_class)` memoizes one instance per format (`.default` is `for(Plumb::Codec::JSON)`), so stores of this layout sharing a format share one compiled registry. Assign `store.message_codec =` for a store that needs its own — e.g. one scoped to a private message registry.
+- Encoding an invalid message raises `Store::MessageCodec::EncodeError`; reading a row whose payload no longer fits its schema raises `Store::MessageCodec::DecodeError` (previously it silently produced an invalid message); reading a row whose type isn't registered raises `Message::UnknownMessageError` (previously a base `Message` with the payload dropped, since base `Message#payload` is `Static[nil]`).
+- `metadata` is an untyped Hash — a JSON noop the codec passes through, so it must hold JSON-native values.
+
 ### Projector flavors
 
 - `Projector::StateStored` — evolves only the claimed batch on top of the stored state snapshot.
@@ -227,6 +247,7 @@ In reactions: `dispatch(Cmd, ...).at(time)` (the produced message is future-date
 - Reactors: `lib/sourced/{decider,projector,durable_workflow,consumer}.rb`
 - Reactor protocol: `lib/sourced/reactor_defaults.rb` (duck-typed defaults)
 - Actions: `lib/sourced/{actions,action_runner}.rb` (signals + interpreter)
+- Codecs: `lib/sourced/{codec,message_codec}.rb` (Ruby ⇄ JSON at the store boundary)
 - Mixins: `lib/sourced/{evolve,react,sync}.rb`
 - Dispatch: `lib/sourced/{dispatcher,worker,work_queue,stale_claim_reaper,scheduled_message_poller,inline_notifier}.rb`
 - Router/topology: `lib/sourced/{router,topology}.rb`

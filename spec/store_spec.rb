@@ -5,6 +5,8 @@ require 'sourced'
 require 'sourced/store'
 require 'sequel'
 require 'tmpdir'
+require 'bigdecimal'
+require 'date'
 
 # Define test messages for store specs (namespaced to avoid collisions)
 module StoreTestMessages
@@ -40,6 +42,38 @@ module StoreTestMessages
 
   CourseClosed = Sourced::Message.define('store_test.course.closed') do
     attribute :course_name, String
+  end
+
+  # Native Ruby types, carried through the JSON payload column by the codec.
+  Booking = Sourced::Message.define('store_test.booking') do
+    attribute :booking_id, String
+    attribute :starts_on, Date
+    attribute :booked_at, Time
+    attribute :status, Sourced::Types::Symbol
+    attribute :price, Sourced::Types::Decimal
+    attribute :seats, Sourced::Types::Array do
+      attribute :row, String
+      attribute :reserved_on, Sourced::Types::Date.nullable
+    end
+  end
+
+  # An app value type, and the codec that teaches Sourced how to store it.
+  Point = Data.define(:x, :y)
+
+  class PointEncoder < Plumb::Encoder[Sourced::Types::String[/\A\d+,\d+\z/] => Sourced::Types::Any[Point]]
+    def encode(point) = "#{point.x},#{point.y}"
+    def decode(str) = Point.new(*str.split(',').map(&:to_i))
+  end
+
+  class StoreCodec < Plumb::Codec::JSON
+    encoder PointEncoder
+  end
+
+  # Unregistered: only StoreCodec can serialize it, and every Sourced.setup!
+  # in the suite walks the global registry.
+  PointPlotted = CodecSpecHelpers.unregistered_message('store_test.point.plotted') do
+    attribute :plot_id, String
+    attribute :point, Sourced::Types::Any[Point]
   end
 end
 
@@ -82,6 +116,38 @@ RSpec.describe Sourced::Store do
 
     it 'is idempotent' do
       expect { store.install! }.not_to raise_error
+    end
+  end
+
+  describe '#setup!' do
+    # Its own store: the outer `before` installs `store`, and installing is
+    # part of what #setup! is being tested for.
+    let(:fresh_store) { Sourced::Store.new(Sequel.sqlite) }
+
+    it 'installs the tables and compiles the codecs' do
+      expect(fresh_store.installed?).to be false
+
+      fresh_store.setup!
+
+      expect(fresh_store.installed?).to be true
+      expect(fresh_store.message_codec.registered?('store_test.device.registered')).to be true
+    end
+
+    it 'is idempotent' do
+      fresh_store.setup!
+      expect { fresh_store.setup! }.not_to raise_error
+    end
+
+    it 'fails when a registered message type cannot be serialized' do
+      unserializable = CodecSpecHelpers.unregistered_message('store_test.unserializable') do
+        attribute :thing, Sourced::Types::Any[Object]
+      end
+      fresh_store.message_codec = Sourced::Store::MessageCodec.new(
+        Plumb::Codec::JSON,
+        registry: CodecSpecHelpers::Registry.new([unserializable])
+      )
+
+      expect { fresh_store.setup! }.to raise_error(Plumb::TypeError, /field `thing`/)
     end
   end
 
@@ -2989,6 +3055,112 @@ RSpec.describe Sourced::Store do
 
       expect(result).not_to be_nil
       expect(result.messages.size).to eq(1)
+    end
+  end
+
+  describe 'native Ruby types (message codec)' do
+    it 'round-trips Dates, Times, Symbols and Decimals through the JSON payload column' do
+      at = Time.at(1_700_000_000, 123_456)
+      store.append(StoreTestMessages::Booking.new(payload: {
+        booking_id: 'b-1',
+        starts_on: Date.new(2026, 1, 2),
+        booked_at: at,
+        status: :confirmed,
+        price: BigDecimal('19.99'),
+        seats: [{ row: 'A', reserved_on: Date.new(2026, 1, 1) }, { row: 'B', reserved_on: nil }]
+      }))
+
+      messages, = store.read(StoreTestMessages::Booking.to_conditions(booking_id: 'b-1'))
+      payload = messages.first.payload
+
+      expect(payload.starts_on).to eq(Date.new(2026, 1, 2))
+      expect(payload.booked_at).to be_a(Time)
+      expect(payload.booked_at.usec).to eq(123_456)
+      expect(payload.status).to eq(:confirmed)
+      expect(payload.price).to eq(BigDecimal('19.99'))
+      expect(payload.seats.map(&:row)).to eq(%w[A B])
+      expect(payload.seats.first.reserved_on).to eq(Date.new(2026, 1, 1))
+      expect(payload.seats.last.reserved_on).to be_nil
+    end
+
+    it 'stores them JSON-native on the wire' do
+      store.append(StoreTestMessages::Booking.new(payload: {
+        booking_id: 'b-1',
+        starts_on: Date.new(2026, 1, 2),
+        booked_at: Time.at(1_700_000_000, 123_456),
+        status: :confirmed,
+        price: BigDecimal('19.99'),
+        seats: []
+      }))
+
+      stored = JSON.parse(db[:sourced_messages].first[:payload])
+
+      expect(stored).to eq(
+        'booking_id' => 'b-1',
+        'starts_on' => '2026-01-02',
+        'booked_at' => Time.at(1_700_000_000, 123_456).iso8601(6),
+        'status' => 'confirmed',
+        'price' => '19.99',
+        'seats' => []
+      )
+    end
+
+    it 'round-trips them through scheduling and promotion too' do
+      now = Time.now
+      due = StoreTestMessages::Booking.new(
+        payload: {
+          booking_id: 'b-1',
+          starts_on: Date.new(2026, 1, 2),
+          booked_at: Time.at(1_700_000_000, 123_456),
+          status: :confirmed,
+          price: BigDecimal('19.99'),
+          seats: []
+        },
+        metadata: { source: 'test' }
+      ).at(now + 2)
+
+      store.append(due)
+      Timecop.freeze(now + 3) { expect(store.update_schedule!).to eq(1) }
+
+      messages, = store.read(StoreTestMessages::Booking.to_conditions(booking_id: 'b-1'))
+      payload = messages.first.payload
+
+      expect(payload.starts_on).to eq(Date.new(2026, 1, 2))
+      expect(payload.booked_at.usec).to eq(123_456)
+      expect(payload.status).to eq(:confirmed)
+      expect(payload.price).to eq(BigDecimal('19.99'))
+      expect(messages.first.metadata[:source]).to eq('test')
+    end
+
+    it 'raises when a stored payload no longer satisfies its schema' do
+      store.append(StoreTestMessages::Booking.new(payload: {
+        booking_id: 'b-1',
+        starts_on: Date.new(2026, 1, 2),
+        booked_at: Time.now,
+        status: :confirmed,
+        price: BigDecimal('1'),
+        seats: []
+      }))
+      db[:sourced_messages].update(payload: JSON.dump(booking_id: 'b-1', starts_on: 'not-a-date'))
+
+      expect {
+        store.read(StoreTestMessages::Booking.to_conditions(booking_id: 'b-1'))
+      }.to raise_error(Sourced::Store::MessageCodec::DecodeError, /store_test\.booking/)
+    end
+
+    it 'uses a codec configured on the store, encoders and all' do
+      store.message_codec = Sourced::Store::MessageCodec.new(
+        StoreTestMessages::StoreCodec,
+        registry: CodecSpecHelpers::Registry.new([StoreTestMessages::PointPlotted])
+      ).compile!
+      point = StoreTestMessages::Point.new(x: 1, y: 2)
+
+      store.append(StoreTestMessages::PointPlotted.new(payload: { plot_id: 'p-1', point: }))
+
+      expect(JSON.parse(db[:sourced_messages].first[:payload])['point']).to eq('1,2')
+
+      messages, = store.read(StoreTestMessages::PointPlotted.to_conditions(plot_id: 'p-1'))
+      expect(messages.first.payload.point).to eq(point)
     end
   end
 end

@@ -4,7 +4,7 @@ require 'json'
 require 'set'
 require 'sourced/inline_notifier'
 require 'sourced/installer'
-require 'sourced/message_codec'
+require 'sourced/store/message_codec'
 
 module Sourced
   # Wraps a Message with a storage position. Delegates all message methods.
@@ -109,22 +109,21 @@ module Sourced
     # @return [Sourced::Installer]
     attr_reader :installer
 
-    # Serializes messages to and from the JSON columns. Assignable so that
-    # {Configuration#codec=} can hand an app-configured codec to a store that
-    # was already built.
-    # @return [Sourced::MessageCodec]
+    # This store's serializer: payload pairs compiled from {#codec}. Assignable,
+    # so a store can be given one scoped to its own message registry.
+    # @return [MessageCodec]
     attr_accessor :message_codec
 
     # @param db [Sequel::SQLite::Database] a Sequel SQLite connection
     # @param notifier [#notify_new_messages, #notify_reactor_resumed, nil] optional notifier for dispatch signals
     # @param logger [Logger, nil] optional logger (defaults to Sourced.config.logger)
     # @param prefix [String] table name prefix (default 'sourced')
-    # @param message_codec [Sourced::MessageCodec] message serializer (defaults to the shared one)
-    def initialize(db, notifier: nil, logger: nil, prefix: 'sourced', message_codec: MessageCodec.default)
+    # @param codec [Class<Plumb::Codec>] the wire format to serialize payloads with
+    def initialize(db, notifier: nil, logger: nil, prefix: 'sourced', codec: Plumb::Codec::JSON)
       @db = db
       @notifier = notifier || Sourced::InlineNotifier.new
       @logger = logger || Sourced.config.logger
-      @message_codec = message_codec
+      @message_codec = MessageCodec.for(codec)
       Sequel.extension(:fiber_concurrency)
       # foreign_keys and busy_timeout are already applied on every connection by
       # Sequel's SQLite adapter defaults; we set them explicitly for clarity.
@@ -187,6 +186,20 @@ module Sourced
       optimize!
     end
 
+    # Prepare this store for use: create its tables and compile its serializer.
+    # Called once at boot by {Configuration#setup!}, so no request pays for the
+    # compilation and a message type this store can't persist fails the boot.
+    # Idempotent.
+    #
+    # @return [self]
+    # @raise [Plumb::TypeError] naming a message type and attribute this store
+    #   can't serialize
+    def setup!
+      install!
+      message_codec.compile!
+      self
+    end
+
     # Refresh SQLite planner statistics (sqlite_stat1) with a bounded ANALYZE.
     #
     # Without statistics the planner guesses, and for {#find_and_claim_partition}
@@ -220,6 +233,17 @@ module Sourced
     # @see Installer#copy_migration_to
     def copy_migration_to(dir = nil, &block)
       installer.copy_migration_to(dir, &block)
+    end
+
+    # The wire format this store serializes payloads with. Setting it swaps in
+    # the serializer for that format.
+    #
+    # @return [Class<Plumb::Codec>]
+    def codec = message_codec.codec
+
+    # @param codec_class [Class<Plumb::Codec>]
+    def codec=(codec_class)
+      self.message_codec = MessageCodec.for(codec_class)
     end
 
     # Run a block inside a store transaction. Callers (e.g. the Router grouping
@@ -283,9 +307,9 @@ module Sourced
           end
 
           to_append.each do |msg|
-            # The codec turns native Ruby values (Dates, Times, Symbols, …) into
-            # JSON-native ones; a payload that is already JSON-native passes
-            # through the identity codec its class compiled to.
+            # The envelope goes into columns; only the payload needs the codec,
+            # to turn native Ruby values (Dates, Times, Symbols, …) into
+            # JSON-native ones.
             encoded_payload = message_codec.encode_payload(msg)
             payload_json = encoded_payload ? JSON.dump(encoded_payload) : '{}'
             metadata_json = msg.metadata.empty? ? nil : JSON.dump(msg.metadata)
@@ -298,7 +322,7 @@ module Sourced
               correlation_id: msg.correlation_id,
               payload: payload_json,
               metadata: metadata_json,
-              created_at: msg.created_at.iso8601
+              created_at: msg.created_at.iso8601(6)
             )
 
             # Upsert key pairs and link to message in 2 statements (was 3):
@@ -338,10 +362,17 @@ module Sourced
     private def schedule_messages(messages)
       now = Time.now
       rows = messages.map do |message|
-        # The whole message is one JSON document here, so it goes through the
-        # codec's #dump rather than #encode_payload.
-        data = message_codec.dump(message)
-        data[:metadata] = message.metadata.merge(scheduled_at: now.iso8601)
+        # This table keeps the whole message as one document, so the envelope is
+        # assembled here.
+        data = {
+          id: message.id,
+          type: message.type,
+          causation_id: message.causation_id,
+          correlation_id: message.correlation_id,
+          created_at: message.created_at.iso8601(6),
+          metadata: message.metadata.merge(scheduled_at: now.iso8601),
+          payload: message_codec.encode_payload(message)
+        }
         {
           created_at: now.iso8601,
           available_at: message.created_at.iso8601,
@@ -376,8 +407,10 @@ module Sourced
 
         messages = rows.map do |row|
           data = JSON.parse(row[:message], symbolize_names: true)
+          # Promotion re-dates the message to now. The envelope skips the codec,
+          # so it takes a Time directly.
           data[:created_at] = now
-          message_codec.load(data)
+          message_codec.decode(data)
         end
 
         append(messages)
@@ -1617,7 +1650,7 @@ module Sourced
       payload = JSON.parse(row[:payload], symbolize_names: true)
       metadata = row[:metadata] ? JSON.parse(row[:metadata], symbolize_names: true) : {}
 
-      msg = message_codec.load(
+      msg = message_codec.decode(
         id: row[:message_id],
         type: row[:message_type],
         causation_id: row[:causation_id],
