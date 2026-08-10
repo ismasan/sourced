@@ -4,6 +4,7 @@ require 'json'
 require 'set'
 require 'sourced/inline_notifier'
 require 'sourced/installer'
+require 'sourced/store/message_codec'
 
 module Sourced
   # Wraps a Message with a storage position. Delegates all message methods.
@@ -108,6 +109,11 @@ module Sourced
     # @return [Sourced::Installer]
     attr_reader :installer
 
+    # This store's serializer, shared with every other store in the process.
+    # Assignable, so a store can be given one scoped to its own message registry.
+    # @return [MessageCodec]
+    attr_accessor :message_codec
+
     # @param db [Sequel::SQLite::Database] a Sequel SQLite connection
     # @param notifier [#notify_new_messages, #notify_reactor_resumed, nil] optional notifier for dispatch signals
     # @param logger [Logger, nil] optional logger (defaults to Sourced.config.logger)
@@ -116,6 +122,7 @@ module Sourced
       @db = db
       @notifier = notifier || Sourced::InlineNotifier.new
       @logger = logger || Sourced.config.logger
+      @message_codec = MessageCodec.default
       Sequel.extension(:fiber_concurrency)
       # foreign_keys and busy_timeout are already applied on every connection by
       # Sequel's SQLite adapter defaults; we set them explicitly for clarity.
@@ -176,6 +183,20 @@ module Sourced
     def install!
       installer.install
       optimize!
+    end
+
+    # Prepare this store for use: create its tables and compile its serializer.
+    # Called once at boot by {Configuration#setup!}, so no request pays for the
+    # compilation and a message type this store can't persist fails the boot.
+    # Idempotent.
+    #
+    # @return [self]
+    # @raise [Plumb::TypeError] naming a message type and attribute this store
+    #   can't serialize
+    def setup!
+      install!
+      message_codec.compile!
+      self
     end
 
     # Refresh SQLite planner statistics (sqlite_stat1) with a bounded ANALYZE.
@@ -274,7 +295,11 @@ module Sourced
           end
 
           to_append.each do |msg|
-            payload_json = msg.payload ? JSON.dump(msg.payload.to_h) : '{}'
+            # The envelope goes into columns; only the payload needs the codec,
+            # to turn native Ruby values (Dates, Times, Symbols, …) into
+            # JSON-native ones.
+            encoded_payload = message_codec.encode(msg)
+            payload_json = encoded_payload ? JSON.dump(encoded_payload) : '{}'
             metadata_json = msg.metadata.empty? ? nil : JSON.dump(msg.metadata)
 
             # insert returns last_insert_rowid on SQLite — no need for a separate SELECT
@@ -285,7 +310,7 @@ module Sourced
               correlation_id: msg.correlation_id,
               payload: payload_json,
               metadata: metadata_json,
-              created_at: msg.created_at.iso8601
+              created_at: msg.created_at.iso8601(6)
             )
 
             # Upsert key pairs and link to message in 2 statements (was 3):
@@ -325,8 +350,17 @@ module Sourced
     private def schedule_messages(messages)
       now = Time.now
       rows = messages.map do |message|
-        data = message.to_h
-        data[:metadata] = message.metadata.merge(scheduled_at: now)
+        # This table keeps the whole message as one document, so the envelope is
+        # assembled here.
+        data = {
+          id: message.id,
+          type: message.type,
+          causation_id: message.causation_id,
+          correlation_id: message.correlation_id,
+          created_at: message.created_at.iso8601(6),
+          metadata: message.metadata.merge(scheduled_at: now.iso8601),
+          payload: message_codec.encode(message)
+        }
         {
           created_at: now.iso8601,
           available_at: message.created_at.iso8601,
@@ -361,8 +395,10 @@ module Sourced
 
         messages = rows.map do |row|
           data = JSON.parse(row[:message], symbolize_names: true)
+          # Promotion re-dates the message to now. The envelope skips the codec,
+          # so it takes a Time directly.
           data[:created_at] = now
-          Message.from(data)
+          message_codec.decode(data)
         end
 
         append(messages)
@@ -1591,16 +1627,18 @@ module Sourced
     end
 
     # Deserialize a database row into a {PositionedMessage}.
-    # Looks up the message class from the registry; falls back to base {Message}.
+    # The codec resolves the message class from the registry and decodes the
+    # payload.
     #
     # @param row [Hash] database row with :position, :message_id, :message_type, :causation_id, :correlation_id, :payload, :metadata, :created_at
     # @return [PositionedMessage]
+    # @raise [Sourced::Message::UnknownMessageError] if the row's message type isn't registered
+    # @raise [MessageCodec::DecodeError] if the stored payload no longer satisfies its schema
     def deserialize(row)
       payload = JSON.parse(row[:payload], symbolize_names: true)
       metadata = row[:metadata] ? JSON.parse(row[:metadata], symbolize_names: true) : {}
 
-      klass = Message.registry[row[:message_type]]
-      attrs = {
+      msg = message_codec.decode(
         id: row[:message_id],
         type: row[:message_type],
         causation_id: row[:causation_id],
@@ -1608,13 +1646,7 @@ module Sourced
         created_at: row[:created_at],
         metadata: metadata,
         payload: payload
-      }
-
-      msg = if klass
-              klass.new(attrs)
-            else
-              Message.new(attrs)
-            end
+      )
 
       PositionedMessage.new(msg, row[:position])
     end

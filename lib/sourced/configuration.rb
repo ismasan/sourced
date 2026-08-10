@@ -7,8 +7,10 @@ require 'sourced/async_executor'
 module Sourced
   class Configuration
     StoreInterface = Types::Interface[
-      :installed?,
-      :install!,
+      # #setup! is how a store prepares itself at boot (see Store#setup!).
+      # Deliberately generic: creating tables and compiling codecs are one
+      # store's answer to it, not part of the contract.
+      :setup!,
       :append,
       :read,
       :read_partition,
@@ -81,7 +83,9 @@ module Sourced
         require 'sourced/store'
         @store = Store.new(Sequel.sqlite)
       end
-      @store.install!
+      # Whatever this store needs to be usable: {Store} creates its tables and
+      # compiles its serializer, so a message type it can't persist fails here.
+      @store.setup!
       @router ||= Router.new(store: @store)
       @setup = true
     end

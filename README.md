@@ -30,6 +30,27 @@ CourseCreated = MyEvent.define('courses.created') do
 end
 ```
 
+Attributes are declared with **native Ruby types**. The store's codec turns values into
+JSON and back:
+
+```ruby
+CourseScheduled = MyEvent.define('courses.scheduled') do
+  attribute :course_id, String
+  attribute :starts_on, Date         # stored as "2026-01-02"
+  attribute :published_at, Time      # stored as ISO 8601, microseconds kept
+  attribute :level, Types::Symbol    # stored as "beginner"
+  attribute :price, Types::Decimal   # stored as "19.99", precision kept
+end
+
+event = CourseScheduled.new(payload: { starts_on: Date.new(2026, 1, 2), ... })
+store.append(event)
+
+messages, = store.read(CourseScheduled.to_conditions(course_id: 'c1'))
+messages.first.payload.starts_on   # => #<Date 2026-01-02>
+```
+
+See [Codecs](#codecs) for the types covered out of the box and how to add your own.
+
 ### Message features
 
 - **Auto-generated UUIDs** for `id`, `causation_id`, and `correlation_id`
@@ -1142,6 +1163,58 @@ Sourced.configure do |c|
   c.housekeeping_interval = 30 # heartbeat/reap cycle (default: 30)
 end
 ```
+
+### Codecs
+
+Messages are declared in native Ruby types; a **codec** translates them to and from
+the JSON the store writes. The codec is `Plumb::Codec::JSON`, and it covers `String`,
+`Integer`, `Float`, booleans, `nil`, hashes, arrays, nested payload structs, unions
+and nullables (all JSON-native, passed through untouched), plus `Date`, `Time`
+(ISO 8601, microsecond precision), `Symbol`, `BigDecimal`, `URI` and `Range`.
+
+To store a type it doesn't know, write a Plumb encoder and register it on the codec:
+
+```ruby
+Money = Data.define(:cents, :currency)
+
+class MoneyEncoder < Plumb::Encoder[
+  Types::Hash[cents: Integer, currency: String] => Types::Any[Money]
+]
+  def encode(money) = { cents: money.cents, currency: money.currency }
+  def decode(hash)  = Money.new(cents: hash[:cents], currency: hash[:currency])
+end
+
+Plumb::Codec::JSON.encoder MoneyEncoder
+
+Sourced.configure do |c|
+  c.store = Sequel.sqlite('my_app.db')
+end
+```
+
+Register encoders
+before `Sourced.setup!`, which is when the store compiles them in — an encoder added
+after that is not picked up. Registration lasts for the life of the process.
+
+Compiling a codec onto a type is a deep type rewrite, so it happens once, at `setup!`,
+for every registered message type. The compiled registry is then frozen: storing or
+reading a message type that wasn't compiled raises.
+
+**A message type the store can't serialize fails the boot**, naming the message and the
+attribute:
+
+```
+Plumb::TypeError: cannot apply Plumb::Codec::JSON[...] (decode) to OrderPlaced::Payload:
+  field `total` (Money) matches no encoder and is not covered by its noop types.
+  Register an encoder for it, or declare it with .noop.
+```
+
+Two things the codec does not reach:
+
+- **`metadata` is untyped**, so it's written as-is and must hold JSON-native values.
+  A `Time` in metadata comes back as a String.
+- **Free-form payload attributes** take `Sourced::Types::JSONData` (any JSON value,
+  recursively). It accepts what a JSON document can carry and rejects the rest — a
+  `Date` or a `Symbol` — at append time.
 
 ### Database setup
 

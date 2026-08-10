@@ -38,15 +38,15 @@ module Sourced
 
       child.const_set(:WorkflowStarted, Sourced::Event.define("#{cname}.workflow.started") do
         attribute :workflow_id, String
-        attribute :args, Sourced::Types::Array.default([].freeze)
+        attribute :args, Sourced::Types::Array[Sourced::Types::JSONData].default([].freeze)
       end)
       child.const_set(:ContextUpdated, Sourced::Event.define("#{cname}.context.updated") do
         attribute :workflow_id, String
-        attribute :context, Sourced::Types::Any
+        attribute :context, Sourced::Types::JSONData
       end)
       child.const_set(:WorkflowComplete, Sourced::Event.define("#{cname}.workflow.complete") do
         attribute :workflow_id, String
-        attribute :output, Sourced::Types::Any
+        attribute :output, Sourced::Types::JSONData
       end)
       child.const_set(:WorkflowFailed, Sourced::Event.define("#{cname}.workflow.failed") do
         attribute :workflow_id, String
@@ -54,27 +54,27 @@ module Sourced
       child.const_set(:StepStarted, Sourced::Event.define("#{cname}.step.started") do
         attribute :workflow_id, String
         attribute :key, String
-        attribute :step_name, Sourced::Types::Lax::Symbol
-        attribute :args, Sourced::Types::Array.default([].freeze)
+        attribute :step_name, Symbol
+        attribute :args, Sourced::Types::Array[Sourced::Types::JSONData].default([].freeze)
       end)
       child.const_set(:StepFailed, Sourced::Event.define("#{cname}.step.failed") do
         attribute :workflow_id, String
         attribute :key, String
-        attribute :step_name, Sourced::Types::Lax::Symbol
+        attribute :step_name, Symbol
         attribute :error_message, String
         attribute :error_class, String
-        attribute :backtrace, Sourced::Types::Array[String]
+        attribute :backtrace, [String]
       end)
       child.const_set(:StepComplete, Sourced::Event.define("#{cname}.step.complete") do
         attribute :workflow_id, String
         attribute :key, String
-        attribute :step_name, Sourced::Types::Lax::Symbol
-        attribute :output, Sourced::Types::Any
+        attribute :step_name, Symbol
+        attribute :output, Sourced::Types::JSONData
       end)
       child.const_set(:WaitStarted, Sourced::Event.define("#{cname}.wait.started") do
         attribute :workflow_id, String
         attribute :count, Integer
-        attribute :at, Sourced::Types::Forms::Time
+        attribute :at, Time
       end)
       child.const_set(:WaitEnded, Sourced::Event.define("#{cname}.wait.ended") do
         attribute :workflow_id, String

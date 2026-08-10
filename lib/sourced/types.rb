@@ -39,5 +39,18 @@ module Sourced
         .downcase
     }
     ModuleToMessageType = ModulesToDots >> Underscore
+
+    # An arbitrary JSON-native value: scalars, and arrays/hashes of them, all
+    # the way down. Use it for message attributes whose shape isn't known up
+    # front but which still have to survive a round trip through the store's
+    # JSON columns — {Sourced::DurableWorkflow}'s workflow context and step
+    # outputs are the built-in example.
+    #
+    # Values a JSON document can't carry, such as a Date or a Symbol, are
+    # rejected at append time. For values with a known type, declare the type
+    # and the store's codec encodes and decodes it.
+    JSONData = String | Integer | Float | True | False | Nil |
+               Array[Any.defer { JSONData }] |
+               Hash[Symbol | String, Any.defer { JSONData }]
   end
 end
