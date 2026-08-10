@@ -142,21 +142,21 @@ end
 
 Attributes use **native Ruby types** (`Date`, `Time`, `Symbol`, `BigDecimal`, `URI`, `Range`) — never coercing types. The codec (below) handles JSON translation at the store boundary. Free-form attributes take `Sourced::Types::JSONData` (any JSON value, recursively), not `Types::Any`, which no codec can encode.
 
-### Codecs (`lib/sourced/{codec,message_codec}.rb`)
+### Codecs (`lib/sourced/store/message_codec.rb`)
 
-Three layers, with deliberately different ownership:
+Serialization is split between one global format and a store that owns everything else:
 
-- **Format — global.** `Plumb::Codec::JSON` decides how Ruby values travel (`Date` → `"2026-01-02"`, `Time` → ISO 8601 at microsecond precision). It's the default `config.codec`; Sourced wraps it in nothing. Apps subclass it to register encoders for their own value types and set `config.codec = MyCodec`. One format, every callsite.
-- **Registry use — store-private.** `Sourced::Store::MessageCodec` (`lib/sourced/store/message_codec.rb`) wraps a Plumb codec **instance** (a registry of `[decoder, encoder]` pairs) and registers each message class's **payload type** under its message type string. It's namespaced under `Store` because it exists for *this* store's layout. `Configuration` never names it: it passes the format (`Store.new(db, codec:)`, `store.codec =`) and the store decides what to build from it. Nothing in `Configuration::StoreInterface` mentions serialization either — a store with a different layout owns a different serializer, or none.
-- **Envelope — the store's own code.** `Store#append` writes `id`/`type`/`causation_id`/`correlation_id`/`created_at` straight into columns and only sends `payload` through the codec; `deserialize` rebuilds attrs from the row and calls `message_codec.decode`; `schedule_messages` assembles a whole-message document inline, because that table has a different layout. Sending the envelope through the codec instead costs ~7.7 µs/message on reads (measured) to rebuild what the store just took apart — see `plans/message-codecs.md`.
+- **Format — global, unconfigurable.** `Plumb::Codec::JSON` decides how Ruby values travel (`Date` → `"2026-01-02"`, `Time` → ISO 8601 at microsecond precision). Apps teach it their own value types by registering encoders on the class itself — `Plumb::Codec::JSON.encoder MoneyEncoder` — before `Sourced.setup!`, which is when the store compiles them in. There is no codec setting on `Configuration` or `Store`.
+- **Registry use — store-private.** `Sourced::Store::MessageCodec` wraps a Plumb codec **instance** (a registry of `[decoder, encoder]` pairs) and registers each message class's **payload type** under its message type string. It's namespaced under `Store` because it exists for *this* store's layout, and nothing in `Configuration::StoreInterface` mentions serialization — a store with a different layout owns a different serializer, or none. Its `format:` kwarg is a seam for scoping a codec in specs, not configuration.
+- **Envelope — the store's own code.** `Store#append` writes `id`/`type`/`causation_id`/`correlation_id`/`created_at` straight into columns and only sends `payload` through the codec; `deserialize` rebuilds attrs from the row and calls `message_codec.decode`; `schedule_messages` assembles a whole-message document inline, because that table has a different layout. Routing the envelope through the codec instead costs ~7.7 µs/message on reads (measured) to rebuild what the store just took apart — see `plans/message-codecs.md`.
 
 Other notes:
 
 - **Payload scope is free for JSON-native payloads**: a codec composition returns the *original node* when nothing needs rewriting, so the decoder *is* the payload class.
-- **Registration happens only in `compile!`**, which builds the Plumb registry with the block form (`Codec.new { … }`), so it is frozen once every type is in. Encoding or decoding a type that wasn't compiled raises `Plumb::Codec::NoEntryError` — a bug, not a cue to compile mid-request. `compile!` rebuilds, so calling it again picks up types defined since. Specs that build stores directly rely on a `before(:suite)` hook compiling `MessageCodec.default`, mirroring the once-per-process compile at boot.
+- **Registration happens only in `compile!`**, which builds the Plumb registry with the block form (`Codec.new { … }`), so it is frozen once every type is in. Encoding or decoding a type that wasn't compiled raises `Plumb::Codec::NoEntryError` — a bug, not a cue to compile mid-request. `compile!` rebuilds, so calling it again picks up types (and encoders) added since. Specs that build stores directly rely on a `before(:suite)` hook compiling `MessageCodec.default`, mirroring the once-per-process compile at boot.
 - **Boot check**: `Configuration#setup!` calls `store.setup!` — the store's generic "prepare yourself" hook (in `StoreInterface`), which for `Store` means creating tables *and* compiling its serializer. A message type the store can't persist raises `Plumb::TypeError` naming the message and attribute, and **the app fails to boot**. Specs needing a deliberately-unserializable message type must keep it *out* of the global registry — see `CodecSpecHelpers.unregistered_message` in `spec/spec_helper.rb`, since one registered example would fail every other spec's `setup!`.
-- **Sharing**: `Store::MessageCodec.for(codec_class)` memoizes one instance per format (`.default` is `for(Plumb::Codec::JSON)`), so stores of this layout sharing a format share one compiled registry. Assign `store.message_codec =` for a store that needs its own — e.g. one scoped to a private message registry.
-- Encoding an invalid message raises `Store::MessageCodec::EncodeError`; reading a row whose payload no longer fits its schema raises `Store::MessageCodec::DecodeError` (previously it silently produced an invalid message); reading a row whose type isn't registered raises `Message::UnknownMessageError` (previously a base `Message` with the payload dropped, since base `Message#payload` is `Static[nil]`).
+- **Sharing**: `Store::MessageCodec.default` is the one instance every store takes, so a process compiles its pairs once, including after a fork. Assign `store.message_codec =` for a store that needs its own — e.g. one scoped to a private message registry.
+- Encoding an invalid message raises `Store::MessageCodec::EncodeError`; reading a row whose payload no longer fits its schema raises `Store::MessageCodec::DecodeError`; reading a row whose type isn't registered raises `Message::UnknownMessageError` (the base `Message` declares `payload` as `Static[nil]`, so building one would drop the payload).
 - `metadata` is an untyped Hash — a JSON noop the codec passes through, so it must hold JSON-native values.
 
 ### Projector flavors
@@ -247,7 +247,7 @@ In reactions: `dispatch(Cmd, ...).at(time)` (the produced message is future-date
 - Reactors: `lib/sourced/{decider,projector,durable_workflow,consumer}.rb`
 - Reactor protocol: `lib/sourced/reactor_defaults.rb` (duck-typed defaults)
 - Actions: `lib/sourced/{actions,action_runner}.rb` (signals + interpreter)
-- Codecs: `lib/sourced/{codec,message_codec}.rb` (Ruby ⇄ JSON at the store boundary)
+- Codecs: `lib/sourced/store/message_codec.rb` (Ruby ⇄ JSON at the store boundary)
 - Mixins: `lib/sourced/{evolve,react,sync}.rb`
 - Dispatch: `lib/sourced/{dispatcher,worker,work_queue,stale_claim_reaper,scheduled_message_poller,inline_notifier}.rb`
 - Router/topology: `lib/sourced/{router,topology}.rb`

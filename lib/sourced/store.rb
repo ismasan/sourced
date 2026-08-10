@@ -109,8 +109,8 @@ module Sourced
     # @return [Sourced::Installer]
     attr_reader :installer
 
-    # This store's serializer: payload pairs compiled from {#codec}. Assignable,
-    # so a store can be given one scoped to its own message registry.
+    # This store's serializer, shared with every other store in the process.
+    # Assignable, so a store can be given one scoped to its own message registry.
     # @return [MessageCodec]
     attr_accessor :message_codec
 
@@ -118,12 +118,11 @@ module Sourced
     # @param notifier [#notify_new_messages, #notify_reactor_resumed, nil] optional notifier for dispatch signals
     # @param logger [Logger, nil] optional logger (defaults to Sourced.config.logger)
     # @param prefix [String] table name prefix (default 'sourced')
-    # @param codec [Class<Plumb::Codec>] the wire format to serialize payloads with
-    def initialize(db, notifier: nil, logger: nil, prefix: 'sourced', codec: Plumb::Codec::JSON)
+    def initialize(db, notifier: nil, logger: nil, prefix: 'sourced')
       @db = db
       @notifier = notifier || Sourced::InlineNotifier.new
       @logger = logger || Sourced.config.logger
-      @message_codec = MessageCodec.for(codec)
+      @message_codec = MessageCodec.default
       Sequel.extension(:fiber_concurrency)
       # foreign_keys and busy_timeout are already applied on every connection by
       # Sequel's SQLite adapter defaults; we set them explicitly for clarity.
@@ -233,17 +232,6 @@ module Sourced
     # @see Installer#copy_migration_to
     def copy_migration_to(dir = nil, &block)
       installer.copy_migration_to(dir, &block)
-    end
-
-    # The wire format this store serializes payloads with. Setting it swaps in
-    # the serializer for that format.
-    #
-    # @return [Class<Plumb::Codec>]
-    def codec = message_codec.codec
-
-    # @param codec_class [Class<Plumb::Codec>]
-    def codec=(codec_class)
-      self.message_codec = MessageCodec.for(codec_class)
     end
 
     # Run a block inside a store transaction. Callers (e.g. the Router grouping

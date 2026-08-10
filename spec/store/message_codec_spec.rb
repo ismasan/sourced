@@ -30,7 +30,8 @@ module MessageCodecTests
 
   Payloadless = Sourced::Message.define('message_codec_test.payloadless')
 
-  # A stand-in for a value type an app would register an encoder for.
+  # A value type with an encoder, in a format scoped to this spec so that the
+  # global one stays free of it.
   Money = Data.define(:cents, :currency)
 
   class MoneyEncoder < Plumb::Encoder[
@@ -68,7 +69,7 @@ RSpec.describe Sourced::Store::MessageCodec do
   ].freeze
 
   def codec_for(classes, format: Plumb::Codec::JSON)
-    described_class.new(format, registry: CodecSpecHelpers::Registry.new(classes)).compile!
+    described_class.new(format:, registry: CodecSpecHelpers::Registry.new(classes)).compile!
   end
 
   # Round-trip a message the way the store does: envelope by hand, payload
@@ -197,7 +198,7 @@ RSpec.describe Sourced::Store::MessageCodec do
   describe '#compile!' do
     it 'registers a pair per message type' do
       registry = CodecSpecHelpers::Registry.new([MessageCodecTests::Rich, MessageCodecTests::Native])
-      codec = described_class.new(Plumb::Codec::JSON, registry:)
+      codec = described_class.new(registry:)
 
       expect(codec.registered?('message_codec_test.rich')).to be(false)
       expect(codec.compile!).to be(codec)
@@ -207,14 +208,26 @@ RSpec.describe Sourced::Store::MessageCodec do
 
     it 'raises for a message type it cannot represent, naming the attribute' do
       registry = CodecSpecHelpers::Registry.new([MessageCodecTests::Native, MessageCodecTests::Opaque])
-      codec = described_class.new(Plumb::Codec::JSON, registry:)
+      codec = described_class.new(registry:)
 
       expect { codec.compile! }.to raise_error(Plumb::TypeError, /field `thing`/)
     end
 
+    it 'picks up encoders added to the format before it runs' do
+      format = Class.new(Plumb::Codec::JSON)
+      codec = described_class.new(
+        format:,
+        registry: CodecSpecHelpers::Registry.new([MessageCodecTests::Priced])
+      )
+      format.encoder MessageCodecTests::MoneyEncoder
+
+      expect { codec.compile! }.not_to raise_error
+      expect(codec.registered?(MessageCodecTests::Priced.type)).to be(true)
+    end
+
     it 'picks up message types defined since the last call' do
       registry = CodecSpecHelpers::Registry.new(classes = [MessageCodecTests::Native])
-      codec = described_class.new(Plumb::Codec::JSON, registry:).compile!
+      codec = described_class.new(registry:).compile!
       classes << MessageCodecTests::Rich
 
       expect { codec.compile! }.to change { codec.registered?('message_codec_test.rich') }.to(true)

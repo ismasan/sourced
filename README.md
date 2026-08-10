@@ -1167,13 +1167,12 @@ end
 ### Codecs
 
 Messages are declared in native Ruby types; a **codec** translates them to and from
-the JSON the store writes. `Plumb::Codec::JSON` is the default and covers `String`,
+the JSON the store writes. The codec is `Plumb::Codec::JSON`, and it covers `String`,
 `Integer`, `Float`, booleans, `nil`, hashes, arrays, nested payload structs, unions
 and nullables (all JSON-native, passed through untouched), plus `Date`, `Time`
 (ISO 8601, microsecond precision), `Symbol`, `BigDecimal`, `URI` and `Range`.
 
-To store a type the default codec doesn't know, write a Plumb encoder and register it
-on a subclass:
+To store a type it doesn't know, write a Plumb encoder and register it on the codec:
 
 ```ruby
 Money = Data.define(:cents, :currency)
@@ -1185,19 +1184,16 @@ class MoneyEncoder < Plumb::Encoder[
   def decode(hash)  = Money.new(cents: hash[:cents], currency: hash[:currency])
 end
 
-class MyCodec < Plumb::Codec::JSON
-  encoder MoneyEncoder
-end
+Plumb::Codec::JSON.encoder MoneyEncoder
 
 Sourced.configure do |c|
   c.store = Sequel.sqlite('my_app.db')
-  c.codec = MyCodec
 end
 ```
 
-The format is global — registering `MoneyEncoder` enhances every callsite. What a store
-does with it is its own business: the SQLite store compiles payload codecs keyed by
-message type and maps the envelope to columns itself.
+Register encoders
+before `Sourced.setup!`, which is when the store compiles them in — an encoder added
+after that is not picked up. Registration lasts for the life of the process.
 
 Compiling a codec onto a type is a deep type rewrite, so it happens once, at `setup!`,
 for every registered message type. The compiled registry is then frozen: storing or
@@ -1207,7 +1203,7 @@ reading a message type that wasn't compiled raises.
 attribute:
 
 ```
-Plumb::TypeError: cannot apply MyCodec[...] (decode) to OrderPlaced::Payload:
+Plumb::TypeError: cannot apply Plumb::Codec::JSON[...] (decode) to OrderPlaced::Payload:
   field `total` (Money) matches no encoder and is not covered by its noop types.
   Register an encoder for it, or declare it with .noop.
 ```

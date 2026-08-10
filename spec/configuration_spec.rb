@@ -329,7 +329,6 @@ RSpec.describe Sourced::Configuration do
       config = described_class.new
       config.store = Sequel.sqlite
       config.store.message_codec = Sourced::Store::MessageCodec.new(
-        Plumb::Codec::JSON,
         registry: CodecSpecHelpers::Registry.new([klass])
       )
 
@@ -345,7 +344,6 @@ RSpec.describe Sourced::Configuration do
       config = described_class.new
       config.store = Sequel.sqlite
       config.store.message_codec = Sourced::Store::MessageCodec.new(
-        Plumb::Codec::JSON,
         registry: CodecSpecHelpers::Registry.new([unserializable])
       )
 
@@ -371,37 +369,6 @@ RSpec.describe Sourced::Configuration do
       expect { config.setup! }.not_to raise_error
       expect(custom_store.setups).to eq(1)
       expect(config.store).to be(custom_store)
-    end
-  end
-
-  describe '#codec=' do
-    let(:app_codec) { Class.new(Plumb::Codec::JSON) }
-
-    it 'defaults to Plumb::Codec::JSON' do
-      expect(described_class.new.codec).to be(Plumb::Codec::JSON)
-    end
-
-    it 'hands the format to a store configured afterwards' do
-      config = described_class.new
-      config.codec = app_codec
-      config.store = Sequel.sqlite
-
-      expect(config.codec).to be(app_codec)
-      expect(config.store.message_codec.codec).to be(app_codec)
-    end
-
-    it 'hands the format to a store configured beforehand' do
-      config = described_class.new
-      config.store = Sequel.sqlite
-      config.codec = app_codec
-
-      expect(config.store.message_codec.codec).to be(app_codec)
-    end
-
-    it 'reaches the store built by setup!' do
-      Sourced.configure { |c| c.codec = app_codec }
-
-      expect(Sourced.store.message_codec.codec).to be(app_codec)
     end
   end
 

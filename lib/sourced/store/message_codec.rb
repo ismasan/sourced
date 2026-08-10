@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'plumb'
 require 'sourced/message'
 
 module Sourced
@@ -19,9 +20,10 @@ module Sourced
     # so it costs nothing extra. The envelope is the store's own business; see
     # {Store#append} and {Store#deserialize}.
     #
-    # The format — the {Plumb::Codec} deciding that a +Date+ travels as
-    # +"2026-01-02"+ and that your +Money+ has an encoder — is global, set with
-    # +config.codec=+ and reaching this class through {Store#codec=}.
+    # The format is {Plumb::Codec::JSON}: it decides that a +Date+ travels as
+    # +"2026-01-02"+, and an app teaches it its own value types by registering
+    # encoders on the class — +Plumb::Codec::JSON.encoder MoneyEncoder+ — before
+    # {#compile!} runs.
     class MessageCodec
       # Raised when a stored payload no longer satisfies its message class's
       # schema — a schema change, a hand-edited row, a foreign writer.
@@ -31,35 +33,26 @@ module Sourced
       # format, which in practice means the message itself is invalid.
       EncodeError = Class.new(Sourced::Error)
 
-      # The shared instance for a format. Holding no connections, it is safe to
-      # share, so stores on the same format compile their pairs once — including
-      # a store rebuilt after a fork. Assign {Store#message_codec} to give a
-      # store its own.
+      # The instance stores share. Holding no connections, it is safe to share,
+      # so a process compiles its pairs once — including a store rebuilt after a
+      # fork. Assign {Store#message_codec} to give a store its own.
       #
-      # @param codec [Class<Plumb::Codec>]
       # @return [MessageCodec]
-      def self.for(codec)
-        @instances ||= {}
-        @instances[codec] ||= new(codec)
-      end
+      def self.default = @default ||= new
 
-      # @return [MessageCodec] the shared instance for the default format
-      def self.default = self.for(Plumb::Codec::JSON)
-
-      # @return [Class<Plumb::Codec>] the format compiled onto payload types
-      attr_reader :codec
-
-      # @param codec [Class<Plumb::Codec>] the wire format (default {Plumb::Codec::JSON})
+      # @param format [Class<Plumb::Codec>] the codec class compiled onto payload
+      #   types. A seam for scoping a codec to its own format, as specs do; the
+      #   format itself needs no configuring.
       # @param registry [Sourced::Message::Registry] resolves type strings to classes
-      def initialize(codec = Plumb::Codec::JSON, registry: Sourced::Message.registry)
-        @codec = codec
+      def initialize(format: Plumb::Codec::JSON, registry: Sourced::Message.registry)
+        @format = format
         @registry = registry
         # Empty until #compile! builds the real one.
-        @payloads = codec.new { |_| }
+        @payloads = format.new { |_| }
       end
 
       # @return [String]
-      def inspect = format('#<%s codec=%s>', self.class.name, @codec.name)
+      def inspect = format('#<%s format=%s>', self.class.name, @format.name)
 
       # Build the registry: a payload pair for every message class, frozen once
       # they are all in. Registration happens here and nowhere else, so encoding
@@ -73,7 +66,7 @@ module Sourced
       # @raise [Plumb::TypeError] if any registered message type can't be
       #   serialized by this codec
       def compile!
-        @payloads = @codec.new do |pairs|
+        @payloads = @format.new do |pairs|
           @registry.all { |klass| pairs.register(klass.type, payload_type(klass)) }
         end
         self

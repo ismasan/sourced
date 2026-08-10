@@ -30,12 +30,6 @@ module Sourced
 
     attr_reader :store, :router
 
-    # The wire format messages are serialized with — a {Plumb::Codec} subclass,
-    # global to the app.
-    # @see #codec=
-    # @return [Class<Plumb::Codec>]
-    attr_reader :codec
-
     # The mutable error strategy. Configure retry policy and register callbacks
     # directly on it (possibly from different layers); it freezes when the
     # configuration is frozen (see {#freeze}).
@@ -54,7 +48,6 @@ module Sourced
       @store = nil
       @router = nil
       @error_strategy = ErrorStrategy.new
-      @codec = Plumb::Codec::JSON
       @setup = false
     end
 
@@ -64,28 +57,9 @@ module Sourced
       @store = case s.class.name
       when 'Sequel::SQLite::Database'
         require 'sourced/store'
-        Store.new(s, codec: @codec)
+        Store.new(s)
       else StoreInterface.parse(s)
       end
-    end
-
-    # Set the wire format. Expects a {Plumb::Codec} subclass — normally a
-    # subclass of {Plumb::Codec::JSON} adding encoders for the app's own types:
-    #
-    #   class MyCodec < Plumb::Codec::JSON
-    #     encoder MoneyEncoder
-    #   end
-    #
-    #   Sourced.configure { |config| config.codec = MyCodec }
-    #
-    # Handed to an already-built store as well, so this and {#store=} can be set
-    # in either order. What a store does with it is its own business: {Store}
-    # compiles payload pairs from it.
-    #
-    # @param codec_class [Class<Plumb::Codec>]
-    def codec=(codec_class)
-      @codec = codec_class
-      @store.codec = codec_class if @store.respond_to?(:codec=)
     end
 
     def error_strategy=(strategy)
@@ -107,7 +81,7 @@ module Sourced
 
       unless @store
         require 'sourced/store'
-        @store = Store.new(Sequel.sqlite, codec: @codec)
+        @store = Store.new(Sequel.sqlite)
       end
       # Whatever this store needs to be usable: {Store} creates its tables and
       # compiles its serializer, so a message type it can't persist fails here.

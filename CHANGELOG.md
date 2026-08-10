@@ -5,11 +5,11 @@
 - **Message codecs.** Messages are declared with native Ruby types (`Date`, `Time`,
   `Symbol`, `BigDecimal`, `URI`, `Range`, …) and `Plumb::Codec::JSON` translates them to
   and from the store's JSON columns. Apps register encoders for their own value types
-  on a subclass of it and set `config.codec = MyCodec`.
+  directly on it (`Plumb::Codec::JSON.encoder MoneyEncoder`), before `Sourced.setup!`.
 - `Sourced::Store::MessageCodec` — the SQLite store's serializer, namespaced under and
   owned by it. It registers each message class's payload type in a Plumb codec instance
   keyed by message type string, built and frozen at `setup!`; the
-  envelope is the store's own business. `config.codec = MyCodec` sets the format, which is global; a
+  envelope is the store's own business. The format is global and needs no configuring; a
   future store with a different layout owns a different serializer, or none. A message
   type the store can't persist raises `Plumb::TypeError` at `setup!` — the app fails to
   boot rather than raising on the first append.

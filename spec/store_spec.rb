@@ -57,7 +57,7 @@ module StoreTestMessages
     end
   end
 
-  # An app value type, and the codec that teaches Sourced how to store it.
+  # An app value type, and a format scoped to this spec that can encode it.
   Point = Data.define(:x, :y)
 
   class PointEncoder < Plumb::Encoder[Sourced::Types::String[/\A\d+,\d+\z/] => Sourced::Types::Any[Point]]
@@ -119,6 +119,12 @@ RSpec.describe Sourced::Store do
     end
   end
 
+  describe '#message_codec' do
+    it 'is the serializer shared by every store in the process' do
+      expect(Sourced::Store.new(Sequel.sqlite).message_codec).to be(Sourced::Store::MessageCodec.default)
+    end
+  end
+
   describe '#setup!' do
     # Its own store: the outer `before` installs `store`, and installing is
     # part of what #setup! is being tested for.
@@ -143,7 +149,6 @@ RSpec.describe Sourced::Store do
         attribute :thing, Sourced::Types::Any[Object]
       end
       fresh_store.message_codec = Sourced::Store::MessageCodec.new(
-        Plumb::Codec::JSON,
         registry: CodecSpecHelpers::Registry.new([unserializable])
       )
 
@@ -3150,7 +3155,7 @@ RSpec.describe Sourced::Store do
 
     it 'uses a codec configured on the store, encoders and all' do
       store.message_codec = Sourced::Store::MessageCodec.new(
-        StoreTestMessages::StoreCodec,
+        format: StoreTestMessages::StoreCodec,
         registry: CodecSpecHelpers::Registry.new([StoreTestMessages::PointPlotted])
       ).compile!
       point = StoreTestMessages::Point.new(x: 1, y: 2)
