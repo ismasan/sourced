@@ -8,7 +8,6 @@ gemspec
 gem 'debug'
 gem 'rake', '~> 13.0'
 gem 'rubocop'
-gem 'plumb', path: '../plumb'
 
 group :development do
   gem 'docco', github: 'ismasan/docco'

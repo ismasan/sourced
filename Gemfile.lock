@@ -7,18 +7,11 @@ GIT
       kramdown-parser-gfm
 
 PATH
-  remote: ../plumb
-  specs:
-    plumb (0.2.0.beta.1)
-      bigdecimal
-      concurrent-ruby
-
-PATH
   remote: .
   specs:
     sourced (0.0.1)
       async
-      plumb (= 0.2.0.beta.1)
+      plumb (= 0.2.0.beta.2)
       sequel
       sourced-message
       sqlite3
@@ -71,6 +64,9 @@ GEM
     parser (3.3.7.1)
       ast (~> 2.4.1)
       racc
+    plumb (0.2.0.beta.2)
+      bigdecimal
+      concurrent-ruby
     psych (5.1.2)
       stringio
     raabro (1.5.0)
@@ -112,9 +108,9 @@ GEM
     ruby-progressbar (1.13.0)
     sequel (5.84.0)
       bigdecimal
-    sourced-message (0.1.1)
+    sourced-message (0.2.1)
       fugit
-      plumb (>= 0.0.18)
+      plumb (= 0.2.0.beta.2)
     sqlite3 (2.8.0)
       mini_portile2 (~> 2.8.0)
     sqlite3 (2.8.0-arm64-darwin)
@@ -137,7 +133,6 @@ DEPENDENCIES
   debug
   docco!
   logger
-  plumb!
   rake (~> 13.0)
   rspec (~> 3.0)
   rubocop

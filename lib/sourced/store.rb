@@ -298,7 +298,7 @@ module Sourced
             # The envelope goes into columns; only the payload needs the codec,
             # to turn native Ruby values (Dates, Times, Symbols, …) into
             # JSON-native ones.
-            encoded_payload = message_codec.encode_payload(msg)
+            encoded_payload = message_codec.encode(msg)
             payload_json = encoded_payload ? JSON.dump(encoded_payload) : '{}'
             metadata_json = msg.metadata.empty? ? nil : JSON.dump(msg.metadata)
 
@@ -359,7 +359,7 @@ module Sourced
           correlation_id: message.correlation_id,
           created_at: message.created_at.iso8601(6),
           metadata: message.metadata.merge(scheduled_at: now.iso8601),
-          payload: message_codec.encode_payload(message)
+          payload: message_codec.encode(message)
         }
         {
           created_at: now.iso8601,

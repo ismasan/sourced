@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+### Changed
+
+- `Sourced::Store::MessageCodec` is now a subclass of `Sourced::Message::JSONCodec`, which
+  lives in the **sourced-message** gem and is shared with Sidereal. It keeps its
+  payload-only behaviour by overriding three private seams, and gains a per-class pair
+  cache, `compiled?`, `recompile!`, `.reset!` and `.clear_pairs!`.
+- `#encode_payload` is now `#encode` (the base class's name; it still encodes only the
+  payload and still returns `nil` for a message declared without one).
+- `#compile!` is idempotent — call `#recompile!` to pick up message types or encoders
+  registered since the last compile.
+- Encoding or decoding an uncompiled type raises
+  `Sourced::Message::JSONCodec::UnregisteredTypeError` instead of `Plumb::Codec::NoEntryError`.
+- `EncodeError` / `DecodeError` now descend from `StandardError` rather than
+  `Sourced::Error`. `Store::MessageCodec::EncodeError` still resolves, by inheritance.
+
 ### Added
 
 - **Message codecs.** Messages are declared with native Ruby types (`Date`, `Time`,
