@@ -2,6 +2,8 @@
 
 Sourced is a Ruby library for aggregateless, stream-less event sourcing. Events go into a flat, globally-ordered log. Consistency context is assembled dynamically by querying relevant facts via key-value pairs extracted from event payloads, rather than being pre-assigned to fixed streams.
 
+[![Ruby Users Forum](https://img.shields.io/discourse/topics?server=https%3A%2F%2Fwww.rubyforum.org&style=flat&logo=discourse&label=Ruby%20Users%20Forum)](https://www.rubyforum.org/tag/sourced)
+
 ## Core Concepts
 
 - **No streams or aggregates** — all messages share a single append-only log with auto-increment positions.
