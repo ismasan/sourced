@@ -100,6 +100,28 @@ class TestDelayedReactionDecider < Sourced::Decider
   end
 end
 
+# Reacts on replay too, by overriding the default replay gate.
+class TestReplayingReactionDecider < Sourced::Decider
+  partition_by :device_id
+  consumer_group 'device-replaying-decider-test'
+
+  state { |_| { exists: false, bound: false } }
+
+  evolve DeciderTestMessages::DeviceBound do |state, _evt|
+    state[:bound] = true
+  end
+
+  # device_id echoes whether the reacted message was evolved into state first.
+  reaction DeciderTestMessages::DeviceBound do |state, evt|
+    device_id = state[:bound] ? evt.payload.device_id : 'not-evolved'
+    DeciderTestMessages::NotifyBound.new(payload: { device_id: device_id })
+  end
+
+  def should_react?(_state, _message, replaying: false)
+    true
+  end
+end
+
 RSpec.describe Sourced::Decider do
   describe '.command' do
     it 'registers handler and #decide runs it' do
@@ -337,6 +359,55 @@ RSpec.describe Sourced::Decider do
       expect {
         TestDeviceDecider.handle_claim(claim, history: history)
       }.to raise_error(RuntimeError, 'Not found')
+    end
+  end
+
+  describe '#should_react?' do
+    let(:guard) { Sourced::ConsistencyGuard.new(conditions: [], last_position: 2) }
+
+    def bound_claim(replaying:)
+      bound = Sourced::PositionedMessage.new(
+        DeciderTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' }), 2
+      )
+      claim = Sourced::ClaimResult.new(
+        offset_id: 2, key_pair_ids: [], partition_key: 'device_id:d1',
+        partition_value: { 'device_id' => 'd1' },
+        messages: [bound], replaying: replaying, guard: guard
+      )
+      [claim, bound]
+    end
+
+    it 'defaults to skipping reactions while replaying' do
+      instance = TestDeviceDecider.new(device_id: 'd1')
+      msg = DeciderTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
+
+      expect(instance.should_react?(instance.state, msg, replaying: false)).to be(true)
+      expect(instance.should_react?(instance.state, msg, replaying: true)).to be(false)
+    end
+
+    it 'runs reactions on replaying claims when overridden to true' do
+      claim, bound = bound_claim(replaying: true)
+      history = Sourced::ReadResult.new(messages: [], guard: guard)
+
+      pairs = TestReplayingReactionDecider.handle_claim(claim, history: history)
+
+      actions, source_msg = pairs.first
+      expect(source_msg).to eq(bound)
+
+      append = Array(actions).find { |a| a.is_a?(Sourced::Actions::Append) }
+      expect(append.messages.first).to be_a(DeciderTestMessages::NotifyBound)
+      expect(append.source).to eq(bound)
+    end
+
+    it 'evolves state with the reacted message when reacting on replay' do
+      claim, _bound = bound_claim(replaying: true)
+      history = Sourced::ReadResult.new(messages: [], guard: guard)
+
+      pairs = TestReplayingReactionDecider.handle_claim(claim, history: history)
+
+      actions, _source_msg = pairs.first
+      append = Array(actions).find { |a| a.is_a?(Sourced::Actions::Append) }
+      expect(append.messages.first.payload.device_id).to eq('d1')
     end
   end
 

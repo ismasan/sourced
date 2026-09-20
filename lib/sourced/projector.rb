@@ -18,20 +18,22 @@ module Sourced
 
       private
 
+      # Reactions are gated per message by {React#should_react?}, which by
+      # default skips them while replaying. +sync+ / +after_sync+ blocks are
+      # not gated: they run on every claim and receive +replaying:+ so they
+      # can branch themselves.
       def build_action_pairs(instance, messages, replaying:)
         sync_actions = instance.collect_actions(
           state: instance.state, messages:, replaying:
         )
 
-        reaction_pairs = if replaying
-          []
-        else
-          each_with_partial_ack(messages) do |msg|
-            next unless instance.reacts_to?(msg)
-            reaction_msgs = Array(instance.react(msg))
-            actions = Actions.build_for(reaction_msgs)
-            actions.any? ? [actions, msg] : nil
-          end
+        reaction_pairs = each_with_partial_ack(messages) do |msg|
+          next unless instance.reacts_to?(msg)
+          next unless instance.should_react?(instance.state, msg, replaying:)
+
+          reaction_msgs = Array(instance.react(msg))
+          actions = Actions.build_for(reaction_msgs)
+          actions.any? ? [actions, msg] : nil
         end
 
         reaction_pairs + [[sync_actions, messages.last]]

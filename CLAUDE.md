@@ -40,6 +40,8 @@ Sourced is a Ruby library for **aggregateless, stream-less event sourcing**. Mes
 
 Reactions are **deferred**: a Decider's `react` blocks don't run inline with the command that produced the triggering event. When the Decider appends events, its own subscription (`handled_messages_for_react`) picks them up on the next claim cycle and runs the reaction in a separate `handle_batch`. Consequence: the originating command's `after_sync` commits as soon as its events commit, not after reactions finish. Trade-off: command and reactions are no longer in the same transaction — a failing reaction does not roll back the command.
 
+Reactions are gated per message by `React#should_react?(state, message, replaying:)`, which defaults to `!replaying` — reactions are skipped while a partition is being re-processed (after a consumer group reset or offset rewind). Deciders and projectors override the method to react on replay, or to gate on state/payload. `sync` / `after_sync` blocks are never gated; projectors pass `replaying:` into them so they can branch themselves. `DurableWorkflow` doesn't include `React` and ignores `replaying` entirely — step memoisation handles re-processing.
+
 All reactors implement `.handle_claim(claim, history:)` and/or `.handle_batch(partition_values, new_messages, history:, replaying:)` with a uniform signature so GWT helpers and partial-ack logic work across types.
 
 ### Partition-based consistency

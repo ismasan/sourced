@@ -44,7 +44,8 @@ module Sourced
       #    +sync+ / +after_sync+ actions are collected.
       #
       # 2. **Reaction-triggering event** — if the decider
-      #    {React#reacts_to? reacts to} this message (and the batch is not
+      #    {React#reacts_to? reacts to} this message and
+      #    {React#should_react?} allows it (by default: the batch is not
       #    replaying), its state is evolved with the event, {React#react} is
       #    invoked, and any produced messages are wrapped in an
       #    {Actions::Append} with +source: msg+ so the infra layer correlates
@@ -80,7 +81,8 @@ module Sourced
       # @param partition_values [Hash{Symbol => String}] partition key-value pairs
       # @param new_messages [Array<PositionedMessage>] claimed messages to process
       # @param history [ReadResult] prior partition history (evolved into state)
-      # @param replaying [Boolean] when +true+, the reaction branch is skipped
+      # @param replaying [Boolean] forwarded to {React#should_react?}, which by
+      #   default skips the reaction branch when +true+
       # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
       def handle_batch(partition_values, new_messages, history:, replaying: false)
         instance = new(partition_values)
@@ -95,7 +97,7 @@ module Sourced
             )
 
             [actions, msg]
-          elsif !replaying && instance.reacts_to?(msg)
+          elsif instance.reacts_to?(msg) && instance.should_react?(instance.state, msg, replaying:)
             instance.evolve([msg])
             reaction_msgs = Array(instance.react(msg))
             actions = Actions.build_for(reaction_msgs, source: msg)

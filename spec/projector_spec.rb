@@ -101,6 +101,50 @@ class TestDelayedItemProjector < Sourced::Projector::StateStored
   end
 end
 
+# Reacts on replay too, by overriding the default replay gate.
+class TestReplayingItemProjector < Sourced::Projector::StateStored
+  partition_by :list_id
+  consumer_group 'replaying-item-projector-test'
+
+  state do |(list_id)|
+    { list_id: list_id, items: [] }
+  end
+
+  evolve ProjectorTestMessages::ItemArchived do |state, msg|
+    state[:items].delete(msg.payload.name)
+  end
+
+  reaction ProjectorTestMessages::ItemArchived do |_state, msg|
+    ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
+  end
+
+  def should_react?(_state, _message, replaying: false)
+    true
+  end
+end
+
+# Gates reactions per message on the payload, regardless of replaying.
+class TestSelectiveItemProjector < Sourced::Projector::StateStored
+  partition_by :list_id
+  consumer_group 'selective-item-projector-test'
+
+  state do |(list_id)|
+    { list_id: list_id, items: [] }
+  end
+
+  evolve ProjectorTestMessages::ItemArchived do |state, msg|
+    state[:items].delete(msg.payload.name)
+  end
+
+  reaction ProjectorTestMessages::ItemArchived do |_state, msg|
+    ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
+  end
+
+  def should_react?(_state, message, replaying: false)
+    message.payload.name == 'Apple'
+  end
+end
+
 RSpec.describe Sourced::Projector do
   describe '.handled_messages' do
     it 'includes evolve and react types' do
@@ -427,6 +471,52 @@ RSpec.describe Sourced::Projector do
     it 'StateStored is not detected as needing history' do
       needs = Sourced::Injector.resolve_args(TestItemProjector, :handle_claim)
       expect(needs).not_to include(:history)
+    end
+  end
+
+  describe '#should_react?' do
+    def archived(name, position)
+      Sourced::PositionedMessage.new(
+        ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: name }), position
+      )
+    end
+
+    def reaction_messages(pairs)
+      pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::Actions::Append) }
+        .flat_map(&:messages)
+    end
+
+    it 'defaults to skipping reactions while replaying' do
+      instance = TestItemProjector.new(['L1'])
+      msg = archived('Apple', 1)
+
+      expect(instance.should_react?(instance.state, msg, replaying: false)).to be(true)
+      expect(instance.should_react?(instance.state, msg, replaying: true)).to be(false)
+    end
+
+    it 'runs reactions on replaying batches when overridden to true' do
+      pairs = TestReplayingItemProjector.handle_batch(['L1'], [archived('Apple', 1)], replaying: true)
+
+      expect(reaction_messages(pairs).map(&:class)).to eq([ProjectorTestMessages::NotifyArchive])
+    end
+
+    it 'gates reactions per message rather than per batch' do
+      msgs = [archived('Apple', 1), archived('Banana', 2)]
+
+      pairs = TestSelectiveItemProjector.handle_batch(['L1'], msgs)
+
+      reactions = pairs.select { |actions, _| Array(actions).any? { |a| a.is_a?(Sourced::Actions::Append) } }
+      expect(reactions.size).to eq(1)
+      expect(reactions.first.last).to eq(msgs.first)
+    end
+
+    it 'still runs sync blocks for a batch whose reactions are all skipped' do
+      pairs = TestItemProjector.handle_batch(['L1'], [archived('Apple', 1)], replaying: true)
+
+      sync_actions, source_msg = pairs.last
+      expect(Array(sync_actions).any? { |a| a.is_a?(Sourced::Actions::Sync) }).to be(true)
+      expect(source_msg.payload.name).to eq('Apple')
     end
   end
 

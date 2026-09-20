@@ -28,8 +28,42 @@ module Sourced
       end
     end
 
+    # Whether this reactor registers a reaction handler for +message+.
+    # Static type routing: it only asks whether a handler exists.
+    #
+    # @param message [Sourced::Message]
+    # @return [Boolean]
     def reacts_to?(message)
       self.class.handled_messages_for_react.include?(message.class)
+    end
+
+    # Whether a registered reaction should actually run for +message+.
+    # Dynamic policy, evaluated after {#reacts_to?} for every claimed message.
+    #
+    # By default reactions are skipped while replaying, so that re-processing
+    # a partition (after a consumer group reset, or an offset rewind) does not
+    # re-dispatch commands that already ran.
+    #
+    # Override to react on replay, or to gate on state or payload:
+    #
+    #   # always react, even on replay
+    #   def should_react?(_state, _message, replaying: false) = true
+    #
+    #   # react on replay only for messages the projection hasn't seen
+    #   def should_react?(state, message, replaying: false)
+    #     return true unless replaying
+    #     !state[:notified].include?(message.payload.student_id)
+    #   end
+    #
+    # +state+ is the reactor's state with +message+ already applied. In
+    # projectors the whole claimed batch has been applied, not just +message+.
+    #
+    # @param state [Object] reactor state
+    # @param message [Sourced::Message] the message about to be reacted to
+    # @param replaying [Boolean] whether this batch has been processed before
+    # @return [Boolean]
+    def should_react?(_state, _message, replaying: false)
+      !replaying
     end
 
     private
