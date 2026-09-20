@@ -122,6 +122,23 @@ class TestReplayingReactionDecider < Sourced::Decider
   end
 end
 
+# Counts occurrences so a message evolved twice is observable.
+class TestCountingDecider < Sourced::Decider
+  partition_by :device_id
+  consumer_group 'device-counting-decider-test'
+
+  state { |_| { bound_count: 0 } }
+
+  evolve DeciderTestMessages::DeviceBound do |state, _evt|
+    state[:bound_count] += 1
+  end
+
+  # device_id echoes how many times the reacted message hit the evolve block.
+  reaction DeciderTestMessages::DeviceBound do |state, _evt|
+    DeciderTestMessages::NotifyBound.new(payload: { device_id: "count:#{state[:bound_count]}" })
+  end
+end
+
 RSpec.describe Sourced::Decider do
   describe '.command' do
     it 'registers handler and #decide runs it' do
@@ -408,6 +425,39 @@ RSpec.describe Sourced::Decider do
       actions, _source_msg = pairs.first
       append = Array(actions).find { |a| a.is_a?(Sourced::Actions::Append) }
       expect(append.messages.first.payload.device_id).to eq('d1')
+    end
+  end
+
+  describe '.handle_claim history deduplication' do
+    let(:guard) { Sourced::ConsistencyGuard.new(conditions: [], last_position: 2) }
+
+    it 'evolves a claimed message once, even though the unbounded read includes it' do
+      bound = Sourced::PositionedMessage.new(
+        DeciderTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' }), 2
+      )
+      # Store#read is unbounded: history contains the claimed message.
+      history = Sourced::ReadResult.new(messages: [bound], guard: guard)
+      claim = Sourced::ClaimResult.new(
+        offset_id: 2, key_pair_ids: [], partition_key: 'device_id:d1',
+        partition_value: { 'device_id' => 'd1' },
+        messages: [bound], replaying: false, guard: guard
+      )
+
+      pairs = TestCountingDecider.handle_claim(claim, history: history)
+
+      actions, _source_msg = pairs.first
+      append = Array(actions).find { |a| a.is_a?(Sourced::Actions::Append) }
+      expect(append.messages.first.payload.device_id).to eq('count:1')
+    end
+
+    it 'keeps the guard from the full read' do
+      bound = Sourced::PositionedMessage.new(
+        DeciderTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' }), 2
+      )
+      history = Sourced::ReadResult.new(messages: [bound], guard: guard)
+
+      expect(history.excluding([bound]).guard).to eq(guard)
+      expect(history.excluding([bound]).messages).to be_empty
     end
   end
 

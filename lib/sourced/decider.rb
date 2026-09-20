@@ -114,12 +114,16 @@ module Sourced
 
       # Build executable actions for a claimed batch.
       #
+      # +history+ comes from an unbounded read, so it contains the claimed
+      # messages; it is narrowed to prior history before being handed to
+      # {.handle_batch}, which evolves the claimed batch itself.
+      #
       # @param claim [ClaimResult] claimed partition batch
       # @param history [ReadResult] event history for the partition
       # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
       def handle_claim(claim, history:)
         values = partition_keys.to_h { |k| [k, claim.partition_value[k.to_s]] }
-        handle_batch(values, claim.messages, history:, replaying: claim.replaying)
+        handle_batch(values, claim.messages, history: history.excluding(claim.messages), replaying: claim.replaying)
       end
 
       # Copy registered command handlers into subclasses.

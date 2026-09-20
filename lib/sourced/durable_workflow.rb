@@ -193,11 +193,8 @@ module Sourced
     # router's +store.read(conditions)+ returns the full partition, including
     # messages being claimed) and delegates to {.handle_batch}.
     def self.handle_claim(claim, history:)
-      claim_positions = claim.messages.map { |m| m.position if m.respond_to?(:position) }.compact.to_set
-      prior = history.messages.reject { |m| m.respond_to?(:position) && claim_positions.include?(m.position) }
-      prior_history = ReadResult.new(messages: prior, guard: history.guard)
       values = claim.partition_value.transform_keys(&:to_sym)
-      handle_batch(values, claim.messages, history: prior_history)
+      handle_batch(values, claim.messages, history: history.excluding(claim.messages))
     end
 
     # GWT-compatible entry point. +history.messages+ must be disjoint from

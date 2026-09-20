@@ -44,6 +44,8 @@ Reactions are gated per message by `React#should_react?(state, message, replayin
 
 All reactors implement `.handle_claim(claim, history:)` and/or `.handle_batch(partition_values, new_messages, history:, replaying:)` with a uniform signature so GWT helpers and partial-ack logic work across types.
 
+`history` semantics differ by reactor, because `Store#read` is unbounded and returns the claimed messages too. `Decider` and `DurableWorkflow` evolve the claimed batch themselves, so their `handle_claim` narrows history with `ReadResult#excluding(claim.messages)` and `handle_batch` takes **prior** history, disjoint from `new_messages` (which is also what the GWT helpers pass). `Projector::EventSourced` evolves from history alone, so its `handle_batch` expects history to **include** `new_messages`. The guard is always carried over from the full read.
+
 ### Partition-based consistency
 
 Reactors declare `partition_by :key1, :key2`. The store indexes every payload attribute into `sourced_key_pairs` at append time, and reads use AND-filtered conditions over these keys. `ConsistencyGuard` (returned by `read` / `claim_next`) detects conflicting appends via `messages_since(conditions, position)`.

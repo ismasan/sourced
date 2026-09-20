@@ -37,6 +37,25 @@ module Sourced
   #   messages, guard = store.read(conditions)
   ReadResult = Data.define(:messages, :guard) do
     def to_ary = [messages, guard]
+
+    # A copy of this result without +excluded+, matched by log position.
+    #
+    # {Store#read} is unbounded, so a reactor's history includes the messages
+    # it has just claimed. Reactors that evolve the claimed batch themselves
+    # subtract it first, so each message is applied to state exactly once.
+    # The guard is carried over unchanged: it reflects the full read.
+    #
+    # @param excluded [Array<PositionedMessage, Sourced::Message>]
+    # @return [ReadResult]
+    def excluding(excluded)
+      positions = excluded.filter_map { |m| m.position if m.respond_to?(:position) }.to_set
+      return self if positions.empty?
+
+      ReadResult.new(
+        messages: messages.reject { |m| m.respond_to?(:position) && positions.include?(m.position) },
+        guard: guard
+      )
+    end
   end
 
   ReadAllResult = Data.define(:messages, :last_position, :fetcher) do
