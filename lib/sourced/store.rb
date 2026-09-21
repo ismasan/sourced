@@ -119,14 +119,19 @@ module Sourced
     # @return [Sequel::SQLite::Database]
     attr_reader :db
 
-    # @return [Sourced::InlineNotifier]
-    attr_reader :notifier
-
     # @return [Logger]
     attr_reader :logger
 
     # @return [Sourced::Installer]
     attr_reader :installer
+
+    # The notifier this store announces appends through: the one injected at
+    # construction, else +Sourced.config.notifier+ resolved on each call — so a
+    # notifier configured after this store was built (or after +Sourced.setup!+
+    # rebuilt it) still takes effect.
+    #
+    # @return [#notify_new_messages, #notify_reactor_resumed, #subscribe, #start, #stop]
+    def notifier = @notifier || Sourced.config.notifier
 
     # This store's serializer, shared with every other store in the process.
     # Assignable, so a store can be given one scoped to its own message registry.
@@ -134,12 +139,13 @@ module Sourced
     attr_accessor :message_codec
 
     # @param db [Sequel::SQLite::Database] a Sequel SQLite connection
-    # @param notifier [#notify_new_messages, #notify_reactor_resumed, nil] optional notifier for dispatch signals
+    # @param notifier [#notify_new_messages, #notify_reactor_resumed, nil] notifier for
+    #   dispatch signals; when nil the configured +Sourced.config.notifier+ is used (see {#notifier})
     # @param logger [Logger, nil] optional logger (defaults to Sourced.config.logger)
     # @param prefix [String] table name prefix (default 'sourced')
     def initialize(db, notifier: nil, logger: nil, prefix: 'sourced')
       @db = db
-      @notifier = notifier || Sourced::InlineNotifier.new
+      @notifier = notifier
       @logger = logger || Sourced.config.logger
       @message_codec = MessageCodec.default
       Sequel.extension(:fiber_concurrency)
@@ -283,11 +289,13 @@ module Sourced
     #   When nil (default), the basis is resolved per message from its consuming group
     #   (see {#register_consumer_group}) — id-partitioned types index by id, all else
     #   by payload — so every append path indexes consistently.
-    # @return [Integer] the last assigned position
+    # @return [Integer, nil] the last assigned position, or nil when nothing was
+    #   appended to the log (no messages, or every message was future-dated and
+    #   scheduled instead)
     # @raise [Sourced::ConcurrentAppendError] if conflicting messages found after guard position
     def append(messages, guard: nil, index_by: nil)
       messages = Array(messages)
-      return latest_position if messages.empty?
+      return nil if messages.empty?
 
       now = Time.now
       # Messages dated in the future are deferred to the scheduled_messages table
@@ -351,12 +359,23 @@ module Sourced
           # when promoted (re-appended) by #update_schedule!.
           ensure_offsets_for_registered_groups(to_append)
         end
+
+        # Announce once the messages are visible: after the *outermost*
+        # transaction commits, which may be a caller's (the router appends
+        # inside its claim/ack transaction). Announcing earlier would let a
+        # listener poll before the rows exist, and a notifier that does IO
+        # (a cross-process pubsub) would yield the fiber while this
+        # connection still holds SQLite's write lock — other fibers then
+        # block the thread in the busy handler waiting for a commit that
+        # cannot happen until they yield. Nothing is announced on rollback.
+        # Scheduled messages are announced when promoted, not now.
+        if to_append.any?
+          types = to_append.map(&:type).uniq
+          db.after_commit { notifier.notify_new_messages(types) }
+        end
       end
 
-      # Scheduled messages are announced when promoted, not now.
-      notifier.notify_new_messages(to_append.map(&:type).uniq) if to_append.any?
-
-      to_append.empty? ? latest_position : last_position
+      last_position
     end
 
     # Persist future-dated messages for later promotion into the main log.
@@ -651,7 +670,8 @@ module Sourced
           last_nil_types_max_pos: 0,
           updated_at: Time.now.iso8601
         )
-      notifier.notify_reactor_resumed(group_id)
+      # As with appends: announce once the change is visible, never on rollback.
+      db.after_commit { notifier.notify_reactor_resumed(group_id) }
     end
 
     # Load a consumer group row, yield a {GroupUpdater} for mutation,

@@ -219,8 +219,9 @@ RSpec.describe 'Sourced.handle!' do
 
     before do
       router.register(HandleTestDecider)
+      # The store resolves its notifier from the config on each append.
       allow(Sourced).to receive(:config).and_return(
-        instance_double(Sourced::Configuration, router: router)
+        instance_double(Sourced::Configuration, router: router, notifier: Sourced::InlineNotifier.new)
       )
     end
 

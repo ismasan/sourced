@@ -3,6 +3,7 @@
 require 'logger'
 require 'sourced/error_strategy'
 require 'sourced/async_executor'
+require 'sourced/inline_notifier'
 
 module Sourced
   class Configuration
@@ -23,6 +24,16 @@ module Sourced
       :notifier
     ]
 
+    # What a store notifier must respond to. {InlineNotifier} is the reference
+    # implementation; see it for the semantics of each method.
+    NotifierInterface = Types::Interface[
+      :subscribe,
+      :notify_new_messages,
+      :notify_reactor_resumed,
+      :start,
+      :stop
+    ]
+
     attr_accessor :logger, :worker_count, :batch_size,
                   :catchup_interval, :max_drain_rounds,
                   :claim_ttl_seconds, :housekeeping_interval,
@@ -36,8 +47,22 @@ module Sourced
     # @return [ErrorStrategy, #call]
     attr_reader :error_strategy
 
+    # The notifier stores announce appends and resumed reactors through, and
+    # the dispatcher listens on. Stores built without an explicit +notifier:+
+    # resolve this one on every call (see {Store#notifier}), so it can be
+    # assigned before or after the store, and it survives {#disconnect!} —
+    # like {#error_strategy}, it is configuration, not a connection.
+    #
+    # The default {InlineNotifier} is in-process. Assign one that crosses
+    # process boundaries when appends happen in processes other than the
+    # one running the dispatcher.
+    #
+    # @return [#subscribe, #notify_new_messages, #notify_reactor_resumed, #start, #stop]
+    attr_reader :notifier
+
     def initialize
       @logger = Logger.new($stdout)
+      @notifier = InlineNotifier.new
       @worker_count = 2
       @batch_size = 50
       @catchup_interval = 5
@@ -60,6 +85,11 @@ module Sourced
         Store.new(s)
       else StoreInterface.parse(s)
       end
+    end
+
+    # @param notifier [Object] must implement {NotifierInterface}
+    def notifier=(notifier)
+      @notifier = NotifierInterface.parse(notifier)
     end
 
     def error_strategy=(strategy)

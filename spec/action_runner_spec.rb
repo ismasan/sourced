@@ -44,6 +44,39 @@ RSpec.describe Sourced::ActionRunner do
     end
   end
 
+  describe 'guarded appends within one batch' do
+    let(:conditions) { InterpreterTestMessages::ThingDone.to_conditions(thing_id: 't1') }
+
+    it 'raises the guard floor to its own earlier appends, so a batch does not conflict with itself' do
+      guard = store.read(conditions).guard # read once, before any append — as a claim does
+
+      interpreter.run({ type: :append, messages: [new_event], guard: guard }, source, after_syncs)
+      expect { interpreter.run({ type: :append, messages: [new_event], guard: guard }, source, after_syncs) }
+        .not_to raise_error
+
+      expect(store.read(conditions).messages.size).to eq(2)
+    end
+
+    it 'still reports a write by someone else after its last append' do
+      guard = store.read(conditions).guard
+      interpreter.run({ type: :append, messages: [new_event], guard: guard }, source, after_syncs)
+      store.append(new_event) # a concurrent writer, not this runner
+
+      expect { interpreter.run({ type: :append, messages: [new_event], guard: guard }, source, after_syncs) }
+        .to raise_error(Sourced::ConcurrentAppendError)
+    end
+
+    it 'does not take a scheduled append as its floor' do
+      guard = store.read(conditions).guard
+      later = InterpreterTestMessages::ThingDone.new(payload: { thing_id: 't1' }).at(Time.now + 3600)
+      interpreter.run({ type: :append, messages: [later], guard: guard }, source, after_syncs)
+      store.append(new_event) # concurrent writer after the scheduled one
+
+      expect { interpreter.run({ type: :append, messages: [new_event], guard: guard }, source, after_syncs) }
+        .to raise_error(Sourced::ConcurrentAppendError)
+    end
+  end
+
   describe 'delete flag' do
     it 'returns true for an append signal with delete: true' do
       expect(interpreter.run({ type: :append, messages: [new_event], delete: true }, source, after_syncs)).to be true

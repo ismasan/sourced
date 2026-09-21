@@ -1166,6 +1166,18 @@ Sourced.configure do |c|
 end
 ```
 
+### Notifier
+
+When a store appends messages it announces the appended types through a **notifier**, and the dispatcher subscribes to that notifier so a worker picks the messages up immediately instead of on the next catch-up poll. The default `Sourced::InlineNotifier` is in-process: it only wakes workers running in the process that appended. When appends happen in other processes (several web workers appending, one process running the dispatcher), assign a notifier that crosses the boundary:
+
+```ruby
+Sourced.configure do |c|
+  c.notifier = MyPubSubNotifier.new
+end
+```
+
+A notifier implements `subscribe(callable)`, `notify_new_messages(types)`, `notify_reactor_resumed(group_id)`, `start` and `stop`; `Sourced::InlineNotifier` is the reference implementation. Stores built without an explicit `notifier:` resolve the configured one on every call, so it can be assigned before or after the store. Appends are announced after the outermost transaction commits (never on rollback), so a notifier is free to do IO: it runs once the rows are visible and no write lock is held. The catch-up poll remains the safety net for notifications that never arrive.
+
 ### Codecs
 
 Messages are declared in native Ruby types; a **codec** translates them to and from

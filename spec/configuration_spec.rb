@@ -251,6 +251,43 @@ RSpec.describe Sourced::Configuration do
     end
   end
 
+  describe '#notifier' do
+    let(:fake_notifier) do
+      double('Notifier', subscribe: nil, notify_new_messages: nil,
+                         notify_reactor_resumed: nil, start: nil, stop: nil)
+    end
+
+    it 'defaults to an InlineNotifier' do
+      config = described_class.new
+      expect(config.notifier).to be_a(Sourced::InlineNotifier)
+    end
+
+    it 'accepts any object implementing NotifierInterface' do
+      config = described_class.new
+      config.notifier = fake_notifier
+      expect(config.notifier).to be(fake_notifier)
+    end
+
+    it 'raises for objects not implementing NotifierInterface' do
+      config = described_class.new
+      expect { config.notifier = Object.new }.to raise_error(Plumb::ParseError)
+    end
+
+    it 'survives disconnect!, like the error strategy' do
+      config = described_class.new
+      config.notifier = fake_notifier
+      config.disconnect!
+      expect(config.notifier).to be(fake_notifier)
+    end
+
+    it 'is picked up by a store configured before the notifier was assigned' do
+      Sourced.configure { |c| c.store = Sequel.sqlite }
+      Sourced.configure { |c| c.notifier = fake_notifier }
+
+      expect(Sourced.store.notifier).to be(fake_notifier)
+    end
+  end
+
   describe '#error_strategy' do
     it 'returns a default ErrorStrategy' do
       config = described_class.new

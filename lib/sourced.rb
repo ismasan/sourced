@@ -149,7 +149,8 @@ module Sourced
     to_append = [command] + correlated_events
     last_position = store.append(to_append, guard: guard)
 
-    advance_registered_offsets(store, reactor_class, partition_attrs, last_position)
+    # nil when the command itself was future-dated and scheduled: nothing to skip past.
+    advance_registered_offsets(store, reactor_class, partition_attrs, last_position) if last_position
 
     HandleResult.new(command: command, reactor: instance, events: correlated_events)
   end

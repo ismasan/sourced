@@ -10,7 +10,6 @@ module Sourced
       @store = store
       @reactors = []
       @needs_history = {}
-      @action_runner = ActionRunner.new(store)
     end
 
     # Register a reactor. Reactors are duck-typed: only +handled_messages+ and
@@ -223,7 +222,8 @@ module Sourced
     # reactor explicitly marked for deletion via a +delete: true+ signal.
     def execute_actions(action_pairs, claim, reactor)
       group_id = reactor.group_id
-      interpreter = @action_runner
+      # One runner per batch: it carries the batch's append floor (see ActionRunner).
+      interpreter = ActionRunner.new(store)
       after_sync_works = []
 
       store.transaction do

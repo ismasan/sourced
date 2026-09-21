@@ -25,6 +25,16 @@ module RouterTestMessages
     attribute :device_id, String
   end
 
+  RenameDevice = Sourced::Message.define('router_test.rename_device') do
+    attribute :device_id, String
+    attribute :name, String
+  end
+
+  DeviceRenamed = Sourced::Message.define('router_test.device.renamed') do
+    attribute :device_id, String
+    attribute :name, String
+  end
+
   # Projector messages
   DeviceListed = Sourced::Message.define('router_test.device.listed') do
     attribute :device_id, String
@@ -62,6 +72,15 @@ class RouterTestDecider < Sourced::Decider
     raise 'Not found' unless state[:exists]
     raise 'Already bound' if state[:bound]
     event RouterTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
+  end
+
+  evolve RouterTestMessages::DeviceRenamed do |state, evt|
+    state[:name] = evt.payload.name
+  end
+
+  command RouterTestMessages::RenameDevice do |state, cmd|
+    raise 'Not found' unless state[:exists]
+    event RouterTestMessages::DeviceRenamed, device_id: cmd.payload.device_id, name: cmd.payload.name
   end
 
   reaction RouterTestMessages::DeviceBound do |_state, evt|
@@ -268,6 +287,25 @@ RSpec.describe Sourced::Router do
       read_result = store.read(conds)
       expect(read_result.messages.size).to eq(1)
       expect(read_result.messages.first).to be_a(RouterTestMessages::DeviceBound)
+    end
+
+    it 'handles several queued commands on one partition in a single claim' do
+      # Commands that pile up while no worker runs (a stopped or failing-over
+      # dispatcher) are claimed together; each one's events must append
+      # without the batch tripping over its own earlier appends.
+      store.append(RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' }))
+      store.append(RouterTestMessages::RenameDevice.new(payload: { device_id: 'd1', name: 'Sensor A' }))
+      store.append(RouterTestMessages::RenameDevice.new(payload: { device_id: 'd1', name: 'Sensor B' }))
+      store.append(RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' }))
+
+      expect(router.handle_next_for(RouterTestDecider)).to be true
+      # Drain: the bound event's deferred reaction takes one more claim.
+      5.times { break unless router.handle_next_for(RouterTestDecider) }
+
+      renamed = store.read(RouterTestMessages::DeviceRenamed.to_conditions(device_id: 'd1')).messages
+      expect(renamed.map { |m| m.payload.name }).to eq(['Sensor A', 'Sensor B'])
+      bound = store.read(RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')).messages
+      expect(bound.size).to eq(1)
     end
 
     it 'reads history for decider, skips history for projector' do

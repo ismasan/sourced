@@ -11,6 +11,14 @@ module Sourced
   #
   # Correlation (causation/correlation ids) is applied here at execution time.
   #
+  # One runner serves one claimed batch. A batch's appends are guarded by a
+  # single {ConsistencyGuard}, read before the first append, so each append
+  # after the first would otherwise find the batch's own earlier appends past
+  # the guard and report a conflict. The runner remembers the last position it
+  # appended and raises every later guard's floor to it: messages this batch
+  # wrote are not concurrent writes, while anything another writer slips in
+  # after them still is.
+  #
   # @example
   #   runner = ActionRunner.new(store)
   #   after_syncs = []
@@ -19,6 +27,7 @@ module Sourced
     # @param store [Sourced::Store]
     def initialize(store)
       @store = store
+      @last_appended = nil
     end
 
     # Run a single signal for a source message.
@@ -58,9 +67,17 @@ module Sourced
       to_append = Array(signal[:messages]).map { |m| correlate_from.correlate(m) }
       return if to_append.empty?
 
+      guard = signal[:guard]
+      if guard && @last_appended && @last_appended > guard.last_position
+        guard = guard.with(last_position: @last_appended)
+      end
+
       # The store resolves each message's index basis from its consuming group,
       # and defers any future-dated message into the scheduled_messages table.
-      @store.append(to_append, guard: signal[:guard])
+      # nil when every message was future-dated: scheduled, not positioned, so
+      # there is no new floor to claim.
+      position = @store.append(to_append, guard: guard)
+      @last_appended = position if position
     end
   end
 end
