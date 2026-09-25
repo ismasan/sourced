@@ -160,10 +160,15 @@ module Sourced
           pairs = run_handle_batch
 
           if sync
-            pairs.each do |actions, _|
+            # Hooks run as the runner runs them: with the pair's appended
+            # messages, correlated the way the runner correlates them.
+            pairs.each do |actions, source|
+              appended = Array(actions).select { |a| a.is_a?(Sourced::Actions::Append) }.flat_map do |a|
+                Sourced::ActionRunner.correlate(a.deconstruct_keys(nil), source)
+              end
               Array(actions).select { |a|
                 a.is_a?(Sourced::Actions::Sync) || a.is_a?(Sourced::Actions::AfterSync)
-              }.each(&:call)
+              }.each { |a| a.call(appended) }
             end
           end
 

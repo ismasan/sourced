@@ -13,7 +13,7 @@ PATH
       async
       plumb (= 0.3.0)
       sequel
-      sourced-message
+      sourced-message (>= 0.3)
       sqlite3
 
 GEM
@@ -108,7 +108,7 @@ GEM
     ruby-progressbar (1.13.0)
     sequel (5.84.0)
       bigdecimal
-    sourced-message (0.2.2)
+    sourced-message (0.3.0)
       fugit
       plumb (>= 0.3)
     sqlite3 (2.8.0)

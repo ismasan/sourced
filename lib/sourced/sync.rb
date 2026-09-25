@@ -4,7 +4,17 @@ module Sourced
   # Sync mixin for reactors.
   # Registers blocks that run within the store transaction (+sync+)
   # or after the transaction commits (+after_sync+).
+  #
+  # The blocks are built before the runner has appended anything, so a
+  # keyword that should carry the messages as stored — correlated by the
+  # runner — cannot be given up front. Pass a block to any builder instead:
+  # it is called at run time with the pair's appended messages and returns
+  # the keywords to add (see {Decider.handle_batch}, which maps them to
+  # +events:+).
   module Sync
+    NO_LATE_ARGS = {}.freeze
+    private_constant :NO_LATE_ARGS
+
     def self.included(base)
       super
       base.extend ClassMethods
@@ -13,29 +23,46 @@ module Sourced
     # Build {Actions::Sync} wrappers for all registered +sync+ blocks.
     #
     # @param args [Hash] keyword arguments forwarded to each block
+    # @yieldparam appended [Array<Sourced::Message>] the pair's appended messages, at run time
+    # @yieldreturn [Hash] keyword arguments to add for that call
     # @return [Array<Actions::Sync>]
-    def sync_actions(**args)
+    def sync_actions(**args, &late)
       self.class.sync_blocks.map do |block|
-        Actions::Sync.new(proc { instance_exec(**args, &block) })
+        Actions::Sync.new(hook_work(block, args, late))
       end
     end
 
     # Build {Actions::AfterSync} wrappers for all registered +after_sync+ blocks.
     #
     # @param args [Hash] keyword arguments forwarded to each block
+    # @yieldparam appended [Array<Sourced::Message>] the pair's appended messages, at run time
+    # @yieldreturn [Hash] keyword arguments to add for that call
     # @return [Array<Actions::AfterSync>]
-    def after_sync_actions(**args)
+    def after_sync_actions(**args, &late)
       self.class.after_sync_blocks.map do |block|
-        Actions::AfterSync.new(proc { instance_exec(**args, &block) })
+        Actions::AfterSync.new(hook_work(block, args, late))
       end
     end
 
     # Build all sync and after_sync actions together.
     #
     # @param args [Hash] keyword arguments forwarded to each block
+    # @yieldparam appended [Array<Sourced::Message>] the pair's appended messages, at run time
+    # @yieldreturn [Hash] keyword arguments to add for that call
     # @return [Array<Actions::Sync, Actions::AfterSync>]
-    def collect_actions(**args)
-      sync_actions(**args) + after_sync_actions(**args)
+    def collect_actions(**args, &late)
+      sync_actions(**args, &late) + after_sync_actions(**args, &late)
+    end
+
+    private
+
+    # A work the runner calls with the pair's appended messages (see
+    # {Actions.invoke}); called bare, it sees none.
+    def hook_work(block, args, late)
+      proc do |appended = []|
+        late_args = late ? late.call(appended) : NO_LATE_ARGS
+        instance_exec(**args, **late_args, &block)
+      end
     end
 
     module ClassMethods

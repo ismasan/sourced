@@ -202,7 +202,8 @@ RSpec.describe Sourced::Message do
       )
 
       correlated = source.correlate(target)
-      expect(correlated.metadata).to eq({ user_id: 42, request_id: 'req-1' })
+      expect(correlated.metadata).to include(user_id: 42, request_id: 'req-1')
+      expect(correlated.metadata).to include(correlation_type: source.type)
     end
 
     it 'returns a new instance without mutating the original' do
