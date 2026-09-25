@@ -232,7 +232,73 @@ RSpec.describe Sourced::Testing::RSpec do
     end
   end
 
+  describe 'Decider hooks under then! with a block' do
+    it 'receive events: correlated to the command, and run once' do
+      seen = []
+      klass = Class.new(GWTTestSimpleDecider) do
+        consumer_group 'gwt-test-simple-decider-recording'
+        after_sync { |events:, **| seen.concat(events) }
+      end
+      cmd = GWTTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+
+      with_reactor(klass, device_id: 'd1')
+        .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+        .when(cmd)
+        .then! { |r| expect(r.messages.size).to eq(1) }
+
+      expect(seen.size).to eq(1)
+      expect(seen.first).to be_a(GWTTestMessages::DeviceBound)
+      expect(seen.first.causation_id).to eq(cmd.id)
+      expect(seen.first.correlation_type).to eq(cmd.type)
+    end
+  end
+
   describe 'Projector (StateStored)' do
+    # A subclass whose hooks record what they were handed and how often.
+    let(:recording_projector) do
+      seen = []
+      calls = []
+      Class.new(GWTTestStateStoredProjector).tap do |klass|
+        klass.consumer_group 'gwt-test-ss-projector-recording'
+        klass.after_sync { |messages:, **| seen.concat(messages); calls << :after_sync }
+        klass.sync { |**| calls << :sync }
+        klass.define_singleton_method(:seen) { seen }
+        klass.define_singleton_method(:calls) { calls }
+      end
+    end
+
+    it 'given events are the batch: then! hands them to the hooks as messages:' do
+      apple = GWTTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Apple' })
+      pear = GWTTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Pear' })
+
+      with_reactor(recording_projector, list_id: 'L1')
+        .given(apple)
+        .given(pear)
+        .then!([])
+
+      expect(recording_projector.seen).to eq([apple, pear])
+    end
+
+    it 'refuses when: a projector consumes events that already exist' do
+      expect {
+        with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
+          .when(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+      }.to raise_error(ArgumentError, /projector.*given/)
+    end
+
+    it 'then! runs each hook once, with or without a block' do
+      with_reactor(recording_projector, list_id: 'L1')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .then!([])
+      expect(recording_projector.calls).to contain_exactly(:sync, :after_sync)
+
+      recording_projector.calls.clear
+      with_reactor(recording_projector, list_id: 'L1')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .then! { |r| expect(r.state[:synced]).to be true }
+      expect(recording_projector.calls).to contain_exactly(:sync, :after_sync)
+    end
+
     it 'given events → then block asserts evolved state' do
       with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
@@ -268,6 +334,21 @@ RSpec.describe Sourced::Testing::RSpec do
   end
 
   describe 'Projector (EventSourced)' do
+    it 'given events are both history and batch: state evolves and hooks see them' do
+      seen = []
+      klass = Class.new(GWTTestEventSourcedProjector) do
+        consumer_group 'gwt-test-es-projector-recording'
+        after_sync { |state:, messages:, **| seen << [state[:items].dup, messages.size] }
+      end
+
+      with_reactor(klass, list_id: 'L1')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Banana')
+        .then!([])
+
+      expect(seen).to eq([[%w[Apple Banana], 2]])
+    end
+
     it 'given events → then block asserts evolved state' do
       with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')

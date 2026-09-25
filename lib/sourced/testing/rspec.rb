@@ -103,11 +103,21 @@ module Sourced
         # The batch of new messages to process via +handle_batch+. Can be
         # called multiple times to supply several messages.
         #
+        # Not for projectors: they consume events that already exist, so the
+        # events they process go to {#given}, and there is nothing to
+        # dispatch. See {#run_handle_batch}.
+        #
         # @param klass_or_instance [Class, Sourced::Message]
         # @param payload [Hash]
         # @return [self]
+        # @raise [ArgumentError] on a projector
         def when(klass_or_instance = nil, **payload)
           raise 'test case already asserted' if @asserted
+          if projector?
+            raise ArgumentError,
+                  "#{@reactor_class} is a projector: it consumes events that already exist, " \
+                  'so pass them to `given` and assert with `then`/`then!`'
+          end
 
           @when_messages << build_message(klass_or_instance, **payload)
           self
@@ -159,21 +169,14 @@ module Sourced
 
           pairs = run_handle_batch
 
-          if sync
-            # Hooks run as the runner runs them: with the pair's appended
-            # messages, correlated the way the runner correlates them.
-            pairs.each do |actions, source|
-              appended = Array(actions).select { |a| a.is_a?(Sourced::Actions::Append) }.flat_map do |a|
-                Sourced::ActionRunner.correlate(a.deconstruct_keys(nil), source)
-              end
-              Array(actions).select { |a|
-                a.is_a?(Sourced::Actions::Sync) || a.is_a?(Sourced::Actions::AfterSync)
-              }.each { |a| a.call(appended) }
-            end
-          end
+          # With a block, the hooks run inside compute_state, on the instance
+          # whose state the block receives, so their effects on it are
+          # visible. Without one they run here, on the pipeline's own
+          # instance. Either way they run once.
+          run_hooks(pairs) if sync && !block_given?
 
           if block_given?
-            block.call(RunResult.new(pairs: pairs, messages: extract_messages(pairs), state: compute_state(sync: sync)))
+            block.call(RunResult.new(pairs: pairs, messages: extract_messages(pairs), state: compute_state(pairs, sync: sync)))
             return self
           end
 
@@ -197,15 +200,46 @@ module Sourced
           self
         end
 
+        # Drive the reactor's +handle_batch+ the way the router does.
+        #
+        # A decider is given its history and decides on the batch, so
+        # {#given} is the history and {#when} the batch. A projector has no
+        # such split: in production every message it consumes arrives as the
+        # batch, and its history — read unbounded — includes that batch. So
+        # for a projector the {#given} messages are both, and its hooks see
+        # them as +messages:+ exactly as they would in production.
         def run_handle_batch
           guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 0)
           history = Sourced::ReadResult.new(messages: @given_messages, guard: guard)
           @reactor_class.handle_batch(
             @partition_values,
-            @when_messages,
+            projector? ? @given_messages : @when_messages,
             history: history,
             replaying: false
           )
+        end
+
+        def projector?
+          @reactor_class <= Sourced::Projector
+        end
+
+        # Run each pair's Sync / AfterSync actions as the runner runs them:
+        # with the pair's appended messages, correlated the way the runner
+        # correlates them.
+        def run_hooks(pairs)
+          pairs.each do |actions, source|
+            appended = appended_in(actions, source)
+            Array(actions).select { |a|
+              a.is_a?(Sourced::Actions::Sync) || a.is_a?(Sourced::Actions::AfterSync)
+            }.each { |a| a.call(appended) }
+          end
+        end
+
+        # The messages a pair's Append actions would store, correlated.
+        def appended_in(actions, source)
+          Array(actions).select { |a| a.is_a?(Sourced::Actions::Append) }.flat_map do |a|
+            Sourced::ActionRunner.correlate(a.deconstruct_keys(nil), source)
+          end
         end
 
         # Build an instance and evolve it with all known messages so the
@@ -213,23 +247,25 @@ module Sourced
         # whose +handle_batch+ evolves its own instance (Decider, Projector,
         # DurableWorkflow), this is an independent, predictable computation.
         # When +sync+ is true, also runs the reactor's Sync / AfterSync
-        # blocks against this instance so their state mutations are visible.
-        def compute_state(sync: false)
+        # blocks against this instance so their state mutations are visible,
+        # handing them the messages the +pairs+ would have appended.
+        def compute_state(pairs, sync: false)
           instance = @reactor_class.new(@partition_values)
           return nil unless instance.respond_to?(:evolve)
 
           messages = @given_messages + @when_messages
           instance.evolve(messages)
-          run_sync_on(instance, messages) if sync
+          run_sync_on(instance, messages, pairs.flat_map { |actions, source| appended_in(actions, source) }) if sync
           instance.state
         end
 
         # Invoke Sync / AfterSync blocks against +instance+. Per-block
         # kwarg signatures vary by reactor type (deciders expect +events:+,
         # projectors expect +replaying:+); we inspect each block's
-        # parameters and pass only what it declares.
-        def run_sync_on(instance, messages)
-          all_args = { state: instance.state, messages: messages, events: [], replaying: false }
+        # parameters and pass only what it declares. +events:+ carries the
+        # appended messages, correlated, as the runner would bind them.
+        def run_sync_on(instance, messages, appended)
+          all_args = { state: instance.state, messages: messages, events: appended, replaying: false }
           klass = instance.class
           blocks = []
           blocks.concat(klass.sync_blocks) if klass.respond_to?(:sync_blocks)

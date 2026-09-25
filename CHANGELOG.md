@@ -2,6 +2,15 @@
 
 ### Changed
 
+- GWT helper (`Sourced::Testing::RSpec`): for a projector, the `given` events are the
+  batch it consumes — they are handed to `handle_batch` as the new messages (and, as in
+  production's unbounded read, as its history), so `.given(events).then!` runs the
+  projector's `sync` / `after_sync` hooks with those events as `messages:`. `when` on a
+  projector raises `ArgumentError`: there is no command to dispatch. `then!` now runs
+  each hook exactly once — inside `compute_state` when a block is given, so effects on
+  the yielded state are visible, and through the pipeline otherwise — and decider hooks
+  see `events:` correlated to the command in both forms.
+
 - `sync` and `after_sync` hooks now see appended messages as stored. `ActionRunner#run_pair`
   runs one action pair, accumulates the messages its `:append` signals stored — correlated
   by the runner, as always — and hands them to each `:sync` work as it runs and to each
