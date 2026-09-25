@@ -231,10 +231,7 @@ module Sourced
         flagged_deletes = []
 
         Array(action_pairs).each do |(signals, source_message)|
-          delete_requested = false
-          wrap_signals(signals).each do |signal|
-            delete_requested = true if interpreter.run(signal, source_message, after_sync_works)
-          end
+          delete_requested = interpreter.run_pair(wrap_signals(signals), source_message, after_sync_works)
           if source_message.respond_to?(:position)
             last_position = source_message.position
             flagged_deletes << source_message.position if delete_requested

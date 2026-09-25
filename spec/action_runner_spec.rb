@@ -95,6 +95,46 @@ RSpec.describe Sourced::ActionRunner do
     end
   end
 
+  describe 'run_pair' do
+    it 'hands sync and after_sync works the messages appended so far in the pair, correlated' do
+      seen_sync = nil
+      seen_after = nil
+      signals = [
+        { type: :append, messages: [new_event] },
+        { type: :sync, work: ->(appended) { seen_sync = appended } },
+        { type: :after_sync, work: ->(appended) { seen_after = appended } }
+      ]
+
+      interpreter.run_pair(signals, source, after_syncs)
+      after_syncs.each(&:call)
+
+      stored = store.read(InterpreterTestMessages::ThingDone.to_conditions(thing_id: 't1')).messages
+      expect(seen_sync).to eq(stored)
+      expect(seen_after).to eq(stored)
+      expect(seen_sync.first.causation_id).to eq(source.id)
+    end
+
+    it 'starts each pair with an empty appended list and still calls bare works' do
+      counts = []
+      pair = ->(n) {
+        [{ type: :append, messages: Array.new(n) { new_event } }, { type: :sync, work: ->(appended) { counts << appended.size } }]
+      }
+      bare_ran = false
+
+      interpreter.run_pair(pair.call(2), source, after_syncs)
+      interpreter.run_pair(pair.call(1) + [{ type: :sync, work: -> { bare_ran = true } }], source, after_syncs)
+
+      expect(counts).to eq([2, 1])
+      expect(bare_ran).to be true
+    end
+
+    it 'reports a delete request from any signal in the pair' do
+      signals = [{ type: :sync, work: -> {} }, { type: :ack, delete: true }]
+      expect(interpreter.run_pair(signals, source, after_syncs)).to be true
+      expect(interpreter.run_pair([{ type: :ack }], source, after_syncs)).to be false
+    end
+  end
+
   describe 'sync vs after_sync' do
     it 'runs :sync immediately' do
       ran = false

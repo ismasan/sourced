@@ -309,6 +309,43 @@ RSpec.describe Sourced::Decider do
       expect(after_sync_action).not_to be_nil
     end
 
+    it 'binds events: in sync hooks to the events the runner appended, correlated' do
+      reg = DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 0)
+      history = Sourced::ReadResult.new(messages: [], guard: guard)
+
+      cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      cmd_positioned = Sourced::PositionedMessage.new(cmd, 2)
+
+      seen_sync = []
+      seen_after = []
+      decider = Class.new(TestDeviceDecider) do
+        consumer_group 'device-decider-correlation-test'
+        sync { |events:, **| seen_sync.concat(events) }
+        after_sync { |events:, **| seen_after.concat(events) }
+      end
+
+      # Runner over a real store, as the router drives it.
+      store = Sourced::Store.new(Sequel.sqlite)
+      store.install!
+      store.append(reg)
+      history = store.read(DeciderTestMessages::DeviceRegistered.to_conditions(device_id: 'd1'))
+      pairs = decider.handle_batch({ device_id: 'd1' }, [cmd_positioned], history:)
+
+      after_syncs = []
+      runner = Sourced::ActionRunner.new(store)
+      pairs.each { |signals, source| runner.run_pair(signals, source, after_syncs) }
+      after_syncs.each(&:call)
+
+      stored = store.read(DeciderTestMessages::DeviceBound.to_conditions(device_id: 'd1')).messages
+      expect(stored.size).to eq(1)
+      expect(seen_sync).to eq(stored)
+      expect(seen_after).to eq(stored)
+      expect(seen_sync.first.causation_id).to eq(cmd.id)
+      expect(seen_sync.first.correlation_type).to eq(cmd.type)
+      expect(seen_sync.first).to equal(seen_after.first)
+    end
+
     it 'returns [OK, msg] for non-command messages' do
       reg = DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       reg_positioned = Sourced::PositionedMessage.new(reg, 1)

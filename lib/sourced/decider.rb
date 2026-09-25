@@ -92,9 +92,11 @@ module Sourced
           if handled_commands.include?(msg.class)
             raw_events = instance.decide(msg)
             actions = Actions.build_for(raw_events, guard: history.guard, source: msg)
-            actions += instance.collect_actions(
-              state: instance.state, messages: [msg], events: raw_events
-            )
+            # The runner correlates the events as it appends them; +events:+
+            # is bound then, so the hooks see the events as stored.
+            actions += instance.collect_actions(state: instance.state, messages: [msg]) do |appended|
+              { events: appended }
+            end
 
             [actions, msg]
           elsif instance.reacts_to?(msg) && instance.should_react?(instance.state, msg, replaying:)

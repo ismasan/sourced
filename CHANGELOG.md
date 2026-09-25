@@ -2,6 +2,17 @@
 
 ### Changed
 
+- `sync` and `after_sync` hooks now see appended messages as stored. `ActionRunner#run_pair`
+  runs one action pair, accumulates the messages its `:append` signals stored — correlated
+  by the runner, as always — and hands them to each `:sync` work as it runs and to each
+  `:after_sync` work after the commit. A work that declares no parameters is called bare.
+  `Sync#collect_actions` (and `sync_actions` / `after_sync_actions`) take a block that maps
+  those messages to keyword arguments at call time; `Decider.handle_batch` uses it to bind
+  `events:`, so a decider's hooks receive events carrying causation and correlation ids and
+  `Sourced::Message#correlation_type`. Reactors themselves never correlate.
+  `ActionRunner.correlate` is the single definition of that correlation, and the GWT
+  helper (`with_reactor ... .then!`) uses it so hooks under test see the same messages.
+
 - `Sourced::Store::MessageCodec` is now a subclass of `Sourced::Message::JSONCodec`, which
   lives in the **sourced-message** gem and is shared with Sidereal. It keeps its
   payload-only behaviour by overriding three private seams, and gains a per-class pair

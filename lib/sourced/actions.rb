@@ -69,17 +69,32 @@ module Sourced
       end
     end
 
+    # Call a hook's work with the messages the runner has appended so far in
+    # the hook's action pair — correlated, as stored. A work that declares no
+    # parameters is called bare, so a lambda taking none is not refused.
+    # Declared parameters, not arity: a proc's optional parameter leaves its
+    # arity at zero.
+    #
+    # @param work [#call] the hook's callable
+    # @param appended [Array<Sourced::Message>] correlated messages appended in the pair
+    # @return [Object] the work's return value
+    def self.invoke(work, appended)
+      params = work.respond_to?(:parameters) ? work.parameters : work.method(:call).parameters
+      params.empty? ? work.call : work.call(appended)
+    end
+
     # Execute a synchronous side effect within the current transaction.
     class Sync
       attr_reader :work
 
-      # @param work [#call] callable to execute
+      # @param work [#call] callable to execute; may take the pair's appended messages
       def initialize(work)
         @work = work
       end
 
+      # @param appended [Array<Sourced::Message>] correlated messages appended in the pair
       # @return [Object] the callable's return value
-      def call = @work.call
+      def call(appended = []) = Actions.invoke(@work, appended)
 
       def deconstruct_keys(_keys)
         { type: :sync, work: @work }
@@ -90,13 +105,14 @@ module Sourced
     class AfterSync
       attr_reader :work
 
-      # @param work [#call] callable to execute
+      # @param work [#call] callable to execute; may take the pair's appended messages
       def initialize(work)
         @work = work
       end
 
+      # @param appended [Array<Sourced::Message>] correlated messages appended in the pair
       # @return [Object] the callable's return value
-      def call = @work.call
+      def call(appended = []) = Actions.invoke(@work, appended)
 
       def deconstruct_keys(_keys)
         { type: :after_sync, work: @work }
