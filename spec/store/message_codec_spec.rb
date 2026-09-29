@@ -72,19 +72,10 @@ RSpec.describe Sourced::Store::MessageCodec do
     described_class.new(format:, registry: CodecSpecHelpers::Registry.new(classes)).compile!
   end
 
-  # Round-trip a message the way the store does: envelope by hand, payload
-  # through the codec, all of it through JSON, then back.
+  # Round-trip a message through the codec and JSON, parsed String-keyed as the
+  # store parses it.
   def round_trip(message, with: codec)
-    data = {
-      id: message.id,
-      type: message.type,
-      causation_id: message.causation_id,
-      correlation_id: message.correlation_id,
-      created_at: message.created_at.iso8601(6),
-      metadata: message.metadata,
-      payload: with.encode(message)
-    }
-    with.decode(JSON.parse(JSON.dump(data), symbolize_names: true))
+    with.decode(JSON.parse(JSON.dump(with.encode(message))))
   end
 
   describe 'native Ruby types' do
@@ -99,12 +90,12 @@ RSpec.describe Sourced::Store::MessageCodec do
     end
 
     it 'encodes payload values into JSON-native ones' do
-      expect(codec.encode(message)).to eq(
-        id: 'r1',
-        on: '1978-10-08',
-        at: Time.at(1_700_000_000, 123_456).iso8601(6),
-        level: 'warning',
-        amount: '10.55'
+      expect(codec.encode(message)['payload']).to eq(
+        'id' => 'r1',
+        'on' => '1978-10-08',
+        'at' => Time.at(1_700_000_000, 123_456).iso8601(6),
+        'level' => 'warning',
+        'amount' => '10.55'
       )
     end
 
@@ -126,7 +117,7 @@ RSpec.describe Sourced::Store::MessageCodec do
     end
 
     it 'omits optional attributes that were never set, rather than writing nulls' do
-      expect(codec.encode(message)).not_to have_key(:note)
+      expect(codec.encode(message)['payload']).not_to have_key('note')
       expect(round_trip(message).payload.note).to be_nil
     end
   end
@@ -134,8 +125,16 @@ RSpec.describe Sourced::Store::MessageCodec do
   describe 'the envelope' do
     let(:message) { MessageCodecTests::Native.new(payload: { name: 'x', count: 1 }) }
 
-    it 'is not the codec\'s business — only the payload is encoded' do
-      expect(codec.encode(message)).to eq(name: 'x', count: 1)
+    it 'is encoded with the payload, as one JSON-native document' do
+      expect(codec.encode(message)).to eq(
+        'id' => message.id,
+        'type' => 'message_codec_test.native',
+        'causation_id' => message.causation_id,
+        'correlation_id' => message.correlation_id,
+        'created_at' => message.created_at.iso8601(6),
+        'metadata' => {},
+        'payload' => { 'name' => 'x', 'count' => 1 }
+      )
     end
 
     it 'is carried through #decode, which builds the message from it' do
@@ -148,10 +147,10 @@ RSpec.describe Sourced::Store::MessageCodec do
       expect(loaded.created_at.usec).to eq(message.created_at.usec)
     end
 
-    it 'carries metadata through' do
-      with_meta = message.with_metadata(user_id: 42, source: 'test')
+    it 'carries metadata through, decoding its keys at every depth' do
+      with_meta = message.with_metadata(user_id: 42, source: 'test', ctx: { tags: ['a', { ok: true }] })
 
-      expect(round_trip(with_meta).metadata).to eq(user_id: 42, source: 'test')
+      expect(round_trip(with_meta).metadata).to eq(user_id: 42, source: 'test', ctx: { tags: ['a', { ok: true }] })
     end
   end
 
@@ -166,8 +165,8 @@ RSpec.describe Sourced::Store::MessageCodec do
     end
 
     it 'encodes nested structs inside arrays' do
-      expect(codec.encode(message)).to eq(
-        items: [{ sku: 'a', ships_on: '2026-01-01' }, { sku: 'b', ships_on: nil }]
+      expect(codec.encode(message)['payload']).to eq(
+        'items' => [{ 'sku' => 'a', 'ships_on' => '2026-01-01' }, { 'sku' => 'b', 'ships_on' => nil }]
       )
     end
 
@@ -183,8 +182,8 @@ RSpec.describe Sourced::Store::MessageCodec do
   describe 'messages defined without a payload' do
     let(:message) { MessageCodecTests::Payloadless.new }
 
-    it 'encodes to nil' do
-      expect(codec.encode(message)).to be_nil
+    it 'encodes its payload to nil' do
+      expect(codec.encode(message)['payload']).to be_nil
     end
 
     it 'round-trips' do
@@ -210,7 +209,7 @@ RSpec.describe Sourced::Store::MessageCodec do
       registry = CodecSpecHelpers::Registry.new([MessageCodecTests::Native, MessageCodecTests::Opaque])
       codec = described_class.new(registry:)
 
-      expect { codec.compile! }.to raise_error(Plumb::TypeError, /field `thing`/)
+      expect { codec.compile! }.to raise_error(Plumb::TypeError, /field `payload\.thing`/)
     end
 
     it 'picks up encoders added to the format before it runs' do
@@ -272,7 +271,7 @@ RSpec.describe Sourced::Store::MessageCodec do
       }.to raise_error(Sourced::Message::UnknownMessageError, /message_codec_test\.not_registered \(abc\)/)
     end
 
-    it 'raises DecodeError when a stored payload no longer fits its schema' do
+    it 'raises DecodeError when a stored message no longer fits its schema' do
       expect {
         codec.decode(id: 'abc', type: 'message_codec_test.rich', payload: { id: 'r1', on: 'not-a-date' })
       }.to raise_error(described_class::DecodeError, /message_codec_test\.rich \(abc\)/)
@@ -295,7 +294,7 @@ RSpec.describe Sourced::Store::MessageCodec do
     let(:message) { MessageCodecTests::Priced.new(payload: { price: money }) }
 
     it 'encodes app value types through the registered encoder' do
-      expect(codec.encode(message)).to eq(price: { cents: 1050, currency: 'GBP' })
+      expect(codec.encode(message)['payload']).to eq('price' => { 'cents' => 1050, 'currency' => 'GBP' })
     end
 
     it 'decodes them back' do
@@ -303,7 +302,7 @@ RSpec.describe Sourced::Store::MessageCodec do
     end
 
     it 'is unknown to the default codec' do
-      expect { codec_for([MessageCodecTests::Priced]) }.to raise_error(Plumb::TypeError, /field `price`/)
+      expect { codec_for([MessageCodecTests::Priced]) }.to raise_error(Plumb::TypeError, /field `payload\.price`/)
     end
   end
 

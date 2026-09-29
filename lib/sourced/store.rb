@@ -322,12 +322,12 @@ module Sourced
           end
 
           to_append.each do |msg|
-            # The envelope goes into columns; only the payload needs the codec,
-            # to turn native Ruby values (Dates, Times, Symbols, …) into
-            # JSON-native ones.
-            encoded_payload = message_codec.encode(msg)
-            payload_json = encoded_payload ? JSON.dump(encoded_payload) : '{}'
-            metadata_json = msg.metadata.empty? ? nil : JSON.dump(msg.metadata)
+            # The codec turns native Ruby values (Dates, Times, Symbols, …) into
+            # JSON-native ones. Payload and metadata are stored as JSON; the rest of
+            # the envelope goes into columns.
+            encoded = message_codec.encode(msg)
+            payload_json = encoded['payload'] ? JSON.dump(encoded['payload']) : '{}'
+            metadata_json = encoded['metadata'].empty? ? nil : JSON.dump(encoded['metadata'])
 
             # insert returns last_insert_rowid on SQLite — no need for a separate SELECT
             last_position = db[@messages_table].insert(
@@ -388,17 +388,8 @@ module Sourced
     private def schedule_messages(messages)
       now = Time.now
       rows = messages.map do |message|
-        # This table keeps the whole message as one document, so the envelope is
-        # assembled here.
-        data = {
-          id: message.id,
-          type: message.type,
-          causation_id: message.causation_id,
-          correlation_id: message.correlation_id,
-          created_at: message.created_at.iso8601(6),
-          metadata: message.metadata.merge(scheduled_at: now.iso8601),
-          payload: message_codec.encode(message)
-        }
+        # This table keeps the whole message as one document.
+        data = message_codec.encode(message.with_metadata(scheduled_at: now.iso8601))
         {
           created_at: now.iso8601,
           available_at: message.created_at.iso8601,
@@ -432,10 +423,9 @@ module Sourced
         return 0 if rows.empty?
 
         messages = rows.map do |row|
-          data = JSON.parse(row[:message], symbolize_names: true)
-          # Promotion re-dates the message to now. The envelope skips the codec,
-          # so it takes a Time directly.
-          data[:created_at] = now
+          data = JSON.parse(row[:message])
+          # Promotion re-dates the message to now, in the wire form the codec decodes.
+          data['created_at'] = now.iso8601(6)
           message_codec.decode(data)
         end
 
@@ -1667,25 +1657,24 @@ module Sourced
 
     # Deserialize a database row into a {PositionedMessage}.
     # The codec resolves the message class from the registry and decodes the
-    # payload.
+    # whole message: columns and JSON blobs alike.
     #
     # @param row [Hash] database row with :position, :message_id, :message_type, :causation_id, :correlation_id, :payload, :metadata, :created_at
     # @return [PositionedMessage]
     # @raise [Sourced::Message::UnknownMessageError] if the row's message type isn't registered
-    # @raise [MessageCodec::DecodeError] if the stored payload no longer satisfies its schema
+    # @raise [MessageCodec::DecodeError] if the stored message no longer satisfies its schema
     def deserialize(row)
-      payload = JSON.parse(row[:payload], symbolize_names: true)
-      metadata = row[:metadata] ? JSON.parse(row[:metadata], symbolize_names: true) : {}
-
-      msg = message_codec.decode(
+      # Compacted: a NULL column is an absent attribute, which the message defaults,
+      # not a nil the decoder would reject.
+      msg = message_codec.decode({
         id: row[:message_id],
         type: row[:message_type],
         causation_id: row[:causation_id],
         correlation_id: row[:correlation_id],
         created_at: row[:created_at],
-        metadata: metadata,
-        payload: payload
-      )
+        metadata: row[:metadata] ? JSON.parse(row[:metadata]) : nil,
+        payload: JSON.parse(row[:payload])
+      }.compact)
 
       PositionedMessage.new(msg, row[:position])
     end

@@ -2,6 +2,14 @@
 
 ### Changed
 
+- Requires plumb 0.4 and sourced-message 0.4.
+- `Store::MessageCodec` encodes and decodes whole messages, not just payloads. The
+  store writes the encoded payload and metadata as JSON and the envelope to columns as
+  before, and decodes rows (and promoted scheduled messages) through the codec, so
+  metadata is decoded by its schema and JSON is no longer parsed with
+  `symbolize_names`. `#encode` returns the whole String-keyed document; field paths in
+  compile errors are now prefixed `payload.`. Stored data is unchanged, so no migration.
+
 - GWT helper (`Sourced::Testing::RSpec`): for a projector, the `given` events are the
   batch it consumes — they are handed to `handle_batch` as the new messages (and, as in
   production's unbounded read, as its history), so `.given(events).then!` runs the

@@ -152,7 +152,7 @@ RSpec.describe Sourced::Store do
         registry: CodecSpecHelpers::Registry.new([unserializable])
       )
 
-      expect { fresh_store.setup! }.to raise_error(Plumb::TypeError, /field `thing`/)
+      expect { fresh_store.setup! }.to raise_error(Plumb::TypeError, /field `payload\.thing`/)
     end
   end
 
@@ -311,6 +311,17 @@ RSpec.describe Sourced::Store do
       row = db[:sourced_messages].first
       meta = JSON.parse(row[:metadata], symbolize_names: true)
       expect(meta[:user_id]).to eq(42)
+    end
+
+    it 'reads metadata back through the codec, Symbol-keyed at every depth' do
+      meta = { user_id: 42, ctx: { tags: ['a', { ok: true }] } }
+      store.append(StoreTestMessages::DeviceRegistered.new(
+                     payload: { device_id: 'dev-1', name: 'Sensor A' }, metadata: meta
+                   ))
+
+      cond = Sourced::QueryCondition.new(message_type: 'store_test.device.registered', attrs: { device_id: 'dev-1' })
+      messages, = store.read([cond])
+      expect(messages.first.metadata).to eq(meta)
     end
 
     it 'persists and round-trips causation_id and correlation_id' do

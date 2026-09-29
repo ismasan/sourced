@@ -384,7 +384,7 @@ RSpec.describe Sourced::Configuration do
         registry: CodecSpecHelpers::Registry.new([unserializable])
       )
 
-      expect { config.setup! }.to raise_error(Plumb::TypeError, /field `thing`/)
+      expect { config.setup! }.to raise_error(Plumb::TypeError, /field `payload\.thing`/)
     end
 
     it 'asks the store to prepare itself, whatever that means for it' do
