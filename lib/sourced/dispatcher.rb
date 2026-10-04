@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require 'sourced/async_executor'
 require 'sourced/work_queue'
 require 'sourced/catchup_poller'
 require 'sourced/worker'
@@ -97,7 +96,6 @@ module Sourced
     # @param shutdown_timeout [Numeric] seconds {#stop} waits for workers to finish
     #   the batches they're processing (default 30)
     # @param work_queue [WorkQueue, nil] optional pre-built queue (useful for testing)
-    # @param executor [#new_queue] builds the work queue's underlying queue
     # @param logger [Object] logger instance
     def initialize(
       router:,
@@ -109,7 +107,6 @@ module Sourced
       claim_ttl_seconds: 120,
       shutdown_timeout: 30,
       work_queue: nil,
-      executor: AsyncExecutor.new,
       logger: NULL_LOGGER
     )
       @logger = logger
@@ -121,7 +118,7 @@ module Sourced
 
       reactors = router.reactors.select { |r| r.handled_messages.any? }.to_a
 
-      @work_queue = work_queue || WorkQueue.new(max_per_reactor: worker_count, queue: executor.new_queue)
+      @work_queue = work_queue || WorkQueue.new(max_per_reactor: worker_count)
 
       @workers = worker_count.times.map do |i|
         Worker.new(
@@ -221,7 +218,7 @@ module Sourced
         return false
       end
 
-      @logger.info 'Sourced::Dispatcher: all components stopped'
+      @logger.info 'Sourced::Dispatcher: all workers stopped'
       true
     end
 

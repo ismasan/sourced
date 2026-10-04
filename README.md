@@ -997,7 +997,7 @@ end
 # ...
 ```
 
-The topology is a component that depends on every registered reactor, so it's available once Sourced is built: `Sourced.config.build!` builds it without touching the database or starting workers. Typical uses are generating [Event Modeling](https://eventmodeling.org/) diagrams, debugging "which reactor produces this event", or driving visual service-dependency tooling.
+The topology is a component that depends on every registered reactor, available once Sourced is built: `Sourced.config.build!` gets there without touching the database or starting workers. It's built on each read, since it parses the reactors' source and most processes never need it, so keep the result rather than calling `Sourced.topology` repeatedly. Typical uses are generating [Event Modeling](https://eventmodeling.org/) diagrams, debugging "which reactor produces this event", or driving visual service-dependency tooling.
 
 ```ruby
 # Which commands produce the `courses.created` event?
@@ -1165,13 +1165,13 @@ See `examples/app/` for a complete Sinatra application with:
 | `logger` | `#debug`, `#info`, `#warn`, `#error` | `Logger.new($stdout)` |
 | `db` | `Sequel::Database` | in-memory SQLite, disconnected on teardown |
 | `notifier` | see [Notifier](#notifier) | `Sourced::InlineNotifier` |
-| `executor` | `#start`, `#new_queue` | `Sourced::AsyncExecutor` |
+| `executor` | `#start` | `Sourced::AsyncExecutor`: what `Sourced::Supervisor` runs workers in |
 | `error_strategy` | `#call` | `Sourced::ErrorStrategy` |
 | `store` | `Sourced::Config::StoreInterface` | `Sourced::Store` over `db`. Sets itself up on start |
 | `store.table_prefix` | `String` (an identifier) | `'sourced'`: tables are named `sourced_messages`, ... |
 | `reactors.*` | `#handled_messages`, `#handle_claim` | one per `Sourced.register` |
 | `router` | `Sourced::Router` | routes to `reactors.*`, using `store` and `error_strategy` |
-| `topology` | `Array` | the message-flow graph of `reactors.*` |
+| `topology` | `Array` | the message-flow graph of `reactors.*`, built on each read |
 | `workers.count` | `Integer` (0 or more) | `2` |
 | `workers.batch_size` | `Integer` | `50`: messages per claim |
 | `workers.max_drain_rounds` | `Integer` | `10`: drain iterations per pickup |

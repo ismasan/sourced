@@ -17,6 +17,8 @@ module Sourced
       @error_strategy = error_strategy
       @reactors = []
       @needs_history = {}
+      # Consumer group arguments, by reactor: { partition_by:, exclusive:, handled_types: }
+      @groups = {}
       reactors.each { |reactor| add(reactor) }
     end
 
@@ -52,12 +54,12 @@ module Sourced
 
     def handle_next_for(reactor_class, worker_id: 'default', batch_size: nil)
       group_id = reactor_class.group_id
-      handled_types = reactor_class.handled_messages.map(&:type).uniq
+      group = @groups.fetch(reactor_class)
 
       claim = store.claim_next(
         group_id,
-        partition_by: effective_partition_keys(reactor_class).map(&:to_s),
-        handled_types: handled_types,
+        partition_by: group[:partition_by],
+        handled_types: group[:handled_types],
         worker_id: worker_id,
         batch_size: batch_size
       )
@@ -167,8 +169,14 @@ module Sourced
     private
 
     # Apply defaults to a reactor and validate it, without touching the store.
+    # @raise [ArgumentError] if another reactor has the same group_id, or for an
+    #   invalid partitioning or exclusive ownership
     def add(reactor_class)
       ReactorDefaults.apply(reactor_class)
+      if (existing = @reactors.find { |r| r.group_id == reactor_class.group_id })
+        raise ArgumentError, "Cannot register #{reactor_class}: #{existing} already uses group_id #{reactor_class.group_id.inspect}"
+      end
+
       exclusive = reactor_class.exclusive?
       partition_keys = effective_partition_keys(reactor_class)
 
@@ -188,16 +196,12 @@ module Sourced
       validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
 
       @reactors << reactor_class
+      @groups[reactor_class] = { partition_by: partition_keys.map(&:to_s), exclusive:, handled_types: }
       @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
     end
 
     def register_consumer_group(reactor_class)
-      store.register_consumer_group(
-        reactor_class.group_id,
-        partition_by: effective_partition_keys(reactor_class).map(&:to_s),
-        exclusive: reactor_class.exclusive?,
-        handled_types: reactor_class.handled_messages.map(&:type).uniq
-      )
+      store.register_consumer_group(reactor_class.group_id, **@groups.fetch(reactor_class))
     end
 
     # A reactor's own +on_exception+ handles its errors; otherwise this router's
@@ -226,10 +230,10 @@ module Sourced
     # @raise [ArgumentError] on a message-type overlap involving an exclusive reactor
     def validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
       @reactors.each do |existing|
-        existing_exclusive = existing.exclusive?
+        existing_exclusive = @groups.fetch(existing)[:exclusive]
         next unless exclusive || existing_exclusive
 
-        overlap = handled_types & existing.handled_messages.map(&:type)
+        overlap = handled_types & @groups.fetch(existing)[:handled_types]
         next if overlap.empty?
 
         offender = exclusive ? reactor_class : existing

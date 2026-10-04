@@ -349,10 +349,10 @@ RSpec.describe Sourced::Dispatcher do
   describe '#stop waiting for workers' do
     let(:blocking_router) { Sourced::Router.new(store:, reactors: [DispatchTestBlocking]).setup! }
 
-    def start_blocked_dispatcher(shutdown_timeout: 30)
+    def build_blocking_dispatcher(shutdown_timeout: 30)
       DispatchTestBlocking.entered = Queue.new
       DispatchTestBlocking.release = Queue.new
-      dispatcher = described_class.new(
+      described_class.new(
         router: blocking_router,
         worker_count: 1,
         catchup_interval: 0.05,
@@ -360,8 +360,17 @@ RSpec.describe Sourced::Dispatcher do
         shutdown_timeout:,
         logger:
       )
-      dispatcher.start(Sourced::ThreadExecutor.new)
+    end
+
+    def append_message
       store.append(DispatcherTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' }))
+    end
+
+    # Started in threads, with a worker blocked mid-batch
+    def start_blocked_dispatcher(...)
+      dispatcher = build_blocking_dispatcher(...)
+      dispatcher.start(Sourced::ThreadExecutor.new)
+      append_message
       expect(DispatchTestBlocking.entered.pop(timeout: 2)).to be(true)
       dispatcher
     end
@@ -385,20 +394,12 @@ RSpec.describe Sourced::Dispatcher do
     end
 
     it 'waits without blocking the reactor, when stopped from an Async task' do
-      DispatchTestBlocking.entered = Queue.new
-      DispatchTestBlocking.release = Queue.new
-      dispatcher = described_class.new(
-        router: blocking_router,
-        worker_count: 1,
-        catchup_interval: 0.05,
-        housekeeping_interval: 0.05,
-        logger:
-      )
+      dispatcher = build_blocking_dispatcher
       events = []
 
       Async do |task|
         dispatcher.start(task)
-        store.append(DispatcherTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' }))
+        append_message
         DispatchTestBlocking.entered.pop
 
         task.async do

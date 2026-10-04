@@ -22,14 +22,14 @@ module Sourced
   #   logger            Logger.new($stdout)
   #   db                in-memory SQLite. Disconnected on teardown
   #   notifier          InlineNotifier
-  #   executor          AsyncExecutor
+  #   executor          AsyncExecutor. Runs workers under Sourced::Supervisor
   #   error_strategy    ErrorStrategy
   #   store             Store over db. Installs its tables and compiles its codec on start
   #   store.table_prefix  prefix of the store's table names, ex. 'sourced' => sourced_messages
   #   reactors.*        one component per registered reactor (see .register)
   #   router            routes to reactors.*. On start, registers consumer groups and
   #                     freezes the error strategy (see Router#setup!)
-  #   topology          message-flow graph of reactors.*
+  #   topology          message-flow graph of reactors.*, built on each read
   #   workers.*         count, batch_size, max_drain_rounds, catchup_interval, shutdown_timeout
   #   housekeeping.*    interval, claim_ttl_seconds
   #   dispatcher        spawns workers into the context passed to #start!. On teardown, stops
@@ -70,7 +70,7 @@ module Sourced
     ReactorInterface = T::Interface[:handled_messages, :handle_claim]
 
     LoggerInterface = T::Interface[:debug, :info, :warn, :error]
-    ExecutorInterface = T::Interface[:start, :new_queue]
+    ExecutorInterface = T::Interface[:start]
     ErrorStrategyInterface = T::Interface[:call]
 
     # Characters with a meaning in component keys
@@ -114,8 +114,9 @@ module Sourced
           start { |router, _| router.setup! }
         end
 
+        # Dynamic: built when read, as it parses the reactors' source. Most processes never read it
         c.declare('topology', T::Array)
-        c.config!('topology', ['reactors.*']) { |reactors| Topology.build(reactors.values) }
+        c.config('topology', ['reactors.*']) { |reactors| Topology.build(reactors.values) }
 
         c.declare('workers.count', T::Integer[0..]) { 2 }
         c.declare('workers.batch_size', T::Integer[1..]) { 50 }
@@ -126,24 +127,18 @@ module Sourced
         c.declare('housekeeping.claim_ttl_seconds', T::Integer[1..]) { 120 }
 
         c.declare('dispatcher', Dispatcher)
-        c.component!('dispatcher', %w[
-          router executor logger
-          workers.count workers.batch_size workers.max_drain_rounds workers.catchup_interval
-          workers.shutdown_timeout housekeeping.interval housekeeping.claim_ttl_seconds
-        ]) do
-          build do |router, executor, logger, count, batch_size, max_drain_rounds, catchup_interval,
-                    shutdown_timeout, housekeeping_interval, claim_ttl_seconds|
+        c.component!('dispatcher', %w[router logger workers.* housekeeping.*]) do
+          build do |router, logger, workers, housekeeping|
             Dispatcher.new(
               router:,
-              executor:,
               logger:,
-              worker_count: count,
-              batch_size:,
-              max_drain_rounds:,
-              catchup_interval:,
-              shutdown_timeout:,
-              housekeeping_interval:,
-              claim_ttl_seconds:
+              worker_count: workers['count'],
+              batch_size: workers['batch_size'],
+              max_drain_rounds: workers['max_drain_rounds'],
+              catchup_interval: workers['catchup_interval'],
+              shutdown_timeout: workers['shutdown_timeout'],
+              housekeeping_interval: housekeeping['interval'],
+              claim_ttl_seconds: housekeeping['claim_ttl_seconds']
             )
           end
           start { |dispatcher, context| dispatcher.start(context) }
@@ -153,21 +148,17 @@ module Sourced
     end
 
     # Register a reactor as a component under +reactors+, which the router and
-    # topology depend on. Keyed by the reactor's group_id, so registering two
-    # reactors with the same group_id raises.
+    # topology depend on, keyed by its group_id (see {.reactor_key}).
+    # The router checks that group_ids are unique.
     #
     # @param config [Sourced::Component] a tree built by {.build}
     # @param reactor [Class] a reactor (see {ReactorInterface})
     # @return [Sourced::Component] the reactor's node
-    # @raise [ArgumentError] if a reactor with the same group_id is already registered
+    # @raise [Sourced::Component::DeclarationOverrideError] if a reactor is already registered under the same key
     # @raise [Sourced::Component::LockedComponentError] once the tree is prepared
     def self.register(config, reactor)
       ReactorDefaults.apply(reactor)
       key = reactor_key(reactor)
-      if config.declared?(key)
-        raise ArgumentError, "can't register #{reactor}: a reactor with group_id #{reactor.group_id.inspect} is already registered"
-      end
-
       config.declare(key, ReactorInterface)
       config.config!(key) { reactor }
       config.node(key)

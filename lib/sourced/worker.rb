@@ -36,7 +36,6 @@ module Sourced
       @batch_size = batch_size
       @max_drain_rounds = max_drain_rounds
       @logger = logger
-      @running = false
       @started = false
       @stopped = false
       # Closed when #run returns. A Thread::Queue, so #wait blocks a thread, or
@@ -44,8 +43,8 @@ module Sourced
       @finished = Thread::Queue.new
     end
 
-    # Whether {#run} is processing work.
-    def running? = @running
+    # Whether {#run} has started and not returned yet.
+    def running? = @started && !@finished.closed?
 
     # Signal the worker to stop after the batch it's processing, if any.
     # A worker stopped before it runs returns from {#run} right away.
@@ -53,16 +52,14 @@ module Sourced
     # @return [void]
     def stop
       @stopped = true
-      @running = false
     end
 
     # Main run loop. Blocks on the {WorkQueue} waiting for reactor signals.
     # @return [void]
     def run
       @started = true
-      @running = !@stopped
 
-      while @running
+      until @stopped
         reactor = @work_queue.pop
         break if reactor.nil? # shutdown sentinel
 
@@ -71,7 +68,6 @@ module Sourced
 
       @logger.info "Sourced::Worker #{name}: stopped"
     ensure
-      @running = false
       @finished.close
     end
 
@@ -96,14 +92,14 @@ module Sourced
     # @return [void]
     def drain(reactor)
       rounds = 0
-      while @running && rounds < @max_drain_rounds
+      while !@stopped && rounds < @max_drain_rounds
         found = @router.handle_next_for(reactor, worker_id: name, batch_size: @batch_size)
         break unless found
 
         rounds += 1
       end
       # More work likely — re-enqueue so another worker (or this one) continues
-      @work_queue.push(reactor) if @running && rounds >= @max_drain_rounds
+      @work_queue.push(reactor) if !@stopped && rounds >= @max_drain_rounds
     end
 
     # Process one tick of work for a specific reactor. Convenience for testing.

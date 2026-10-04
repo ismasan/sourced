@@ -67,7 +67,7 @@ module Sourced
   # Must be called before the configuration is prepared or booted.
   # @param reactor [Class] a reactor (see {Router#register} for the protocol)
   # @return [Sourced::Component] the reactor's node
-  # @raise [ArgumentError] if a reactor with the same group_id is already registered
+  # @raise [Sourced::Component::DeclarationOverrideError] if a reactor with the same group_id is already registered
   # @raise [Sourced::Component::LockedComponentError] once the configuration is prepared
   def self.register(reactor)
     Config.register(config, reactor)
@@ -98,6 +98,7 @@ module Sourced
   def self.router = config['router']
 
   # The message-flow graph of every registered reactor (see {Topology}).
+  # Built on each call, from the reactors' source: keep the result rather than calling it repeatedly.
   # @return [Array]
   # @raise [Sourced::Component::NotBuiltError] until the configuration is built
   def self.topology = config['topology']

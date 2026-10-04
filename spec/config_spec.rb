@@ -29,19 +29,7 @@ class ConfigTestOtherReactor
 end
 
 RSpec.describe Sourced::Config do
-  # A task that collects what the dispatcher spawns, without running it
-  let(:task) do
-    Class.new do
-      attr_reader :spawned
-
-      def initialize = @spawned = []
-
-      def spawn(&block)
-        @spawned << block
-        self
-      end
-    end.new
-  end
+  let(:task) { CollectingTask.new }
 
   subject(:config) do
     described_class.build.tap do |c|
@@ -97,7 +85,7 @@ RSpec.describe Sourced::Config do
       expect(components['store'][:deps]).to eq(%w[db notifier logger store.table_prefix])
       expect(components['router'][:deps]).to eq(%w[store reactors.ConfigTestReactor error_strategy])
       expect(components['topology'][:deps]).to eq(%w[reactors.ConfigTestReactor])
-      expect(components['dispatcher'][:deps]).to include('router', 'executor', 'workers.count')
+      expect(components['dispatcher'][:deps]).to include('router', 'workers.count', 'housekeeping.interval')
       expect(config.boot_status).to eq(:open)
     end
   end
@@ -213,8 +201,7 @@ RSpec.describe Sourced::Config do
 
         def connect = @connected = true
         def notifier = Sourced::InlineNotifier.new
-        %i[append read read_partition claim_next ack release
-           register_consumer_group worker_heartbeat release_stale_claims].each do |m|
+        (Sourced::Config::StoreInterface.method_names - [:notifier]).each do |m|
           define_method(m) { |*, **| nil }
         end
       end.new
@@ -300,12 +287,12 @@ RSpec.describe Sourced::Config do
       expect(config['topology']).to eq(Sourced::Topology.build([ConfigTestReactor]))
     end
 
-    it 'raises for a group_id that is already registered' do
+    it 'raises for a reactor already registered under the same key' do
       described_class.register(config, ConfigTestReactor)
 
       expect {
         described_class.register(config, ConfigTestReactor)
-      }.to raise_error(ArgumentError, /group_id "ConfigTestReactor" is already registered/)
+      }.to raise_error(Sourced::Component::DeclarationOverrideError, /reactors\.ConfigTestReactor/)
     end
 
     it 'raises once the tree is prepared' do

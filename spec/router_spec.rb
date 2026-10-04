@@ -244,6 +244,20 @@ RSpec.describe Sourced::Router do
       expect(store.consumer_group_active?('router-test-decider')).to be false
     end
 
+    it 'raises for reactors sharing a group_id' do
+      twin = Class.new do
+        def self.name = 'RouterTestTwin'
+        def self.group_id = 'router-test-decider'
+        def self.partition_keys = [:device_id]
+        def self.handled_messages = [RouterTestMessages::DeviceRegistered]
+        def self.handle_claim(_claim) = []
+      end
+
+      expect {
+        Sourced::Router.new(store:, reactors: [RouterTestDecider, twin])
+      }.to raise_error(ArgumentError, /RouterTestDecider already uses group_id "router-test-decider"/)
+    end
+
     it 'validates exclusive ownership' do
       rival = Class.new do
         def self.handled_messages = RouterTestQueueWorker.handled_messages

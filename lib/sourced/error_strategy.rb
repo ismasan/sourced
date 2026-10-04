@@ -9,7 +9,7 @@ module Sourced
   #
   # The strategy is mutable after construction: retry policy and callbacks can be
   # configured separately, from different layers. It becomes immutable once frozen,
-  # which the +error_strategy+ component does when Sourced starts (see {Config}).
+  # which the router does when Sourced starts (see {Router#setup!}).
   #
   # @example retry with exponential back off and callbacks
   #   strategy = Sourced::ErrorStrategy.new

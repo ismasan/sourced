@@ -137,12 +137,12 @@ module Sourced
     # @param db [Sequel::SQLite::Database] a Sequel SQLite connection
     # @param notifier [#notify_new_messages, #notify_reactor_resumed] notifier for
     #   dispatch signals (default: an in-process {InlineNotifier})
-    # @param logger [Logger, nil] optional logger (defaults to {NULL_LOGGER})
+    # @param logger [Logger]
     # @param prefix [String] table name prefix (default 'sourced')
-    def initialize(db, notifier: InlineNotifier.new, logger: nil, prefix: 'sourced')
+    def initialize(db, notifier: InlineNotifier.new, logger: NULL_LOGGER, prefix: 'sourced')
       @db = db
       @notifier = notifier
-      @logger = logger || NULL_LOGGER
+      @logger = logger
       @message_codec = MessageCodec.default
       Sequel.extension(:fiber_concurrency)
 

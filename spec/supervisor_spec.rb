@@ -60,19 +60,9 @@ RSpec.describe Sourced::Supervisor do
   end
 
   it 'spawns the dispatcher and its own shutdown into the executor task' do
-    task = Class.new do
-      attr_reader :spawned
-
-      def initialize = @spawned = []
-
-      def spawn(&block)
-        @spawned << block
-        self
-      end
-    end.new
+    task = CollectingTask.new
     executor = Class.new do
       define_method(:initialize) { |task| @task = task }
-      def new_queue = Thread::Queue.new
       def start = yield(@task)
     end.new(task)
     config.config!('executor') { executor }

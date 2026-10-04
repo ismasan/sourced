@@ -46,6 +46,18 @@ module CodecSpecHelpers
   end
 end
 
+# An executor task that collects what's spawned into it, without running it
+class CollectingTask
+  attr_reader :spawned
+
+  def initialize = @spawned = []
+
+  def spawn(&block)
+    @spawned << block
+    self
+  end
+end
+
 RSpec.configure do |config|
   config.example_status_persistence_file_path = '.rspec_status'
   config.disable_monkey_patching!
