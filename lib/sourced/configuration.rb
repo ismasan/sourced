@@ -4,35 +4,12 @@ require 'logger'
 require 'sourced/error_strategy'
 require 'sourced/async_executor'
 require 'sourced/inline_notifier'
+require 'sourced/config'
 
 module Sourced
   class Configuration
-    StoreInterface = Types::Interface[
-      # #setup! is how a store prepares itself at boot (see Store#setup!).
-      # Deliberately generic: creating tables and compiling codecs are one
-      # store's answer to it, not part of the contract.
-      :setup!,
-      :append,
-      :read,
-      :read_partition,
-      :claim_next,
-      :ack,
-      :release,
-      :register_consumer_group,
-      :worker_heartbeat,
-      :release_stale_claims,
-      :notifier
-    ]
-
-    # What a store notifier must respond to. {InlineNotifier} is the reference
-    # implementation; see it for the semantics of each method.
-    NotifierInterface = Types::Interface[
-      :subscribe,
-      :notify_new_messages,
-      :notify_reactor_resumed,
-      :start,
-      :stop
-    ]
+    StoreInterface = Config::StoreInterface
+    NotifierInterface = Config::NotifierInterface
 
     attr_accessor :logger, :worker_count, :batch_size,
                   :catchup_interval, :max_drain_rounds,

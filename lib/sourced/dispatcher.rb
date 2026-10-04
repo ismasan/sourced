@@ -176,10 +176,16 @@ module Sourced
     #
     # @param task [Object] an executor task or Async::Task to spawn fibers into
     # @return [void]
+    # @raise [ArgumentError] if there are workers to run and +task+ can't spawn them
     def start(task)
       return if @workers.empty?
 
-      s = task.respond_to?(:spawn) ? :spawn : :async
+      s = %i[spawn async].find { |m| task.respond_to?(m) }
+      unless s
+        raise ArgumentError, "can't spawn #{@workers.size} workers into #{task.inspect}: " \
+                             'start them in an executor task or Async::Task (see Sourced::Supervisor), ' \
+                             'or set workers.count to 0 to run no workers in this process'
+      end
 
       # Store notifier (start — no-op for InlineNotifier)
       task.send(s) { @store_notifier.start }
