@@ -1167,7 +1167,8 @@ See `examples/app/` for a complete Sinatra application with:
 | `notifier` | see [Notifier](#notifier) | `Sourced::InlineNotifier` |
 | `executor` | `#start`, `#new_queue` | `Sourced::AsyncExecutor` |
 | `error_strategy` | `#call` | `Sourced::ErrorStrategy` |
-| `store` | `Sourced::Config::StoreInterface` | `Sourced::Store` over `db` |
+| `store` | `Sourced::Config::StoreInterface` | `Sourced::Store` over `db`. Sets itself up on start |
+| `store.table_prefix` | `String` (an identifier) | `'sourced'`: tables are named `sourced_messages`, ... |
 | `reactors.*` | `#handled_messages`, `#handle_claim` | one per `Sourced.register` |
 | `router` | `Sourced::Router` | routes to `reactors.*`, using `store` and `error_strategy` |
 | `topology` | `Array` | the message-flow graph of `reactors.*` |
@@ -1186,19 +1187,14 @@ Implement (or re-implement) any of them, then boot:
 require 'sourced'
 
 Sourced.configure do |c|
-  # A value
+  # Values
   c.config!('workers.count') { 4 }
+  c.config!('store.table_prefix') { 'billing' } # billing_messages, billing_consumer_groups, ...
 
   # A value with lifecycle hooks
   c.component!('db') do
     build { Sequel.sqlite('my_app.db') }
     teardown(&:disconnect)
-  end
-
-  # A value built from other components, with its own lifecycle
-  c.component!('store', %w[db notifier logger]) do
-    build { |db, notifier, logger| Sourced::Store.new(db, notifier:, logger:, prefix: 'billing') }
-    start { |store, _| store.setup! } # create tables, compile the codec
   end
 end
 
@@ -1210,7 +1206,16 @@ Sourced.teardown! # stop workers, then tear down in reverse dependency order
 
 Values are checked against their types when they're built, so `config!('workers.count') { '4' }` fails the boot naming `workers.count`. Building only constructs objects: the store creates its tables and compiles its codec, and the router registers consumer groups, when Sourced starts.
 
-Re-implementing a component replaces its lifecycle hooks along with how it's built. Overriding `db` (ex. a file-backed SQLite database) keeps the store's setup, but a re-implemented `store` must bring its own, as above: `Sourced::Store` needs `setup!` on start. `Sourced.store`, `Sourced.router` and `Sourced.topology` read components, and raise `Sourced::Component::NotBuiltError` until Sourced is built.
+Re-implementing a component replaces its lifecycle hooks along with how it's built. Overriding `db` (ex. a file-backed SQLite database) or `store.table_prefix` keeps the store's setup, but a re-implemented `store` must bring its own. A component can depend on others, too:
+
+```ruby
+Sourced.config.component!('store', %w[db notifier logger]) do
+  build { |db, notifier, logger| MyStore.new(db, notifier:, logger:) }
+  start { |store, _| store.connect! } # whatever this store needs on start
+end
+```
+
+`Sourced.store`, `Sourced.router` and `Sourced.topology` read components, and raise `Sourced::Component::NotBuiltError` until Sourced is built.
 
 Settings can come from ENV, decoded into each component's type:
 
@@ -1345,7 +1350,13 @@ sequel -m db/migrations sqlite://my_app.db
 
 #### Custom table prefix
 
-By default, tables are prefixed with `sourced_` (e.g. `sourced_messages`, `sourced_consumer_groups`). Pass a `prefix:` to `Store.new` to customise this — for example when running multiple Sourced stores in the same database:
+By default, tables are prefixed with `sourced_` (e.g. `sourced_messages`, `sourced_consumer_groups`). Configure `store.table_prefix` to customise this — for example when running multiple Sourced stores in the same database:
+
+```ruby
+Sourced.config.config!('store.table_prefix') { 'billing' }
+```
+
+A store built by hand takes it as `prefix:`:
 
 ```ruby
 store = Sourced::Store.new(db, prefix: 'billing')

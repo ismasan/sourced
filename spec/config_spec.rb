@@ -52,7 +52,7 @@ RSpec.describe Sourced::Config do
   describe '.build' do
     it 'declares every component, without building anything' do
       expect(config.index.keys).to include(
-        'logger', 'db', 'notifier', 'executor', 'error_strategy', 'store', 'router', 'topology',
+        'logger', 'db', 'notifier', 'executor', 'error_strategy', 'store', 'store.table_prefix', 'router', 'topology',
         'workers.count', 'workers.batch_size', 'workers.max_drain_rounds', 'workers.catchup_interval',
         'workers.shutdown_timeout',
         'housekeeping.interval', 'housekeeping.claim_ttl_seconds', 'dispatcher'
@@ -75,6 +75,8 @@ RSpec.describe Sourced::Config do
       expect(config['store']).to be_a(Sourced::Store)
       expect(config['store'].db).to be(config['db'])
       expect(config['store'].notifier).to be(config['notifier'])
+      expect(config['store.table_prefix']).to eq('sourced')
+      expect(config['store'].installer.messages_table).to eq(:sourced_messages)
       expect(config['router']).to be_a(Sourced::Router)
       expect(config['router'].store).to be(config['store'])
       expect(config['router'].error_strategy).to be(config['error_strategy'])
@@ -92,7 +94,7 @@ RSpec.describe Sourced::Config do
       described_class.register(config, ConfigTestReactor)
       components = config.graph.components.to_h { |c| [c[:key], c] }
 
-      expect(components['store'][:deps]).to eq(%w[db notifier logger])
+      expect(components['store'][:deps]).to eq(%w[db notifier logger store.table_prefix])
       expect(components['router'][:deps]).to eq(%w[store reactors.ConfigTestReactor error_strategy])
       expect(components['topology'][:deps]).to eq(%w[reactors.ConfigTestReactor])
       expect(components['dispatcher'][:deps]).to include('router', 'executor', 'workers.count')
@@ -109,6 +111,21 @@ RSpec.describe Sourced::Config do
       config.build!
 
       expect(config['store'].installed?).to be(false)
+    end
+
+    it 'builds the store with store.table_prefix' do
+      config.config!('store.table_prefix') { 'billing' }
+      config.config!('workers.count') { 0 }
+      config.start!
+
+      expect(config['store'].installer.messages_table).to eq(:billing_messages)
+      expect(config['db'].table_exists?(:billing_messages)).to be(true)
+    end
+
+    it 'rejects a table prefix that is not an identifier' do
+      config.config!('store.table_prefix') { 'billing; drop table' }
+
+      expect { config.build! }.to raise_error(Plumb::ParseError, /store\.table_prefix/)
     end
 
     it 'type-checks overrides' do

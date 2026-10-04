@@ -5,7 +5,8 @@
 - **Configuration is a component tree.** `Sourced.config` is the root of a
   [sourced-component](https://github.com/ismasan/sourced-component) tree built by
   `Sourced::Config.build`, declaring typed components with defaults and dependencies:
-  `logger`, `db`, `notifier`, `executor`, `error_strategy`, `store`, `reactors.*`,
+  `logger`, `db`, `notifier`, `executor`, `error_strategy`, `store`,
+  `store.table_prefix`, `reactors.*`,
   `router`, `topology`, `workers.*`, `housekeeping.*` and `dispatcher`. Host apps mount
   it (`App.mount('sourced', Sourced)`) and override components; standalone apps
   override them on `Sourced.config` (`Sourced.configure` yields it). The tree can be

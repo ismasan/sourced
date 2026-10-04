@@ -98,7 +98,7 @@ Sourced.start!(task)                              # build + start; workers spawn
 Sourced.teardown!
 ```
 
-Tree: `logger`, `db`, `notifier`, `executor`, `error_strategy`, `store` (deps db/notifier/logger), `reactors.*`, `router` (deps store, `reactors.*`, error_strategy), `topology` (deps `reactors.*`), `workers.{count,batch_size,max_drain_rounds,catchup_interval,shutdown_timeout}`, `housekeeping.{interval,claim_ttl_seconds}`, `dispatcher`.
+Tree: `logger`, `db`, `notifier`, `executor`, `error_strategy`, `store` (deps db/notifier/logger/`store.table_prefix`), `reactors.*`, `router` (deps store, `reactors.*`, error_strategy), `topology` (deps `reactors.*`), `workers.{count,batch_size,max_drain_rounds,catchup_interval,shutdown_timeout}`, `housekeeping.{interval,claim_ttl_seconds}`, `dispatcher`.
 
 - **Build constructs, start touches the world.** `build!` never writes to the database. On start, the `store` component sets up the store (`Store#setup!`), then `Router#setup!` registers consumer groups and freezes the error strategy; the dispatcher spawns into the start context (`workers.count` 0 → no-op in any context; otherwise the context must respond to `spawn`/`async`).
 - **Re-implementing a component replaces all its hooks.** A component's lifecycle belongs to its implementation: overriding `store` means bringing its lifecycle too (apps normally only override `db`). Side effects that *every* implementation needs go on a dependent instead: the router freezes whatever `error_strategy` is.

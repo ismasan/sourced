@@ -6,6 +6,7 @@ require 'sourced/component'
 require 'sourced/error_strategy'
 require 'sourced/async_executor'
 require 'sourced/inline_notifier'
+require 'sourced/installer'
 
 module Sourced
   # Sourced's configuration: a tree of typed components (see sourced-component),
@@ -24,6 +25,7 @@ module Sourced
   #   executor          AsyncExecutor
   #   error_strategy    ErrorStrategy
   #   store             Store over db. Installs its tables and compiles its codec on start
+  #   store.table_prefix  prefix of the store's table names, ex. 'sourced' => sourced_messages
   #   reactors.*        one component per registered reactor (see .register)
   #   router            routes to reactors.*. On start, registers consumer groups and
   #                     freezes the error strategy (see Router#setup!)
@@ -94,8 +96,9 @@ module Sourced
         # Overriding db (ex. a file-backed SQLite) keeps this lifecycle. Re-implementing
         # store replaces it, along with its hooks: the new store brings its own.
         c.declare('store', StoreInterface)
-        c.component!('store', %w[db notifier logger]) do
-          build { |db, notifier, logger| Store.new(db, notifier:, logger:) }
+        c.declare('store.table_prefix', T::String[Installer::PREFIX_FORMAT]) { 'sourced' }
+        c.component!('store', %w[db notifier logger store.table_prefix]) do
+          build { |db, notifier, logger, prefix| Store.new(db, notifier:, logger:, prefix:) }
           # Creates the tables and compiles the codec, so a message type the store
           # can't persist fails the boot.
           start { |store, _| store.setup! }
