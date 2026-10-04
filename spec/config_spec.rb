@@ -151,6 +151,67 @@ RSpec.describe Sourced::Config do
 
       expect(config['dispatcher'].workers).to be_empty
     end
+
+    it 'compiles the codec of the store' do
+      klass = CodecSpecHelpers.unregistered_message('config_test.warm') do
+        attribute :name, String
+      end
+      config.build!
+      config['store'].message_codec = Sourced::Store::MessageCodec.new(
+        registry: CodecSpecHelpers::Registry.new([klass])
+      )
+
+      config.start!
+
+      expect(config['store'].message_codec.registered?('config_test.warm')).to be(true)
+    end
+
+    it 'refuses to boot when a message type cannot be serialized by the store' do
+      unserializable = CodecSpecHelpers.unregistered_message('config_test.unserializable') do
+        attribute :thing, Sourced::Types::Any[Object]
+      end
+      config.build!
+      config['store'].message_codec = Sourced::Store::MessageCodec.new(
+        registry: CodecSpecHelpers::Registry.new([unserializable])
+      )
+
+      expect { config.start! }.to raise_error(Plumb::TypeError, /field `payload\.thing`/)
+    end
+
+    it 'asks a custom store to prepare itself, whatever that means for it' do
+      custom_store = Class.new do
+        attr_reader :setups
+
+        def initialize = @setups = 0
+        def setup! = @setups += 1
+        def notifier = Sourced::InlineNotifier.new
+        %i[append read read_partition claim_next ack release
+           register_consumer_group worker_heartbeat release_stale_claims].each do |m|
+          define_method(m) { |*, **| nil }
+        end
+      end.new
+      config.config!('store') { custom_store }
+
+      config.start!
+
+      expect(config['store']).to be(custom_store)
+      expect(custom_store.setups).to eq(1)
+    end
+
+    it 'freezes an overriding error strategy' do
+      config.config!('error_strategy') { Sourced::ErrorStrategy.new.retry(times: 2) }
+
+      config.start!
+
+      expect(config['error_strategy']).to be_frozen
+      expect(config['error_strategy'].max_retries).to eq(2)
+    end
+
+    it 'rejects a store that does not implement StoreInterface' do
+      config.config!('store') { Object.new }
+
+      expect { config.build! }.to raise_error(Plumb::ParseError, /store/)
+    end
   end
 
   describe 'tearing down' do
@@ -257,6 +318,115 @@ RSpec.describe Sourced::Config do
 
     it "is booted by the host's root, not its own" do
       expect { config.start! }.to raise_error(Sourced::Component::SubcomponentError)
+    end
+  end
+end
+
+RSpec.describe 'Sourced.config' do
+  before do
+    Sourced.reset!
+    Sourced.config.config!('logger') { Sourced::NULL_LOGGER }
+    Sourced.config.config!('workers.count') { 0 }
+  end
+
+  after do
+    Sourced.teardown! if Sourced.config.root? && Sourced.config.boot_status == :started
+    Sourced.reset!
+  end
+
+  it 'is a configuration tree, memoized until reset!' do
+    config = Sourced.config
+
+    expect(config).to be_a(Sourced::Component)
+    expect(config.declared?('store')).to be(true)
+    expect(Sourced.config).to be(config)
+
+    Sourced.reset!
+    expect(Sourced.config).not_to be(config)
+  end
+
+  it 'is yielded by Sourced.configure' do
+    returned = Sourced.configure do |c|
+      c.config!('workers.batch_size') { 10 }
+    end
+
+    expect(returned).to be(Sourced.config)
+    Sourced.start!
+    expect(Sourced.config['workers.batch_size']).to eq(10)
+  end
+
+  it 'reads the store, router and topology once started' do
+    expect { Sourced.store }.to raise_error(Sourced::Component::NotBuiltError)
+
+    Sourced.register(ConfigTestReactor)
+    Sourced.start!
+
+    expect(Sourced.store).to be(Sourced.config['store'])
+    expect(Sourced.router.reactors).to eq([ConfigTestReactor])
+    expect(Sourced.topology).to eq(Sourced::Topology.build([ConfigTestReactor]))
+    expect(Sourced.logger).to be(Sourced::NULL_LOGGER)
+  end
+
+  it 'tears down with Sourced.teardown!' do
+    Sourced.start!
+    Sourced.teardown!
+
+    expect(Sourced.config.boot_status).to eq(:torn_down)
+  end
+
+  it 'manages consumer groups through the router' do
+    Sourced.register(ConfigTestReactor)
+    Sourced.start!
+
+    Sourced.stop_consumer_group(ConfigTestReactor)
+    expect(Sourced.store.consumer_group_active?('ConfigTestReactor')).to be(false)
+
+    Sourced.start_consumer_group('ConfigTestReactor')
+    expect(Sourced.store.consumer_group_active?('ConfigTestReactor')).to be(true)
+  end
+
+  it 'is mounted by mounting Sourced' do
+    host = Sourced::Component.new
+    host.mount('sourced', Sourced)
+    host.start!
+
+    expect(Sourced.store).to be(host['sourced.store'])
+    expect { Sourced.start! }.to raise_error(Sourced::Component::SubcomponentError)
+  ensure
+    host.teardown!
+  end
+
+  describe 'Sourced.load' do
+    let(:decider_class) do
+      Class.new(Sourced::Decider) do
+        def self.name = 'ConfigLoadDecider'
+
+        partition_by :thing_id
+        consumer_group 'config-load-decider'
+
+        state { |_| { count: 0 } }
+      end
+    end
+
+    it 'uses the configured store when store: is not provided' do
+      Sourced.start!
+      expect(Sourced.store).to receive(:read_partition).and_call_original
+
+      instance, read_result = Sourced.load(decider_class, thing_id: 'abc')
+
+      expect(instance.state[:count]).to eq(0)
+      expect(read_result.messages).to be_empty
+    end
+
+    it 'uses the store: provided, without booting' do
+      other_store = Sourced::Store.new(Sequel.sqlite)
+      other_store.install!
+
+      instance, read_result = Sourced.load(decider_class, store: other_store, thing_id: 'abc')
+
+      expect(instance.state[:count]).to eq(0)
+      expect(read_result.messages).to be_empty
+      expect(Sourced.config.boot_status).to eq(:open)
     end
   end
 end

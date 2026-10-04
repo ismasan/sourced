@@ -2,167 +2,101 @@
 
 require 'spec_helper'
 require 'sourced'
+require 'timeout'
+require 'sourced/thread_executor'
 
 RSpec.describe Sourced::Supervisor do
-  let(:executor) { double('Executor', new_queue: Thread::Queue.new) }
-  let(:logger) { instance_double('Logger', info: nil, warn: nil) }
-  let(:store_notifier) { Sourced::InlineNotifier.new }
-  let(:store) { double('Store', notifier: store_notifier) }
-  let(:reactor1) { double('Reactor1', handled_messages: [double(type: 'event1')], group_id: 'Reactor1', partition_keys: [:id]) }
-  let(:reactors) { [reactor1] }
-  let(:router) { instance_double(Sourced::Router, store: store, reactors: reactors) }
-  let(:task) { double('Task', spawn: nil) }
-  let(:work_queue) { Sourced::WorkQueue.new(max_per_reactor: 2, queue: Queue.new) }
+  let(:config) do
+    Sourced::Config.build.tap do |c|
+      c.config!('logger') { Sourced::NULL_LOGGER }
+      c.config!('workers.count') { 0 }
+    end
+  end
+
+  let(:handlers) { {} }
 
   before do
-    allow(Sourced::WorkQueue).to receive(:new).and_return(work_queue)
-    allow(executor).to receive(:start).and_yield(task)
-    allow(Signal).to receive(:trap)
+    allow(Signal).to receive(:trap) { |signal, &block| handlers[signal] = block }
   end
 
   after do
-    Sourced.reset!
+    config.teardown! if config.boot_status == :started
   end
 
-  describe '.start' do
-    it 'creates a new supervisor instance and starts it' do
-      supervisor_instance = instance_double(described_class)
-      expect(described_class).to receive(:new).with(
-        router: router,
-        logger: logger,
-        count: 3
-      ).and_return(supervisor_instance)
-      expect(supervisor_instance).to receive(:start)
-
-      described_class.start(router: router, logger: logger, count: 3)
-    end
+  # Runs the supervisor in a thread, waiting until the tree has started
+  def run_in_background(supervisor)
+    thread = Thread.new { supervisor.start }
+    Timeout.timeout(2) { sleep 0.01 until config.boot_status == :started || !thread.alive? }
+    thread
   end
 
-  describe '#start' do
-    subject(:supervisor) do
-      described_class.new(
-        router: router,
-        logger: logger,
-        count: 2,
-        executor: executor
-      )
-    end
+  context 'with a ThreadExecutor' do
+    before { config.config!('executor') { Sourced::ThreadExecutor.new } }
 
-    it 'sets up INT and TERM signal handlers' do
-      expect(Signal).to receive(:trap).with('INT')
-      expect(Signal).to receive(:trap).with('TERM')
-      supervisor.start
-    end
+    it 'boots the tree, and tears it down on #stop' do
+      supervisor = described_class.new(config:)
+      thread = run_in_background(supervisor)
+      expect(config.boot_status).to eq(:started)
+      expect(config['store'].installed?).to be(true)
 
-    it 'creates Dispatcher with correct params' do
-      expect(Sourced::Dispatcher).to receive(:new).with(
-        router: router,
-        worker_count: 2,
-        batch_size: 50,
-        max_drain_rounds: 10,
-        catchup_interval: 5,
-        housekeeping_interval: 30,
-        claim_ttl_seconds: 120,
-        executor: executor,
-        logger: logger
-      ).and_call_original
-
-      supervisor.start
-    end
-
-    it 'passes custom params through to Dispatcher' do
-      custom_supervisor = described_class.new(
-        router: router,
-        logger: logger,
-        count: 4,
-        batch_size: 100,
-        max_drain_rounds: 20,
-        catchup_interval: 10,
-        housekeeping_interval: 60,
-        claim_ttl_seconds: 300,
-        executor: executor
-      )
-
-      expect(Sourced::Dispatcher).to receive(:new).with(
-        router: router,
-        worker_count: 4,
-        batch_size: 100,
-        max_drain_rounds: 20,
-        catchup_interval: 10,
-        housekeeping_interval: 60,
-        claim_ttl_seconds: 300,
-        executor: executor,
-        logger: logger
-      ).and_call_original
-
-      custom_supervisor.start
-    end
-
-    it 'spawns via executor (notifier + catchup + scheduler + reaper + 2 workers = 6 spawns)' do
-      expect(executor).to receive(:start).and_yield(task)
-      # 1 notifier + 1 catchup_poller + 1 scheduled_message_poller + 1 stale_claim_reaper + 2 workers = 6 spawns
-      expect(task).to receive(:spawn).exactly(6).times
-
-      supervisor.start
-    end
-  end
-
-  describe '#stop' do
-    subject(:supervisor) do
-      described_class.new(
-        router: router,
-        logger: logger,
-        count: 2,
-        executor: executor
-      )
-    end
-
-    before do
-      supervisor.start
-    end
-
-    it 'logs shutdown information' do
-      expect(logger).to receive(:info).with('Sourced::Supervisor: stopping dispatcher')
-      expect(logger).to receive(:info).with('Sourced::Supervisor: all workers stopped')
-      # Dispatcher also logs
-      allow(logger).to receive(:info)
       supervisor.stop
+      thread.join(2)
+
+      expect(thread).not_to be_alive
+      expect(config.boot_status).to eq(:torn_down)
     end
 
-    it 'stops the dispatcher' do
-      dispatcher = supervisor.instance_variable_get(:@dispatcher)
-      expect(dispatcher).to receive(:stop)
-      # Suppress logs from Supervisor#stop
-      allow(logger).to receive(:info)
-      supervisor.stop
-    end
-  end
+    %w[INT TERM].each do |signal|
+      it "traps #{signal} to tear down" do
+        supervisor = described_class.new(config:)
+        thread = run_in_background(supervisor)
 
-  describe 'signal handling' do
-    subject(:supervisor) do
-      described_class.new(
-        router: router,
-        logger: logger,
-        executor: executor
-      )
-    end
+        handlers.fetch(signal).call
+        thread.join(2)
 
-    it 'traps INT and TERM signals to call stop' do
-      int_handler = nil
-      term_handler = nil
-
-      allow(Signal).to receive(:trap) do |signal, &block|
-        int_handler = block if signal == 'INT'
-        term_handler = block if signal == 'TERM'
+        expect(config.boot_status).to eq(:torn_down)
       end
-
-      supervisor.start
-
-      expect(supervisor).to receive(:stop)
-      int_handler.call
-
-      expect(supervisor).to receive(:stop)
-      term_handler.call
     end
+  end
+
+  it 'spawns the dispatcher and its own shutdown into the executor task' do
+    task = Class.new do
+      attr_reader :spawned
+
+      def initialize = @spawned = []
+
+      def spawn(&block)
+        @spawned << block
+        self
+      end
+    end.new
+    executor = Class.new do
+      define_method(:initialize) { |task| @task = task }
+      def new_queue = Thread::Queue.new
+      def start = yield(@task)
+    end.new(task)
+    config.config!('executor') { executor }
+    config.config!('workers.count') { 2 }
+
+    described_class.new(config:).start
+
+    # notifier, catch-up poller, scheduled message poller, reaper, 2 workers, and the shutdown task
+    expect(task.spawned.size).to eq(7)
+    expect(config.boot_status).to eq(:started)
+  end
+
+  it "boots the root of a host's tree" do
+    host = Sourced::Component.new
+    host.mount('sourced', config)
+    host.config!('sourced.executor') { Sourced::ThreadExecutor.new }
+
+    supervisor = described_class.new(config:)
+    thread = Thread.new { supervisor.start }
+    Timeout.timeout(2) { sleep 0.01 until host.boot_status == :started }
+
+    supervisor.stop
+    thread.join(2)
+
+    expect(host.boot_status).to eq(:torn_down)
   end
 end

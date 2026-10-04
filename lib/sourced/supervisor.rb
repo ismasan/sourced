@@ -1,96 +1,78 @@
 # frozen_string_literal: true
 
-require 'sourced/dispatcher'
-
 module Sourced
-  # Top-level process entry point for background workers.
-  # Creates a {Dispatcher} (which embeds Workers, CatchUpPoller, notifier,
-  # and StaleClaimReaper) and spawns it into an executor.
+  # Top-level entry point for a background worker process. Boots the root of
+  # Sourced's configuration tree inside its executor, so the dispatcher spawns
+  # workers into the executor's task, then blocks until stopped (INT, TERM or
+  # {#stop}) and tears the tree down.
   #
-  # @example Start with defaults
-  #   Sourced::Supervisor.start(router: my_router)
+  # @example Standalone
+  #   Sourced.register(Courses)
+  #   Sourced::Supervisor.start
   #
-  # @example Create and start manually
-  #   supervisor = Sourced::Supervisor.new(router: my_router, count: 4)
-  #   supervisor.start
+  # @example Mounted in a host app: boots the host's whole tree
+  #   App.mount('sourced', Sourced)
+  #   Sourced::Supervisor.start
   class Supervisor
-    # Start a new supervisor instance with the given options.
-    #
-    # @param args [Hash] Arguments passed to {#initialize}
-    # @return [void] This method blocks until the supervisor is stopped
+    SIGNALS = %w[INT TERM].freeze
+
+    # @return [void] blocks until stopped
     def self.start(...)
       new(...).start
     end
 
-    # @param router [Sourced::Router] the router providing reactors and store
-    # @param logger [Object] Logger instance for supervisor output
-    # @param count [Integer] Number of worker fibers to spawn
-    # @param batch_size [Integer] Messages per backend fetch
-    # @param max_drain_rounds [Integer] Max drain iterations per reactor pickup
-    # @param catchup_interval [Numeric] Seconds between catch-up polls
-    # @param housekeeping_interval [Numeric] Seconds between heartbeat/reap cycles
-    # @param claim_ttl_seconds [Integer] Stale claim age threshold in seconds
-    # @param executor [Object] Executor instance for running concurrent workers
-    def initialize(
-      router: Sourced.router,
-      logger: Sourced.config.logger,
-      count: Sourced.config.worker_count,
-      batch_size: Sourced.config.batch_size,
-      max_drain_rounds: Sourced.config.max_drain_rounds,
-      catchup_interval: Sourced.config.catchup_interval,
-      housekeeping_interval: Sourced.config.housekeeping_interval,
-      claim_ttl_seconds: Sourced.config.claim_ttl_seconds,
-      executor: Sourced.config.executor
-    )
-      @router = router
-      @logger = logger
-      @count = count
-      @batch_size = batch_size
-      @max_drain_rounds = max_drain_rounds
-      @catchup_interval = catchup_interval
-      @housekeeping_interval = housekeeping_interval
-      @claim_ttl_seconds = claim_ttl_seconds
-      @executor = executor
+    # @param config [Sourced::Component] Sourced's configuration, standalone or
+    #   mounted in a host. The supervisor boots the root of its tree, and reads
+    #   +executor+, +logger+ and +workers.count+ from it.
+    def initialize(config: Sourced.config)
+      @config = config
+      @root = config.root
+      @stop_reader, @stop_writer = IO.pipe
     end
 
-    # Start the supervisor and dispatcher.
-    # This method blocks until the supervisor receives a shutdown signal.
+    # Boot, block until stopped, then tear down.
+    # @return [void]
     def start
-      logger.info("Sourced::Supervisor: starting with #{@count} workers and #{@executor} executor")
-      set_signal_handlers
+      root.build!
+      executor = config['executor']
+      logger.info("Sourced::Supervisor: starting #{config['workers.count']} workers with #{executor}")
+      trap_signals
 
-      @dispatcher = Dispatcher.new(
-        router: @router,
-        worker_count: @count,
-        batch_size: @batch_size,
-        max_drain_rounds: @max_drain_rounds,
-        catchup_interval: @catchup_interval,
-        housekeeping_interval: @housekeeping_interval,
-        claim_ttl_seconds: @claim_ttl_seconds,
-        executor: @executor,
-        logger: logger
-      )
-
-      @executor.start do |task|
-        @dispatcher.start(task)
+      executor.start do |task|
+        root.start!(task)
+        task.spawn { shut_down_when_stopped }
       end
     end
 
-    # Stop all components gracefully.
+    # Ask the supervisor to tear down. Safe to call from a signal handler:
+    # lifecycle methods take a lock, which Ruby doesn't allow in trap context,
+    # so this only wakes up the task that tears down.
+    # @return [void]
     def stop
-      logger.info('Sourced::Supervisor: stopping dispatcher')
-      @dispatcher&.stop
-      logger.info('Sourced::Supervisor: all workers stopped')
-    end
-
-    # Set up signal handlers for graceful shutdown.
-    def set_signal_handlers
-      Signal.trap('INT') { stop }
-      Signal.trap('TERM') { stop }
+      @stop_writer.write_nonblock('.')
+    rescue IO::WaitWritable, IOError
+      nil # already asked to stop
     end
 
     private
 
-    attr_reader :logger
+    attr_reader :config, :root
+
+    def logger = config['logger']
+
+    def trap_signals
+      SIGNALS.each { |signal| Signal.trap(signal) { stop } }
+    end
+
+    # Spawned into the executor next to the workers, so teardown runs where they do
+    def shut_down_when_stopped
+      @stop_reader.read(1)
+      logger.info('Sourced::Supervisor: stopping')
+      root.teardown!
+      logger.info('Sourced::Supervisor: stopped')
+    ensure
+      @stop_reader.close
+      @stop_writer.close
+    end
   end
 end

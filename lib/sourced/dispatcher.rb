@@ -87,21 +87,6 @@ module Sourced
     # @return [Array<Sourced::Worker>] worker instances managed by this dispatcher
     attr_reader :workers
 
-    def self.start(task)
-      config = Sourced.config
-      dispatcher = Sourced::Dispatcher.new(
-        router: Sourced.router,
-        worker_count: config.worker_count,
-        batch_size: config.batch_size,
-        max_drain_rounds: config.max_drain_rounds,
-        catchup_interval: config.catchup_interval,
-        housekeeping_interval: config.housekeeping_interval,
-        claim_ttl_seconds: config.claim_ttl_seconds,
-        executor: config.executor,
-        logger: config.logger
-      ).start(task)
-    end
-
     # @param router [Sourced::Router] the router providing reactors and store
     # @param worker_count [Integer] number of worker fibers to spawn (default 2)
     # @param batch_size [Integer] max messages per claim (default 50)

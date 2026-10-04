@@ -22,10 +22,11 @@ module Sourced
   #   db                in-memory SQLite. Disconnected on teardown
   #   notifier          InlineNotifier
   #   executor          AsyncExecutor
-  #   error_strategy    ErrorStrategy. Frozen on start
-  #   store             Store over db. Installs tables and compiles its codec on start
+  #   error_strategy    ErrorStrategy
+  #   store             Store over db
   #   reactors.*        one component per registered reactor (see .register)
-  #   router            routes to reactors.*. Registers consumer groups on start
+  #   router            routes to reactors.*. On start, sets up the store, registers
+  #                     consumer groups and freezes the error strategy (see Router#setup!)
   #   topology          message-flow graph of reactors.*
   #   workers.*         count, batch_size, max_drain_rounds, catchup_interval
   #   housekeeping.*    interval, claim_ttl_seconds
@@ -87,21 +88,16 @@ module Sourced
         c.declare('notifier', NotifierInterface) { InlineNotifier.new }
         c.declare('executor', ExecutorInterface) { AsyncExecutor.new }
 
-        c.declare('error_strategy', ErrorStrategyInterface)
-        c.component!('error_strategy') do
-          build { ErrorStrategy.new }
-          start { |strategy, _| strategy.freeze }
-        end
+        c.declare('error_strategy', ErrorStrategyInterface) { ErrorStrategy.new }
 
         c.declare('store', StoreInterface)
         c.component!('store', %w[db notifier logger]) do
-          prepare { require 'sourced/store' }
           build { |db, notifier, logger| Store.new(db, notifier:, logger:) }
-          # Whatever this store needs to be usable: Store creates its tables and
-          # compiles its serializer, so a message type it can't persist fails the boot.
-          start { |store, _| store.setup! }
         end
 
+        # The router's start sets up the store and freezes the error strategy
+        # (see Router#setup!), so overriding either only needs to build it:
+        # re-implementing a component replaces its hooks.
         c.declare('router', Router)
         c.component!('router', %w[store reactors.* error_strategy]) do
           build do |store, reactors, error_strategy|

@@ -2,6 +2,37 @@
 
 ### Changed
 
+- **Configuration is a component tree.** `Sourced.config` is the root of a
+  [sourced-component](https://github.com/ismasan/sourced-component) tree built by
+  `Sourced::Config.build`, declaring typed components with defaults and dependencies:
+  `logger`, `db`, `notifier`, `executor`, `error_strategy`, `store`, `reactors.*`,
+  `router`, `topology`, `workers.*`, `housekeeping.*` and `dispatcher`. Host apps mount
+  it (`App.mount('sourced', Sourced)`) and override components; standalone apps
+  override them on `Sourced.config` (`Sourced.configure` yields it). The tree can be
+  inspected without booting (`Sourced.config.tree`, `.graph.to_mermaid`).
+  Requires Ruby 3.2.
+  - Removed `Sourced::Configuration` and its setters (`c.store =`, `c.worker_count =`,
+    ...): implement components instead, ex. `c.config!('workers.count') { 4 }`.
+    `Configuration::StoreInterface` is now `Config::StoreInterface`.
+  - Removed `Sourced.setup!`. Boot with `Sourced.start!(task)` (or the host's
+    `start!`); forking servers `Sourced.config.prepare!` before forking and start in
+    each child. `Sourced.teardown!` stops workers and disconnects.
+  - `Sourced.store`, `.router` and `.topology` raise `NotBuiltError` until Sourced is
+    built, instead of setting up on first use.
+  - `Sourced.register` declares the reactor as `reactors.<group_id>`: registering two
+    reactors with the same group_id raises, and so does registering after boot.
+    Removed `Sourced.reset_topology`.
+  - Removed `Dispatcher.start(task)`; the `dispatcher` component spawns workers into
+    the context Sourced starts with. `Supervisor.new(config: Sourced.config)` boots
+    the root of the tree, and replaces its old keyword arguments.
+  - `Store.new` no longer reads a late-bound `Sourced.config.notifier`: it takes
+    `notifier:` (default: its own `InlineNotifier`), and runs no queries until
+    `install!`.
+  - `Router.new(store:, reactors:, error_strategy:)`; `Router#setup!` sets up the
+    store, registers consumer groups and freezes the error strategy. Reactors no
+    longer get a default `on_exception`: the router calls a reactor's own, or its
+    error strategy.
+
 - Requires plumb 0.4 and sourced-message 0.4.
 - `Store::MessageCodec` encodes and decodes whole messages, not just payloads. The
   store writes the encoded payload and metadata as JSON and the envelope to columns as

@@ -32,90 +32,94 @@ module Sourced
     end
   end
 
-  # @return [Configuration] the global Sourced configuration instance
+  # Sourced's configuration: the root of a tree of typed components, with
+  # defaults, dependencies and a lifecycle (see {Config} for the tree).
+  #
+  #   Sourced.config.config!('workers.count') { 4 }
+  #   Sourced.config.component!('db') { build { Sequel.sqlite('app.db') }; teardown(&:disconnect) }
+  #   Sourced.start!
+  #
+  # A host app with its own component tree mounts it instead, and boots it with
+  # the rest of the app:
+  #
+  #   App.mount('sourced', Sourced)
+  #   App.config!('sourced.db', ['db']) { |db| db }
+  #   App.start!
+  #
+  # @return [Sourced::Component]
   def self.config
-    @config ||= Configuration.new
+    @config ||= Config.build
   end
 
-  # Configure the Sourced module. Blocks accumulate across calls (so different
-  # layers can each contribute configuration) and are all re-run on {.setup!}.
-  # This block is also applied immediately to the reused {.config} instance.
-  # @yieldparam config [Configuration]
-  def self.configure(&block)
-    configure_blocks << block
-    block.call(config)
-    config.setup!
+  # Mountable: +App.mount('sourced', Sourced)+ mounts {.config}
+  # @return [Sourced::Component]
+  def self.to_component = config
+
+  # Yields {.config}, for configuring a standalone Sourced in a block.
+  # @yieldparam config [Sourced::Component]
+  # @return [Sourced::Component]
+  def self.configure
+    yield config
+    config
   end
 
-  # The accumulated configure blocks, replayed in registration order by {.setup!}.
-  # @return [Array<Proc>]
-  def self.configure_blocks
-    @configure_blocks ||= []
-  end
-  private_class_method :configure_blocks
-
-  # Re-run all configure blocks on the reused Configuration, dropping the existing
-  # store/router first so fresh database connections are established. Safe to call
-  # after a process fork. Config-only settings (e.g. error_strategy callbacks
-  # registered outside the configure blocks) are preserved, and reactors registered
-  # via {.register} are re-registered on the rebuilt router (and their consumer
-  # groups re-registered against the fresh store connection).
-  def self.setup!
-    reactors = config.router&.reactors&.dup || []
-    config.disconnect!
-    configure_blocks.each { |block| block.call(config) }
-    config.setup!
-    reactors.each { |reactor| config.router.register(reactor) }
-    config.freeze
-    @topology = nil
-  end
-
-  # Register a reactor class with the global router.
+  # Register a reactor, as a component under +reactors+ in {.config}.
+  # Must be called before the configuration is prepared or booted.
+  # @param reactor [Class] a reactor (see {Router#register} for the protocol)
+  # @return [Sourced::Component] the reactor's node
+  # @raise [ArgumentError] if a reactor with the same group_id is already registered
+  # @raise [Sourced::Component::LockedComponentError] once the configuration is prepared
   def self.register(reactor)
-    config.setup!
-    config.router.register(reactor)
-    @topology = nil
+    Config.register(config, reactor)
+  end
+
+  # Boot a standalone Sourced: build every component, set up the store and
+  # consumer groups, and spawn workers into +context+. Workers need an executor
+  # task or Async::Task to spawn into: see {Supervisor}, or set
+  # +workers.count+ to 0 to run none in this process.
+  # A mounted Sourced is booted by its host's root.
+  # @return [Sourced::Component]
+  def self.start!(context = Thread.current)
+    config.start!(context)
+  end
+
+  # Stop workers and tear down every component, in reverse dependency order.
+  # @return [Sourced::Component]
+  def self.teardown!
+    config.teardown!
   end
 
   # @return [Sourced::Store]
-  def self.store
-    config.setup!
-    config.store
-  end
+  # @raise [Sourced::Component::NotBuiltError] until the configuration is built
+  def self.store = config['store']
 
   # @return [Sourced::Router]
-  def self.router
-    config.setup!
-    config.router
-  end
+  # @raise [Sourced::Component::NotBuiltError] until the configuration is built
+  def self.router = config['router']
+
+  # The message-flow graph of every registered reactor (see {Topology}).
+  # @return [Array]
+  # @raise [Sourced::Component::NotBuiltError] until the configuration is built
+  def self.topology = config['topology']
+
+  # @return [Logger]
+  def self.logger = config['logger']
 
   def self.stop_consumer_group(reactor_or_id, message = nil)
-    config.router.stop_consumer_group(reactor_or_id, message)
+    router.stop_consumer_group(reactor_or_id, message)
   end
 
   def self.reset_consumer_group(reactor_or_id)
-    config.router.reset_consumer_group(reactor_or_id)
+    router.reset_consumer_group(reactor_or_id)
   end
 
   def self.start_consumer_group(reactor_or_id)
-    config.router.start_consumer_group(reactor_or_id)
+    router.start_consumer_group(reactor_or_id)
   end
 
-  # Reset the global configuration. For test teardown.
+  # Drop the configuration, so the next {.config} builds a fresh one. For specs.
   def self.reset!
     @config = nil
-    @configure_blocks = nil
-    @topology = nil
-  end
-
-  # Build and cache the topology graph from all reactors registered with
-  # the global {.router}.
-  def self.topology
-    @topology ||= Topology.build(router.reactors)
-  end
-
-  def self.reset_topology
-    @topology = nil
   end
 
   # Generate a standardized method name for message handlers.
@@ -182,7 +186,7 @@ module Sourced
   end
 
   private_class_method def self.advance_registered_offsets(store, reactor_class, partition_attrs, position)
-    return unless config.router&.reactors&.include?(reactor_class)
+    return unless config.declared?(Config.reactor_key(reactor_class))
 
     store.advance_offset(
       reactor_class.group_id,
@@ -192,7 +196,8 @@ module Sourced
   end
 end
 
-require 'sourced/configuration'
+require 'sourced/config'
+require 'sourced/store'
 require 'sourced/message'
 require 'sourced/message_ext'
 require 'sourced/actions'

@@ -7,7 +7,7 @@ module Sourced
   class Router
     attr_reader :store, :reactors, :error_strategy
 
-    # @param store [Configuration::StoreInterface]
+    # @param store [Config::StoreInterface]
     # @param reactors [Array<Class>] reactors to route to. Validated here, but their
     #   consumer groups are only registered with the store by {#setup!}
     # @param error_strategy [#call] handles errors of reactors that don't define
@@ -20,10 +20,14 @@ module Sourced
       reactors.each { |reactor| add(reactor) }
     end
 
-    # Register the consumer groups of every reactor with the store. Idempotent.
+    # Prepare everything routing needs: set up the store (see {Store#setup!}),
+    # register the consumer groups of every reactor with it, and freeze the
+    # error strategy. Idempotent.
     # @return [self]
     def setup!
+      store.setup!
       @reactors.each { |reactor| register_consumer_group(reactor) }
+      error_strategy.freeze
       self
     end
 

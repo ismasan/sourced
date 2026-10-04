@@ -125,13 +125,9 @@ module Sourced
     # @return [Sourced::Installer]
     attr_reader :installer
 
-    # The notifier this store announces appends through: the one injected at
-    # construction, else +Sourced.config.notifier+ resolved on each call — so a
-    # notifier configured after this store was built (or after +Sourced.setup!+
-    # rebuilt it) still takes effect.
-    #
+    # The notifier this store announces appends through.
     # @return [#notify_new_messages, #notify_reactor_resumed, #subscribe, #start, #stop]
-    def notifier = @notifier || Sourced.config.notifier
+    attr_reader :notifier
 
     # This store's serializer, shared with every other store in the process.
     # Assignable, so a store can be given one scoped to its own message registry.
@@ -139,11 +135,11 @@ module Sourced
     attr_accessor :message_codec
 
     # @param db [Sequel::SQLite::Database] a Sequel SQLite connection
-    # @param notifier [#notify_new_messages, #notify_reactor_resumed, nil] notifier for
-    #   dispatch signals; when nil the configured +Sourced.config.notifier+ is used (see {#notifier})
+    # @param notifier [#notify_new_messages, #notify_reactor_resumed] notifier for
+    #   dispatch signals (default: an in-process {InlineNotifier})
     # @param logger [Logger, nil] optional logger (defaults to {NULL_LOGGER})
     # @param prefix [String] table name prefix (default 'sourced')
-    def initialize(db, notifier: nil, logger: nil, prefix: 'sourced')
+    def initialize(db, notifier: InlineNotifier.new, logger: nil, prefix: 'sourced')
       @db = db
       @notifier = notifier
       @logger = logger || NULL_LOGGER
@@ -206,7 +202,7 @@ module Sourced
     end
 
     # Prepare this store for use: create its tables and compile its serializer.
-    # Called once at boot by {Configuration#setup!}, so no request pays for the
+    # Called once at boot by {Router#setup!}, so no request pays for the
     # compilation and a message type this store can't persist fails the boot.
     # Idempotent.
     #
