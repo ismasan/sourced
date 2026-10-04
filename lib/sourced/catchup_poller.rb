@@ -29,7 +29,7 @@ module Sourced
     # @param reactors [Array<Class>] reactor classes to push each interval
     # @param interval [Numeric] seconds between pushes (default 5)
     # @param logger [Object] logger instance
-    def initialize(work_queue:, reactors:, interval: 5, logger: Sourced.config.logger)
+    def initialize(work_queue:, reactors:, interval: 5, logger: NULL_LOGGER)
       @work_queue = work_queue
       @reactors = reactors
       @interval = interval

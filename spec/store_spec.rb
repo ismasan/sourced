@@ -85,6 +85,15 @@ RSpec.describe Sourced::Store do
     store.install!
   end
 
+  describe '.new' do
+    it "doesn't touch the database" do
+      fresh_db = Sequel.sqlite
+      expect(fresh_db).not_to receive(:run)
+
+      Sourced::Store.new(fresh_db)
+    end
+  end
+
   describe '#installed?' do
     it 'returns true after install!' do
       expect(store.installed?).to be true
@@ -116,6 +125,11 @@ RSpec.describe Sourced::Store do
 
     it 'is idempotent' do
       expect { store.install! }.not_to raise_error
+    end
+
+    it 'configures the connection' do
+      expect(db.fetch('PRAGMA foreign_keys').first.values.first).to eq(1)
+      expect(db.fetch('PRAGMA busy_timeout').first.values.first).to eq(5000)
     end
   end
 

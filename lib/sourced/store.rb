@@ -141,20 +141,14 @@ module Sourced
     # @param db [Sequel::SQLite::Database] a Sequel SQLite connection
     # @param notifier [#notify_new_messages, #notify_reactor_resumed, nil] notifier for
     #   dispatch signals; when nil the configured +Sourced.config.notifier+ is used (see {#notifier})
-    # @param logger [Logger, nil] optional logger (defaults to Sourced.config.logger)
+    # @param logger [Logger, nil] optional logger (defaults to {NULL_LOGGER})
     # @param prefix [String] table name prefix (default 'sourced')
     def initialize(db, notifier: nil, logger: nil, prefix: 'sourced')
       @db = db
       @notifier = notifier
-      @logger = logger || Sourced.config.logger
+      @logger = logger || NULL_LOGGER
       @message_codec = MessageCodec.default
       Sequel.extension(:fiber_concurrency)
-      # foreign_keys and busy_timeout are already applied on every connection by
-      # Sequel's SQLite adapter defaults; we set them explicitly for clarity.
-      # journal_mode = WAL is a persistent, database-level property, so once is enough.
-      @db.run('PRAGMA foreign_keys = ON')
-      @db.run('PRAGMA journal_mode = WAL')
-      @db.run('PRAGMA busy_timeout = 5000')
 
       @prefix = prefix
       @installer = Installer.new(db, logger: @logger, prefix: prefix)
@@ -206,6 +200,7 @@ module Sourced
     # Create all required tables and indexes. Idempotent.
     # @return [void]
     def install!
+      configure_connection!
       installer.install
       optimize!
     end
@@ -1213,6 +1208,16 @@ module Sourced
     end
 
     private
+
+    # foreign_keys and busy_timeout are already applied on every connection by
+    # Sequel's SQLite adapter defaults; we set them explicitly for clarity.
+    # journal_mode = WAL is a persistent, database-level property, so once is enough.
+    # Run on install rather than construction, so building a store doesn't touch the database.
+    def configure_connection!
+      db.run('PRAGMA foreign_keys = ON')
+      db.run('PRAGMA journal_mode = WAL')
+      db.run('PRAGMA busy_timeout = 5000')
+    end
 
     # Resolve a group_id argument that is either a String
     # or an object responding to +#group_id+.

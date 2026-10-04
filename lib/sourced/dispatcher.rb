@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'sourced/async_executor'
 require 'sourced/work_queue'
 require 'sourced/catchup_poller'
 require 'sourced/worker'
@@ -96,6 +97,7 @@ module Sourced
         catchup_interval: config.catchup_interval,
         housekeeping_interval: config.housekeeping_interval,
         claim_ttl_seconds: config.claim_ttl_seconds,
+        executor: config.executor,
         logger: config.logger
       ).start(task)
     end
@@ -108,6 +110,7 @@ module Sourced
     # @param housekeeping_interval [Numeric] seconds between heartbeat/reap cycles (default 30)
     # @param claim_ttl_seconds [Integer] stale claim age threshold in seconds (default 120)
     # @param work_queue [WorkQueue, nil] optional pre-built queue (useful for testing)
+    # @param executor [#new_queue] builds the work queue's underlying queue
     # @param logger [Object] logger instance
     def initialize(
       router:,
@@ -118,7 +121,8 @@ module Sourced
       housekeeping_interval: 30,
       claim_ttl_seconds: 120,
       work_queue: nil,
-      logger: Sourced.config.logger
+      executor: AsyncExecutor.new,
+      logger: NULL_LOGGER
     )
       @logger = logger
       @router = router
@@ -128,7 +132,7 @@ module Sourced
 
       reactors = router.reactors.select { |r| r.handled_messages.any? }.to_a
 
-      @work_queue = work_queue || WorkQueue.new(max_per_reactor: worker_count)
+      @work_queue = work_queue || WorkQueue.new(max_per_reactor: worker_count, queue: executor.new_queue)
 
       @workers = worker_count.times.map do |i|
         Worker.new(

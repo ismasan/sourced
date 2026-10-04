@@ -1,15 +1,30 @@
 # frozen_string_literal: true
 
 require 'sourced/injector'
+require 'sourced/error_strategy'
 
 module Sourced
   class Router
-    attr_reader :store, :reactors
+    attr_reader :store, :reactors, :error_strategy
 
-    def initialize(store:)
+    # @param store [Configuration::StoreInterface]
+    # @param reactors [Array<Class>] reactors to route to. Validated here, but their
+    #   consumer groups are only registered with the store by {#setup!}
+    # @param error_strategy [#call] handles errors of reactors that don't define
+    #   their own +on_exception+ (see {#handle_next_for})
+    def initialize(store:, reactors: [], error_strategy: ErrorStrategy.new)
       @store = store
+      @error_strategy = error_strategy
       @reactors = []
       @needs_history = {}
+      reactors.each { |reactor| add(reactor) }
+    end
+
+    # Register the consumer groups of every reactor with the store. Idempotent.
+    # @return [self]
+    def setup!
+      @reactors.each { |reactor| register_consumer_group(reactor) }
+      self
     end
 
     # Register a reactor. Reactors are duck-typed: only +handled_messages+ and
@@ -23,35 +38,13 @@ module Sourced
     # +exclusive+ governs routing (sole ownership of the handled types).
     # A reactor must declare +partition_by+; an +exclusive+ reactor may omit it to
     # get an id-partitioned queue (one partition per message).
+    #
+    # Also registers the reactor's consumer group with the store.
+    # @return [self]
     def register(reactor_class)
-      ReactorDefaults.apply(reactor_class)
-      exclusive = reactor_class.exclusive?
-      partition_keys = effective_partition_keys(reactor_class)
-
-      # id-partitioning (declared as `partition_by :__id`, or implied by omitting
-      # partition_by) indexes messages by Message#id (key name "__id", chosen to
-      # not collide with a payload attribute) and must be sole-owned, so it is only
-      # allowed for exclusive reactors. This keeps id-indexing safe: a type is only
-      # id-indexed when its lone exclusive owner is id-partitioned.
-      if partition_keys == [:__id] && !exclusive
-        raise ArgumentError,
-          "#{reactor_class} must declare `partition_by`. (Only an `exclusive` reactor may " \
-          "be id-partitioned — one partition per message — whether by omitting " \
-          "partition_by or declaring `partition_by :__id`.)"
-      end
-
-      handled_types = reactor_class.handled_messages.map(&:type).uniq
-      validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
-
-      @reactors << reactor_class
-
-      store.register_consumer_group(
-        reactor_class.group_id,
-        partition_by: partition_keys.map(&:to_s),
-        exclusive: exclusive,
-        handled_types: handled_types
-      )
-      @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
+      add(reactor_class)
+      register_consumer_group(reactor_class)
+      self
     end
 
     def handle_next_for(reactor_class, worker_id: 'default', batch_size: nil)
@@ -87,7 +80,7 @@ module Sourced
       rescue Sourced::PartialBatchError => e
         execute_actions(e.action_pairs, claim, reactor_class)
         store.updating_consumer_group(group_id) do |group|
-          reactor_class.on_exception(e, e.failed_message, group)
+          handle_exception(reactor_class, e, e.failed_message, group)
         end
         true
       rescue Sourced::ConcurrentAppendError
@@ -96,7 +89,7 @@ module Sourced
       rescue StandardError => e
         store.release(group_id, offset_id: claim.offset_id)
         store.updating_consumer_group(group_id) do |group|
-          reactor_class.on_exception(e, claim.messages.first, group)
+          handle_exception(reactor_class, e, claim.messages.first, group)
         end
         true
       end
@@ -170,9 +163,54 @@ module Sourced
 
     private
 
+    # Apply defaults to a reactor and validate it, without touching the store.
+    def add(reactor_class)
+      ReactorDefaults.apply(reactor_class)
+      exclusive = reactor_class.exclusive?
+      partition_keys = effective_partition_keys(reactor_class)
+
+      # id-partitioning (declared as `partition_by :__id`, or implied by omitting
+      # partition_by) indexes messages by Message#id (key name "__id", chosen to
+      # not collide with a payload attribute) and must be sole-owned, so it is only
+      # allowed for exclusive reactors. This keeps id-indexing safe: a type is only
+      # id-indexed when its lone exclusive owner is id-partitioned.
+      if partition_keys == [:__id] && !exclusive
+        raise ArgumentError,
+          "#{reactor_class} must declare `partition_by`. (Only an `exclusive` reactor may " \
+          "be id-partitioned — one partition per message — whether by omitting " \
+          "partition_by or declaring `partition_by :__id`.)"
+      end
+
+      handled_types = reactor_class.handled_messages.map(&:type).uniq
+      validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
+
+      @reactors << reactor_class
+      @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
+    end
+
+    def register_consumer_group(reactor_class)
+      store.register_consumer_group(
+        reactor_class.group_id,
+        partition_by: effective_partition_keys(reactor_class).map(&:to_s),
+        exclusive: reactor_class.exclusive?,
+        handled_types: reactor_class.handled_messages.map(&:type).uniq
+      )
+    end
+
+    # A reactor's own +on_exception+ handles its errors; otherwise this router's
+    # error strategy does. Not a {ReactorDefaults} default: the strategy belongs
+    # to the router, and reactor classes can be shared between routers.
+    def handle_exception(reactor_class, exception, message, group)
+      if reactor_class.respond_to?(:on_exception)
+        reactor_class.on_exception(exception, message, group)
+      else
+        error_strategy.call(exception, message, group)
+      end
+    end
+
     # A registered reactor's effective partition keys: its declared keys, or
     # +[:__id]+ (partition by Message#id) for an exclusive reactor that declared
-    # none (validated in #register).
+    # none (validated when the reactor is added).
     def effective_partition_keys(reactor)
       keys = Array(reactor.partition_keys)
       keys.empty? ? [:__id] : keys

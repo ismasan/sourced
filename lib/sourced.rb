@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'logger'
 require_relative 'sourced/version'
 require 'sourced/types'
 require 'sourced/injector'
@@ -13,6 +14,9 @@ module Sourced
   class Error < StandardError; end
 
   ConcurrentAppendError = Class.new(Error)
+
+  # Default logger for components built outside a configured system, ex. in specs.
+  NULL_LOGGER = Logger.new(nil)
 
   # Raised when a batch is partially processed before a message raises.
   # Carries the action_pairs for successfully processed messages,

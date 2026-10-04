@@ -6,7 +6,7 @@ module Sourced
     # @param store [Sourced::Store] the store containing scheduled messages
     # @param interval [Numeric] polling interval in seconds
     # @param logger [Object] logger instance
-    def initialize(store:, interval: 5, logger: Sourced.config.logger)
+    def initialize(store:, interval: 5, logger: NULL_LOGGER)
       @store = store
       @interval = interval
       @logger = logger

@@ -40,11 +40,6 @@ module Sourced
       # Not the exclusive owner of its message types (routing concern only).
       def exclusive? = false
 
-      # Delegate processing errors to the configured error strategy.
-      def on_exception(exception, message, group)
-        Sourced.config.error_strategy.call(exception, message, group)
-      end
-
       def on_stop(_message = nil) = nil
       def on_start = nil
       def on_reset = nil

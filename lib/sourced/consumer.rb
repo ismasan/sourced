@@ -100,10 +100,6 @@ module Sourced
       }
     end
 
-    def on_exception(exception, message, group)
-      Sourced.config.error_strategy.call(exception, message, group)
-    end
-
     # Called by {Router#stop_consumer_group} after the group is marked as stopped.
     # Override in reactor classes to run cleanup logic on stop.
     #

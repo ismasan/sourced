@@ -18,9 +18,9 @@ module Sourced
   class WorkQueue
     # @param max_per_reactor [Integer] maximum queued entries per reactor class.
     #   Set this to the worker count so each worker can have one pending signal.
-    # @param queue [Thread::Queue, Async::Queue] underlying queue implementation
-    #   provided by the configured executor
-    def initialize(max_per_reactor: 2, queue: Sourced.config.executor.new_queue)
+    # @param queue [Thread::Queue, Async::Queue] underlying queue implementation,
+    #   usually the executor's +new_queue+
+    def initialize(max_per_reactor: 2, queue: Thread::Queue.new)
       @max_per_reactor = max_per_reactor
       @queue = queue
       @counts = Hash.new(0)

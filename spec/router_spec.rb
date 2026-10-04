@@ -234,6 +234,77 @@ RSpec.describe Sourced::Router do
     store.install!
   end
 
+  describe '.new with reactors:' do
+    it 'validates and routes to the reactors without touching the store' do
+      expect(store).not_to receive(:register_consumer_group)
+
+      routed = Sourced::Router.new(store:, reactors: [RouterTestDecider])
+
+      expect(routed.reactors).to eq([RouterTestDecider])
+      expect(store.consumer_group_active?('router-test-decider')).to be false
+    end
+
+    it 'validates exclusive ownership' do
+      rival = Class.new do
+        def self.handled_messages = RouterTestQueueWorker.handled_messages
+        def self.handle_claim(_claim) = []
+        def self.group_id = 'rival'
+        def self.partition_keys = [:queue_id]
+      end
+
+      expect {
+        Sourced::Router.new(store:, reactors: [RouterTestQueueWorker, rival])
+      }.to raise_error(ArgumentError, /exclusive reactor/)
+    end
+  end
+
+  describe '#setup!' do
+    it 'registers the consumer groups of every reactor, idempotently' do
+      routed = Sourced::Router.new(store:, reactors: [RouterTestDecider])
+
+      expect(routed.setup!).to be(routed)
+      routed.setup!
+
+      expect(store.consumer_group_active?('router-test-decider')).to be true
+    end
+  end
+
+  describe 'error handling' do
+    let(:failing) do
+      Class.new do
+        def self.name = 'RouterTestFailing'
+        def self.handled_messages = [RouterTestMessages::DeviceRegistered]
+        def self.partition_keys = [:device_id]
+        def self.handle_claim(_claim) = raise('boom')
+      end
+    end
+
+    before do
+      store.append(RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' }))
+    end
+
+    it "calls the router's error strategy for reactors without on_exception" do
+      calls = []
+      strategy = ->(exception, message, _group) { calls << [exception.message, message.type] }
+      routed = Sourced::Router.new(store:, reactors: [failing], error_strategy: strategy).setup!
+
+      routed.handle_next_for(failing)
+
+      expect(calls).to eq([['boom', 'router_test.device.registered']])
+    end
+
+    it "calls the reactor's own on_exception instead of the strategy" do
+      handled = []
+      failing.define_singleton_method(:on_exception) { |exception, _message, _group| handled << exception.message }
+      strategy = ->(*) { raise 'strategy should not be called' }
+      routed = Sourced::Router.new(store:, reactors: [failing], error_strategy: strategy).setup!
+
+      routed.handle_next_for(failing)
+
+      expect(handled).to eq(['boom'])
+    end
+  end
+
   describe '#register' do
     it 'creates consumer group and introspects handle_claim signature' do
       router.register(RouterTestDecider)
@@ -410,11 +481,11 @@ RSpec.describe Sourced::Router do
 
       retry_strategy = Sourced::ErrorStrategy.new
       retry_strategy.retry(times: 3, after: 5)
-      allow(Sourced).to receive_message_chain(:config, :error_strategy).and_return(retry_strategy)
+      retrying_router = Sourced::Router.new(store:, reactors: [RouterTestDecider], error_strategy: retry_strategy).setup!
 
       allow(RouterTestDecider).to receive(:handle_claim).and_raise(RuntimeError, 'boom')
 
-      router.handle_next_for(RouterTestDecider)
+      retrying_router.handle_next_for(RouterTestDecider)
 
       row = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).first
       expect(row[:retry_at]).not_to be_nil

@@ -82,7 +82,7 @@ module Sourced
       @store = case s.class.name
       when 'Sequel::SQLite::Database'
         require 'sourced/store'
-        Store.new(s)
+        Store.new(s, logger:)
       else StoreInterface.parse(s)
       end
     end
@@ -111,12 +111,13 @@ module Sourced
 
       unless @store
         require 'sourced/store'
-        @store = Store.new(Sequel.sqlite)
+        @store = Store.new(Sequel.sqlite, logger:)
       end
       # Whatever this store needs to be usable: {Store} creates its tables and
       # compiles its serializer, so a message type it can't persist fails here.
       @store.setup!
-      @router ||= Router.new(store: @store)
+      # Resolve the strategy on every error, so one assigned after setup still applies.
+      @router ||= Router.new(store: @store, error_strategy: ->(*args) { @error_strategy.call(*args) })
       @setup = true
     end
 

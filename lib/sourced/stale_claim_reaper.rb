@@ -30,7 +30,7 @@ module Sourced
     # @param optimize_interval [Numeric] seconds between {Store#optimize!} runs
     #   keeping SQLite planner statistics fresh as the log grows (default 3600)
     # @param logger [Object] logger instance
-    def initialize(store:, interval: 30, ttl_seconds: 120, worker_ids_provider: -> { [] }, optimize_interval: 3600, logger: Sourced.config.logger)
+    def initialize(store:, interval: 30, ttl_seconds: 120, worker_ids_provider: -> { [] }, optimize_interval: 3600, logger: NULL_LOGGER)
       @store = store
       @interval = interval
       @ttl_seconds = ttl_seconds

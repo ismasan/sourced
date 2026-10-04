@@ -4,7 +4,7 @@ require 'spec_helper'
 require 'sourced'
 
 RSpec.describe Sourced::Supervisor do
-  let(:executor) { double('Executor') }
+  let(:executor) { double('Executor', new_queue: Thread::Queue.new) }
   let(:logger) { instance_double('Logger', info: nil, warn: nil) }
   let(:store_notifier) { Sourced::InlineNotifier.new }
   let(:store) { double('Store', notifier: store_notifier) }
@@ -63,6 +63,7 @@ RSpec.describe Sourced::Supervisor do
         catchup_interval: 5,
         housekeeping_interval: 30,
         claim_ttl_seconds: 120,
+        executor: executor,
         logger: logger
       ).and_call_original
 
@@ -90,6 +91,7 @@ RSpec.describe Sourced::Supervisor do
         catchup_interval: 10,
         housekeeping_interval: 60,
         claim_ttl_seconds: 300,
+        executor: executor,
         logger: logger
       ).and_call_original
 

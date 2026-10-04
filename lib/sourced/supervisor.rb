@@ -67,6 +67,7 @@ module Sourced
         catchup_interval: @catchup_interval,
         housekeeping_interval: @housekeeping_interval,
         claim_ttl_seconds: @claim_ttl_seconds,
+        executor: @executor,
         logger: logger
       )
 

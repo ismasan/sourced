@@ -718,9 +718,8 @@ router.drain
 
 Sourced already supports consumer-group retries on failure.
 
-- On reactor errors, `Router#handle_next_for` calls the reactor's `on_exception` hook.
-- If a batch fails mid-way, it is raised as `Sourced::PartialBatchError`. The error carries the already-processed `action_pairs` (which are still ack'd) and the `failed_message` the hook receives — so partial progress is not lost.
-- By default, the hook uses `Sourced.config.error_strategy`.
+- On reactor errors, `Router#handle_next_for` calls the configured error strategy (`Sourced.config.error_strategy`), with the exception, the failing message and the consumer group. A reactor that defines its own `on_exception(exception, message, group)` class method handles its errors instead.
+- If a batch fails mid-way, it is raised as `Sourced::PartialBatchError`. The error carries the already-processed `action_pairs` (which are still ack'd) and the `failed_message` the strategy receives — so partial progress is not lost.
 - The default `Sourced::ErrorStrategy` marks the consumer group as failed immediately.
 - If you configure a retrying error strategy, Sourced stores the next retry time in the consumer group's `retry_at` column and skips claiming work for that group until that time has passed.
 
