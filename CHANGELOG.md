@@ -32,8 +32,11 @@
     they're processing, for up to `workers.shutdown_timeout` seconds (default 30),
     and returns false if they don't. A worker stopped before it runs no longer
     processes work.
-  - `Router.new(store:, reactors:, error_strategy:)`; `Router#setup!` sets up the
-    store, registers consumer groups and freezes the error strategy. Reactors no
+  - `Config::StoreInterface` no longer requires `setup!`: how a store gets ready is
+    the `store` component's lifecycle. The default component calls `Store#setup!` on
+    start; a component implementing another store brings its own hooks.
+  - `Router.new(store:, reactors:, error_strategy:)`; `Router#setup!` registers
+    consumer groups and freezes the error strategy. Reactors no
     longer get a default `on_exception`: the router calls a reactor's own, or its
     error strategy.
 

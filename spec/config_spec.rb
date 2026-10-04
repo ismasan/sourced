@@ -180,24 +180,36 @@ RSpec.describe Sourced::Config do
       expect { config.start! }.to raise_error(Plumb::TypeError, /field `payload\.thing`/)
     end
 
-    it 'asks a custom store to prepare itself, whatever that means for it' do
-      custom_store = Class.new do
-        attr_reader :setups
+    it 'sets up the store over an overriding db' do
+      db = Sequel.sqlite
+      config.config!('db') { db }
 
-        def initialize = @setups = 0
-        def setup! = @setups += 1
+      config.start!
+
+      expect(config['store'].db).to be(db)
+      expect(config['store'].installed?).to be(true)
+    end
+
+    it 'runs the lifecycle a custom store brings, which needs no setup!' do
+      custom_store = Class.new do
+        attr_reader :connected
+
+        def connect = @connected = true
         def notifier = Sourced::InlineNotifier.new
         %i[append read read_partition claim_next ack release
            register_consumer_group worker_heartbeat release_stale_claims].each do |m|
           define_method(m) { |*, **| nil }
         end
       end.new
-      config.config!('store') { custom_store }
+      config.component!('store') do
+        build { custom_store }
+        start { |store, _| store.connect }
+      end
 
       config.start!
 
       expect(config['store']).to be(custom_store)
-      expect(custom_store.setups).to eq(1)
+      expect(custom_store.connected).to be(true)
     end
 
     it 'freezes an overriding error strategy' do

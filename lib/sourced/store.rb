@@ -202,7 +202,7 @@ module Sourced
     end
 
     # Prepare this store for use: create its tables and compile its serializer.
-    # Called once at boot by {Router#setup!}, so no request pays for the
+    # Called once at boot by the +store+ component's start hook (see {Config}), so no request pays for the
     # compilation and a message type this store can't persist fails the boot.
     # Idempotent.
     #

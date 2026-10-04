@@ -259,13 +259,6 @@ RSpec.describe Sourced::Router do
   end
 
   describe '#setup!' do
-    it 'sets up the store' do
-      fresh_store = Sourced::Store.new(Sequel.sqlite)
-      Sourced::Router.new(store: fresh_store).setup!
-
-      expect(fresh_store.installed?).to be(true)
-    end
-
     it 'freezes the error strategy' do
       routed = Sourced::Router.new(store:).setup!
 

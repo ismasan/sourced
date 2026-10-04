@@ -1195,9 +1195,10 @@ Sourced.configure do |c|
     teardown(&:disconnect)
   end
 
-  # A value built from other components
-  c.config!('store', %w[db notifier logger]) do |db, notifier, logger|
-    Sourced::Store.new(db, notifier:, logger:, prefix: 'billing')
+  # A value built from other components, with its own lifecycle
+  c.component!('store', %w[db notifier logger]) do
+    build { |db, notifier, logger| Sourced::Store.new(db, notifier:, logger:, prefix: 'billing') }
+    start { |store, _| store.setup! } # create tables, compile the codec
   end
 end
 
@@ -1207,7 +1208,9 @@ Sourced.start!   # build every component, set up the store and consumer groups, 
 Sourced.teardown! # stop workers, then tear down in reverse dependency order
 ```
 
-Values are checked against their types when they're built, so `config!('workers.count') { '4' }` fails the boot naming `workers.count`. Building only constructs objects: the store creates its tables, compiles its codec and registers consumer groups when Sourced starts. `Sourced.store`, `Sourced.router` and `Sourced.topology` read components, and raise `Sourced::Component::NotBuiltError` until Sourced is built.
+Values are checked against their types when they're built, so `config!('workers.count') { '4' }` fails the boot naming `workers.count`. Building only constructs objects: the store creates its tables and compiles its codec, and the router registers consumer groups, when Sourced starts.
+
+Re-implementing a component replaces its lifecycle hooks along with how it's built. Overriding `db` (ex. a file-backed SQLite database) keeps the store's setup, but a re-implemented `store` must bring its own, as above: `Sourced::Store` needs `setup!` on start. `Sourced.store`, `Sourced.router` and `Sourced.topology` read components, and raise `Sourced::Component::NotBuiltError` until Sourced is built.
 
 Settings can come from ENV, decoded into each component's type:
 

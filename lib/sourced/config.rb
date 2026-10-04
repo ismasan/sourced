@@ -23,10 +23,10 @@ module Sourced
   #   notifier          InlineNotifier
   #   executor          AsyncExecutor
   #   error_strategy    ErrorStrategy
-  #   store             Store over db
+  #   store             Store over db. Installs its tables and compiles its codec on start
   #   reactors.*        one component per registered reactor (see .register)
-  #   router            routes to reactors.*. On start, sets up the store, registers
-  #                     consumer groups and freezes the error strategy (see Router#setup!)
+  #   router            routes to reactors.*. On start, registers consumer groups and
+  #                     freezes the error strategy (see Router#setup!)
   #   topology          message-flow graph of reactors.*
   #   workers.*         count, batch_size, max_drain_rounds, catchup_interval, shutdown_timeout
   #   housekeeping.*    interval, claim_ttl_seconds
@@ -37,11 +37,11 @@ module Sourced
   module Config
     T = Sourced::Component::T
 
+    # What the rest of Sourced uses a store for. How a store gets ready (tables,
+    # codecs, connections) is part of its own lifecycle, not this contract: the
+    # store component's hooks own it, so a component implementing another store
+    # brings its own.
     StoreInterface = T::Interface[
-      # #setup! is how a store prepares itself on start (see Store#setup!).
-      # Deliberately generic: creating tables and compiling codecs are one
-      # store's answer to it, not part of the contract.
-      :setup!,
       :append,
       :read,
       :read_partition,
@@ -91,14 +91,18 @@ module Sourced
 
         c.declare('error_strategy', ErrorStrategyInterface) { ErrorStrategy.new }
 
+        # Overriding db (ex. a file-backed SQLite) keeps this lifecycle. Re-implementing
+        # store replaces it, along with its hooks: the new store brings its own.
         c.declare('store', StoreInterface)
         c.component!('store', %w[db notifier logger]) do
           build { |db, notifier, logger| Store.new(db, notifier:, logger:) }
+          # Creates the tables and compiles the codec, so a message type the store
+          # can't persist fails the boot.
+          start { |store, _| store.setup! }
         end
 
-        # The router's start sets up the store and freezes the error strategy
-        # (see Router#setup!), so overriding either only needs to build it:
-        # re-implementing a component replaces its hooks.
+        # The router's start freezes the error strategy (see Router#setup!), so an
+        # override only needs to build it.
         c.declare('router', Router)
         c.component!('router', %w[store reactors.* error_strategy]) do
           build do |store, reactors, error_strategy|

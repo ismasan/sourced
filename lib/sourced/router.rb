@@ -20,12 +20,11 @@ module Sourced
       reactors.each { |reactor| add(reactor) }
     end
 
-    # Prepare everything routing needs: set up the store (see {Store#setup!}),
-    # register the consumer groups of every reactor with it, and freeze the
-    # error strategy. Idempotent.
+    # Prepare for routing: register the consumer groups of every reactor with
+    # the store, and freeze the error strategy. The store must be ready
+    # (for Store, see {Store#setup!}). Idempotent.
     # @return [self]
     def setup!
-      store.setup!
       @reactors.each { |reactor| register_consumer_group(reactor) }
       error_strategy.freeze
       self
