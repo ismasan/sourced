@@ -96,7 +96,7 @@ module Sourced
         # Overriding db (ex. a file-backed SQLite) keeps this lifecycle. Re-implementing
         # store replaces it, along with its hooks: the new store brings its own.
         c.declare('store', StoreInterface)
-        c.declare('store.table_prefix', T::String[Installer::PREFIX_FORMAT]) { 'sourced' }
+        c.declare('store.table_prefix', Installer::TablePrefix) { 'sourced' }
         c.component!('store', %w[db notifier logger store.table_prefix]) do
           build { |db, notifier, logger, prefix| Store.new(db, notifier:, logger:, prefix:) }
           # Creates the tables and compiles the codec, so a message type the store
