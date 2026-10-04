@@ -1175,9 +1175,10 @@ See `examples/app/` for a complete Sinatra application with:
 | `workers.batch_size` | `Integer` | `50`: messages per claim |
 | `workers.max_drain_rounds` | `Integer` | `10`: drain iterations per pickup |
 | `workers.catchup_interval` | `Numeric` | `5`: seconds between catch-up polls |
+| `workers.shutdown_timeout` | `Numeric` | `30`: seconds teardown waits for workers to finish their batches |
 | `housekeeping.interval` | `Numeric` | `30`: seconds between heartbeat/reap cycles |
 | `housekeeping.claim_ttl_seconds` | `Integer` | `120`: stale claim threshold |
-| `dispatcher` | `Sourced::Dispatcher` | runs the workers |
+| `dispatcher` | `Sourced::Dispatcher` | runs the workers; on teardown, waits for them to finish their batches |
 
 Implement (or re-implement) any of them, then boot:
 

@@ -94,6 +94,8 @@ module Sourced
     # @param catchup_interval [Numeric] seconds between catch-up polls (default 5)
     # @param housekeeping_interval [Numeric] seconds between heartbeat/reap cycles (default 30)
     # @param claim_ttl_seconds [Integer] stale claim age threshold in seconds (default 120)
+    # @param shutdown_timeout [Numeric] seconds {#stop} waits for workers to finish
+    #   the batches they're processing (default 30)
     # @param work_queue [WorkQueue, nil] optional pre-built queue (useful for testing)
     # @param executor [#new_queue] builds the work queue's underlying queue
     # @param logger [Object] logger instance
@@ -105,12 +107,14 @@ module Sourced
       catchup_interval: 5,
       housekeeping_interval: 30,
       claim_ttl_seconds: 120,
+      shutdown_timeout: 30,
       work_queue: nil,
       executor: AsyncExecutor.new,
       logger: NULL_LOGGER
     )
       @logger = logger
       @router = router
+      @shutdown_timeout = shutdown_timeout
       @workers = []
 
       return if worker_count.zero?
@@ -192,11 +196,16 @@ module Sourced
       self
     end
 
-    # Stop all components and close the work queue.
+    # Stop all components, close the work queue, and wait for workers to finish
+    # the batches they're processing, for up to +shutdown_timeout+ seconds in all.
+    # Workers that haven't started running aren't waited for.
     #
-    # @return [void]
+    # Waiting blocks the caller's thread, or yields to the fiber scheduler when
+    # called from a fiber (ex. an Async task), so the workers can finish.
+    #
+    # @return [Boolean] true if every worker finished, false if the timeout expired first
     def stop
-      return if @workers.empty?
+      return true if @workers.empty?
 
       @logger.info "Sourced::Dispatcher: stopping #{@workers.size} workers"
       @store_notifier.stop
@@ -205,7 +214,26 @@ module Sourced
       @stale_claim_reaper.stop
       @workers.each(&:stop)
       @work_queue.close(@workers.size)
+
+      unfinished = wait_for_workers
+      if unfinished.any?
+        @logger.warn "Sourced::Dispatcher: #{unfinished.map(&:name).join(', ')} still running after #{@shutdown_timeout}s"
+        return false
+      end
+
       @logger.info 'Sourced::Dispatcher: all components stopped'
+      true
+    end
+
+    private
+
+    # @return [Array<Worker>] workers still running when the timeout expired
+    def wait_for_workers
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @shutdown_timeout
+      @workers.reject do |worker|
+        remaining = [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
+        worker.wait(timeout: remaining)
+      end
     end
   end
 end

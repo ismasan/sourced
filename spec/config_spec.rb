@@ -54,6 +54,7 @@ RSpec.describe Sourced::Config do
       expect(config.index.keys).to include(
         'logger', 'db', 'notifier', 'executor', 'error_strategy', 'store', 'router', 'topology',
         'workers.count', 'workers.batch_size', 'workers.max_drain_rounds', 'workers.catchup_interval',
+        'workers.shutdown_timeout',
         'housekeeping.interval', 'housekeeping.claim_ttl_seconds', 'dispatcher'
       )
       expect(config.boot_status).to eq(:open)
@@ -82,6 +83,7 @@ RSpec.describe Sourced::Config do
       expect(config['workers.batch_size']).to eq(50)
       expect(config['workers.max_drain_rounds']).to eq(10)
       expect(config['workers.catchup_interval']).to eq(5)
+      expect(config['workers.shutdown_timeout']).to eq(30)
       expect(config['housekeeping.interval']).to eq(30)
       expect(config['housekeeping.claim_ttl_seconds']).to eq(120)
     end

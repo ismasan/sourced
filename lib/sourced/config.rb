@@ -28,9 +28,10 @@ module Sourced
   #   router            routes to reactors.*. On start, sets up the store, registers
   #                     consumer groups and freezes the error strategy (see Router#setup!)
   #   topology          message-flow graph of reactors.*
-  #   workers.*         count, batch_size, max_drain_rounds, catchup_interval
+  #   workers.*         count, batch_size, max_drain_rounds, catchup_interval, shutdown_timeout
   #   housekeeping.*    interval, claim_ttl_seconds
-  #   dispatcher        spawns workers into the context passed to #start!. Stopped on teardown
+  #   dispatcher        spawns workers into the context passed to #start!. On teardown, stops
+  #                     and waits for workers to finish their batches (up to shutdown_timeout)
   #
   # Building only constructs objects: nothing touches the database until #start!.
   module Config
@@ -113,6 +114,7 @@ module Sourced
         c.declare('workers.batch_size', T::Integer[1..]) { 50 }
         c.declare('workers.max_drain_rounds', T::Integer[1..]) { 10 }
         c.declare('workers.catchup_interval', T::Numeric) { 5 }
+        c.declare('workers.shutdown_timeout', T::Numeric) { 30 }
         c.declare('housekeeping.interval', T::Numeric) { 30 }
         c.declare('housekeeping.claim_ttl_seconds', T::Integer[1..]) { 120 }
 
@@ -120,9 +122,10 @@ module Sourced
         c.component!('dispatcher', %w[
           router executor logger
           workers.count workers.batch_size workers.max_drain_rounds workers.catchup_interval
-          housekeeping.interval housekeeping.claim_ttl_seconds
+          workers.shutdown_timeout housekeeping.interval housekeeping.claim_ttl_seconds
         ]) do
-          build do |router, executor, logger, count, batch_size, max_drain_rounds, catchup_interval, housekeeping_interval, claim_ttl_seconds|
+          build do |router, executor, logger, count, batch_size, max_drain_rounds, catchup_interval,
+                    shutdown_timeout, housekeeping_interval, claim_ttl_seconds|
             Dispatcher.new(
               router:,
               executor:,
@@ -131,6 +134,7 @@ module Sourced
               batch_size:,
               max_drain_rounds:,
               catchup_interval:,
+              shutdown_timeout:,
               housekeeping_interval:,
               claim_ttl_seconds:
             )

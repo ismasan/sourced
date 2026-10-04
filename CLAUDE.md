@@ -98,7 +98,7 @@ Sourced.start!(task)                              # build + start; workers spawn
 Sourced.teardown!
 ```
 
-Tree: `logger`, `db`, `notifier`, `executor`, `error_strategy`, `store` (deps db/notifier/logger), `reactors.*`, `router` (deps store, `reactors.*`, error_strategy), `topology` (deps `reactors.*`), `workers.{count,batch_size,max_drain_rounds,catchup_interval}`, `housekeeping.{interval,claim_ttl_seconds}`, `dispatcher`.
+Tree: `logger`, `db`, `notifier`, `executor`, `error_strategy`, `store` (deps db/notifier/logger), `reactors.*`, `router` (deps store, `reactors.*`, error_strategy), `topology` (deps `reactors.*`), `workers.{count,batch_size,max_drain_rounds,catchup_interval,shutdown_timeout}`, `housekeeping.{interval,claim_ttl_seconds}`, `dispatcher`.
 
 - **Build constructs, start touches the world.** `build!` never writes to the database. On start, `Router#setup!` runs `store.setup!`, registers consumer groups and freezes the error strategy; the dispatcher spawns into the start context (`workers.count` 0 → no-op in any context; otherwise the context must respond to `spawn`/`async`).
 - **Re-implementing a component replaces all its hooks**, so side effects that every implementation needs live on a *dependent* (the router), never on the overridable node itself. Keep `store`, `error_strategy`, etc. value-only.

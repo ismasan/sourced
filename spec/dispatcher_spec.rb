@@ -3,6 +3,7 @@
 require 'spec_helper'
 require 'sourced'
 require 'sequel'
+require 'sourced/thread_executor'
 
 module DispatcherTestMessages
   DeviceRegistered = Sourced::Message.define('dispatch_test.device.registered') do
@@ -67,6 +68,26 @@ class DispatchTestProjector < Sourced::Projector::StateStored
 
   sync do |state:, messages:, replaying:|
     state[:synced] = true
+  end
+end
+
+# Blocks in handle_claim until released, to stop a dispatcher mid-batch
+class DispatchTestBlocking
+  extend Sourced::Consumer
+
+  partition_by :device_id
+  consumer_group 'dispatch-test-blocking'
+
+  class << self
+    attr_accessor :entered, :release
+  end
+
+  def self.handled_messages = [DispatcherTestMessages::DeviceRegistered]
+
+  def self.handle_claim(claim)
+    entered << true
+    release.pop
+    claim.messages.map { |message| [[], message] }
   end
 end
 
@@ -303,11 +324,16 @@ RSpec.describe Sourced::Dispatcher do
     end
 
     it '#stop stops all components' do
-      dispatcher.stop
+      expect(dispatcher.stop).to be(true)
 
-      dispatcher.workers.each do |w|
-        expect(w.instance_variable_get(:@running)).to eq(false)
-      end
+      expect(dispatcher.workers.map(&:running?)).to all(be(false))
+    end
+
+    it "#stop doesn't wait for workers that never started running" do
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      expect(dispatcher.stop).to be(true)
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
     end
 
     it 'creates zero workers when worker_count is 0' do
@@ -317,6 +343,83 @@ RSpec.describe Sourced::Dispatcher do
         logger: logger
       )
       expect(d.workers).to be_empty
+    end
+  end
+
+  describe '#stop waiting for workers' do
+    let(:blocking_router) { Sourced::Router.new(store:, reactors: [DispatchTestBlocking]).setup! }
+
+    def start_blocked_dispatcher(shutdown_timeout: 30)
+      DispatchTestBlocking.entered = Queue.new
+      DispatchTestBlocking.release = Queue.new
+      dispatcher = described_class.new(
+        router: blocking_router,
+        worker_count: 1,
+        catchup_interval: 0.05,
+        housekeeping_interval: 0.05,
+        shutdown_timeout:,
+        logger:
+      )
+      dispatcher.start(Sourced::ThreadExecutor.new)
+      store.append(DispatcherTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' }))
+      expect(DispatchTestBlocking.entered.pop(timeout: 2)).to be(true)
+      dispatcher
+    end
+
+    after { DispatchTestBlocking.release&.close }
+
+    it 'waits for workers to finish the batch they are processing' do
+      dispatcher = start_blocked_dispatcher
+      stopping = Thread.new { dispatcher.stop }
+
+      sleep 0.1
+      expect(stopping).to be_alive
+
+      DispatchTestBlocking.release << true
+      expect(stopping.join(2)&.value).to be(true)
+      expect(dispatcher.workers.map(&:running?)).to all(be(false))
+
+      # The batch was acked: nothing left to process
+      DispatchTestBlocking.release << true
+      expect(blocking_router.handle_next_for(DispatchTestBlocking)).to be(false)
+    end
+
+    it 'waits without blocking the reactor, when stopped from an Async task' do
+      DispatchTestBlocking.entered = Queue.new
+      DispatchTestBlocking.release = Queue.new
+      dispatcher = described_class.new(
+        router: blocking_router,
+        worker_count: 1,
+        catchup_interval: 0.05,
+        housekeeping_interval: 0.05,
+        logger:
+      )
+      events = []
+
+      Async do |task|
+        dispatcher.start(task)
+        store.append(DispatcherTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' }))
+        DispatchTestBlocking.entered.pop
+
+        task.async do
+          sleep 0.05
+          events << :released
+          DispatchTestBlocking.release << true
+        end
+        events << (dispatcher.stop ? :stopped : :timed_out)
+      end
+
+      expect(events).to eq(%i[released stopped])
+    end
+
+    it 'gives up after shutdown_timeout, and says which workers are still running' do
+      dispatcher = start_blocked_dispatcher(shutdown_timeout: 0.1)
+      expect(logger).to receive(:warn).with(/still running after 0.1s/)
+
+      expect(dispatcher.stop).to be(false)
+
+      DispatchTestBlocking.release << true
+      expect(dispatcher.workers.first.wait(timeout: 2)).to be(true)
     end
   end
 

@@ -37,18 +37,30 @@ module Sourced
       @max_drain_rounds = max_drain_rounds
       @logger = logger
       @running = false
+      @started = false
+      @stopped = false
+      # Closed when #run returns. A Thread::Queue, so #wait blocks a thread, or
+      # yields to the fiber scheduler in a fiber.
+      @finished = Thread::Queue.new
     end
 
-    # Signal the worker to stop after the current drain completes.
+    # Whether {#run} is processing work.
+    def running? = @running
+
+    # Signal the worker to stop after the batch it's processing, if any.
+    # A worker stopped before it runs returns from {#run} right away.
+    # Use {#wait} to wait for it to finish.
     # @return [void]
     def stop
+      @stopped = true
       @running = false
     end
 
     # Main run loop. Blocks on the {WorkQueue} waiting for reactor signals.
     # @return [void]
     def run
-      @running = true
+      @started = true
+      @running = !@stopped
 
       while @running
         reactor = @work_queue.pop
@@ -58,6 +70,21 @@ module Sourced
       end
 
       @logger.info "Sourced::Worker #{name}: stopped"
+    ensure
+      @running = false
+      @finished.close
+    end
+
+    # Wait for {#run} to return. Returns right away for a worker that hasn't
+    # started running, so it never waits on one that was never spawned.
+    #
+    # @param timeout [Numeric, nil] seconds to wait at most; nil waits indefinitely
+    # @return [Boolean] true if the worker isn't running, false if the timeout expired first
+    def wait(timeout: nil)
+      return true unless @started
+
+      @finished.pop(timeout:)
+      @finished.closed?
     end
 
     # Drain available messages for a reactor in a bounded loop.
