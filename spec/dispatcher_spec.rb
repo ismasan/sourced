@@ -490,6 +490,20 @@ RSpec.describe Sourced::Dispatcher do
       expect(dispatcher).not_to be_running
     end
 
+    it "doesn't start the notifier when stopped before the spawned start runs" do
+      allow(notifier).to receive(:start).and_call_original
+      allow(notifier).to receive(:stop).and_call_original
+      dispatcher = build_dispatcher
+      task = CollectingTask.new
+
+      dispatcher.start(task)
+      dispatcher.stop
+      task.spawned.each(&:call) # what the context would run, late
+
+      expect(notifier).to have_received(:stop).once
+      expect(notifier).not_to have_received(:start)
+    end
+
     it 'is a no-op when started while running' do
       dispatcher = build_dispatcher
       task = double('Task', spawn: nil)

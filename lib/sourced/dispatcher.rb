@@ -204,8 +204,10 @@ module Sourced
       run = @run
       @running = true
 
-      # Store notifier (start — no-op for InlineNotifier)
-      Spawner.into(task) { @store_notifier.start }
+      # Store notifier (start — no-op for InlineNotifier). Spawned, so it checks
+      # this run is still current when it gets to run: a stop before that has
+      # already stopped the notifier.
+      Spawner.into(task) { @store_notifier.start if @running && run.equal?(@run) }
 
       run.workers.each do |w|
         Spawner.into(task) { w.run }
