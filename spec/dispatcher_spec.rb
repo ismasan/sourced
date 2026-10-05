@@ -293,7 +293,6 @@ RSpec.describe Sourced::Dispatcher do
         worker_count: 2,
         batch_size: 50,
         max_drain_rounds: 10,
-        catchup_interval: 5,
         work_queue: work_queue,
         logger: logger
       )
@@ -311,15 +310,15 @@ RSpec.describe Sourced::Dispatcher do
 
     it 'spawns via #spawn when task responds to spawn' do
       task = double('Task')
-      # 1 notifier + 1 catchup_poller + 1 scheduled_message_poller + 1 stale_claim_reaper + 2 workers = 6 spawns
-      expect(task).to receive(:spawn).exactly(6).times
+      # 1 notifier + 2 workers = 3 spawns
+      expect(task).to receive(:spawn).exactly(3).times
       dispatcher.start(task)
     end
 
     it 'spawns via #async when task does not respond to spawn' do
       task = Object.new
       def task.async; end
-      expect(task).to receive(:async).exactly(6).times
+      expect(task).to receive(:async).exactly(3).times
       dispatcher.start(task)
     end
 
@@ -355,8 +354,6 @@ RSpec.describe Sourced::Dispatcher do
       described_class.new(
         router: blocking_router,
         worker_count: 1,
-        catchup_interval: 0.05,
-        housekeeping_interval: 0.05,
         shutdown_timeout:,
         logger:
       )
@@ -417,7 +414,7 @@ RSpec.describe Sourced::Dispatcher do
       dispatcher = start_blocked_dispatcher(shutdown_timeout: 0.1)
       allow(logger).to receive(:warn)
 
-      expect { dispatcher.stop! }.to raise_error(Sourced::Dispatcher::ShutdownTimeoutError, /0\.1s: \d+-worker-0/)
+      expect { dispatcher.stop! }.to raise_error(Sourced::ShutdownTimeoutError, /0\.1s: \d+-worker-0/)
 
       DispatchTestBlocking.release << true
       expect(dispatcher.workers.first.wait(timeout: 2)).to be(true)
@@ -448,8 +445,6 @@ RSpec.describe Sourced::Dispatcher do
       described_class.new(
         router: blocking_router,
         worker_count: 1,
-        catchup_interval: 0.05,
-        housekeeping_interval: 0.05,
         shutdown_timeout:,
         logger:
       )
@@ -468,7 +463,7 @@ RSpec.describe Sourced::Dispatcher do
       dispatcher.stop
       dispatcher.start(task)
 
-      expect(task).to have_received(:spawn).exactly(10).times # 5 parts per run, 1 worker each
+      expect(task).to have_received(:spawn).exactly(4).times # notifier + 1 worker, per run
       expect(dispatcher.workers.size).to eq(1)
       expect(dispatcher.workers.first).not_to be(first.first)
     end
@@ -502,7 +497,7 @@ RSpec.describe Sourced::Dispatcher do
       dispatcher.start(task)
       dispatcher.start(task)
 
-      expect(task).to have_received(:spawn).exactly(5).times
+      expect(task).to have_received(:spawn).exactly(2).times
     end
 
     it 'processes messages appended after a restart' do
@@ -518,16 +513,23 @@ RSpec.describe Sourced::Dispatcher do
       expect(dispatcher.stop).to be(true)
     end
 
-    it 'processes messages appended while stopped, once started again' do
+    it 'drops notifications while stopped, leaving messages appended then to the catch-up poll' do
       dispatcher = build_dispatcher
       dispatcher.start(Sourced::ThreadExecutor.new)
       dispatcher.stop
 
-      append_message # the notification is dropped: the catch-up poll finds it
+      expect(dispatcher.push(DispatchTestBlocking)).to be(false)
+      append_message # its notification is dropped too
       dispatcher.start(Sourced::ThreadExecutor.new)
+      expect(DispatchTestBlocking.entered.pop(timeout: 0.2)).to be_nil
 
+      # The catch-up poller (a component depending on the dispatcher) pushes every reactor when it starts
+      poller = Sourced::CatchUpPoller.new(work_queue: dispatcher, reactors: dispatcher.reactors, interval: 60)
+      poller.start(Sourced::ThreadExecutor.new)
       expect(DispatchTestBlocking.entered.pop(timeout: 2)).to be(true)
+
       DispatchTestBlocking.release << true
+      expect(poller.stop).to be(true)
       expect(dispatcher.stop).to be(true)
     end
 
@@ -567,7 +569,6 @@ RSpec.describe Sourced::Dispatcher do
         worker_count: 1,
         batch_size: 50,
         max_drain_rounds: 10,
-        catchup_interval: 60, # long interval — we test synchronous path only
         work_queue: work_queue,
         logger: logger
       )

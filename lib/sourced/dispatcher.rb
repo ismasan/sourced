@@ -1,14 +1,14 @@
 # frozen_string_literal: true
 
 require 'sourced/work_queue'
-require 'sourced/catchup_poller'
 require 'sourced/worker'
-require 'sourced/scheduled_message_poller'
-require 'sourced/stale_claim_reaper'
+require 'sourced/spawner'
 
 module Sourced
   # Orchestrator that wires together the signal-driven dispatch pipeline:
-  # {WorkQueue}, {NotificationQueuer}, {CatchUpPoller}, store notifier, and {Worker}s.
+  # {WorkQueue}, {NotificationQueuer}, store notifier, and {Worker}s. The
+  # {CatchUpPoller} feeding it and the {StaleClaimReaper} heartbeating for its
+  # workers are components of their own, depending on it (see {Config}).
   #
   # Does not own the process lifecycle — the caller provides the task/fiber
   # context via {#start}, and triggers shutdown via {#stop}. It can be started
@@ -26,9 +26,6 @@ module Sourced
   #   queue = WorkQueue.new(max_per_reactor: 2, queue: Queue.new)
   #   dispatcher = Sourced::Dispatcher.new(router: router, work_queue: queue)
   class Dispatcher
-    # Raised by {#stop!} when workers are still running after the shutdown timeout
-    ShutdownTimeoutError = Class.new(Sourced::Error)
-
     # Subscriber for the store notifier. Routes events to the {WorkQueue}
     # by resolving message types or group IDs to reactor classes.
     #
@@ -106,10 +103,10 @@ module Sourced
       end
     end
 
-    # The parts of one run, from {#start} to {#stop}: a work queue, the workers
-    # popping from it, and the pollers feeding it. A worker or work queue can't
-    # be used again once stopped, so each run gets its own.
-    Run = Data.define(:work_queue, :workers, :catchup_poller, :scheduled_message_poller, :stale_claim_reaper)
+    # The parts of one run, from {#start} to {#stop}: a work queue and the
+    # workers popping from it. A worker or work queue can't be used again once
+    # stopped, so each run gets its own.
+    Run = Data.define(:work_queue, :workers)
 
     # Raised by {#start} while the previous run's workers are still running,
     # after a {#stop} that timed out
@@ -119,9 +116,6 @@ module Sourced
     # @param worker_count [Integer] number of worker fibers to spawn (default 2)
     # @param batch_size [Integer] max messages per claim (default 50)
     # @param max_drain_rounds [Integer] max drain iterations before re-enqueue (default 10)
-    # @param catchup_interval [Numeric] seconds between catch-up polls (default 5)
-    # @param housekeeping_interval [Numeric] seconds between heartbeat/reap cycles (default 30)
-    # @param claim_ttl_seconds [Integer] stale claim age threshold in seconds (default 120)
     # @param shutdown_timeout [Numeric] seconds {#stop} waits for workers to finish
     #   the batches they're processing (default 30)
     # @param work_queue [WorkQueue, nil] optional pre-built queue for the first
@@ -132,9 +126,6 @@ module Sourced
       worker_count: 2,
       batch_size: 50,
       max_drain_rounds: 10,
-      catchup_interval: 5,
-      housekeeping_interval: 30,
-      claim_ttl_seconds: 120,
       shutdown_timeout: 30,
       work_queue: nil,
       logger: NULL_LOGGER
@@ -144,17 +135,15 @@ module Sourced
       @worker_count = worker_count
       @batch_size = batch_size
       @max_drain_rounds = max_drain_rounds
-      @catchup_interval = catchup_interval
-      @housekeeping_interval = housekeeping_interval
-      @claim_ttl_seconds = claim_ttl_seconds
       @shutdown_timeout = shutdown_timeout
+      @reactors = router.reactors.select { |r| r.handled_messages.any? }.to_a.freeze
       @run = nil
+      @queue_switch = nil
       @running = false
       @stopped = false
 
       return if worker_count.zero?
 
-      @reactors = router.reactors.select { |r| r.handled_messages.any? }.to_a
       @run = build_run(work_queue || new_work_queue)
 
       # Subscribed once: the switch points at whichever run is current
@@ -163,24 +152,34 @@ module Sourced
       @store_notifier.subscribe(NotificationQueuer.new(work_queue: @queue_switch, reactors: @reactors))
     end
 
+    # The reactors this dispatcher routes to: the router's, except those handling no messages
+    # @return [Array<Class>]
+    attr_reader :reactors
+
     # The current run's workers: the ones running, or the ones the next
     # {#start} runs. Empty when +worker_count+ is 0.
     # @return [Array<Sourced::Worker>]
     def workers = @run ? @run.workers : []
 
+    # Enqueue a reactor for the current run's workers, ex. from a {CatchUpPoller}.
+    # Dropped while stopped, or with no workers.
+    # @return [Boolean] whether it was enqueued
+    def push(reactor)
+      switch = @queue_switch
+      switch ? switch.push(reactor) : false
+    end
+
     # Whether it's started, and not stopped since.
     def running? = @running
 
-    # Spawn all component fibers into the caller's task context.
-    # Spawns: store notifier (e.g. PG LISTEN), catch-up poller, scheduled message
-    # poller, stale claim reaper, and N workers.
+    # Spawn the store notifier (e.g. PG LISTEN) and N workers into the caller's
+    # task context.
     #
     # Can be called again after {#stop}, to run again with fresh workers.
     # A no-op while running.
     #
-    # @param task [Object] an executor task or Async::Task to spawn fibers into
+    # @param task [Object] an executor task or Async::Task to spawn into, else threads (see {Spawner})
     # @return [self]
-    # @raise [ArgumentError] if there are workers to run and +task+ can't spawn them
     # @raise [StillRunningError] if the previous run's workers haven't finished
     #   (a {#stop} that timed out)
     def start(task)
@@ -189,13 +188,6 @@ module Sourced
       if @run.nil? # no workers: nothing to spawn, but it's started
         @running = true
         return self
-      end
-
-      s = %i[spawn async].find { |m| task.respond_to?(m) }
-      unless s
-        raise ArgumentError, "can't spawn #{@worker_count} workers into #{task.inspect}: " \
-                             'start with an Async::Task, or Sourced::ThreadExecutor.new to run them in threads, ' \
-                             'or set workers.count to 0 to run no workers in this process'
       end
 
       if @stopped
@@ -213,14 +205,10 @@ module Sourced
       @running = true
 
       # Store notifier (start — no-op for InlineNotifier)
-      task.send(s) { @store_notifier.start }
-
-      task.send(s) { run.catchup_poller.run }
-      task.send(s) { run.scheduled_message_poller.run }
-      task.send(s) { run.stale_claim_reaper.run }
+      Spawner.into(task) { @store_notifier.start }
 
       run.workers.each do |w|
-        task.send(s) { w.run }
+        Spawner.into(task) { w.run }
       end
 
       self
@@ -251,9 +239,6 @@ module Sourced
 
       @logger.info "Sourced::Dispatcher: stopping #{run.workers.size} workers"
       @store_notifier.stop
-      run.catchup_poller.stop
-      run.scheduled_message_poller.stop
-      run.stale_claim_reaper.stop
       run.workers.each(&:stop)
       run.work_queue.close(run.workers.size)
 
@@ -298,28 +283,7 @@ module Sourced
         )
       end
 
-      Run.new(
-        work_queue:,
-        workers:,
-        catchup_poller: CatchUpPoller.new(
-          work_queue:,
-          reactors: @reactors,
-          interval: @catchup_interval,
-          logger: @logger
-        ),
-        scheduled_message_poller: ScheduledMessagePoller.new(
-          store: @router.store,
-          interval: @catchup_interval,
-          logger: @logger
-        ),
-        stale_claim_reaper: StaleClaimReaper.new(
-          store: @router.store,
-          interval: @housekeeping_interval,
-          ttl_seconds: @claim_ttl_seconds,
-          worker_ids_provider: -> { workers.map(&:name) },
-          logger: @logger
-        )
-      )
+      Run.new(work_queue:, workers:)
     end
 
     # @param workers [Array<Worker>]

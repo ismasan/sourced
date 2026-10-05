@@ -7,6 +7,9 @@ require 'sourced/error_strategy'
 require 'sourced/async_executor'
 require 'sourced/inline_notifier'
 require 'sourced/installer'
+require 'sourced/catchup_poller'
+require 'sourced/scheduled_message_poller'
+require 'sourced/stale_claim_reaper'
 
 module Sourced
   # Sourced's configuration: a tree of typed components (see sourced-component),
@@ -34,8 +37,13 @@ module Sourced
   #   housekeeping.*    interval, claim_ttl_seconds
   #   dispatcher        spawns workers into the context passed to #start!. On stop (and so on
   #                     teardown), stops and waits for workers to finish their batches (up to
-  #                     shutdown_timeout, then raises Dispatcher::ShutdownTimeoutError). Can be
-  #                     deferred, and started and stopped by key
+  #                     shutdown_timeout, then raises ShutdownTimeoutError). Can be deferred,
+  #                     and started and stopped by key, along with the two below
+  #   dispatcher.catchup_poller      pushes every reactor to the dispatcher each workers.catchup_interval
+  #   dispatcher.stale_claim_reaper  heartbeats the dispatcher's workers and releases stale claims
+  #   scheduled_messages.interval    seconds between promotions of due scheduled messages
+  #   scheduled_messages.poller      promotes them into the log. Needs no workers, so it runs
+  #                                  in any process that isn't told to defer it
   #
   # Building only constructs objects: nothing touches the database until #start!.
   # Preparing compiles the store's codec, so it can run once before forking.
@@ -138,21 +146,52 @@ module Sourced
         # Restartable: a host can defer it and start and stop it by key, ex. only
         # while its process is the elected leader
         c.declare('dispatcher', Dispatcher)
-        c.component!('dispatcher', %w[router logger workers.* housekeeping.*]) do
-          build do |router, logger, workers, housekeeping|
+        c.component!('dispatcher', %w[router logger workers.*]) do
+          build do |router, logger, workers|
             Dispatcher.new(
               router:,
               logger:,
               worker_count: workers['count'],
               batch_size: workers['batch_size'],
               max_drain_rounds: workers['max_drain_rounds'],
-              catchup_interval: workers['catchup_interval'],
-              shutdown_timeout: workers['shutdown_timeout'],
-              housekeeping_interval: housekeeping['interval'],
-              claim_ttl_seconds: housekeeping['claim_ttl_seconds']
+              shutdown_timeout: workers['shutdown_timeout']
             )
           end
           start { |dispatcher, context| dispatcher.start(context) }
+          stop(&:stop!)
+        end
+
+        # The loops around the dispatcher depend on it, so they start after its
+        # workers and stop before them, and are deferred, stopped and started with it
+        c.declare('dispatcher.catchup_poller', CatchUpPoller)
+        c.component!('dispatcher.catchup_poller', %w[dispatcher workers.catchup_interval logger]) do
+          build do |dispatcher, interval, logger|
+            CatchUpPoller.new(work_queue: dispatcher, reactors: dispatcher.reactors, interval:, logger:)
+          end
+          start { |poller, context| poller.start(context) }
+          stop(&:stop!)
+        end
+
+        c.declare('dispatcher.stale_claim_reaper', StaleClaimReaper)
+        c.component!('dispatcher.stale_claim_reaper', %w[dispatcher store housekeeping.* logger]) do
+          build do |dispatcher, store, housekeeping, logger|
+            StaleClaimReaper.new(
+              store:,
+              interval: housekeeping['interval'],
+              ttl_seconds: housekeeping['claim_ttl_seconds'],
+              worker_ids_provider: -> { dispatcher.workers.map(&:name) },
+              logger:
+            )
+          end
+          start { |reaper, context| reaper.start(context) }
+          stop(&:stop!)
+        end
+
+        c.declare('scheduled_messages.interval', T::Numeric) { 5 }
+        c.declare('scheduled_messages.poller', ScheduledMessagePoller)
+        c.component!('scheduled_messages.poller', %w[store scheduled_messages.interval logger]) do
+          build { |store, interval, logger| ScheduledMessagePoller.new(store:, interval:, logger:) }
+          start { |poller, context| poller.start(context) }
           stop(&:stop!)
         end
       end

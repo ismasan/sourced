@@ -112,8 +112,8 @@ Scheduling is transparent: stamp a message with a future time via `#at(time)` an
 cmd = SendReminder.new(payload: { course_id: 'c1' }).at(Time.now + 3600)
 store.append(cmd)  # created_at in the future → deferred, not appended for immediate consumption
 
-# Normally the ScheduledMessagePoller (started by the Dispatcher) promotes
-# due messages automatically. In tests or scripts, do it manually:
+# Normally the scheduled_messages.poller component promotes due messages
+# automatically. In tests or scripts, do it manually:
 store.update_schedule!  # => number of messages promoted
 ```
 
@@ -659,7 +659,15 @@ Reactors that use the `Sourced::Consumer` mixin (for `partition_by`, `each_with_
 
 ## Background processing
 
-Workers run in the `dispatcher` component, which spawns them into the context Sourced is started with: `Sourced.start!` runs them in threads and returns, and `Sourced.start!(task)` runs them as fibers in an `Async::Task`. The dispatcher embeds the `CatchUpPoller`, `ScheduledMessagePoller` and `StaleClaimReaper`, so nothing else needs spawning.
+Workers run in the `dispatcher` component, which spawns them into the context Sourced is started with: `Sourced.start!(task)` runs them as fibers in an `Async::Task`, and `Sourced.start!` runs them in threads; either way the call returns. Three loops run alongside, as components of their own:
+
+| Component | Does | Depends on |
+| --- | --- | --- |
+| `dispatcher.catchup_poller` | pushes every reactor to the dispatcher each `workers.catchup_interval`, as a safety net for missed notifications | `dispatcher` |
+| `dispatcher.stale_claim_reaper` | heartbeats the dispatcher's workers and releases claims of dead ones, each `housekeeping.interval` | `dispatcher` |
+| `scheduled_messages.poller` | promotes due scheduled messages into the log, each `scheduled_messages.interval` | `store` |
+
+They start after what they depend on and stop before it, and the two under `dispatcher` are deferred, stopped and started along with it. The scheduled messages poller only needs the store, so it runs in any process that boots Sourced, workers or not, unless deferred. To run a loop in only some processes, defer it in the others: `Sourced.config.defer('scheduled_messages.poller')`.
 
 A dispatcher can be stopped and started again, ex. to run workers only while a process holds a leader lock: `#stop` waits for its workers to finish their batches, and `#start(task)` runs fresh workers. Messages appended while it's stopped are picked up by the catch-up poll once it starts again. Through the configuration, defer the `dispatcher` component, so booting doesn't start it, and start and stop it by key:
 
@@ -691,10 +699,11 @@ Sourced.config.prepare!
 Async { |task| Sourced.start!(task) }
 ```
 
-Processes that should run no workers (web processes, when a separate process runs them) set `workers.count` to 0:
+Processes that should run no workers (web processes, when a separate process runs them) set `workers.count` to 0. The scheduled messages poller still runs there; defer it if the worker process should be the only one promoting:
 
 ```ruby
 Sourced.config.config!('workers.count') { 0 }
+Sourced.config.defer('scheduled_messages.poller')
 Sourced.start!
 ```
 
@@ -1189,7 +1198,11 @@ See `examples/app/` for a complete Sinatra application with:
 | `workers.shutdown_timeout` | `Numeric` | `30`: seconds teardown waits for workers to finish their batches before raising |
 | `housekeeping.interval` | `Numeric` | `30`: seconds between heartbeat/reap cycles |
 | `housekeeping.claim_ttl_seconds` | `Integer` | `120`: stale claim threshold |
-| `dispatcher` | `Sourced::Dispatcher` | runs the workers; on teardown, waits for them to finish their batches |
+| `scheduled_messages.interval` | `Numeric` | `5`: seconds between promotions of due scheduled messages |
+| `scheduled_messages.poller` | `Sourced::ScheduledMessagePoller` | promotes them, in any process (see [Background processing](#background-processing)) |
+| `dispatcher` | `Sourced::Dispatcher` | runs the workers; on stop, waits for them to finish their batches |
+| `dispatcher.catchup_poller` | `Sourced::CatchUpPoller` | the catch-up poll, started and stopped with the dispatcher |
+| `dispatcher.stale_claim_reaper` | `Sourced::StaleClaimReaper` | heartbeats and reaping, started and stopped with the dispatcher |
 
 Implement (or re-implement) any of them, then boot:
 

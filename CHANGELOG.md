@@ -36,6 +36,20 @@
     (`start_component!` / `stop_component!`), ex. only while it holds a leader lock.
     `#start` raises `Dispatcher::StillRunningError` while the previous run's workers
     are still running. Notifiers must support `start` after `stop`.
+  - The catch-up poller, stale claim reaper and scheduled message poller are components
+    (`dispatcher.catchup_poller`, `dispatcher.stale_claim_reaper`,
+    `scheduled_messages.poller`, with `scheduled_messages.interval`) instead of being
+    embedded in the dispatcher: each can be deferred, stopped and started by key, the
+    two under `dispatcher` along with it, and each is waited for on stop. They're built
+    on `Sourced::PeriodicTask` (`start(context)`, `stop`, restartable). The scheduled
+    message poller only depends on the store, so it runs in every process that boots
+    Sourced, workers or not, unless deferred. `Dispatcher.new` no longer takes
+    `catchup_interval:`, `housekeeping_interval:` or `claim_ttl_seconds:`, and
+    exposes `#push(reactor)` and `#reactors`. `Dispatcher::ShutdownTimeoutError` is
+    `Sourced::ShutdownTimeoutError`, raised by the pollers' `stop!` too.
+  - Components spawn through `Sourced::Spawner`: an Async task, an executor task, or
+    threads for any other context, so a bare `Sourced.start!` or a host's `App.start!`
+    runs workers and pollers in threads.
   - Removed `Dispatcher.start(task)`; the `dispatcher` component spawns workers into
     the context Sourced starts with. `Supervisor.new(config: Sourced.config)` boots
     the root of the tree, and replaces its old keyword arguments.

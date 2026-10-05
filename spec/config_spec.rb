@@ -38,13 +38,17 @@ RSpec.describe Sourced::Config do
     end
   end
 
+  after { config.teardown! if config.root? && config.boot_status == :started }
+
   describe '.build' do
     it 'declares every component, without building anything' do
       expect(config.index.keys).to include(
         'logger', 'db', 'notifier', 'executor', 'error_strategy', 'store', 'store.table_prefix', 'router', 'topology',
         'workers.count', 'workers.batch_size', 'workers.max_drain_rounds', 'workers.catchup_interval',
         'workers.shutdown_timeout',
-        'housekeeping.interval', 'housekeeping.claim_ttl_seconds', 'dispatcher'
+        'housekeeping.interval', 'housekeeping.claim_ttl_seconds', 'dispatcher',
+        'dispatcher.catchup_poller', 'dispatcher.stale_claim_reaper',
+        'scheduled_messages.interval', 'scheduled_messages.poller'
       )
       expect(config.boot_status).to eq(:open)
       expect { config['store'] }.to raise_error(Sourced::Component::NotBuiltError)
@@ -77,6 +81,10 @@ RSpec.describe Sourced::Config do
       expect(config['workers.shutdown_timeout']).to eq(30)
       expect(config['housekeeping.interval']).to eq(30)
       expect(config['housekeeping.claim_ttl_seconds']).to eq(120)
+      expect(config['scheduled_messages.interval']).to eq(5)
+      expect(config['dispatcher.catchup_poller']).to be_a(Sourced::CatchUpPoller)
+      expect(config['dispatcher.stale_claim_reaper']).to be_a(Sourced::StaleClaimReaper)
+      expect(config['scheduled_messages.poller']).to be_a(Sourced::ScheduledMessagePoller)
     end
 
     it 'describes its dependency graph before booting' do
@@ -86,7 +94,10 @@ RSpec.describe Sourced::Config do
       expect(components['store'][:deps]).to eq(%w[db notifier logger store.table_prefix])
       expect(components['router'][:deps]).to eq(%w[store reactors.ConfigTestReactor error_strategy])
       expect(components['topology'][:deps]).to eq(%w[reactors.ConfigTestReactor])
-      expect(components['dispatcher'][:deps]).to include('router', 'workers.count', 'housekeeping.interval')
+      expect(components['dispatcher'][:deps]).to include('router', 'workers.count')
+      expect(components['dispatcher.catchup_poller'][:deps]).to eq(%w[dispatcher workers.catchup_interval logger])
+      expect(components['dispatcher.stale_claim_reaper'][:deps]).to include('dispatcher', 'store', 'housekeeping.interval')
+      expect(components['scheduled_messages.poller'][:deps]).to eq(%w[store scheduled_messages.interval logger])
       expect(config.boot_status).to eq(:open)
     end
   end
@@ -140,25 +151,48 @@ RSpec.describe Sourced::Config do
       config.config!('workers.count') { 2 }
       config.start!(task)
 
-      # notifier, catch-up poller, scheduled message poller, reaper and 2 workers
+      # dispatcher: notifier and 2 workers; and the catch-up poller, reaper and scheduled message poller
       expect(task.spawned.size).to eq(6)
     ensure
       config.teardown!
     end
 
-    it "raises for workers it can't spawn, and tears down what started" do
+    it 'runs workers and pollers in threads when the context cannot spawn' do
       config.config!('workers.count') { 2 }
 
-      expect { config.start!(Thread.current) }.to raise_error(ArgumentError, /ThreadExecutor/)
-      expect(config.boot_status).to eq(:torn_down)
-      expect(config.node('store').status).to eq(:torn_down)
+      config.start!(Thread.current)
+      workers = config['dispatcher'].workers
+      Timeout.timeout(2) { sleep 0.01 until workers.all?(&:running?) }
+      expect(config['scheduled_messages.poller']).to be_running
+
+      config.teardown!
+      expect(workers.map(&:running?)).to all(be(false))
+      expect(config['scheduled_messages.poller']).not_to be_running
+    end
+
+    it 'stops the pollers around the dispatcher with it, and starts them again with it' do
+      config.config!('workers.count') { 2 }
+      config.start!(task)
+      expect(config['dispatcher.catchup_poller']).to be_running.or satisfy { |p| task.spawned.any? }
+
+      config.stop_component!('dispatcher')
+      expect(config.node('dispatcher.catchup_poller').status).to eq(:stopped)
+      expect(config.node('dispatcher.stale_claim_reaper').status).to eq(:stopped)
+      expect(config.node('scheduled_messages.poller').status).to eq(:started)
+
+      config.start_component!('dispatcher', task)
+      expect(config.node('dispatcher.catchup_poller').status).to eq(:started)
+    ensure
+      config.teardown!
     end
 
     it 'runs the dispatcher only when started by key, once deferred, and again after stopping' do
       config.config!('workers.count') { 2 }
       config.defer('dispatcher')
       config.start!(task)
-      expect(task.spawned).to be_empty
+      # Only the scheduled message poller, which doesn't depend on the dispatcher
+      expect(task.spawned.size).to eq(1)
+      expect(config.node('dispatcher.catchup_poller').status).to eq(:built)
 
       config.start_component!('dispatcher', task)
       expect(config['dispatcher']).to be_running
@@ -166,16 +200,17 @@ RSpec.describe Sourced::Config do
       expect(config['dispatcher']).not_to be_running
       config.start_component!('dispatcher', task)
 
-      # notifier, catch-up poller, scheduled message poller, reaper and 2 workers, per run
-      expect(task.spawned.size).to eq(12)
+      # per run: notifier and 2 workers, then the catch-up poller and reaper; plus the scheduled poller
+      expect(task.spawned.size).to eq(11)
     ensure
       config.teardown!
     end
 
-    it 'runs no workers with workers.count 0, in any context' do
-      config.start!(Thread.current)
+    it 'runs no workers with workers.count 0, but still the pollers' do
+      config.start!(task)
 
       expect(config['dispatcher'].workers).to be_empty
+      expect(task.spawned.size).to eq(3)
     end
 
     it 'compiles the default store codec on prepare, before anything is built' do
@@ -285,7 +320,7 @@ RSpec.describe Sourced::Config do
       config.start!
       allow(config['dispatcher']).to receive(:stop).and_return(false)
 
-      expect { config.teardown! }.to raise_error(Sourced::Dispatcher::ShutdownTimeoutError, /still running/)
+      expect { config.teardown! }.to raise_error(Sourced::ShutdownTimeoutError, /still running/)
       expect(config.boot_status).to eq(:torn_down)
       expect(config.node('db').status).to eq(:torn_down)
     end

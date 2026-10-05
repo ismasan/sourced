@@ -15,6 +15,10 @@ module Sourced
 
   ConcurrentAppendError = Class.new(Error)
 
+  # Raised by a component's stop (Dispatcher#stop!, PeriodicTask#stop!) when what
+  # it runs is still running after its shutdown timeout
+  ShutdownTimeoutError = Class.new(Error)
+
   # Raised by {.handle!} when the reactor is registered with Sourced but its
   # consumer group isn't in the store, which registers groups when Sourced starts.
   ConsumerGroupNotRegisteredError = Class.new(Error)
@@ -78,13 +82,13 @@ module Sourced
   end
 
   # Boot a standalone Sourced: build every component, set up the store and
-  # consumer groups, and spawn workers into +context+. By default workers run
-  # in threads and this returns; pass an Async::Task to run them as fibers in
-  # its reactor, or set +workers.count+ to 0 to run none in this process.
-  # To block until the process is signalled, see {Supervisor}.
-  # A mounted Sourced is booted by its host's root.
+  # consumer groups, and spawn the workers and pollers into +context+: an
+  # Async::Task to run them as fibers in its reactor, or by default threads
+  # (see {Spawner}); either way this returns. Set +workers.count+ to 0 to run
+  # no workers in this process. To block until the process is signalled, see
+  # {Supervisor}. A mounted Sourced is booted by its host's root.
   # @return [Sourced::Component]
-  def self.start!(context = ThreadExecutor.new)
+  def self.start!(context = Thread.current)
     config.start!(context)
   end
 
@@ -212,7 +216,6 @@ module Sourced
 end
 
 require 'sourced/config'
-require 'sourced/thread_executor'
 require 'sourced/store'
 require 'sourced/message'
 require 'sourced/message_ext'
