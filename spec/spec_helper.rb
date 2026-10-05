@@ -12,9 +12,10 @@ ENV['ENVIRONMENT'] ||= 'test'
 module CodecSpecHelpers
   # Build a message class without adding it to the global registry.
   #
-  # Sourced.setup! refuses to boot when a registered message type can't be
-  # serialized, and this suite plays several apps at once, so an app-specific
-  # type must stay out of the registry every other spec's setup! walks.
+  # Store#setup! (run when Sourced starts) refuses to boot when a registered
+  # message type can't be serialized, and this suite plays several apps at once,
+  # so an app-specific type must stay out of the registry every other spec's
+  # store setup walks.
   #
   # @param type_str [String] message type string
   # @param base [Class<Sourced::Message>]

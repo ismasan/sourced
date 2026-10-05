@@ -46,7 +46,7 @@ module MessageCodecTests
   end
 
   # Unregistered: the default codec can't serialize it, and every
-  # Sourced.setup! in the suite walks the global registry.
+  # Store#setup! in the suite walks the global registry.
   Priced = CodecSpecHelpers.unregistered_message('message_codec_test.priced') do
     attribute :price, Sourced::Types::Any[Money]
   end

@@ -69,7 +69,7 @@ module StoreTestMessages
     encoder PointEncoder
   end
 
-  # Unregistered: only StoreCodec can serialize it, and every Sourced.setup!
+  # Unregistered: only StoreCodec can serialize it, and every Store#setup!
   # in the suite walks the global registry.
   PointPlotted = CodecSpecHelpers.unregistered_message('store_test.point.plotted') do
     attribute :plot_id, String
