@@ -37,10 +37,11 @@ module Sourced
       @cycle = nil
     end
 
-    # Spawn the loop into +context+ (see {Spawner}). A no-op while running.
+    # Spawn the loop into +context+ (see {Spawner}). A no-op while running,
+    # or spawned and not stopped since.
     # @return [self]
     def start(context)
-      return self if running?
+      return self if spawned?
 
       cycle = @cycle = Cycle.new(Thread::Queue.new, Thread::Queue.new, false, false)
       Spawner.into(context) { run_cycle(cycle) }
@@ -81,6 +82,13 @@ module Sourced
     def running?
       cycle = @cycle
       !cycle.nil? && cycle.started && !cycle.finished.closed?
+    end
+
+    # Whether a loop was spawned and neither stopped nor finished: unlike
+    # #running?, true before the spawned loop gets to run
+    private def spawned?
+      cycle = @cycle
+      !cycle.nil? && !cycle.stopped && !cycle.finished.closed?
     end
 
     private

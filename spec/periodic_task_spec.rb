@@ -95,6 +95,14 @@ RSpec.describe Sourced::PeriodicTask do
     periodic.stop
   end
 
+  it 'spawns one loop when started twice before the first gets to run' do
+    task = CollectingTask.new
+    periodic.start(task)
+    periodic.start(task)
+
+    expect(task.spawned.size).to eq(1)
+  end
+
   it 'stops without waiting when the spawned loop never ran' do
     periodic.start(CollectingTask.new)
 
