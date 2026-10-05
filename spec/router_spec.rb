@@ -272,6 +272,16 @@ RSpec.describe Sourced::Router do
     end
   end
 
+  describe '#handle_next_for' do
+    it 'raises for a reactor not registered with this router' do
+      routed = Sourced::Router.new(store:, reactors: [RouterTestDecider]).setup!
+
+      expect {
+        routed.handle_next_for(RouterTestQueueWorker)
+      }.to raise_error(ArgumentError, /RouterTestQueueWorker is not registered with this router \(its reactors: RouterTestDecider\)/)
+    end
+  end
+
   describe '#setup!' do
     it 'freezes the error strategy' do
       routed = Sourced::Router.new(store:).setup!

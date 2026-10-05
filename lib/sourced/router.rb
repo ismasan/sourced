@@ -54,7 +54,9 @@ module Sourced
 
     def handle_next_for(reactor_class, worker_id: 'default', batch_size: nil)
       group_id = reactor_class.group_id
-      group = @groups.fetch(reactor_class)
+      group = @groups.fetch(reactor_class) do
+        raise ArgumentError, "#{reactor_class} is not registered with this router (its reactors: #{@reactors.join(', ')})"
+      end
 
       claim = store.claim_next(
         group_id,
