@@ -16,7 +16,11 @@ RSpec.describe Sourced::Supervisor do
   let(:handlers) { {} }
 
   before do
-    allow(Signal).to receive(:trap) { |signal, &block| handlers[signal] = block }
+    # Records the handler installed for each signal: a block, or a restored previous handler
+    allow(Signal).to receive(:trap) do |signal, handler = nil, &block|
+      handlers[signal] = block || handler
+      'DEFAULT'
+    end
   end
 
   after do
@@ -39,11 +43,33 @@ RSpec.describe Sourced::Supervisor do
       expect(config.boot_status).to eq(:started)
       expect(config['store'].installed?).to be(true)
 
-      supervisor.stop
+      expect(supervisor.stop).to be(true)
       thread.join(2)
 
       expect(thread).not_to be_alive
       expect(config.boot_status).to eq(:torn_down)
+    end
+
+    it 'restores the previous signal handlers and closes up once stopped' do
+      supervisor = described_class.new(config:)
+      thread = run_in_background(supervisor)
+      expect(handlers.values_at('INT', 'TERM')).to all(be_a(Proc))
+
+      supervisor.stop
+      thread.join(2)
+
+      expect(handlers.values_at('INT', 'TERM')).to eq(%w[DEFAULT DEFAULT])
+      expect(supervisor.stop).to be(false)
+    end
+
+    it 'restores the previous signal handlers and closes up when boot fails' do
+      config.config!('workers.count') { -1 }
+      supervisor = described_class.new(config:)
+
+      expect { supervisor.start }.to raise_error(Plumb::ParseError, /workers\.count/)
+
+      expect(handlers.values_at('INT', 'TERM')).to eq(%w[DEFAULT DEFAULT])
+      expect(supervisor.stop).to be(false)
     end
 
     %w[INT TERM].each do |signal|

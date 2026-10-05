@@ -30,28 +30,37 @@ module Sourced
       @stop_reader, @stop_writer = IO.pipe
     end
 
-    # Boot, block until stopped, then tear down.
+    # Boot, block until stopped, then tear down. Whether it returns or raises
+    # (ex. a component fails to build), the signal handlers it installed are
+    # restored and its pipe is closed.
     # @return [void]
     def start
+      previous_handlers = trap_signals
       root.build!
       executor = config['executor']
       logger.info("Sourced::Supervisor: starting #{config['workers.count']} workers with #{executor}")
-      trap_signals
 
       executor.start do |task|
         root.start!(task)
         task.spawn { shut_down_when_stopped }
       end
+    ensure
+      restore_signals(previous_handlers)
+      close_pipe
     end
 
     # Ask the supervisor to tear down. Safe to call from a signal handler:
     # lifecycle methods take a lock, which Ruby doesn't allow in trap context,
     # so this only wakes up the task that tears down.
-    # @return [void]
+    # @return [Boolean] false if the supervisor isn't running (it returned, or
+    #   failed to start), so there is nothing to stop
     def stop
       @stop_writer.write_nonblock('.')
-    rescue IO::WaitWritable, IOError
-      nil # already asked to stop
+      true
+    rescue IO::WaitWritable
+      true # already asked to stop
+    rescue IOError
+      false
     end
 
     private
@@ -60,8 +69,18 @@ module Sourced
 
     def logger = config['logger']
 
+    # @return [Hash{String => Object}] the handlers replaced, by signal
     def trap_signals
-      SIGNALS.each { |signal| Signal.trap(signal) { stop } }
+      SIGNALS.to_h { |signal| [signal, Signal.trap(signal) { stop }] }
+    end
+
+    def restore_signals(previous_handlers)
+      previous_handlers&.each { |signal, handler| Signal.trap(signal, handler) }
+    end
+
+    def close_pipe
+      @stop_reader.close unless @stop_reader.closed?
+      @stop_writer.close unless @stop_writer.closed?
     end
 
     # Spawned into the executor next to the workers, so teardown runs where they do
@@ -70,9 +89,6 @@ module Sourced
       logger.info('Sourced::Supervisor: stopping')
       root.teardown!
       logger.info('Sourced::Supervisor: stopped')
-    ensure
-      @stop_reader.close
-      @stop_writer.close
     end
   end
 end
