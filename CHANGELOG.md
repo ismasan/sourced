@@ -40,10 +40,12 @@
     (`dispatcher.catchup_poller`, `dispatcher.stale_claim_reaper`,
     `scheduled_messages.poller`, with `scheduled_messages.interval`) instead of being
     embedded in the dispatcher: each can be deferred, stopped and started by key, the
-    two under `dispatcher` along with it, and each is waited for on stop. They're built
-    on `Sourced::PeriodicTask` (`start(context)`, `stop`, restartable). The scheduled
-    message poller only depends on the store, so it runs in every process that boots
-    Sourced, workers or not, unless deferred. `Dispatcher.new` no longer takes
+    all three along with the dispatcher they depend on (so a leader-only dispatcher keeps
+    leader-only pollers), and each is waited for on stop. They're built on
+    `Sourced::PeriodicTask` (`start(context)`, `stop`, restartable). The scheduled
+    message poller depends on the dispatcher only to run where it runs; re-implement it
+    with a dependency on `store` alone to promote in a process without workers.
+    `Dispatcher.new` no longer takes
     `catchup_interval:`, `housekeeping_interval:` or `claim_ttl_seconds:`, and
     exposes `#push(reactor)` and `#reactors`. `Dispatcher::ShutdownTimeoutError` is
     `Sourced::ShutdownTimeoutError`, raised by the pollers' `stop!` too.

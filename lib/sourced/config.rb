@@ -42,8 +42,8 @@ module Sourced
   #   dispatcher.catchup_poller      pushes every reactor to the dispatcher each workers.catchup_interval
   #   dispatcher.stale_claim_reaper  heartbeats the dispatcher's workers and releases stale claims
   #   scheduled_messages.interval    seconds between promotions of due scheduled messages
-  #   scheduled_messages.poller      promotes them into the log. Needs no workers, so it runs
-  #                                  in any process that isn't told to defer it
+  #   scheduled_messages.poller      promotes them into the log. Runs with the dispatcher, so
+  #                                  only where the workers run (ex. a leader process)
   #
   # Building only constructs objects: nothing touches the database until #start!.
   # Preparing compiles the store's codec, so it can run once before forking.
@@ -187,10 +187,13 @@ module Sourced
           stop(&:stop!)
         end
 
+        # Depends on the dispatcher only to run where it runs: one promoter, in the
+        # process running the workers. Re-implement it with deps on store alone to
+        # promote in a process without workers.
         c.declare('scheduled_messages.interval', T::Numeric) { 5 }
         c.declare('scheduled_messages.poller', ScheduledMessagePoller)
-        c.component!('scheduled_messages.poller', %w[store scheduled_messages.interval logger]) do
-          build { |store, interval, logger| ScheduledMessagePoller.new(store:, interval:, logger:) }
+        c.component!('scheduled_messages.poller', %w[dispatcher store scheduled_messages.interval logger]) do
+          build { |_dispatcher, store, interval, logger| ScheduledMessagePoller.new(store:, interval:, logger:) }
           start { |poller, context| poller.start(context) }
           stop(&:stop!)
         end

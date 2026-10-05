@@ -97,7 +97,7 @@ RSpec.describe Sourced::Config do
       expect(components['dispatcher'][:deps]).to include('router', 'workers.count')
       expect(components['dispatcher.catchup_poller'][:deps]).to eq(%w[dispatcher workers.catchup_interval logger])
       expect(components['dispatcher.stale_claim_reaper'][:deps]).to include('dispatcher', 'store', 'housekeeping.interval')
-      expect(components['scheduled_messages.poller'][:deps]).to eq(%w[store scheduled_messages.interval logger])
+      expect(components['scheduled_messages.poller'][:deps]).to eq(%w[dispatcher store scheduled_messages.interval logger])
       expect(config.boot_status).to eq(:open)
     end
   end
@@ -170,7 +170,7 @@ RSpec.describe Sourced::Config do
       expect(config['scheduled_messages.poller']).not_to be_running
     end
 
-    it 'stops the pollers around the dispatcher with it, and starts them again with it' do
+    it 'stops the pollers with the dispatcher, and starts them again with it' do
       config.config!('workers.count') { 2 }
       config.start!(task)
       expect(config['dispatcher.catchup_poller']).to be_running.or satisfy { |p| task.spawned.any? }
@@ -178,7 +178,7 @@ RSpec.describe Sourced::Config do
       config.stop_component!('dispatcher')
       expect(config.node('dispatcher.catchup_poller').status).to eq(:stopped)
       expect(config.node('dispatcher.stale_claim_reaper').status).to eq(:stopped)
-      expect(config.node('scheduled_messages.poller').status).to eq(:started)
+      expect(config.node('scheduled_messages.poller').status).to eq(:stopped)
 
       config.start_component!('dispatcher', task)
       expect(config.node('dispatcher.catchup_poller').status).to eq(:started)
@@ -190,9 +190,9 @@ RSpec.describe Sourced::Config do
       config.config!('workers.count') { 2 }
       config.defer('dispatcher')
       config.start!(task)
-      # Only the scheduled message poller, which doesn't depend on the dispatcher
-      expect(task.spawned.size).to eq(1)
-      expect(config.node('dispatcher.catchup_poller').status).to eq(:built)
+      # The pollers depend on the dispatcher, so they're deferred with it
+      expect(task.spawned).to be_empty
+      expect(config.node('scheduled_messages.poller').status).to eq(:built)
 
       config.start_component!('dispatcher', task)
       expect(config['dispatcher']).to be_running
@@ -200,13 +200,13 @@ RSpec.describe Sourced::Config do
       expect(config['dispatcher']).not_to be_running
       config.start_component!('dispatcher', task)
 
-      # per run: notifier and 2 workers, then the catch-up poller and reaper; plus the scheduled poller
-      expect(task.spawned.size).to eq(11)
+      # per run: notifier and 2 workers, then the three pollers
+      expect(task.spawned.size).to eq(12)
     ensure
       config.teardown!
     end
 
-    it 'runs no workers with workers.count 0, but still the pollers' do
+    it 'runs no workers with workers.count 0, but still the pollers' do # defer the dispatcher to run none
       config.start!(task)
 
       expect(config['dispatcher'].workers).to be_empty

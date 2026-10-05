@@ -665,9 +665,9 @@ Workers run in the `dispatcher` component, which spawns them into the context So
 | --- | --- | --- |
 | `dispatcher.catchup_poller` | pushes every reactor to the dispatcher each `workers.catchup_interval`, as a safety net for missed notifications | `dispatcher` |
 | `dispatcher.stale_claim_reaper` | heartbeats the dispatcher's workers and releases claims of dead ones, each `housekeeping.interval` | `dispatcher` |
-| `scheduled_messages.poller` | promotes due scheduled messages into the log, each `scheduled_messages.interval` | `store` |
+| `scheduled_messages.poller` | promotes due scheduled messages into the log, each `scheduled_messages.interval` | `dispatcher`, `store` |
 
-They start after what they depend on and stop before it, and the two under `dispatcher` are deferred, stopped and started along with it. The scheduled messages poller only needs the store, so it runs in any process that boots Sourced, workers or not, unless deferred. To run a loop in only some processes, defer it in the others: `Sourced.config.defer('scheduled_messages.poller')`.
+All three depend on the dispatcher, so they start after its workers, stop before them, and are deferred, stopped and started along with it: a process that runs the dispatcher only while it's the leader runs the pollers only then too. The scheduled messages poller depends on the dispatcher only for that; re-implement it with a dependency on `store` alone to promote scheduled messages in a process without workers. Any of them can also be deferred on its own.
 
 A dispatcher can be stopped and started again, ex. to run workers only while a process holds a leader lock: `#stop` waits for its workers to finish their batches, and `#start(task)` runs fresh workers. Messages appended while it's stopped are picked up by the catch-up poll once it starts again. Through the configuration, defer the `dispatcher` component, so booting doesn't start it, and start and stop it by key:
 
@@ -699,11 +699,10 @@ Sourced.config.prepare!
 Async { |task| Sourced.start!(task) }
 ```
 
-Processes that should run no workers (web processes, when a separate process runs them) set `workers.count` to 0. The scheduled messages poller still runs there; defer it if the worker process should be the only one promoting:
+Processes that should run no workers (web processes, when a separate process runs them) set `workers.count` to 0. The pollers still run there (with no workers, the catch-up poll and heartbeats do nothing); defer the dispatcher to run none of it:
 
 ```ruby
-Sourced.config.config!('workers.count') { 0 }
-Sourced.config.defer('scheduled_messages.poller')
+Sourced.config.defer('dispatcher')
 Sourced.start!
 ```
 
@@ -1199,7 +1198,7 @@ See `examples/app/` for a complete Sinatra application with:
 | `housekeeping.interval` | `Numeric` | `30`: seconds between heartbeat/reap cycles |
 | `housekeeping.claim_ttl_seconds` | `Integer` | `120`: stale claim threshold |
 | `scheduled_messages.interval` | `Numeric` | `5`: seconds between promotions of due scheduled messages |
-| `scheduled_messages.poller` | `Sourced::ScheduledMessagePoller` | promotes them, in any process (see [Background processing](#background-processing)) |
+| `scheduled_messages.poller` | `Sourced::ScheduledMessagePoller` | promotes them, started and stopped with the dispatcher (see [Background processing](#background-processing)) |
 | `dispatcher` | `Sourced::Dispatcher` | runs the workers; on stop, waits for them to finish their batches |
 | `dispatcher.catchup_poller` | `Sourced::CatchUpPoller` | the catch-up poll, started and stopped with the dispatcher |
 | `dispatcher.stale_claim_reaper` | `Sourced::StaleClaimReaper` | heartbeats and reaping, started and stopped with the dispatcher |
