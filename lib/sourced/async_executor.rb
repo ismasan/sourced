@@ -35,8 +35,14 @@ module Sourced
       #
       # @yieldparam block [Proc] The block to execute concurrently
       # @return [Async::Task] The spawned async task
+      # Before #start, blocks are kept to run when it starts; after, they run
+      # right away (ex. a component started by key later, in the same task).
       def spawn(&block)
-        @blocks << block
+        if @barrier
+          @barrier.async(&block)
+        else
+          @blocks << block
+        end
         self
       end
 
