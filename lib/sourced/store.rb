@@ -1048,7 +1048,6 @@ module Sourced
     # @param group_id [String] consumer group identifier
     # @param partition [Hash{String => String}] partition attribute names and values
     # @param position [Integer] advance offset to at least this position
-    # @return [void]
     # @return [Boolean] whether the consumer group exists. Advancing is a no-op
     #   for an unknown group, a partition with no messages, or a cursor already past +position+
     def advance_offset(group_id, partition:, position:)

@@ -254,8 +254,9 @@ RSpec.describe 'Sourced.handle!' do
       expect(handled).to be false
     end
 
-    it "raises when the reactor is registered but Sourced hasn't started, instead of silently not advancing" do
-      unstarted = Sourced::Store.new(Sequel.sqlite)
+    it "raises when the reactor is registered but Sourced hasn't started, without appending the command" do
+      unstarted_db = Sequel.sqlite
+      unstarted = Sourced::Store.new(unstarted_db)
       unstarted.install!
 
       expect {
@@ -265,6 +266,8 @@ RSpec.describe 'Sourced.handle!' do
           store: unstarted
         )
       }.to raise_error(Sourced::ConsumerGroupNotRegisteredError, /HandleTestDecider.*start Sourced/)
+
+      expect(unstarted_db[:sourced_messages].count).to eq(0)
     end
 
     it "doesn't advance offsets of reactors that aren't registered" do

@@ -55,6 +55,7 @@ module Sourced
     # store component's hooks own it, so a component implementing another store
     # brings its own.
     StoreInterface = T::Interface[
+      :transaction,
       :append,
       :read,
       :read_partition,

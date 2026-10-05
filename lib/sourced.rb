@@ -165,10 +165,12 @@ module Sourced
 
     guard = read_result&.guard
     to_append = [command] + correlated_events
-    last_position = store.append(to_append, guard: guard)
-
-    # nil when the command itself was future-dated and scheduled: nothing to skip past.
-    advance_registered_offsets(store, reactor_class, partition_attrs, last_position) if last_position
+    # One transaction, so a command whose offset can't be advanced isn't committed either
+    store.transaction do
+      last_position = store.append(to_append, guard: guard)
+      # nil when the command itself was future-dated and scheduled: nothing to skip past.
+      advance_registered_offsets(store, reactor_class, partition_attrs, last_position) if last_position
+    end
 
     HandleResult.new(command: command, reactor: instance, events: correlated_events)
   end
