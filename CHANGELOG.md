@@ -29,10 +29,11 @@
   - `Store.new` no longer reads a late-bound `Sourced.config.notifier`: it takes
     `notifier:` (default: its own `InlineNotifier`), and runs no queries until
     `install!`.
-  - `Dispatcher#stop` (and so teardown) waits for workers to finish the batches
-    they're processing, for up to `workers.shutdown_timeout` seconds (default 30),
-    and returns false if they don't. A worker stopped before it runs no longer
-    processes work.
+  - `Dispatcher#stop` waits for workers to finish the batches they're processing,
+    for up to `workers.shutdown_timeout` seconds (default 30), and returns false if
+    they don't; teardown uses `Dispatcher#stop!`, which raises
+    `Dispatcher::ShutdownTimeoutError` instead, after the rest of the tree is torn
+    down. A worker stopped before it runs no longer processes work.
   - `Config::StoreInterface` no longer requires `setup!`: how a store gets ready is
     the `store` component's lifecycle. The default component calls `Store#setup!` on
     start; a component implementing another store brings its own hooks.

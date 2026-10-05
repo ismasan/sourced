@@ -24,6 +24,9 @@ module Sourced
   #   queue = WorkQueue.new(max_per_reactor: 2, queue: Queue.new)
   #   dispatcher = Sourced::Dispatcher.new(router: router, work_queue: queue)
   class Dispatcher
+    # Raised by {#stop!} when workers are still running after the shutdown timeout
+    ShutdownTimeoutError = Class.new(Sourced::Error)
+
     # Subscriber for the store notifier. Routes events to the {WorkQueue}
     # by resolving message types or group IDs to reactor classes.
     #
@@ -220,6 +223,19 @@ module Sourced
 
       @logger.info 'Sourced::Dispatcher: all workers stopped'
       true
+    end
+
+    # {#stop}, raising if workers are still running after the shutdown timeout.
+    # The dispatcher component tears down with this, so a shutdown that leaves
+    # workers mid-batch fails loudly instead of disconnecting under them.
+    #
+    # @return [void]
+    # @raise [ShutdownTimeoutError]
+    def stop!
+      return if stop
+
+      names = @workers.select(&:running?).map(&:name).join(', ')
+      raise ShutdownTimeoutError, "workers still running after #{@shutdown_timeout}s: #{names}"
     end
 
     private

@@ -247,6 +247,16 @@ RSpec.describe Sourced::Config do
       expect(torn_down.index('store')).to be < torn_down.index('db')
     end
 
+    it 'raises when workers are still running after the shutdown timeout, after tearing down' do
+      config.config!('workers.count') { 0 }
+      config.start!
+      allow(config['dispatcher']).to receive(:stop).and_return(false)
+
+      expect { config.teardown! }.to raise_error(Sourced::Dispatcher::ShutdownTimeoutError, /still running/)
+      expect(config.boot_status).to eq(:torn_down)
+      expect(config.node('db').status).to eq(:torn_down)
+    end
+
     it 'disconnects the db' do
       config.config!('workers.count') { 0 }
       config.start!

@@ -413,6 +413,16 @@ RSpec.describe Sourced::Dispatcher do
       expect(events).to eq(%i[released stopped])
     end
 
+    it '#stop! raises after shutdown_timeout, naming the workers still running' do
+      dispatcher = start_blocked_dispatcher(shutdown_timeout: 0.1)
+      allow(logger).to receive(:warn)
+
+      expect { dispatcher.stop! }.to raise_error(Sourced::Dispatcher::ShutdownTimeoutError, /0\.1s: \d+-worker-0/)
+
+      DispatchTestBlocking.release << true
+      expect(dispatcher.workers.first.wait(timeout: 2)).to be(true)
+    end
+
     it 'gives up after shutdown_timeout, and says which workers are still running' do
       dispatcher = start_blocked_dispatcher(shutdown_timeout: 0.1)
       expect(logger).to receive(:warn).with(/still running after 0.1s/)

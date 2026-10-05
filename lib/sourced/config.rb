@@ -33,7 +33,8 @@ module Sourced
   #   workers.*         count, batch_size, max_drain_rounds, catchup_interval, shutdown_timeout
   #   housekeeping.*    interval, claim_ttl_seconds
   #   dispatcher        spawns workers into the context passed to #start!. On teardown, stops
-  #                     and waits for workers to finish their batches (up to shutdown_timeout)
+  #                     and waits for workers to finish their batches (up to shutdown_timeout,
+  #                     then raises Dispatcher::ShutdownTimeoutError)
   #
   # Building only constructs objects: nothing touches the database until #start!.
   module Config
@@ -142,7 +143,7 @@ module Sourced
             )
           end
           start { |dispatcher, context| dispatcher.start(context) }
-          teardown(&:stop)
+          teardown(&:stop!)
         end
       end
     end
