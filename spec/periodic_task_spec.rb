@@ -27,6 +27,23 @@ RSpec.describe Sourced::PeriodicTask do
     end
   end
 
+  it 'logs a tick that raises and keeps going' do
+    logger = instance_double('Logger', info: nil)
+    failing = Class.new(task_class) do
+      def tick
+        super
+        raise 'boom' if ticks == 1
+      end
+    end.new(interval: 0.01, logger:)
+    expect(logger).to receive(:error).with(/RuntimeError: boom/).once
+
+    failing.start(Sourced::ThreadExecutor.new)
+    Timeout.timeout(2) { sleep 0.005 until failing.ticks >= 3 }
+
+    expect(failing).to be_running
+    failing.stop
+  end
+
   subject(:periodic) { task_class.new(interval: 0.01) }
 
   it 'ticks right after starting, then every interval, until stopped' do

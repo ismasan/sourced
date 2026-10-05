@@ -97,16 +97,25 @@ module Sourced
       cycle.started = true
       return if cycle.stopped
 
-      first_tick
+      guarded { first_tick }
       until cycle.stopped
         cycle.wake.pop(timeout: interval) # nil on timeout, or right away once closed by #stop
         break if cycle.stopped
 
-        tick
+        guarded { tick }
       end
       logger.info "#{name}: stopped"
     ensure
       cycle.finished.close
+    end
+
+    # A tick that raises is logged, and the loop goes on to the next one:
+    # a transient error (ex. a busy database) shouldn't end a poller for
+    # the life of the process.
+    def guarded
+      yield
+    rescue StandardError => e
+      logger.error "#{name}: #{e.class}: #{e.message}\n  #{Array(e.backtrace).first(5).join("\n  ")}"
     end
   end
 end
