@@ -188,6 +188,9 @@ RSpec.describe Sourced::Config do
 
       expect(Sourced::Store::MessageCodec.default.registered?(klass.type)).to be(true)
       expect(config.node('store').status).to eq(:prepared)
+    ensure
+      # The rest of the suite builds stores on the shared, compiled default codec
+      Sourced::Store::MessageCodec.default.compile!
     end
 
     it 'compiles the codec of the store' do

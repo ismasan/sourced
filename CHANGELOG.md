@@ -26,6 +26,16 @@
   - `Sourced.register` declares the reactor as `reactors.<group_id>`: registering two
     reactors with the same group_id raises, and so does registering after boot.
     Removed `Sourced.reset_topology`.
+  - The `store` component compiles the default codec on `prepare!`, which touches no
+    database, so a forking server prepares once in the parent and its children share
+    the compiled codec. Register encoders and define message types before that.
+  - `Dispatcher` is restartable: `#stop` waits for the run's workers, and `#start`
+    runs fresh workers, pollers and work queue; notifications are dropped while
+    stopped and the catch-up poll covers them. The `dispatcher` component uses a
+    `stop` hook, so a host can `defer('dispatcher')` and start and stop it by key
+    (`start_component!` / `stop_component!`), ex. only while it holds a leader lock.
+    `#start` raises `Dispatcher::StillRunningError` while the previous run's workers
+    are still running. Notifiers must support `start` after `stop`.
   - Removed `Dispatcher.start(task)`; the `dispatcher` component spawns workers into
     the context Sourced starts with. `Supervisor.new(config: Sourced.config)` boots
     the root of the tree, and replaces its old keyword arguments.

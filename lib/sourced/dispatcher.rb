@@ -184,7 +184,12 @@ module Sourced
     # @raise [StillRunningError] if the previous run's workers haven't finished
     #   (a {#stop} that timed out)
     def start(task)
-      return self if @run.nil? || @running
+      return self if @running
+
+      if @run.nil? # no workers: nothing to spawn, but it's started
+        @running = true
+        return self
+      end
 
       s = %i[spawn async].find { |m| task.respond_to?(m) }
       unless s
@@ -233,7 +238,10 @@ module Sourced
     #
     # @return [Boolean] true if every worker finished, false if the timeout expired first
     def stop
-      return true if @run.nil?
+      if @run.nil?
+        @running = false
+        return true
+      end
       return workers.none?(&:running?) if @stopped
 
       run = @run

@@ -484,6 +484,17 @@ RSpec.describe Sourced::Dispatcher do
       expect(dispatcher).not_to be_running
     end
 
+    it 'says whether it is running, with no workers to run' do
+      dispatcher = described_class.new(router: blocking_router, worker_count: 0, logger:)
+      expect(dispatcher).not_to be_running
+
+      dispatcher.start(Thread.current)
+      expect(dispatcher).to be_running
+
+      expect(dispatcher.stop).to be(true)
+      expect(dispatcher).not_to be_running
+    end
+
     it 'is a no-op when started while running' do
       dispatcher = build_dispatcher
       task = double('Task', spawn: nil)

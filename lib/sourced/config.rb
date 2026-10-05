@@ -60,7 +60,9 @@ module Sourced
     ]
 
     # What a store notifier must respond to. {InlineNotifier} is the reference
-    # implementation; see it for the semantics of each method.
+    # implementation; see it for the semantics of each method. The dispatcher
+    # calls +start+ on each run and +stop+ when it stops, so a notifier must
+    # support starting again after stopping (see Dispatcher#start).
     NotifierInterface = T::Interface[
       :subscribe,
       :notify_new_messages,
