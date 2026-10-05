@@ -661,6 +661,16 @@ Reactors that use the `Sourced::Consumer` mixin (for `partition_by`, `each_with_
 
 Workers run in the `dispatcher` component, which spawns them into the context Sourced is started with: `Sourced.start!` runs them in threads and returns, and `Sourced.start!(task)` runs them as fibers in an `Async::Task`. The dispatcher embeds the `CatchUpPoller`, `ScheduledMessagePoller` and `StaleClaimReaper`, so nothing else needs spawning.
 
+A dispatcher can be stopped and started again, ex. to run workers only while a process holds a leader lock: `#stop` waits for its workers to finish their batches, and `#start(task)` runs fresh workers. Messages appended while it's stopped are picked up by the catch-up poll once it starts again. Through the configuration, defer the `dispatcher` component, so booting doesn't start it, and start and stop it by key:
+
+```ruby
+Sourced.config.defer('dispatcher')
+Sourced.start!(task)                                    # everything but the workers
+
+elector.on_promote { Sourced.config.start_component!('dispatcher', task) }
+elector.on_demote { Sourced.config.stop_component!('dispatcher') }
+```
+
 ### Running inside a web server
 
 To run workers in the same process as your web app, start Sourced (or the host app it's mounted in) inside the server's async context:
@@ -1204,7 +1214,7 @@ Sourced.start!   # build every component, set up the store and consumer groups, 
 Sourced.teardown! # stop workers, then tear down in reverse dependency order
 ```
 
-Values are checked against their types when they're built, so `config!('workers.count') { '4' }` fails the boot naming `workers.count`. Building only constructs objects: the store creates its tables and compiles its codec, and the router registers consumer groups, when Sourced starts.
+Values are checked against their types when they're built, so `config!('workers.count') { '4' }` fails the boot naming `workers.count`. Preparing compiles the store's codec, and building only constructs objects: the store creates its tables, and the router registers consumer groups, when Sourced starts.
 
 Re-implementing a component replaces its lifecycle hooks along with how it's built. Overriding `db` (ex. a file-backed SQLite database) or `store.table_prefix` keeps the store's setup, but a re-implemented `store` must bring its own. A component can depend on others, too:
 
@@ -1288,13 +1298,14 @@ end
 Plumb::Codec::JSON.encoder MoneyEncoder
 ```
 
-Register encoders
-before `Sourced.start!` (or your app's `start!`), which is when the store compiles them in — an encoder added
+Register encoders, and define message types,
+before Sourced is prepared (`Sourced.config.prepare!`, which `build!` and `start!` run too), which is when the store compiles them in — an encoder or type added
 after that is not picked up. Registration lasts for the life of the process.
 
-Compiling a codec onto a type is a deep type rewrite, so it happens once, when Sourced starts,
+Compiling a codec onto a type is a deep type rewrite, so it happens once, when Sourced is prepared,
 for every registered message type. The compiled registry is then frozen: storing or
-reading a message type that wasn't compiled raises.
+reading a message type that wasn't compiled raises. Preparing touches no database, so a forking
+server can prepare once in the parent, after loading the app, and its workers share the compiled codec.
 
 **A message type the store can't serialize fails the boot**, naming the message and the
 attribute:

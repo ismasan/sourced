@@ -154,10 +154,40 @@ RSpec.describe Sourced::Config do
       expect(config.node('store').status).to eq(:torn_down)
     end
 
+    it 'runs the dispatcher only when started by key, once deferred, and again after stopping' do
+      config.config!('workers.count') { 2 }
+      config.defer('dispatcher')
+      config.start!(task)
+      expect(task.spawned).to be_empty
+
+      config.start_component!('dispatcher', task)
+      expect(config['dispatcher']).to be_running
+      config.stop_component!('dispatcher')
+      expect(config['dispatcher']).not_to be_running
+      config.start_component!('dispatcher', task)
+
+      # notifier, catch-up poller, scheduled message poller, reaper and 2 workers, per run
+      expect(task.spawned.size).to eq(12)
+    ensure
+      config.teardown!
+    end
+
     it 'runs no workers with workers.count 0, in any context' do
       config.start!(Thread.current)
 
       expect(config['dispatcher'].workers).to be_empty
+    end
+
+    it 'compiles the default store codec on prepare, before anything is built' do
+      Sourced::Store::MessageCodec.reset!
+      klass = Sourced::Event.define("config_test.prepared_#{SecureRandom.hex(4)}") do
+        attribute :name, String
+      end
+
+      config.prepare!
+
+      expect(Sourced::Store::MessageCodec.default.registered?(klass.type)).to be(true)
+      expect(config.node('store').status).to eq(:prepared)
     end
 
     it 'compiles the codec of the store' do

@@ -24,7 +24,7 @@ module Sourced
   #   notifier          InlineNotifier
   #   executor          AsyncExecutor. Runs workers under Sourced::Supervisor
   #   error_strategy    ErrorStrategy
-  #   store             Store over db. Installs its tables and compiles its codec on start
+  #   store             Store over db. Compiles its codec on prepare, and installs its tables on start
   #   store.table_prefix  prefix of the store's table names, ex. 'sourced' => sourced_messages
   #   reactors.*        one component per registered reactor (see .register)
   #   router            routes to reactors.*. On start, registers consumer groups and
@@ -32,11 +32,13 @@ module Sourced
   #   topology          message-flow graph of reactors.*, built on each read
   #   workers.*         count, batch_size, max_drain_rounds, catchup_interval, shutdown_timeout
   #   housekeeping.*    interval, claim_ttl_seconds
-  #   dispatcher        spawns workers into the context passed to #start!. On teardown, stops
-  #                     and waits for workers to finish their batches (up to shutdown_timeout,
-  #                     then raises Dispatcher::ShutdownTimeoutError)
+  #   dispatcher        spawns workers into the context passed to #start!. On stop (and so on
+  #                     teardown), stops and waits for workers to finish their batches (up to
+  #                     shutdown_timeout, then raises Dispatcher::ShutdownTimeoutError). Can be
+  #                     deferred, and started and stopped by key
   #
   # Building only constructs objects: nothing touches the database until #start!.
+  # Preparing compiles the store's codec, so it can run once before forking.
   module Config
     T = Sourced::Component::T
 
@@ -99,9 +101,13 @@ module Sourced
         c.declare('store', StoreInterface)
         c.declare('store.table_prefix', Installer::TablePrefix) { 'sourced' }
         c.component!('store', %w[db notifier logger store.table_prefix]) do
+          # Compiles the codec stores are built with, which only needs the message
+          # types, so a message type the store can't persist fails the boot before
+          # anything connects. A process that prepares before forking shares the
+          # compiled codec with its children.
+          prepare { Store::MessageCodec.default.compile! }
           build { |db, notifier, logger, prefix| Store.new(db, notifier:, logger:, prefix:) }
-          # Creates the tables and compiles the codec, so a message type the store
-          # can't persist fails the boot.
+          # Creates the tables (and compiles the store's codec, if it was given another)
           start { |store, _| store.setup! }
         end
 
@@ -127,6 +133,8 @@ module Sourced
         c.declare('housekeeping.interval', T::Numeric) { 30 }
         c.declare('housekeeping.claim_ttl_seconds', T::Integer[1..]) { 120 }
 
+        # Restartable: a host can defer it and start and stop it by key, ex. only
+        # while its process is the elected leader
         c.declare('dispatcher', Dispatcher)
         c.component!('dispatcher', %w[router logger workers.* housekeeping.*]) do
           build do |router, logger, workers, housekeeping|
@@ -143,7 +151,7 @@ module Sourced
             )
           end
           start { |dispatcher, context| dispatcher.start(context) }
-          teardown(&:stop!)
+          stop(&:stop!)
         end
       end
     end

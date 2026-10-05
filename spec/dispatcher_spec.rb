@@ -434,6 +434,120 @@ RSpec.describe Sourced::Dispatcher do
     end
   end
 
+  describe 'restarting' do
+    let(:blocking_router) { Sourced::Router.new(store:, reactors: [DispatchTestBlocking]).setup! }
+
+    before do
+      DispatchTestBlocking.entered = Queue.new
+      DispatchTestBlocking.release = Queue.new
+    end
+
+    after { DispatchTestBlocking.release&.close }
+
+    def build_dispatcher(shutdown_timeout: 30)
+      described_class.new(
+        router: blocking_router,
+        worker_count: 1,
+        catchup_interval: 0.05,
+        housekeeping_interval: 0.05,
+        shutdown_timeout:,
+        logger:
+      )
+    end
+
+    def append_message
+      store.append(DispatcherTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' }))
+    end
+
+    it 'starts again after #stop, with fresh workers' do
+      dispatcher = build_dispatcher
+      task = double('Task', spawn: nil)
+
+      dispatcher.start(task)
+      first = dispatcher.workers
+      dispatcher.stop
+      dispatcher.start(task)
+
+      expect(task).to have_received(:spawn).exactly(10).times # 5 parts per run, 1 worker each
+      expect(dispatcher.workers.size).to eq(1)
+      expect(dispatcher.workers.first).not_to be(first.first)
+    end
+
+    it 'says whether it is running' do
+      dispatcher = build_dispatcher
+      expect(dispatcher).not_to be_running
+
+      dispatcher.start(Sourced::ThreadExecutor.new)
+      expect(dispatcher).to be_running
+
+      dispatcher.stop
+      expect(dispatcher).not_to be_running
+    end
+
+    it 'is a no-op when started while running' do
+      dispatcher = build_dispatcher
+      task = double('Task', spawn: nil)
+
+      dispatcher.start(task)
+      dispatcher.start(task)
+
+      expect(task).to have_received(:spawn).exactly(5).times
+    end
+
+    it 'processes messages appended after a restart' do
+      dispatcher = build_dispatcher
+      dispatcher.start(Sourced::ThreadExecutor.new)
+      expect(dispatcher.stop).to be(true)
+
+      dispatcher.start(Sourced::ThreadExecutor.new)
+      append_message
+
+      expect(DispatchTestBlocking.entered.pop(timeout: 2)).to be(true)
+      DispatchTestBlocking.release << true
+      expect(dispatcher.stop).to be(true)
+    end
+
+    it 'processes messages appended while stopped, once started again' do
+      dispatcher = build_dispatcher
+      dispatcher.start(Sourced::ThreadExecutor.new)
+      dispatcher.stop
+
+      append_message # the notification is dropped: the catch-up poll finds it
+      dispatcher.start(Sourced::ThreadExecutor.new)
+
+      expect(DispatchTestBlocking.entered.pop(timeout: 2)).to be(true)
+      DispatchTestBlocking.release << true
+      expect(dispatcher.stop).to be(true)
+    end
+
+    it "refuses to start while the last run's workers are still running, after a stop that timed out" do
+      allow(logger).to receive(:warn)
+      dispatcher = build_dispatcher(shutdown_timeout: 0.1)
+      dispatcher.start(Sourced::ThreadExecutor.new)
+      append_message
+      expect(DispatchTestBlocking.entered.pop(timeout: 2)).to be(true)
+      expect(dispatcher.stop).to be(false)
+
+      expect { dispatcher.start(Sourced::ThreadExecutor.new) }
+        .to raise_error(Sourced::Dispatcher::StillRunningError, /worker-0 still running/)
+
+      DispatchTestBlocking.release << true
+      expect(dispatcher.workers.first.wait(timeout: 2)).to be(true)
+      expect { dispatcher.start(Sourced::ThreadExecutor.new) }.not_to raise_error
+      expect(dispatcher.stop).to be(true)
+    end
+
+    it 'once stopped, #stop and #stop! say whether the workers finished, without stopping anything again' do
+      dispatcher = build_dispatcher
+      dispatcher.start(Sourced::ThreadExecutor.new)
+      dispatcher.stop
+
+      expect(logger).not_to receive(:info).with(/stopping/)
+      expect(dispatcher.stop).to be(true)
+      expect { dispatcher.stop! }.not_to raise_error
+    end
+  end
+
   describe 'Integration: append → notify → queue → worker' do
     it 'InlineNotifier fires synchronously through the full pipeline' do
       # Build dispatcher which subscribes NotificationQueuer to the store's notifier
