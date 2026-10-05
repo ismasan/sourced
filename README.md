@@ -220,7 +220,7 @@ end
 
 #### Synchronous command handling
 
-`Sourced.handle!` loads history, runs the decider, appends the command + events, and advances consumer group offsets — all in one call. Designed for web controllers.
+`Sourced.handle!` loads history, runs the decider, appends the command + events, and advances the decider's consumer group offset so workers skip the command — all in one call and one transaction. Designed for web controllers. It uses `Sourced.store`, so Sourced must be started (or pass `store:`).
 
 ```ruby
 cmd = CreateCourse.new(payload: { course_id: 'c1', course_name: 'Algebra' })
@@ -233,7 +233,7 @@ else
 end
 ```
 
-Raises `Sourced::ConcurrentAppendError` on conflicts, or `RuntimeError` on domain invariant violations (e.g. "Course already exists").
+Raises `Sourced::ConcurrentAppendError` on conflicts, or `RuntimeError` on domain invariant violations (e.g. "Course already exists"). For a reactor registered with `Sourced.register` whose consumer group isn't in the store yet (Sourced not started, or a `store:` it isn't registered in), it raises `Sourced::ConsumerGroupNotRegisteredError` without appending the command: silently not advancing the offset would have a worker decide the command again later.
 
 #### CommandContext
 
@@ -667,9 +667,9 @@ Workers run in the `dispatcher` component, which spawns them into the context So
 | `dispatcher.stale_claim_reaper` | heartbeats the dispatcher's workers and releases claims of dead ones, each `housekeeping.interval` | `dispatcher` |
 | `scheduled_messages.poller` | promotes due scheduled messages into the log, each `scheduled_messages.interval` | `dispatcher`, `store` |
 
-All three depend on the dispatcher, so they start after its workers, stop before them, and are deferred, stopped and started along with it: a process that runs the dispatcher only while it's the leader runs the pollers only then too. The scheduled messages poller depends on the dispatcher only for that; re-implement it with a dependency on `store` alone to promote scheduled messages in a process without workers. Any of them can also be deferred on its own.
+All three are `Sourced::PeriodicTask`s: `start(context)` spawns the loop, `stop` wakes it and waits for it to finish (raising `Sourced::ShutdownTimeoutError` from the component's stop if a tick outlives the timeout), and it can start again. All three depend on the dispatcher, so they start after its workers, stop before them, and are deferred, stopped and started along with it: a process that runs the dispatcher only while it's the leader runs the pollers only then too. The scheduled messages poller depends on the dispatcher only for that; re-implement it with a dependency on `store` alone to promote scheduled messages in a process without workers. Any of them can also be deferred on its own.
 
-A dispatcher can be stopped and started again, ex. to run workers only while a process holds a leader lock: `#stop` waits for its workers to finish their batches, and `#start(task)` runs fresh workers. Messages appended while it's stopped are picked up by the catch-up poll once it starts again. Through the configuration, defer the `dispatcher` component, so booting doesn't start it, and start and stop it by key:
+A dispatcher can be stopped and started again, ex. to run workers only while a process holds a leader lock: `#stop` waits for its workers to finish their batches, and `#start(task)` runs fresh workers (it raises `Sourced::Dispatcher::StillRunningError` while the last run's workers are still running, after a stop that timed out). Messages appended while it's stopped are picked up by the catch-up poll once it starts again. Through the configuration, defer the `dispatcher` component, so booting doesn't start it, and start and stop it by key:
 
 ```ruby
 Sourced.config.defer('dispatcher')
@@ -732,6 +732,8 @@ The router can also be used directly for testing or scripting:
 
 ```ruby
 router = Sourced.router # once Sourced is started
+# or one of your own: validates the reactors, and #setup! registers their consumer groups
+router = Sourced::Router.new(store:, reactors: [CourseDecider], error_strategy: Sourced::ErrorStrategy.new).setup!
 
 # Process one batch for a specific reactor
 router.handle_next_for(CourseDecider)
@@ -1194,7 +1196,7 @@ See `examples/app/` for a complete Sinatra application with:
 | `workers.batch_size` | `Integer` | `50`: messages per claim |
 | `workers.max_drain_rounds` | `Integer` | `10`: drain iterations per pickup |
 | `workers.catchup_interval` | `Numeric` | `5`: seconds between catch-up polls |
-| `workers.shutdown_timeout` | `Numeric` | `30`: seconds teardown waits for workers to finish their batches before raising |
+| `workers.shutdown_timeout` | `Numeric` | `30`: seconds a stop waits for workers to finish their batches before raising `Sourced::ShutdownTimeoutError` |
 | `housekeeping.interval` | `Numeric` | `30`: seconds between heartbeat/reap cycles |
 | `housekeeping.claim_ttl_seconds` | `Integer` | `120`: stale claim threshold |
 | `scheduled_messages.interval` | `Numeric` | `5`: seconds between promotions of due scheduled messages |
@@ -1237,7 +1239,7 @@ Sourced.config.component!('store', %w[db notifier logger]) do
 end
 ```
 
-`Sourced.store`, `Sourced.router` and `Sourced.topology` read components, and raise `Sourced::Component::NotBuiltError` until Sourced is built.
+`Sourced.store`, `Sourced.router` and `Sourced.topology` read components, and raise `Sourced::Component::NotBuiltError` until Sourced is built. A torn-down tree can't be started again (`Sourced::Component::TornDownError`): `Sourced.reset!` drops it, so the next `Sourced.config` is a fresh one with no reactors, which specs use between examples.
 
 Settings can come from ENV, decoded into each component's type:
 
