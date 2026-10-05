@@ -155,12 +155,17 @@ module Sourced
     # @param config [Sourced::Component] a tree built by {.build}
     # @param reactor [Class] a reactor (see {ReactorInterface})
     # @return [Sourced::Component] the reactor's node
-    # @raise [Sourced::Component::DeclarationOverrideError] if a reactor is already registered under the same key
+    # @raise [ArgumentError] if a reactor is already registered under the same key
     # @raise [Sourced::Component::LockedComponentError] once the tree is prepared
     def self.register(config, reactor)
       ReactorDefaults.apply(reactor)
       key = reactor_key(reactor)
-      config.declare(key, ReactorInterface)
+      begin
+        config.declare(key, ReactorInterface)
+      rescue Sourced::Component::DeclarationOverrideError
+        raise ArgumentError, "can't register #{reactor} (group_id #{reactor.group_id.inspect}) as #{key}: " \
+                             "a reactor is already registered under that key. Keys are group_ids with '.' and '*' replaced by '_'"
+      end
       config.config!(key) { reactor }
       config.node(key)
     end

@@ -71,7 +71,7 @@ module Sourced
   # Must be called before the configuration is prepared or booted.
   # @param reactor [Class] a reactor (see {Router#register} for the protocol)
   # @return [Sourced::Component] the reactor's node
-  # @raise [Sourced::Component::DeclarationOverrideError] if a reactor with the same group_id is already registered
+  # @raise [ArgumentError] if a reactor is already registered under the same key (its group_id, escaped)
   # @raise [Sourced::Component::LockedComponentError] once the configuration is prepared
   def self.register(reactor)
     Config.register(config, reactor)

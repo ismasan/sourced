@@ -303,7 +303,21 @@ RSpec.describe Sourced::Config do
 
       expect {
         described_class.register(config, ConfigTestReactor)
-      }.to raise_error(Sourced::Component::DeclarationOverrideError, /reactors\.ConfigTestReactor/)
+      }.to raise_error(ArgumentError, /can't register ConfigTestReactor \(group_id "ConfigTestReactor"\) as reactors\.ConfigTestReactor/)
+    end
+
+    it 'names the reactor when distinct group_ids map to the same key' do
+      described_class.register(config, ConfigTestOtherReactor) # 'config.test.other'
+      lookalike = Class.new do
+        def self.name = 'ConfigTestLookalike'
+        def self.group_id = 'config_test_other'
+        def self.handled_messages = []
+        def self.handle_claim(_claim) = []
+      end
+
+      expect {
+        described_class.register(config, lookalike)
+      }.to raise_error(ArgumentError, /\(group_id "config_test_other"\) as reactors\.config_test_other.*replaced by '_'/)
     end
 
     it 'raises once the tree is prepared' do
