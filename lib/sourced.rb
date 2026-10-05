@@ -74,12 +74,13 @@ module Sourced
   end
 
   # Boot a standalone Sourced: build every component, set up the store and
-  # consumer groups, and spawn workers into +context+. Workers need an executor
-  # task or Async::Task to spawn into: see {Supervisor}, or set
-  # +workers.count+ to 0 to run none in this process.
+  # consumer groups, and spawn workers into +context+. By default workers run
+  # in threads and this returns; pass an Async::Task to run them as fibers in
+  # its reactor, or set +workers.count+ to 0 to run none in this process.
+  # To block until the process is signalled, see {Supervisor}.
   # A mounted Sourced is booted by its host's root.
   # @return [Sourced::Component]
-  def self.start!(context = Thread.current)
+  def self.start!(context = ThreadExecutor.new)
     config.start!(context)
   end
 
@@ -198,6 +199,7 @@ module Sourced
 end
 
 require 'sourced/config'
+require 'sourced/thread_executor'
 require 'sourced/store'
 require 'sourced/message'
 require 'sourced/message_ext'

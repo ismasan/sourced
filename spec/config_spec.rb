@@ -2,6 +2,7 @@
 
 require 'spec_helper'
 require 'sourced'
+require 'timeout'
 
 module ConfigTestMessages
   ThingAdded = Sourced::Event.define('config_test.thing_added') do
@@ -148,7 +149,7 @@ RSpec.describe Sourced::Config do
     it "raises for workers it can't spawn, and tears down what started" do
       config.config!('workers.count') { 2 }
 
-      expect { config.start!(Thread.current) }.to raise_error(ArgumentError, /Supervisor/)
+      expect { config.start!(Thread.current) }.to raise_error(ArgumentError, /ThreadExecutor/)
       expect(config.boot_status).to eq(:torn_down)
       expect(config.node('store').status).to eq(:torn_down)
     end
@@ -390,6 +391,20 @@ RSpec.describe 'Sourced.config' do
     Sourced.teardown!
 
     expect(Sourced.config.boot_status).to eq(:torn_down)
+  end
+
+  it 'runs workers in threads by default, and stops them on teardown' do
+    Sourced.config.config!('workers.count') { 2 }
+    Sourced.config.config!('workers.catchup_interval') { 0.05 }
+    Sourced.config.config!('housekeeping.interval') { 0.05 }
+
+    Sourced.start!
+    workers = Sourced.config['dispatcher'].workers
+    expect(workers.size).to eq(2)
+    Timeout.timeout(2) { sleep 0.01 until workers.all?(&:running?) }
+
+    Sourced.teardown!
+    expect(workers.map(&:running?)).to all(be(false))
   end
 
   it 'manages consumer groups through the router' do

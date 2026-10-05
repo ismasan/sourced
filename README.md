@@ -659,7 +659,7 @@ Reactors that use the `Sourced::Consumer` mixin (for `partition_by`, `each_with_
 
 ## Background processing
 
-Workers run in the `dispatcher` component, which spawns them into the context Sourced is started with: an `Async::Task`, or an executor's task. The dispatcher embeds the `CatchUpPoller`, `ScheduledMessagePoller` and `StaleClaimReaper`, so nothing else needs spawning.
+Workers run in the `dispatcher` component, which spawns them into the context Sourced is started with: `Sourced.start!` runs them in threads and returns, and `Sourced.start!(task)` runs them as fibers in an `Async::Task`. The dispatcher embeds the `CatchUpPoller`, `ScheduledMessagePoller` and `StaleClaimReaper`, so nothing else needs spawning.
 
 ### Running inside a web server
 
@@ -681,7 +681,7 @@ Sourced.config.prepare!
 Async { |task| Sourced.start!(task) }
 ```
 
-Processes that should run no workers (web processes, when a separate process runs them) set `workers.count` to 0, and can start Sourced in any context:
+Processes that should run no workers (web processes, when a separate process runs them) set `workers.count` to 0:
 
 ```ruby
 Sourced.config.config!('workers.count') { 0 }
@@ -1199,7 +1199,7 @@ Sourced.configure do |c|
 end
 
 Sourced.register(CourseDecider)
-Sourced.start!   # build every component, set up the store and consumer groups, start workers
+Sourced.start!   # build every component, set up the store and consumer groups, start workers in threads
 # ...
 Sourced.teardown! # stop workers, then tear down in reverse dependency order
 ```

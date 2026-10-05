@@ -169,7 +169,7 @@ module Sourced
       s = %i[spawn async].find { |m| task.respond_to?(m) }
       unless s
         raise ArgumentError, "can't spawn #{@workers.size} workers into #{task.inspect}: " \
-                             'start them in an executor task or Async::Task (see Sourced::Supervisor), ' \
+                             'start with an Async::Task, or Sourced::ThreadExecutor.new to run them in threads, ' \
                              'or set workers.count to 0 to run no workers in this process'
       end
 
