@@ -456,12 +456,9 @@ RSpec.describe 'Sourced.config' do
     expect(Sourced.config).not_to be(config)
   end
 
-  it 'is yielded by Sourced.configure' do
-    returned = Sourced.configure do |c|
-      c.config!('workers.batch_size') { 10 }
-    end
+  it 'is configured with the component DSL' do
+    Sourced.config.config!('workers.batch_size') { 10 }
 
-    expect(returned).to be(Sourced.config)
     Sourced.start!
     expect(Sourced.config['workers.batch_size']).to eq(10)
   end

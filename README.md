@@ -1210,16 +1210,14 @@ Implement (or re-implement) any of them, then boot:
 ```ruby
 require 'sourced'
 
-Sourced.configure do |c|
-  # Values
-  c.config!('workers.count') { 4 }
-  c.config!('store.table_prefix') { 'billing' } # billing_messages, billing_consumer_groups, ...
+# Values
+Sourced.config.config!('workers.count') { 4 }
+Sourced.config.config!('store.table_prefix') { 'billing' } # billing_messages, billing_consumer_groups, ...
 
-  # A value with lifecycle hooks
-  c.component!('db') do
-    build { Sequel.sqlite('my_app.db') }
-    teardown(&:disconnect)
-  end
+# A value with lifecycle hooks
+Sourced.config.component!('db') do
+  build { Sequel.sqlite('my_app.db') }
+  teardown(&:disconnect)
 end
 
 Sourced.register(CourseDecider)

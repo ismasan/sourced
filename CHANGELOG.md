@@ -9,7 +9,7 @@
   `store.table_prefix`, `reactors.*`,
   `router`, `topology`, `workers.*`, `housekeeping.*` and `dispatcher`. Host apps mount
   it (`App.mount('sourced', Sourced)`) and override components; standalone apps
-  override them on `Sourced.config` (`Sourced.configure` yields it). The tree can be
+  override them on `Sourced.config`; `Sourced.configure` is removed. The tree can be
   inspected without booting (`Sourced.config.tree`, `.graph.to_mermaid`).
   Requires Ruby 3.2.
   - Removed `Sourced::Configuration` and its setters (`c.store =`, `c.worker_count =`,

@@ -90,10 +90,8 @@ bin/console
 `Sourced.config` **is** the root of a `Sourced::Component` tree (from the sourced-component gem, `~> 0.1`), built by `Sourced::Config.build`. There is no `Configuration` class: settings are typed components with defaults, overridden with the component DSL.
 
 ```ruby
-Sourced.configure do |c|                          # yields Sourced.config
-  c.config!('workers.count') { 4 }
-  c.component!('db') { build { Sequel.sqlite('my_app.db') }; teardown(&:disconnect) }
-end
+Sourced.config.config!('workers.count') { 4 }
+Sourced.config.component!('db') { build { Sequel.sqlite('my_app.db') }; teardown(&:disconnect) }
 Sourced.register(SomeDecider)                     # declares reactors.<group_id>
 Sourced.start!(task)                              # build + start; workers spawn into task
 Sourced.teardown!

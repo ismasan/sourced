@@ -63,14 +63,6 @@ module Sourced
   # @return [Sourced::Component]
   def self.to_component = config
 
-  # Yields {.config}, for configuring a standalone Sourced in a block.
-  # @yieldparam config [Sourced::Component]
-  # @return [Sourced::Component]
-  def self.configure
-    yield config
-    config
-  end
-
   # Register a reactor, as a component under +reactors+ in {.config}.
   # Must be called before the configuration is prepared or booted.
   # @param reactor [Class] a reactor (see {Router#register} for the protocol)
