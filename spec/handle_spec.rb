@@ -254,6 +254,19 @@ RSpec.describe 'Sourced.handle!' do
       expect(handled).to be false
     end
 
+    it "raises when the reactor is registered but Sourced hasn't started, instead of silently not advancing" do
+      unstarted = Sourced::Store.new(Sequel.sqlite)
+      unstarted.install!
+
+      expect {
+        Sourced.handle!(
+          HandleTestDecider,
+          HandleTestMessages::CreateDevice.new(payload: { device_id: 'd1', name: 'Sensor' }),
+          store: unstarted
+        )
+      }.to raise_error(Sourced::ConsumerGroupNotRegisteredError, /HandleTestDecider.*start Sourced/)
+    end
+
     it "doesn't advance offsets of reactors that aren't registered" do
       Sourced.reset!
 

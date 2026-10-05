@@ -19,7 +19,10 @@
     `start!`); forking servers `Sourced.config.prepare!` before forking and start in
     each child. `Sourced.teardown!` stops workers and disconnects.
   - `Sourced.store`, `.router` and `.topology` raise `NotBuiltError` until Sourced is
-    built, instead of setting up on first use.
+    built, instead of setting up on first use. `Sourced.handle!` raises
+    `ConsumerGroupNotRegisteredError` for a registered reactor whose consumer group
+    isn't in the store yet (consumer groups are registered when Sourced starts).
+    `Store#advance_offset` returns whether the group exists.
   - `Sourced.register` declares the reactor as `reactors.<group_id>`: registering two
     reactors with the same group_id raises, and so does registering after boot.
     Removed `Sourced.reset_topology`.

@@ -1049,15 +1049,17 @@ module Sourced
     # @param partition [Hash{String => String}] partition attribute names and values
     # @param position [Integer] advance offset to at least this position
     # @return [void]
+    # @return [Boolean] whether the consumer group exists. Advancing is a no-op
+    #   for an unknown group, a partition with no messages, or a cursor already past +position+
     def advance_offset(group_id, partition:, position:)
       cg = db[@consumer_groups_table].where(group_id: group_id).first
-      return unless cg
+      return false unless cg
 
       offset_id = ensure_offset_for_partition(cg[:id], partition)
-      return unless offset_id
+      return true unless offset_id
 
       offset = db[@offsets_table].where(id: offset_id).first
-      return if offset[:last_position] >= position
+      return true if offset[:last_position] >= position
 
       db[@offsets_table].where(id: offset_id).update(last_position: position)
 
@@ -1067,6 +1069,7 @@ module Sourced
           updated_at: Time.now.iso8601
         )
       end
+      true
     end
 
     # System-wide diagnostics for monitoring and debugging.

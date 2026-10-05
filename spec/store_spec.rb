@@ -2516,24 +2516,22 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      expect {
-        store.advance_offset('nonexistent',
-          partition: { 'device_id' => 'dev-1' },
-          position: 1
-        )
-      }.not_to raise_error
+      advanced = store.advance_offset('nonexistent',
+        partition: { 'device_id' => 'dev-1' },
+        position: 1
+      )
 
+      expect(advanced).to be(false)
       expect(db[:sourced_offsets].count).to eq(0)
     end
 
     it 'is a no-op when partition has no messages in the store' do
-      expect {
-        store.advance_offset(group_id,
-          partition: { 'device_id' => 'dev-1' },
-          position: 1
-        )
-      }.not_to raise_error
+      advanced = store.advance_offset(group_id,
+        partition: { 'device_id' => 'dev-1' },
+        position: 1
+      )
 
+      expect(advanced).to be(true)
       expect(db[:sourced_offsets].count).to eq(0)
     end
 

@@ -15,6 +15,10 @@ module Sourced
 
   ConcurrentAppendError = Class.new(Error)
 
+  # Raised by {.handle!} when the reactor is registered with Sourced but its
+  # consumer group isn't in the store, which registers groups when Sourced starts.
+  ConsumerGroupNotRegisteredError = Class.new(Error)
+
   # Default logger for components built outside a configured system, ex. in specs.
   NULL_LOGGER = Logger.new(nil)
 
@@ -187,14 +191,23 @@ module Sourced
     end
   end
 
+  # Skip the handled command for a registered reactor's workers. The group
+  # exists once Sourced has started; before that, advancing would silently do
+  # nothing and a worker would decide the command again later.
   private_class_method def self.advance_registered_offsets(store, reactor_class, partition_attrs, position)
     return unless config.declared?(Config.reactor_key(reactor_class))
 
-    store.advance_offset(
+    advanced = store.advance_offset(
       reactor_class.group_id,
       partition: partition_attrs.transform_keys(&:to_s),
       position: position
     )
+    return if advanced
+
+    raise ConsumerGroupNotRegisteredError,
+          "#{reactor_class} is registered with Sourced, but its consumer group " \
+          "#{reactor_class.group_id.inspect} is not in the store: start Sourced before handling " \
+          'commands, or handle them with the store it is registered in'
   end
 end
 
