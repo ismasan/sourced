@@ -3,6 +3,8 @@
 module Sourced
   # Fills in a reactor's optional protocol methods with defaults so the Router
   # can call them unconditionally (no +respond_to?+ guards, no wrapper).
+  # +on_exception+ is the exception: its fallback is the router's own error
+  # strategy, so the Router checks for it (see Router#handle_exception).
   #
   # Rather than wrapping the reactor in a delegator, this defines the missing
   # methods directly on the reactor class — and only the ones it doesn't already
@@ -39,11 +41,6 @@ module Sourced
 
       # Not the exclusive owner of its message types (routing concern only).
       def exclusive? = false
-
-      # Delegate processing errors to the configured error strategy.
-      def on_exception(exception, message, group)
-        Sourced.config.error_strategy.call(exception, message, group)
-      end
 
       def on_stop(_message = nil) = nil
       def on_start = nil

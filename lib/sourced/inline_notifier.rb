@@ -50,11 +50,12 @@ module Sourced
       publish('reactor_resumed', group_id)
     end
 
-    # No-op. Provided for interface compatibility with {Backends::SequelBackend::PGNotifier}.
+    # No-op: nothing to listen on. A notifier that does (ex. a PG LISTEN) starts
+    # listening here, on each dispatcher run.
     # @return [nil]
     def start = nil
 
-    # No-op. Provided for interface compatibility with {Backends::SequelBackend::PGNotifier}.
+    # No-op. Called when the dispatcher stops; +start+ can follow.
     # @return [nil]
     def stop = nil
   end

@@ -31,12 +31,19 @@ module Sourced
         # freeze
       end
 
-      # Spawn a new concurrent fiber within this task's context
+      # Spawn a new concurrent fiber within this task's context. Before #start,
+      # blocks are kept to run when it starts; after, they run right away on the
+      # same barrier (ex. a component started by key later, in the same task),
+      # so #wait covers them too.
       #
       # @yieldparam block [Proc] The block to execute concurrently
-      # @return [Async::Task] The spawned async task
+      # @return [self]
       def spawn(&block)
-        @blocks << block
+        if @barrier
+          @barrier.async(&block)
+        else
+          @blocks << block
+        end
         self
       end
 

@@ -125,13 +125,9 @@ module Sourced
     # @return [Sourced::Installer]
     attr_reader :installer
 
-    # The notifier this store announces appends through: the one injected at
-    # construction, else +Sourced.config.notifier+ resolved on each call — so a
-    # notifier configured after this store was built (or after +Sourced.setup!+
-    # rebuilt it) still takes effect.
-    #
+    # The notifier this store announces appends through.
     # @return [#notify_new_messages, #notify_reactor_resumed, #subscribe, #start, #stop]
-    def notifier = @notifier || Sourced.config.notifier
+    attr_reader :notifier
 
     # This store's serializer, shared with every other store in the process.
     # Assignable, so a store can be given one scoped to its own message registry.
@@ -139,22 +135,16 @@ module Sourced
     attr_accessor :message_codec
 
     # @param db [Sequel::SQLite::Database] a Sequel SQLite connection
-    # @param notifier [#notify_new_messages, #notify_reactor_resumed, nil] notifier for
-    #   dispatch signals; when nil the configured +Sourced.config.notifier+ is used (see {#notifier})
-    # @param logger [Logger, nil] optional logger (defaults to Sourced.config.logger)
+    # @param notifier [#notify_new_messages, #notify_reactor_resumed] notifier for
+    #   dispatch signals (default: an in-process {InlineNotifier})
+    # @param logger [Logger]
     # @param prefix [String] table name prefix (default 'sourced')
-    def initialize(db, notifier: nil, logger: nil, prefix: 'sourced')
+    def initialize(db, notifier: InlineNotifier.new, logger: NULL_LOGGER, prefix: 'sourced')
       @db = db
       @notifier = notifier
-      @logger = logger || Sourced.config.logger
+      @logger = logger
       @message_codec = MessageCodec.default
       Sequel.extension(:fiber_concurrency)
-      # foreign_keys and busy_timeout are already applied on every connection by
-      # Sequel's SQLite adapter defaults; we set them explicitly for clarity.
-      # journal_mode = WAL is a persistent, database-level property, so once is enough.
-      @db.run('PRAGMA foreign_keys = ON')
-      @db.run('PRAGMA journal_mode = WAL')
-      @db.run('PRAGMA busy_timeout = 5000')
 
       @prefix = prefix
       @installer = Installer.new(db, logger: @logger, prefix: prefix)
@@ -206,12 +196,13 @@ module Sourced
     # Create all required tables and indexes. Idempotent.
     # @return [void]
     def install!
+      configure_connection!
       installer.install
       optimize!
     end
 
     # Prepare this store for use: create its tables and compile its serializer.
-    # Called once at boot by {Configuration#setup!}, so no request pays for the
+    # Called once at boot by the +store+ component's start hook (see {Config}), so no request pays for the
     # compilation and a message type this store can't persist fails the boot.
     # Idempotent.
     #
@@ -1057,16 +1048,17 @@ module Sourced
     # @param group_id [String] consumer group identifier
     # @param partition [Hash{String => String}] partition attribute names and values
     # @param position [Integer] advance offset to at least this position
-    # @return [void]
+    # @return [Boolean] whether the consumer group exists. Advancing is a no-op
+    #   for an unknown group, a partition with no messages, or a cursor already past +position+
     def advance_offset(group_id, partition:, position:)
       cg = db[@consumer_groups_table].where(group_id: group_id).first
-      return unless cg
+      return false unless cg
 
       offset_id = ensure_offset_for_partition(cg[:id], partition)
-      return unless offset_id
+      return true unless offset_id
 
       offset = db[@offsets_table].where(id: offset_id).first
-      return if offset[:last_position] >= position
+      return true if offset[:last_position] >= position
 
       db[@offsets_table].where(id: offset_id).update(last_position: position)
 
@@ -1076,6 +1068,7 @@ module Sourced
           updated_at: Time.now.iso8601
         )
       end
+      true
     end
 
     # System-wide diagnostics for monitoring and debugging.
@@ -1213,6 +1206,16 @@ module Sourced
     end
 
     private
+
+    # foreign_keys and busy_timeout are already applied on every connection by
+    # Sequel's SQLite adapter defaults; we set them explicitly for clarity.
+    # journal_mode = WAL is a persistent, database-level property, so once is enough.
+    # Run on install rather than construction, so building a store doesn't touch the database.
+    def configure_connection!
+      db.run('PRAGMA foreign_keys = ON')
+      db.run('PRAGMA journal_mode = WAL')
+      db.run('PRAGMA busy_timeout = 5000')
+    end
 
     # Resolve a group_id argument that is either a String
     # or an object responding to +#group_id+.

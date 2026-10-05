@@ -112,8 +112,8 @@ Scheduling is transparent: stamp a message with a future time via `#at(time)` an
 cmd = SendReminder.new(payload: { course_id: 'c1' }).at(Time.now + 3600)
 store.append(cmd)  # created_at in the future → deferred, not appended for immediate consumption
 
-# Normally the ScheduledMessagePoller (started by the Dispatcher) promotes
-# due messages automatically. In tests or scripts, do it manually:
+# Normally the scheduled_messages.poller component promotes due messages
+# automatically. In tests or scripts, do it manually:
 store.update_schedule!  # => number of messages promoted
 ```
 
@@ -220,7 +220,7 @@ end
 
 #### Synchronous command handling
 
-`Sourced.handle!` loads history, runs the decider, appends the command + events, and advances consumer group offsets — all in one call. Designed for web controllers.
+`Sourced.handle!` loads history, runs the decider, appends the command + events, and advances the decider's consumer group offset so workers skip the command — all in one call and one transaction. Designed for web controllers. It uses `Sourced.store`, so Sourced must be started (or pass `store:`).
 
 ```ruby
 cmd = CreateCourse.new(payload: { course_id: 'c1', course_name: 'Algebra' })
@@ -233,7 +233,7 @@ else
 end
 ```
 
-Raises `Sourced::ConcurrentAppendError` on conflicts, or `RuntimeError` on domain invariant violations (e.g. "Course already exists").
+Raises `Sourced::ConcurrentAppendError` on conflicts, or `RuntimeError` on domain invariant violations (e.g. "Course already exists"). For a reactor registered with `Sourced.register` whose consumer group isn't in the store yet (Sourced not started, or a `store:` it isn't registered in), it raises `Sourced::ConsumerGroupNotRegisteredError` without appending the command: silently not advancing the offset would have a worker decide the command again later.
 
 #### CommandContext
 
@@ -587,7 +587,7 @@ Sourced.register(EnrolmentDecider)
 Sourced.register(CourseCatalogProjector)
 ```
 
-This registers the reactor's consumer group with the store and adds it to the global router.
+Each reactor becomes a component of Sourced's configuration, under `reactors` and keyed by its `group_id` (`reactors.CourseDecider`); the router and `Sourced.topology` depend on all of them. Register reactors before Sourced boots: registering once it's booted raises, and so does registering two reactors with the same `group_id`. Their consumer groups are registered with the store when Sourced starts.
 
 ## The reactor protocol
 
@@ -659,36 +659,62 @@ Reactors that use the `Sourced::Consumer` mixin (for `partition_by`, `each_with_
 
 ## Background processing
 
-### Running inside a web server
+Workers run in the `dispatcher` component, which spawns them into the context Sourced is started with: `Sourced.start!(task)` runs them as fibers in an `Async::Task`, and `Sourced.start!` runs them in threads; either way the call returns. Three loops run alongside, as components of their own:
 
-To run Sourced workers in the same process as your web app, call `Sourced.setup!` on boot (or, for forking servers, in each child after fork) and start a `Sourced::Dispatcher` in the server's async context. `Sourced.setup!` re-establishes fresh database connections, which is necessary because SQLite (and pooled) connections are not fork-safe.
+| Component | Does | Depends on |
+| --- | --- | --- |
+| `dispatcher.catchup_poller` | pushes every reactor to the dispatcher each `workers.catchup_interval`, as a safety net for missed notifications | `dispatcher` |
+| `dispatcher.stale_claim_reaper` | heartbeats the dispatcher's workers and releases claims of dead ones, each `housekeeping.interval` | `dispatcher` |
+| `scheduled_messages.poller` | promotes due scheduled messages into the log, each `scheduled_messages.interval` | `dispatcher`, `store` |
+
+All three are `Sourced::PeriodicTask`s: `start(context)` spawns the loop, `stop` wakes it and waits for it to finish (raising `Sourced::ShutdownTimeoutError` from the component's stop if a tick outlives the timeout), and it can start again. All three depend on the dispatcher, so they start after its workers, stop before them, and are deferred, stopped and started along with it: a process that runs the dispatcher only while it's the leader runs the pollers only then too. The scheduled messages poller depends on the dispatcher only for that; re-implement it with a dependency on `store` alone to promote scheduled messages in a process without workers. Any of them can also be deferred on its own.
+
+A dispatcher can be stopped and started again, ex. to run workers only while a process holds a leader lock: `#stop` waits for its workers to finish their batches, and `#start(task)` runs fresh workers (it raises `Sourced::Dispatcher::StillRunningError` while the last run's workers are still running, after a stop that timed out). Messages appended while it's stopped are picked up by the catch-up poll once it starts again. Through the configuration, defer the `dispatcher` component, so booting doesn't start it, and start and stop it by key:
 
 ```ruby
-# In your server's per-worker boot / after-fork hook:
-Sourced.setup!
+Sourced.config.defer('dispatcher')
+Sourced.start!(task)                                    # everything but the workers
 
+elector.on_promote { Sourced.config.start_component!('dispatcher', task) }
+elector.on_demote { Sourced.config.stop_component!('dispatcher') }
+```
+
+### Running inside a web server
+
+To run workers in the same process as your web app, start Sourced (or the host app it's mounted in) inside the server's async context:
+
+```ruby
 Async do |task|
-  Sourced::Dispatcher.start(task)
+  Sourced.start!(task) # or App.start!(task), when Sourced is mounted in App
 end
 ```
 
-The `Dispatcher` reads all settings (`worker_count`, `batch_size`, etc.) from `Sourced.config`, and embeds the `StaleClaimReaper`, so no separate housekeeper fibers are needed.
+Forking servers should prepare Sourced before forking, and start it in each child after the fork. Preparing checks the configuration and loads what it needs without opening any connections, so no connection is shared between processes:
+
+```ruby
+# In the parent, before forking:
+Sourced.config.prepare!
+
+# In each child, after forking:
+Async { |task| Sourced.start!(task) }
+```
+
+Processes that should run no workers (web processes, when a separate process runs them) set `workers.count` to 0. The pollers still run there (with no workers, the catch-up poll and heartbeats do nothing); defer the dispatcher to run none of it:
+
+```ruby
+Sourced.config.defer('dispatcher')
+Sourced.start!
+```
 
 ### Supervisor (standalone)
 
-For running workers without a web server, the supervisor starts workers that claim partitions, process messages, and ack offsets.
+For running workers without a web server, the supervisor starts Sourced inside its `executor`, blocks until it receives INT or TERM (or `#stop`), then tears it down.
 
 ```ruby
-# Start blocking (handles INT/TERM signals for graceful shutdown)
 Sourced::Supervisor.start
-
-# Or create and start manually
-supervisor = Sourced::Supervisor.new(
-  router: Sourced.router,
-  count: 4
-)
-supervisor.start
 ```
+
+When Sourced is mounted in a host app, the supervisor boots the host's whole tree.
 
 ### How it works
 
@@ -705,7 +731,9 @@ supervisor.start
 The router can also be used directly for testing or scripting:
 
 ```ruby
-router = Sourced.router
+router = Sourced.router # once Sourced is started
+# or one of your own: validates the reactors, and #setup! registers their consumer groups
+router = Sourced::Router.new(store:, reactors: [CourseDecider], error_strategy: Sourced::ErrorStrategy.new).setup!
 
 # Process one batch for a specific reactor
 router.handle_next_for(CourseDecider)
@@ -718,9 +746,8 @@ router.drain
 
 Sourced already supports consumer-group retries on failure.
 
-- On reactor errors, `Router#handle_next_for` calls the reactor's `on_exception` hook.
-- If a batch fails mid-way, it is raised as `Sourced::PartialBatchError`. The error carries the already-processed `action_pairs` (which are still ack'd) and the `failed_message` the hook receives — so partial progress is not lost.
-- By default, the hook uses `Sourced.config.error_strategy`.
+- On reactor errors, `Router#handle_next_for` calls the configured error strategy (the `error_strategy` component), with the exception, the failing message and the consumer group. A reactor that defines its own `on_exception(exception, message, group)` class method handles its errors instead.
+- If a batch fails mid-way, it is raised as `Sourced::PartialBatchError`. The error carries the already-processed `action_pairs` (which are still ack'd) and the `failed_message` the strategy receives — so partial progress is not lost.
 - The default `Sourced::ErrorStrategy` marks the consumer group as failed immediately.
 - If you configure a retrying error strategy, Sourced stores the next retry time in the consumer group's `retry_at` column and skips claiming work for that group until that time has passed.
 
@@ -728,16 +755,14 @@ So retries are built in already, but they are opt-in via the error strategy conf
 
 ### Example: exponential backoff retries
 
-The error strategy is mutable, so retry policy and callbacks can be configured
-separately. Set the retry policy in the `Sourced.configure` block:
+The error strategy is the `error_strategy` component. Implement it with a configured
+`Sourced::ErrorStrategy` (or any callable):
 
 ```ruby
 require 'sourced'
 
-Sourced.configure do |c|
-  c.store = Sequel.sqlite('my_app.db')
-
-  c.error_strategy.retry(
+Sourced.config.config!('error_strategy') do
+  Sourced::ErrorStrategy.new.retry(
     times: 5,
     after: 2,
     backoff: ->(retry_after, retry_count) { retry_after * (2**(retry_count - 1)) }
@@ -745,25 +770,29 @@ Sourced.configure do |c|
 end
 ```
 
-Callbacks can be registered anywhere else — for example from a framework
-integration or instrumentation layer — by mutating `Sourced.config.error_strategy`
-directly. They remain registered until the configuration is frozen (which
-`Sourced.setup!` does at worker boot):
+The strategy stays mutable until Sourced starts, when the router freezes it. So
+callbacks can also be registered separately, for example by a framework
+integration or instrumentation layer, once the configuration is built and before
+it starts:
 
 ```ruby
-Sourced.config.error_strategy.on_retry do |retry_count:, exception:, message:, retry_at:|
+Sourced.config.build!
+
+Sourced.config['error_strategy'].on_retry do |retry_count:, exception:, message:, retry_at:|
   LOGGER.warn(
     "Sourced retry ##{retry_count} for #{message.type} (#{message.id}) " \
     "at #{retry_at}: #{exception.class}: #{exception.message}"
   )
 end
 
-Sourced.config.error_strategy.on_fail do |retry_count:, exception:, message:|
+Sourced.config['error_strategy'].on_fail do |retry_count:, exception:, message:|
   LOGGER.error(
     "Sourced failing consumer group after #{retry_count} retries for #{message.type} (#{message.id}): " \
     "#{exception.class}: #{exception.message}"
   )
 end
+
+Sourced.start!
 ```
 
 `on_retry` / `on_fail` also accept any callable, or an object responding to
@@ -800,7 +829,7 @@ store.consumer_group_active?(CourseDecider)  # => true/false
 store.stop_consumer_group('CourseApp::CourseDecider')
 ```
 
-When retries are configured via `Sourced.config.error_strategy`, failed consumer groups remain active but paused until their `retry_at` time. Once that time passes, they become claimable again automatically.
+When retries are configured via the `error_strategy` component, failed consumer groups remain active but paused until their `retry_at` time. Once that time passes, they become claimable again automatically.
 
 ### Lifecycle hooks via Router
 
@@ -988,7 +1017,7 @@ end
 # ...
 ```
 
-The graph is cached; `Sourced.register` invalidates the cache automatically, and you can force a rebuild with `Sourced.reset_topology`. Typical uses are generating [Event Modeling](https://eventmodeling.org/) diagrams, debugging "which reactor produces this event", or driving visual service-dependency tooling.
+The topology is a component that depends on every registered reactor, available once Sourced is built: `Sourced.config.build!` gets there without touching the database or starting workers. It's built on each read, since it parses the reactors' source and most processes never need it, so keep the result rather than calling `Sourced.topology` repeatedly. Typical uses are generating [Event Modeling](https://eventmodeling.org/) diagrams, debugging "which reactor produces this event", or driving visual service-dependency tooling.
 
 ```ruby
 # Which commands produce the `courses.created` event?
@@ -1149,21 +1178,103 @@ See `examples/app/` for a complete Sinatra application with:
 
 ### Configuration
 
+`Sourced.config` is a tree of typed components (built with [sourced-component](https://github.com/ismasan/sourced-component)), each with a default implementation:
+
+| Component | Type | Default |
+| --- | --- | --- |
+| `logger` | `#debug`, `#info`, `#warn`, `#error` | `Logger.new($stdout)` |
+| `db` | `Sequel::Database` | in-memory SQLite, disconnected on teardown |
+| `notifier` | see [Notifier](#notifier) | `Sourced::InlineNotifier` |
+| `executor` | `#start` | `Sourced::AsyncExecutor`: what `Sourced::Supervisor` runs workers in |
+| `error_strategy` | `#call` | `Sourced::ErrorStrategy` |
+| `store` | `Sourced::Config::StoreInterface` | `Sourced::Store` over `db`. Sets itself up on start |
+| `store.table_prefix` | `String` (an identifier) | `'sourced'`: tables are named `sourced_messages`, ... |
+| `reactors.*` | `#handled_messages`, `#handle_claim` | one per `Sourced.register` |
+| `router` | `Sourced::Router` | routes to `reactors.*`, using `store` and `error_strategy` |
+| `topology` | `Array` | the message-flow graph of `reactors.*`, built on each read |
+| `workers.count` | `Integer` (0 or more) | `2` |
+| `workers.batch_size` | `Integer` | `50`: messages per claim |
+| `workers.max_drain_rounds` | `Integer` | `10`: drain iterations per pickup |
+| `workers.catchup_interval` | `Numeric` | `5`: seconds between catch-up polls |
+| `workers.shutdown_timeout` | `Numeric` | `30`: seconds a stop waits for workers to finish their batches before raising `Sourced::ShutdownTimeoutError` |
+| `housekeeping.interval` | `Numeric` | `30`: seconds between heartbeat/reap cycles |
+| `housekeeping.claim_ttl_seconds` | `Integer` | `120`: stale claim threshold |
+| `scheduled_messages.interval` | `Numeric` | `5`: seconds between promotions of due scheduled messages |
+| `scheduled_messages.poller` | `Sourced::ScheduledMessagePoller` | promotes them, started and stopped with the dispatcher (see [Background processing](#background-processing)) |
+| `dispatcher` | `Sourced::Dispatcher` | runs the workers; on stop, waits for them to finish their batches |
+| `dispatcher.catchup_poller` | `Sourced::CatchUpPoller` | the catch-up poll, started and stopped with the dispatcher |
+| `dispatcher.stale_claim_reaper` | `Sourced::StaleClaimReaper` | heartbeats and reaping, started and stopped with the dispatcher |
+
+Implement (or re-implement) any of them, then boot:
+
 ```ruby
 require 'sourced'
 
-Sourced.configure do |c|
-  # Pass a Sequel SQLite connection or a Sourced::Store instance
-  c.store = Sequel.sqlite('my_app.db')
+# Values
+Sourced.config.config!('workers.count') { 4 }
+Sourced.config.config!('store.table_prefix') { 'billing' } # billing_messages, billing_consumer_groups, ...
 
-  # Optional settings
-  c.worker_count = 4           # background worker fibers (default: 2)
-  c.batch_size = 50            # messages per claim (default: 50)
-  c.catchup_interval = 5       # seconds between catch-up polls (default: 5)
-  c.max_drain_rounds = 10      # max drain iterations per pickup (default: 10)
-  c.claim_ttl_seconds = 120    # stale claim threshold (default: 120)
-  c.housekeeping_interval = 30 # heartbeat/reap cycle (default: 30)
+# A value with lifecycle hooks
+Sourced.config.component!('db') do
+  build { Sequel.sqlite('my_app.db') }
+  teardown(&:disconnect)
 end
+
+Sourced.register(CourseDecider)
+Sourced.start!   # build every component, set up the store and consumer groups, start workers in threads
+# ...
+Sourced.teardown! # stop workers, then tear down in reverse dependency order
+```
+
+Values are checked against their types when they're built, so `config!('workers.count') { '4' }` fails the boot naming `workers.count`. Preparing compiles the store's codec, and building only constructs objects: the store creates its tables, and the router registers consumer groups, when Sourced starts.
+
+Re-implementing a component replaces its lifecycle hooks along with how it's built. Overriding `db` (ex. a file-backed SQLite database) or `store.table_prefix` keeps the store's setup, but a re-implemented `store` must bring its own. A component can depend on others, too:
+
+```ruby
+Sourced.config.component!('store', %w[db notifier logger]) do
+  build { |db, notifier, logger| MyStore.new(db, notifier:, logger:) }
+  start { |store, _| store.connect! } # whatever this store needs on start
+end
+```
+
+`Sourced.store`, `Sourced.router` and `Sourced.topology` read components, and raise `Sourced::Component::NotBuiltError` until Sourced is built. A torn-down tree can't be started again (`Sourced::Component::TornDownError`): `Sourced.reset!` drops it, so the next `Sourced.config` is a fresh one with no reactors, which specs use between examples.
+
+Settings can come from ENV, decoded into each component's type:
+
+```ruby
+Sourced.config.env('SOURCED_WORKERS' => 'workers.count', 'SOURCED_BATCH_SIZE' => 'workers.batch_size')
+```
+
+#### Mounting Sourced in an app
+
+An app that uses sourced-component for its own configuration mounts Sourced, wires Sourced's components to its own, and boots everything together. Dependencies are resolved in the app's tree, so `['db']` below is the app's `db`:
+
+```ruby
+App = Sourced::Component.new
+App.declare('db', Sequel::Database)
+App.component!('db') do
+  build { Sequel.sqlite('my_app.db') }
+  teardown(&:disconnect)
+end
+
+App.mount('sourced', Sourced)
+App.config!('sourced.db', ['db']) { |db| db }      # share the app's connection
+App.config!('sourced.workers.count') { 4 }
+
+Sourced.register(CourseDecider)                    # still registered through Sourced
+
+Async { |task| App.start!(task) }
+```
+
+The app's override of `sourced.db` replaces Sourced's default along with its teardown, so the app's own `db` component owns the connection. `Sourced.store` and friends read the same components as `App['sourced.store']`.
+
+#### Inspecting the configuration
+
+The tree describes itself before anything is built, which is handy for tooling and debugging:
+
+```ruby
+puts Sourced.config.tree                # how components are nested, and who implemented each
+puts Sourced.config.graph.to_mermaid    # a Mermaid flowchart of their dependencies
 ```
 
 ### Notifier
@@ -1171,12 +1282,10 @@ end
 When a store appends messages it announces the appended types through a **notifier**, and the dispatcher subscribes to that notifier so a worker picks the messages up immediately instead of on the next catch-up poll. The default `Sourced::InlineNotifier` is in-process: it only wakes workers running in the process that appended. When appends happen in other processes (several web workers appending, one process running the dispatcher), assign a notifier that crosses the boundary:
 
 ```ruby
-Sourced.configure do |c|
-  c.notifier = MyPubSubNotifier.new
-end
+Sourced.config.config!('notifier') { MyPubSubNotifier.new }
 ```
 
-A notifier implements `subscribe(callable)`, `notify_new_messages(types)`, `notify_reactor_resumed(group_id)`, `start` and `stop`; `Sourced::InlineNotifier` is the reference implementation. Stores built without an explicit `notifier:` resolve the configured one on every call, so it can be assigned before or after the store. Appends are announced after the outermost transaction commits (never on rollback), so a notifier is free to do IO: it runs once the rows are visible and no write lock is held. The catch-up poll remains the safety net for notifications that never arrive.
+A notifier implements `subscribe(callable)`, `notify_new_messages(types)`, `notify_reactor_resumed(group_id)`, `start` and `stop`; `Sourced::InlineNotifier` is the reference implementation. The default `store` is built with the `notifier` component; a store built by hand takes one as `Store.new(db, notifier:)`, and gets an `InlineNotifier` of its own otherwise. Appends are announced after the outermost transaction commits (never on rollback), so a notifier is free to do IO: it runs once the rows are visible and no write lock is held. The catch-up poll remains the safety net for notifications that never arrive.
 
 ### Codecs
 
@@ -1199,19 +1308,16 @@ class MoneyEncoder < Plumb::Encoder[
 end
 
 Plumb::Codec::JSON.encoder MoneyEncoder
-
-Sourced.configure do |c|
-  c.store = Sequel.sqlite('my_app.db')
-end
 ```
 
-Register encoders
-before `Sourced.setup!`, which is when the store compiles them in — an encoder added
+Register encoders, and define message types,
+before Sourced is prepared (`Sourced.config.prepare!`, which `build!` and `start!` run too), which is when the store compiles them in — an encoder or type added
 after that is not picked up. Registration lasts for the life of the process.
 
-Compiling a codec onto a type is a deep type rewrite, so it happens once, at `setup!`,
+Compiling a codec onto a type is a deep type rewrite, so it happens once, when Sourced is prepared,
 for every registered message type. The compiled registry is then frozen: storing or
-reading a message type that wasn't compiled raises.
+reading a message type that wasn't compiled raises. Preparing touches no database, so a forking
+server can prepare once in the parent, after loading the app, and its workers share the compiled codec.
 
 **A message type the store can't serialize fails the boot**, naming the message and the
 attribute:
@@ -1267,7 +1373,13 @@ sequel -m db/migrations sqlite://my_app.db
 
 #### Custom table prefix
 
-By default, tables are prefixed with `sourced_` (e.g. `sourced_messages`, `sourced_consumer_groups`). Pass a `prefix:` to `Store.new` to customise this — for example when running multiple Sourced stores in the same database:
+By default, tables are prefixed with `sourced_` (e.g. `sourced_messages`, `sourced_consumer_groups`). Configure `store.table_prefix` to customise this — for example when running multiple Sourced stores in the same database:
+
+```ruby
+Sourced.config.config!('store.table_prefix') { 'billing' }
+```
+
+A store built by hand takes it as `prefix:`:
 
 ```ruby
 store = Sourced::Store.new(db, prefix: 'billing')

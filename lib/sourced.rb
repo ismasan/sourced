@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'logger'
 require_relative 'sourced/version'
 require 'sourced/types'
 require 'sourced/injector'
@@ -13,6 +14,17 @@ module Sourced
   class Error < StandardError; end
 
   ConcurrentAppendError = Class.new(Error)
+
+  # Raised by a component's stop (Dispatcher#stop!, PeriodicTask#stop!) when what
+  # it runs is still running after its shutdown timeout
+  ShutdownTimeoutError = Class.new(Error)
+
+  # Raised by {.handle!} when the reactor is registered with Sourced but its
+  # consumer group isn't in the store, which registers groups when Sourced starts.
+  ConsumerGroupNotRegisteredError = Class.new(Error)
+
+  # Default logger for components built outside a configured system, ex. in specs.
+  NULL_LOGGER = Logger.new(nil)
 
   # Raised when a batch is partially processed before a message raises.
   # Carries the action_pairs for successfully processed messages,
@@ -28,90 +40,88 @@ module Sourced
     end
   end
 
-  # @return [Configuration] the global Sourced configuration instance
+  # Sourced's configuration: the root of a tree of typed components, with
+  # defaults, dependencies and a lifecycle (see {Config} for the tree).
+  #
+  #   Sourced.config.config!('workers.count') { 4 }
+  #   Sourced.config.component!('db') { build { Sequel.sqlite('app.db') }; teardown(&:disconnect) }
+  #   Sourced.start!
+  #
+  # A host app with its own component tree mounts it instead, and boots it with
+  # the rest of the app:
+  #
+  #   App.mount('sourced', Sourced)
+  #   App.config!('sourced.db', ['db']) { |db| db }
+  #   App.start!
+  #
+  # @return [Sourced::Component]
   def self.config
-    @config ||= Configuration.new
+    @config ||= Config.build
   end
 
-  # Configure the Sourced module. Blocks accumulate across calls (so different
-  # layers can each contribute configuration) and are all re-run on {.setup!}.
-  # This block is also applied immediately to the reused {.config} instance.
-  # @yieldparam config [Configuration]
-  def self.configure(&block)
-    configure_blocks << block
-    block.call(config)
-    config.setup!
-  end
+  # Mountable: +App.mount('sourced', Sourced)+ mounts {.config}
+  # @return [Sourced::Component]
+  def self.to_component = config
 
-  # The accumulated configure blocks, replayed in registration order by {.setup!}.
-  # @return [Array<Proc>]
-  def self.configure_blocks
-    @configure_blocks ||= []
-  end
-  private_class_method :configure_blocks
-
-  # Re-run all configure blocks on the reused Configuration, dropping the existing
-  # store/router first so fresh database connections are established. Safe to call
-  # after a process fork. Config-only settings (e.g. error_strategy callbacks
-  # registered outside the configure blocks) are preserved, and reactors registered
-  # via {.register} are re-registered on the rebuilt router (and their consumer
-  # groups re-registered against the fresh store connection).
-  def self.setup!
-    reactors = config.router&.reactors&.dup || []
-    config.disconnect!
-    configure_blocks.each { |block| block.call(config) }
-    config.setup!
-    reactors.each { |reactor| config.router.register(reactor) }
-    config.freeze
-    @topology = nil
-  end
-
-  # Register a reactor class with the global router.
+  # Register a reactor, as a component under +reactors+ in {.config}.
+  # Must be called before the configuration is prepared or booted.
+  # @param reactor [Class] a reactor (see {Router#register} for the protocol)
+  # @return [Sourced::Component] the reactor's node
+  # @raise [ArgumentError] if a reactor is already registered under the same key (its group_id, escaped)
+  # @raise [Sourced::Component::LockedComponentError] once the configuration is prepared
   def self.register(reactor)
-    config.setup!
-    config.router.register(reactor)
-    @topology = nil
+    Config.register(config, reactor)
+  end
+
+  # Boot a standalone Sourced: build every component, set up the store and
+  # consumer groups, and spawn the workers and pollers into +context+: an
+  # Async::Task to run them as fibers in its reactor, or by default threads
+  # (see {Spawner}); either way this returns. Set +workers.count+ to 0 to run
+  # no workers in this process. To block until the process is signalled, see
+  # {Supervisor}. A mounted Sourced is booted by its host's root.
+  # @return [Sourced::Component]
+  def self.start!(context = Thread.current)
+    config.start!(context)
+  end
+
+  # Stop workers and tear down every component, in reverse dependency order.
+  # @return [Sourced::Component]
+  def self.teardown!
+    config.teardown!
   end
 
   # @return [Sourced::Store]
-  def self.store
-    config.setup!
-    config.store
-  end
+  # @raise [Sourced::Component::NotBuiltError] until the configuration is built
+  def self.store = config['store']
 
   # @return [Sourced::Router]
-  def self.router
-    config.setup!
-    config.router
-  end
+  # @raise [Sourced::Component::NotBuiltError] until the configuration is built
+  def self.router = config['router']
+
+  # The message-flow graph of every registered reactor (see {Topology}).
+  # Built on each call, from the reactors' source: keep the result rather than calling it repeatedly.
+  # @return [Array]
+  # @raise [Sourced::Component::NotBuiltError] until the configuration is built
+  def self.topology = config['topology']
+
+  # @return [Logger]
+  def self.logger = config['logger']
 
   def self.stop_consumer_group(reactor_or_id, message = nil)
-    config.router.stop_consumer_group(reactor_or_id, message)
+    router.stop_consumer_group(reactor_or_id, message)
   end
 
   def self.reset_consumer_group(reactor_or_id)
-    config.router.reset_consumer_group(reactor_or_id)
+    router.reset_consumer_group(reactor_or_id)
   end
 
   def self.start_consumer_group(reactor_or_id)
-    config.router.start_consumer_group(reactor_or_id)
+    router.start_consumer_group(reactor_or_id)
   end
 
-  # Reset the global configuration. For test teardown.
+  # Drop the configuration, so the next {.config} builds a fresh one. For specs.
   def self.reset!
     @config = nil
-    @configure_blocks = nil
-    @topology = nil
-  end
-
-  # Build and cache the topology graph from all reactors registered with
-  # the global {.router}.
-  def self.topology
-    @topology ||= Topology.build(router.reactors)
-  end
-
-  def self.reset_topology
-    @topology = nil
   end
 
   # Generate a standardized method name for message handlers.
@@ -147,10 +157,12 @@ module Sourced
 
     guard = read_result&.guard
     to_append = [command] + correlated_events
-    last_position = store.append(to_append, guard: guard)
-
-    # nil when the command itself was future-dated and scheduled: nothing to skip past.
-    advance_registered_offsets(store, reactor_class, partition_attrs, last_position) if last_position
+    # One transaction, so a command whose offset can't be advanced isn't committed either
+    store.transaction do
+      last_position = store.append(to_append, guard: guard)
+      # nil when the command itself was future-dated and scheduled: nothing to skip past.
+      advance_registered_offsets(store, reactor_class, partition_attrs, last_position) if last_position
+    end
 
     HandleResult.new(command: command, reactor: instance, events: correlated_events)
   end
@@ -177,18 +189,28 @@ module Sourced
     end
   end
 
+  # Skip the handled command for a registered reactor's workers. The group
+  # exists once Sourced has started; before that, advancing would silently do
+  # nothing and a worker would decide the command again later.
   private_class_method def self.advance_registered_offsets(store, reactor_class, partition_attrs, position)
-    return unless config.router&.reactors&.include?(reactor_class)
+    return unless config.declared?(Config.reactor_key(reactor_class))
 
-    store.advance_offset(
+    advanced = store.advance_offset(
       reactor_class.group_id,
       partition: partition_attrs.transform_keys(&:to_s),
       position: position
     )
+    return if advanced
+
+    raise ConsumerGroupNotRegisteredError,
+          "#{reactor_class} is registered with Sourced, but its consumer group " \
+          "#{reactor_class.group_id.inspect} is not in the store: start Sourced before handling " \
+          'commands, or handle them with the store it is registered in'
   end
 end
 
-require 'sourced/configuration'
+require 'sourced/config'
+require 'sourced/store'
 require 'sourced/message'
 require 'sourced/message_ext'
 require 'sourced/actions'

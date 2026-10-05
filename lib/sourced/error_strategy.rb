@@ -8,8 +8,8 @@ module Sourced
   # It can also register callbacks to be called on retry and on failure.
   #
   # The strategy is mutable after construction: retry policy and callbacks can be
-  # configured separately, from different layers. It becomes immutable once frozen
-  # (see {Configuration#freeze}).
+  # configured separately, from different layers. It becomes immutable once frozen,
+  # which the router does when Sourced starts (see {Router#setup!}).
   #
   # @example retry with exponential back off and callbacks
   #   strategy = Sourced::ErrorStrategy.new
@@ -41,8 +41,7 @@ module Sourced
       @on_fail = []
     end
 
-    # Freeze the strategy and its callback lists. Called by {Configuration#freeze}
-    # once configuration is finalized, making the strategy immutable for processing.
+    # Freeze the strategy and its callback lists, making it immutable for processing.
     # @return [self]
     def freeze
       @on_retry.freeze

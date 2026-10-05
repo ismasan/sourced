@@ -219,11 +219,10 @@ RSpec.describe 'Sourced.handle!' do
 
     before do
       router.register(HandleTestDecider)
-      # The store resolves its notifier from the config on each append.
-      allow(Sourced).to receive(:config).and_return(
-        instance_double(Sourced::Configuration, router: router, notifier: Sourced::InlineNotifier.new)
-      )
+      Sourced.register(HandleTestDecider)
     end
+
+    after { Sourced.reset! }
 
     it 'advances offsets so background workers skip handled commands' do
       cmd = HandleTestMessages::CreateDevice.new(
@@ -253,6 +252,35 @@ RSpec.describe 'Sourced.handle!' do
       # Background worker should still find no work
       handled = router.handle_next_for(HandleTestDecider, worker_id: 'test-worker')
       expect(handled).to be false
+    end
+
+    it "raises when the reactor is registered but Sourced hasn't started, without appending the command" do
+      unstarted_db = Sequel.sqlite
+      unstarted = Sourced::Store.new(unstarted_db)
+      unstarted.install!
+
+      expect {
+        Sourced.handle!(
+          HandleTestDecider,
+          HandleTestMessages::CreateDevice.new(payload: { device_id: 'd1', name: 'Sensor' }),
+          store: unstarted
+        )
+      }.to raise_error(Sourced::ConsumerGroupNotRegisteredError, /HandleTestDecider.*start Sourced/)
+
+      expect(unstarted_db[:sourced_messages].count).to eq(0)
+    end
+
+    it "doesn't advance offsets of reactors that aren't registered" do
+      Sourced.reset!
+
+      Sourced.handle!(
+        HandleTestDecider,
+        HandleTestMessages::CreateDevice.new(payload: { device_id: 'd1', name: 'Sensor' }),
+        store: store
+      )
+
+      handled = router.handle_next_for(HandleTestDecider, worker_id: 'test-worker')
+      expect(handled).to be true
     end
   end
 end

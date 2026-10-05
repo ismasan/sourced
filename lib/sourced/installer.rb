@@ -3,17 +3,21 @@
 require 'sequel'
 require 'sequel/extensions/migration'
 require 'erb'
+require 'sourced/types'
 
 module Sourced
   class Installer
     TABLE_SUFFIXES = %i[messages key_pairs message_key_pairs scheduled_messages consumer_groups offsets offset_key_pairs workers].freeze
+
+    # Table prefixes are interpolated into table names, so they must be identifiers
+    TablePrefix = Types::String[/\A[a-zA-Z_]\w*\z/]
 
     attr_reader :messages_table, :key_pairs_table, :message_key_pairs_table,
                 :scheduled_messages_table, :consumer_groups_table, :offsets_table,
                 :offset_key_pairs_table, :workers_table
 
     def initialize(db, logger:, prefix: 'sourced', migration_template: '001_create_sourced_tables.rb.erb')
-      raise ArgumentError, "invalid prefix: #{prefix}" unless prefix.match?(/\A[a-zA-Z_]\w*\z/)
+      raise ArgumentError, "invalid prefix: #{prefix.inspect}" unless TablePrefix === prefix
 
       @db = db
       @logger = logger

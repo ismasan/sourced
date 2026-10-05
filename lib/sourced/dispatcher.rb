@@ -1,17 +1,19 @@
 # frozen_string_literal: true
 
 require 'sourced/work_queue'
-require 'sourced/catchup_poller'
 require 'sourced/worker'
-require 'sourced/scheduled_message_poller'
-require 'sourced/stale_claim_reaper'
+require 'sourced/spawner'
 
 module Sourced
   # Orchestrator that wires together the signal-driven dispatch pipeline:
-  # {WorkQueue}, {NotificationQueuer}, {CatchUpPoller}, store notifier, and {Worker}s.
+  # {WorkQueue}, {NotificationQueuer}, store notifier, and {Worker}s. The
+  # {CatchUpPoller} feeding it and the {StaleClaimReaper} heartbeating for its
+  # workers are components of their own, depending on it (see {Config}).
   #
   # Does not own the process lifecycle — the caller provides the task/fiber
-  # context via {#start}, and triggers shutdown via {#stop}.
+  # context via {#start}, and triggers shutdown via {#stop}. It can be started
+  # again after stopping, ex. when its process is elected to run the workers
+  # again: each run gets fresh workers, pollers and work queue.
   #
   # @example Usage with a task runner
   #   dispatcher = Sourced::Dispatcher.new(router: router, worker_count: 4)
@@ -83,134 +85,217 @@ module Sourced
       end
     end
 
-    # @return [Array<Sourced::Worker>] worker instances managed by this dispatcher
-    attr_reader :workers
+    # Forwards the notification queuer's pushes to the current run's work queue,
+    # and drops them while the dispatcher is stopped: a run's catch-up poll
+    # finds whatever was appended before it started.
+    class QueueSwitch
+      def initialize(target)
+        @target = target
+      end
 
-    def self.start(task)
-      config = Sourced.config
-      dispatcher = Sourced::Dispatcher.new(
-        router: Sourced.router,
-        worker_count: config.worker_count,
-        batch_size: config.batch_size,
-        max_drain_rounds: config.max_drain_rounds,
-        catchup_interval: config.catchup_interval,
-        housekeeping_interval: config.housekeeping_interval,
-        claim_ttl_seconds: config.claim_ttl_seconds,
-        logger: config.logger
-      ).start(task)
+      attr_writer :target
+
+      # @param reactor [Class]
+      # @return [Boolean] whether it was enqueued
+      def push(reactor)
+        target = @target
+        target ? target.push(reactor) : false
+      end
     end
+
+    # The parts of one run, from {#start} to {#stop}: a work queue and the
+    # workers popping from it. A worker or work queue can't be used again once
+    # stopped, so each run gets its own.
+    Run = Data.define(:work_queue, :workers)
+
+    # Raised by {#start} while the previous run's workers are still running,
+    # after a {#stop} that timed out
+    StillRunningError = Class.new(Sourced::Error)
 
     # @param router [Sourced::Router] the router providing reactors and store
     # @param worker_count [Integer] number of worker fibers to spawn (default 2)
     # @param batch_size [Integer] max messages per claim (default 50)
     # @param max_drain_rounds [Integer] max drain iterations before re-enqueue (default 10)
-    # @param catchup_interval [Numeric] seconds between catch-up polls (default 5)
-    # @param housekeeping_interval [Numeric] seconds between heartbeat/reap cycles (default 30)
-    # @param claim_ttl_seconds [Integer] stale claim age threshold in seconds (default 120)
-    # @param work_queue [WorkQueue, nil] optional pre-built queue (useful for testing)
+    # @param shutdown_timeout [Numeric] seconds {#stop} waits for workers to finish
+    #   the batches they're processing (default 30)
+    # @param work_queue [WorkQueue, nil] optional pre-built queue for the first
+    #   run (useful for testing). Later runs build their own
     # @param logger [Object] logger instance
     def initialize(
       router:,
       worker_count: 2,
       batch_size: 50,
       max_drain_rounds: 10,
-      catchup_interval: 5,
-      housekeeping_interval: 30,
-      claim_ttl_seconds: 120,
+      shutdown_timeout: 30,
       work_queue: nil,
-      logger: Sourced.config.logger
+      logger: NULL_LOGGER
     )
       @logger = logger
       @router = router
-      @workers = []
+      @worker_count = worker_count
+      @batch_size = batch_size
+      @max_drain_rounds = max_drain_rounds
+      @shutdown_timeout = shutdown_timeout
+      @reactors = router.reactors.select { |r| r.handled_messages.any? }.to_a.freeze
+      @run = nil
+      @queue_switch = nil
+      @running = false
+      @stopped = false
 
       return if worker_count.zero?
 
-      reactors = router.reactors.select { |r| r.handled_messages.any? }.to_a
+      @run = build_run(work_queue || new_work_queue)
 
-      @work_queue = work_queue || WorkQueue.new(max_per_reactor: worker_count)
-
-      @workers = worker_count.times.map do |i|
-        Worker.new(
-          work_queue: @work_queue,
-          router:,
-          name: "worker-#{i}",
-          batch_size:,
-          max_drain_rounds:,
-          logger:
-        )
-      end
-
-      notification_queuer = NotificationQueuer.new(work_queue: @work_queue, reactors: reactors)
+      # Subscribed once: the switch points at whichever run is current
+      @queue_switch = QueueSwitch.new(@run.work_queue)
       @store_notifier = router.store.notifier
-      @store_notifier.subscribe(notification_queuer)
-
-      @catchup_poller = CatchUpPoller.new(
-        work_queue: @work_queue,
-        reactors:,
-        interval: catchup_interval,
-        logger:
-      )
-
-      @scheduled_message_poller = ScheduledMessagePoller.new(
-        store: router.store,
-        interval: catchup_interval,
-        logger:
-      )
-
-      @stale_claim_reaper = StaleClaimReaper.new(
-        store: router.store,
-        interval: housekeeping_interval,
-        ttl_seconds: claim_ttl_seconds,
-        worker_ids_provider: -> { @workers.map(&:name) },
-        logger:
-      )
+      @store_notifier.subscribe(NotificationQueuer.new(work_queue: @queue_switch, reactors: @reactors))
     end
 
-    # Spawn all component fibers into the caller's task context.
-    # Spawns: store notifier (e.g. PG LISTEN), catch-up poller, and N workers.
+    # The reactors this dispatcher routes to: the router's, except those handling no messages
+    # @return [Array<Class>]
+    attr_reader :reactors
+
+    # The current run's workers: the ones running, or the ones the next
+    # {#start} runs. Empty when +worker_count+ is 0.
+    # @return [Array<Sourced::Worker>]
+    def workers = @run ? @run.workers : []
+
+    # Enqueue a reactor for the current run's workers, ex. from a {CatchUpPoller}.
+    # Dropped while stopped, or with no workers.
+    # @return [Boolean] whether it was enqueued
+    def push(reactor)
+      switch = @queue_switch
+      switch ? switch.push(reactor) : false
+    end
+
+    # Whether it's started, and not stopped since.
+    def running? = @running
+
+    # Spawn the store notifier (e.g. PG LISTEN) and N workers into the caller's
+    # task context.
     #
-    # @param task [Object] an executor task or Async::Task to spawn fibers into
-    # @return [void]
+    # Can be called again after {#stop}, to run again with fresh workers.
+    # A no-op while running.
+    #
+    # @param task [Object] an executor task or Async::Task to spawn into, else threads (see {Spawner})
+    # @return [self]
+    # @raise [StillRunningError] if the previous run's workers haven't finished
+    #   (a {#stop} that timed out)
     def start(task)
-      return if @workers.empty?
+      return self if @running
 
-      s = task.respond_to?(:spawn) ? :spawn : :async
+      if @run.nil? # no workers: nothing to spawn, but it's started
+        @running = true
+        return self
+      end
 
-      # Store notifier (start — no-op for InlineNotifier)
-      task.send(s) { @store_notifier.start }
+      if @stopped
+        still_running = @run.workers.select(&:running?)
+        if still_running.any?
+          raise StillRunningError, "can't start: #{still_running.map(&:name).join(', ')} still running from the last run"
+        end
 
-      # CatchUp poller
-      task.send(s) { @catchup_poller.run }
+        @run = build_run(new_work_queue)
+        @queue_switch.target = @run.work_queue
+        @stopped = false
+      end
 
-      # Scheduled message poller
-      task.send(s) { @scheduled_message_poller.run }
+      run = @run
+      @running = true
 
-      # Stale claim reaper
-      task.send(s) { @stale_claim_reaper.run }
+      # Store notifier (start — no-op for InlineNotifier). Spawned, so it checks
+      # this run is still current when it gets to run: a stop before that has
+      # already stopped the notifier.
+      Spawner.into(task) { @store_notifier.start if @running && run.equal?(@run) }
 
-      # Workers
-      @workers.each do |w|
-        task.send(s) { w.run }
+      run.workers.each do |w|
+        Spawner.into(task) { w.run }
       end
 
       self
     end
 
-    # Stop all components and close the work queue.
+    # Stop all components, close the work queue, and wait for workers to finish
+    # the batches they're processing, for up to +shutdown_timeout+ seconds in all.
+    # Workers that haven't started running aren't waited for. Notifications
+    # are dropped until the next {#start}.
+    #
+    # Waiting blocks the caller's thread, or yields to the fiber scheduler when
+    # called from a fiber (ex. an Async task), so the workers can finish.
+    #
+    # Once stopped, a no-op that says whether the workers have finished.
+    #
+    # @return [Boolean] true if every worker finished, false if the timeout expired first
+    def stop
+      if @run.nil?
+        @running = false
+        return true
+      end
+      return workers.none?(&:running?) if @stopped
+
+      run = @run
+      @running = false
+      @stopped = true
+      @queue_switch.target = nil
+
+      @logger.info "Sourced::Dispatcher: stopping #{run.workers.size} workers"
+      @store_notifier.stop
+      run.workers.each(&:stop)
+      run.work_queue.close(run.workers.size)
+
+      unfinished = wait_for_workers(run.workers)
+      if unfinished.any?
+        @logger.warn "Sourced::Dispatcher: #{unfinished.map(&:name).join(', ')} still running after #{@shutdown_timeout}s"
+        return false
+      end
+
+      @logger.info 'Sourced::Dispatcher: all workers stopped'
+      true
+    end
+
+    # {#stop}, raising if workers are still running after the shutdown timeout.
+    # The dispatcher component tears down with this, so a shutdown that leaves
+    # workers mid-batch fails loudly instead of disconnecting under them.
     #
     # @return [void]
-    def stop
-      return if @workers.empty?
+    # @raise [ShutdownTimeoutError]
+    def stop!
+      return if stop
 
-      @logger.info "Sourced::Dispatcher: stopping #{@workers.size} workers"
-      @store_notifier.stop
-      @catchup_poller.stop
-      @scheduled_message_poller.stop
-      @stale_claim_reaper.stop
-      @workers.each(&:stop)
-      @work_queue.close(@workers.size)
-      @logger.info 'Sourced::Dispatcher: all components stopped'
+      names = workers.select(&:running?).map(&:name).join(', ')
+      raise ShutdownTimeoutError, "workers still running after #{@shutdown_timeout}s: #{names}"
+    end
+
+    private
+
+    def new_work_queue = WorkQueue.new(max_per_reactor: @worker_count)
+
+    # @param work_queue [WorkQueue]
+    # @return [Run]
+    def build_run(work_queue)
+      workers = @worker_count.times.map do |i|
+        Worker.new(
+          work_queue:,
+          router: @router,
+          name: "worker-#{i}",
+          batch_size: @batch_size,
+          max_drain_rounds: @max_drain_rounds,
+          logger: @logger
+        )
+      end
+
+      Run.new(work_queue:, workers:)
+    end
+
+    # @param workers [Array<Worker>]
+    # @return [Array<Worker>] workers still running when the timeout expired
+    def wait_for_workers(workers)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @shutdown_timeout
+      workers.reject do |worker|
+        remaining = [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
+        worker.wait(timeout: remaining)
+      end
     end
   end
 end

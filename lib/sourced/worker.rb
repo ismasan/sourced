@@ -28,7 +28,7 @@ module Sourced
       name: SecureRandom.hex(4),
       batch_size: 50,
       max_drain_rounds: 10,
-      logger: Sourced.config.logger
+      logger: NULL_LOGGER
     )
       @work_queue = work_queue
       @router = router
@@ -36,21 +36,30 @@ module Sourced
       @batch_size = batch_size
       @max_drain_rounds = max_drain_rounds
       @logger = logger
-      @running = false
+      @started = false
+      @stopped = false
+      # Closed when #run returns. A Thread::Queue, so #wait blocks a thread, or
+      # yields to the fiber scheduler in a fiber.
+      @finished = Thread::Queue.new
     end
 
-    # Signal the worker to stop after the current drain completes.
+    # Whether {#run} has started and not returned yet.
+    def running? = @started && !@finished.closed?
+
+    # Signal the worker to stop after the batch it's processing, if any.
+    # A worker stopped before it runs returns from {#run} right away.
+    # Use {#wait} to wait for it to finish.
     # @return [void]
     def stop
-      @running = false
+      @stopped = true
     end
 
     # Main run loop. Blocks on the {WorkQueue} waiting for reactor signals.
     # @return [void]
     def run
-      @running = true
+      @started = true
 
-      while @running
+      until @stopped
         reactor = @work_queue.pop
         break if reactor.nil? # shutdown sentinel
 
@@ -58,6 +67,20 @@ module Sourced
       end
 
       @logger.info "Sourced::Worker #{name}: stopped"
+    ensure
+      @finished.close
+    end
+
+    # Wait for {#run} to return. Returns right away for a worker that hasn't
+    # started running, so it never waits on one that was never spawned.
+    #
+    # @param timeout [Numeric, nil] seconds to wait at most; nil waits indefinitely
+    # @return [Boolean] true if the worker isn't running, false if the timeout expired first
+    def wait(timeout: nil)
+      return true unless @started
+
+      @finished.pop(timeout:)
+      @finished.closed?
     end
 
     # Drain available messages for a reactor in a bounded loop.
@@ -69,14 +92,14 @@ module Sourced
     # @return [void]
     def drain(reactor)
       rounds = 0
-      while @running && rounds < @max_drain_rounds
+      while !@stopped && rounds < @max_drain_rounds
         found = @router.handle_next_for(reactor, worker_id: name, batch_size: @batch_size)
         break unless found
 
         rounds += 1
       end
       # More work likely — re-enqueue so another worker (or this one) continues
-      @work_queue.push(reactor) if @running && rounds >= @max_drain_rounds
+      @work_queue.push(reactor) if !@stopped && rounds >= @max_drain_rounds
     end
 
     # Process one tick of work for a specific reactor. Convenience for testing.

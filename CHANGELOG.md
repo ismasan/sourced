@@ -2,6 +2,75 @@
 
 ### Changed
 
+- **Configuration is a component tree.** `Sourced.config` is the root of a
+  [sourced-component](https://github.com/ismasan/sourced-component) tree built by
+  `Sourced::Config.build`, declaring typed components with defaults and dependencies:
+  `logger`, `db`, `notifier`, `executor`, `error_strategy`, `store`,
+  `store.table_prefix`, `reactors.*`,
+  `router`, `topology`, `workers.*`, `housekeeping.*` and `dispatcher`. Host apps mount
+  it (`App.mount('sourced', Sourced)`) and override components; standalone apps
+  override them on `Sourced.config`; `Sourced.configure` is removed. The tree can be
+  inspected without booting (`Sourced.config.tree`, `.graph.to_mermaid`).
+  Requires Ruby 3.2.
+  - Removed `Sourced::Configuration` and its setters (`c.store =`, `c.worker_count =`,
+    ...): implement components instead, ex. `c.config!('workers.count') { 4 }`.
+    `Configuration::StoreInterface` is now `Config::StoreInterface`.
+  - Removed `Sourced.setup!`. Boot with `Sourced.start!(task)` (or the host's
+    `start!`); forking servers `Sourced.config.prepare!` before forking and start in
+    each child. `Sourced.teardown!` stops workers and disconnects.
+  - `Sourced.store`, `.router` and `.topology` raise `NotBuiltError` until Sourced is
+    built, instead of setting up on first use. `Sourced.handle!` raises
+    `ConsumerGroupNotRegisteredError` for a registered reactor whose consumer group
+    isn't in the store yet (consumer groups are registered when Sourced starts).
+    `Store#advance_offset` returns whether the group exists.
+  - `Sourced.register` declares the reactor as `reactors.<group_id>`: registering two
+    reactors with the same group_id raises, and so does registering after boot.
+    Removed `Sourced.reset_topology`.
+  - The `store` component compiles the default codec on `prepare!`, which touches no
+    database, so a forking server prepares once in the parent and its children share
+    the compiled codec. Register encoders and define message types before that.
+  - `Dispatcher` is restartable: `#stop` waits for the run's workers, and `#start`
+    runs fresh workers, pollers and work queue; notifications are dropped while
+    stopped and the catch-up poll covers them. The `dispatcher` component uses a
+    `stop` hook, so a host can `defer('dispatcher')` and start and stop it by key
+    (`start_component!` / `stop_component!`), ex. only while it holds a leader lock.
+    `#start` raises `Dispatcher::StillRunningError` while the previous run's workers
+    are still running. Notifiers must support `start` after `stop`.
+  - The catch-up poller, stale claim reaper and scheduled message poller are components
+    (`dispatcher.catchup_poller`, `dispatcher.stale_claim_reaper`,
+    `scheduled_messages.poller`, with `scheduled_messages.interval`) instead of being
+    embedded in the dispatcher: each can be deferred, stopped and started by key, the
+    all three along with the dispatcher they depend on (so a leader-only dispatcher keeps
+    leader-only pollers), and each is waited for on stop. They're built on
+    `Sourced::PeriodicTask` (`start(context)`, `stop`, restartable). The scheduled
+    message poller depends on the dispatcher only to run where it runs; re-implement it
+    with a dependency on `store` alone to promote in a process without workers.
+    `Dispatcher.new` no longer takes
+    `catchup_interval:`, `housekeeping_interval:` or `claim_ttl_seconds:`, and
+    exposes `#push(reactor)` and `#reactors`. `Dispatcher::ShutdownTimeoutError` is
+    `Sourced::ShutdownTimeoutError`, raised by the pollers' `stop!` too.
+  - Components spawn through `Sourced::Spawner`: an Async task, an executor task, or
+    threads for any other context, so a bare `Sourced.start!` or a host's `App.start!`
+    runs workers and pollers in threads.
+  - Removed `Dispatcher.start(task)`; the `dispatcher` component spawns workers into
+    the context Sourced starts with. `Supervisor.new(config: Sourced.config)` boots
+    the root of the tree, and replaces its old keyword arguments.
+  - `Store.new` no longer reads a late-bound `Sourced.config.notifier`: it takes
+    `notifier:` (default: its own `InlineNotifier`), and runs no queries until
+    `install!`.
+  - `Dispatcher#stop` waits for workers to finish the batches they're processing,
+    for up to `workers.shutdown_timeout` seconds (default 30), and returns false if
+    they don't; teardown uses `Dispatcher#stop!`, which raises
+    `Dispatcher::ShutdownTimeoutError` instead, after the rest of the tree is torn
+    down. A worker stopped before it runs no longer processes work.
+  - `Config::StoreInterface` no longer requires `setup!`: how a store gets ready is
+    the `store` component's lifecycle. The default component calls `Store#setup!` on
+    start; a component implementing another store brings its own hooks.
+  - `Router.new(store:, reactors:, error_strategy:)`; `Router#setup!` registers
+    consumer groups and freezes the error strategy. Reactors no
+    longer get a default `on_exception`: the router calls a reactor's own, or its
+    error strategy.
+
 - Requires plumb 0.4 and sourced-message 0.4.
 - `Store::MessageCodec` encodes and decodes whole messages, not just payloads. The
   store writes the encoded payload and metadata as JSON and the envelope to columns as

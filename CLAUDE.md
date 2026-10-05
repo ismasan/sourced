@@ -17,17 +17,19 @@ Sourced is a Ruby library for **aggregateless, stream-less event sourcing**. Mes
   - `Projector` (`lib/sourced/projector.rb`) — builds read models. Two flavors: `Projector::StateStored` and `Projector::EventSourced`.
   - `DurableWorkflow` (`lib/sourced/durable_workflow.rb`) — long-running workflows with step memoisation via `durable`/`wait`/`context`/`execute` and `catch(:halt)`.
   - Plain `Consumer` reactors (extend `Sourced::Consumer` directly) for side-effect-only handlers.
-- **Store lifecycle** — `StoreInterface` requires `setup!`, not `install!`/`installed?`: creating tables is one store's answer to "prepare yourself", not the contract. `Store#setup!` = `install!` + `message_codec.compile!`, idempotent, called once by `Configuration#setup!`. `install!` / `installed?` remain public on `Store` for scripts and specs.
-- **Reactor protocol** — the Router is **duck-typed**: any class responding to `handled_messages` and `handle_claim(claim, …)` can be registered without extending `Sourced::Consumer` or depending on Sourced (e.g. a third-party command handler). Missing optional methods (`group_id` → class name, `partition_keys` → `[]`, `exclusive?` → false, `on_exception`, `context_for`, lifecycle hooks) are filled in by `ReactorDefaults`.
+- **Store lifecycle** — `Config::StoreInterface` covers what Sourced uses a store *for* (append, read, claim, …); how a store gets ready is its own lifecycle, owned by the `store` component's hooks, not the contract. For `Store`, the default component's prepare hook compiles `MessageCodec.default` (no IO, so a forking parent does it once), and its start hook calls `Store#setup!` = `install!` + `message_codec.compile!`, idempotent. Overriding `db` keeps that lifecycle; re-implementing `store` replaces it, so a different store brings its own hooks. `Store.new` doesn't touch the database (PRAGMAs run in `install!`). `install!` / `installed?` remain public on `Store` for scripts and specs.
+- **Reactor protocol** — the Router is **duck-typed**: any class responding to `handled_messages` and `handle_claim(claim, …)` can be registered without extending `Sourced::Consumer` or depending on Sourced (e.g. a third-party command handler). Missing optional methods (`group_id` → class name, `partition_keys` → `[]`, `exclusive?` → false, `context_for`, lifecycle hooks) are filled in by `ReactorDefaults`. `on_exception` is the exception: it's optional, and the Router calls its own `error_strategy` for reactors that don't define it (the strategy belongs to the router, and reactor classes can be shared between routers).
 - **Actions / signals** (`lib/sourced/actions.rb`) — a reactor's `handle_claim` returns `[[signals, source_message], …]` pairs. Each signal is **inert data**: a plain Hash (`{type: :append|:sync|:after_sync|:ack, …}`) or a `Sourced::Actions` value object that `deconstruct_keys` to the same shape. A `delete: true` flag marks the source message for deletion on ack. There is **no separate `:schedule` signal** — a future-dated message (built with `Message#at`) in an `:append` is transparently deferred by the store (see below).
 - **ActionRunner** (`lib/sourced/action_runner.rb`) — the only code that touches the store on behalf of actions. Routes each signal to `append`/sync work, applying correlation. Third-party reactors emit plain-Hash signals with no Sourced dependency.
 - **ReactorDefaults** (`lib/sourced/reactor_defaults.rb`) — `ReactorDefaults.apply(reactor)` defines missing optional protocol methods directly on the reactor class (only where absent, so the reactor's own definitions win). Chosen over a `SimpleDelegator` wrapper so the reactor stays a real class and `Injector` signature reflection keeps working.
 - **Mixins**: `Sourced::Evolve` (state evolution from history), `Sourced::React` (event → command/event reactions), `Sourced::Sync` (post-append side effects).
 - **Router** (`lib/sourced/router.rb`) — registers reactors (applies defaults, validates exclusive ownership), dispatches claimed batches via the `ActionRunner`, manages consumer-group lifecycle hooks.
-- **Dispatcher / Worker / WorkQueue** (`lib/sourced/{dispatcher,worker,work_queue}.rb`) — claim-and-drain processing; signal-driven via `InlineNotifier` + `CatchUpPoller`.
+- **Dispatcher / Worker / WorkQueue** (`lib/sourced/{dispatcher,worker,work_queue}.rb`) — claim-and-drain processing; signal-driven via `InlineNotifier` + `CatchUpPoller`. Restartable: each run has fresh workers and queue; `#push(reactor)` feeds the current run (dropped while stopped).
+- **PeriodicTask** (`lib/sourced/periodic_task.rb`) — base of the three loops below: `start(context)` spawns (via `Spawner`: `spawn`/`async`, else a Thread), `stop` wakes the loop and waits, restartable. Each is its own component (see Configuration).
 - **StaleClaimReaper** (`lib/sourced/stale_claim_reaper.rb`) — releases abandoned partition claims from dead workers via heartbeats.
 - **ScheduledMessagePoller** (`lib/sourced/scheduled_message_poller.rb`) — promotes due scheduled messages into the main log.
-- **Supervisor** (`lib/sourced/supervisor.rb`) — top-level process entry point wiring Dispatcher, executor, and reactors.
+- **Config** (`lib/sourced/config.rb`) — `Config.build` returns Sourced's configuration as a [sourced-component](https://github.com/ismasan/sourced-component) tree (see Configuration below). Holds `StoreInterface`, `NotifierInterface`, `ReactorInterface`.
+- **Supervisor** (`lib/sourced/supervisor.rb`) — top-level process entry point: builds the root of the config tree, starts it inside the `executor` (so the dispatcher spawns workers into the executor task), and tears it down on INT/TERM via a self-pipe (lifecycle methods can't run in trap context).
 - **CommandContext** (`lib/sourced/command_context.rb`) — builds commands from raw attributes; supports per-message and `any` hooks.
 - **Topology** (`lib/sourced/topology.rb`) — graph of reactors / message flows.
 - **Installer + migrations** (`lib/sourced/installer.rb`, `lib/sourced/migrations/`) — Sequel migration template for installing store tables.
@@ -85,23 +87,24 @@ bin/console
 
 ## Configuration
 
-```ruby
-Sourced.configure do |config|
-  config.store = Sequel.sqlite('my_app.db')   # auto-wraps in Sourced::Store
-  # or: config.store = Sourced::Store.new(db)
-  # or: any object matching Configuration::StoreInterface
-  config.worker_count   = 2
-  config.batch_size     = 50
-  config.catchup_interval = 5
-  config.claim_ttl_seconds = 120
-end
+`Sourced.config` **is** the root of a `Sourced::Component` tree (from the sourced-component gem, `~> 0.1`), built by `Sourced::Config.build`. There is no `Configuration` class: settings are typed components with defaults, overridden with the component DSL.
 
-Sourced.register(SomeDecider)
-Sourced.register(SomeProjector)
+```ruby
+Sourced.config.config!('workers.count') { 4 }
+Sourced.config.component!('db') { build { Sequel.sqlite('my_app.db') }; teardown(&:disconnect) }
+Sourced.register(SomeDecider)                     # declares reactors.<group_id>
+Sourced.start!(task)                              # build + start; workers spawn into task
+Sourced.teardown!
 ```
 
-- `Sourced.configure` stores the block, applies it to the reused `Sourced.config`, and calls `config.setup!` (does not freeze). `Sourced.setup!` re-applies the block, re-establishes DB connections via `config.disconnect!`, and freezes the config — call it on boot/after-fork to make connections fork-safe.
-- `Sourced.store`, `Sourced.router`, `Sourced.topology`, `Sourced.reset!` — module-level accessors.
+Tree: `logger`, `db`, `notifier`, `executor`, `error_strategy`, `store` (deps db/notifier/logger/`store.table_prefix`), `reactors.*`, `router` (deps store, `reactors.*`, error_strategy), `topology` (deps `reactors.*`; dynamic, built on each read), `workers.{count,batch_size,max_drain_rounds,catchup_interval,shutdown_timeout}`, `housekeeping.{interval,claim_ttl_seconds}`, `dispatcher` (deps router, `workers.*`), `dispatcher.catchup_poller` and `dispatcher.stale_claim_reaper` (deps `dispatcher`: deferred/stopped/started with it), `scheduled_messages.{interval,poller}` (deps `dispatcher` + store: the dispatcher dep is only so it runs where workers run; re-implement with store-only deps to promote without workers).
+
+- **Build constructs, start touches the world.** `build!` never writes to the database. On start, the `store` component sets up the store (`Store#setup!`), then `Router#setup!` registers consumer groups and freezes the error strategy; the dispatcher and pollers spawn into the start context through `Spawner`: an Async task's `async`, an executor task's `spawn`, else a new Thread (so a bare `Sourced.start!` / `App.start!` just runs them in threads). The dispatcher is restartable (`stop` hook, not `teardown`): each run gets fresh workers/pollers/queue, and a host can `defer('dispatcher')` and `start_component!`/`stop_component!` it by key, ex. under a leader lock.
+- **Re-implementing a component replaces all its hooks.** A component's lifecycle belongs to its implementation: overriding `store` means bringing its lifecycle too (apps normally only override `db`). Side effects that *every* implementation needs go on a dependent instead: the router freezes whatever `error_strategy` is.
+- **Reactors are nodes.** `Sourced.register` → `Config.register` declares `reactors.<group_id>` (`.`/`*` escaped to `_`). Duplicate keys raise `ArgumentError` naming both the reactor and the escaping, and the Router rejects duplicate group_ids; registering after `prepare!` raises `LockedComponentError`. `Sourced.handle!` advances offsets only for reactors declared in `Sourced.config`, and raises `ConsumerGroupNotRegisteredError` if the group isn't in the store yet (Sourced not started).
+- **Mounting**: hosts `App.mount('sourced', Sourced)` and override (`App.config!('sourced.db', ['db']) { |db| db }`); `Sourced.store` etc. read the same nodes. A mounted config is booted by the host's root.
+- **Forking**: `Sourced.config.prepare!` in the parent, `start!` in each child. A torn-down tree can't be restarted (`TornDownError`); specs use `Sourced.reset!` for a fresh tree.
+- `Sourced.store`, `.router`, `.topology`, `.logger` read components and raise `NotBuiltError` before build. Core classes (Store, Router, Worker, Dispatcher, pollers) never read globals: they take explicit kwargs (loggers default to `NULL_LOGGER`), and only the tree wires them.
 - `Sourced.handle!(ReactorClass, command)` — synchronous command dispatch (for web controllers): validates, loads history via partition read, decides, appends with guard, advances registered offsets. Returns `HandleResult(command, reactor, events)`.
 - `Sourced.load(ReactorClass, **partition_values)` — loads a reactor instance by evolving over AND-filtered partition history. Returns `[instance, read_result]`.
 
@@ -150,15 +153,15 @@ Attributes use **native Ruby types** (`Date`, `Time`, `Symbol`, `BigDecimal`, `U
 
 Serialization is split between one global format and a store that owns everything else:
 
-- **Format — global, unconfigurable.** `Plumb::Codec::JSON` decides how Ruby values travel (`Date` → `"2026-01-02"`, `Time` → ISO 8601 at microsecond precision). Apps teach it their own value types by registering encoders on the class itself — `Plumb::Codec::JSON.encoder MoneyEncoder` — before `Sourced.setup!`, which is when the store compiles them in. There is no codec setting on `Configuration` or `Store`.
-- **Registry use — store-private.** `Sourced::Store::MessageCodec` is a `Sourced::Message::JSONCodec` (from the **sourced-message** gem) that registers each message class's **payload type** under its message type string. The base class owns the compiled-pair registry, the pair cache, `compile!`/`recompile!`, `decode` and the error classes; the subclass supplies only three private seams — `#compiled_type` (payload schema instead of the message class), `#encode_subject` (`message.payload`), and `#build` (reassemble the message around the decoded payload). It stays namespaced under `Store` because it exists for *this* store's layout, and nothing in `Configuration::StoreInterface` mentions serialization — a store with a different layout owns a different serializer, or none. Its `format:` kwarg is a seam for scoping a codec in specs, not configuration. Sidereal uses the same base class directly, unsubclassed, to encode whole messages onto its file store and socket pubsub.
+- **Format — global, unconfigurable.** `Plumb::Codec::JSON` decides how Ruby values travel (`Date` → `"2026-01-02"`, `Time` → ISO 8601 at microsecond precision). Apps teach it their own value types by registering encoders on the class itself — `Plumb::Codec::JSON.encoder MoneyEncoder` — before Sourced is prepared (`prepare!`, which `build!`/`start!` run), which is when the store compiles them in. There is no codec setting on `Sourced.config` or `Store`.
+- **Registry use — store-private.** `Sourced::Store::MessageCodec` is a `Sourced::Message::JSONCodec` (from the **sourced-message** gem) that registers each message class's **payload type** under its message type string. The base class owns the compiled-pair registry, the pair cache, `compile!`/`recompile!`, `decode` and the error classes; the subclass supplies only three private seams — `#compiled_type` (payload schema instead of the message class), `#encode_subject` (`message.payload`), and `#build` (reassemble the message around the decoded payload). It stays namespaced under `Store` because it exists for *this* store's layout, and nothing in `Config::StoreInterface` mentions serialization — a store with a different layout owns a different serializer, or none. Its `format:` kwarg is a seam for scoping a codec in specs, not configuration. Sidereal uses the same base class directly, unsubclassed, to encode whole messages onto its file store and socket pubsub.
 - **Envelope — the store's own code.** `Store#append` writes `id`/`type`/`causation_id`/`correlation_id`/`created_at` straight into columns and only sends `payload` through the codec; `deserialize` rebuilds attrs from the row and calls `message_codec.decode`; `schedule_messages` assembles a whole-message document inline, because that table has a different layout. Routing the envelope through the codec instead costs ~7.7 µs/message on reads (measured) to rebuild what the store just took apart — see `plans/message-codecs.md`.
 
 Other notes:
 
 - **Payload scope is free for JSON-native payloads**: a codec composition returns the *original node* when nothing needs rewriting, so the decoder *is* the payload class.
 - **Registration happens only in `compile!`**, which freezes the compiled pairs once every type is in. Encoding or decoding a type that wasn't compiled raises `Sourced::Message::JSONCodec::UnregisteredTypeError` — a bug, not a cue to compile mid-request. `compile!` is **idempotent**, so several collaborators sharing a codec can each call it on start without coordinating; `recompile!` is what picks up types (and encoders) registered since. Pairs are cached per message class on the codec *class*, so a recompile re-collects them rather than rebuilding. Specs that build stores directly rely on a `before(:suite)` hook compiling `MessageCodec.default`, mirroring the once-per-process compile at boot.
-- **Boot check**: `Configuration#setup!` calls `store.setup!` — the store's generic "prepare yourself" hook (in `StoreInterface`), which for `Store` means creating tables *and* compiling its serializer. A message type the store can't persist raises `Plumb::TypeError` naming the message and attribute, and **the app fails to boot**. Specs needing a deliberately-unserializable message type must keep it *out* of the global registry — see `CodecSpecHelpers.unregistered_message` in `spec/spec_helper.rb`, since one registered example would fail every other spec's `setup!`.
+- **Boot check**: the `store` component's prepare hook compiles the default serializer, and its start hook calls `Store#setup!`, which creates tables and compiles whichever serializer the store has (idempotent). A message type the store can't persist raises `Plumb::TypeError` naming the message and attribute, and **the app fails to boot**. Specs needing a deliberately-unserializable message type must keep it *out* of the global registry — see `CodecSpecHelpers.unregistered_message` in `spec/spec_helper.rb`, since one registered example would fail every other spec's `setup!`.
 - **Sharing**: `Store::MessageCodec.default` is the one instance every store takes, so a process compiles its pairs once, including after a fork. Assign `store.message_codec =` for a store that needs its own — e.g. one scoped to a private message registry.
 - Encoding an invalid message raises `Sourced::Message::JSONCodec::EncodeError`; reading a row whose payload no longer fits its schema raises `Sourced::Message::JSONCodec::DecodeError` (both inherited, so `Store::MessageCodec::EncodeError` still resolves — but they descend from `StandardError`, not `Sourced::Error`); reading a row whose type isn't registered raises `Message::UnknownMessageError` (the base `Message` declares `payload` as `Static[nil]`, so building one would drop the payload).
 - `metadata` is an untyped Hash — a JSON noop the codec passes through, so it must hold JSON-native values.
@@ -240,13 +243,14 @@ In reactions: `dispatch(Cmd, ...).at(time)` (the produced message is future-date
 
 ## Error Handling
 
-- `error_strategy` on `Configuration` — configurable retry / backoff / fail. See `lib/sourced/error_strategy.rb`.
+- `error_strategy` component — configurable retry / backoff / fail; frozen by `Router#setup!`. A reactor's own `on_exception` takes precedence. See `lib/sourced/error_strategy.rb`.
 - Consumer groups have `running` / `stopped` / `failed` states. `on_fail` fires on terminal failures.
 - `PartialBatchError` carries successfully-processed `action_pairs` plus the failing message so batches can be partially acked.
 
 ## Key Files
 
-- Entrypoint: `lib/sourced.rb` (top-level API, `handle!`, `load`)
+- Entrypoint: `lib/sourced.rb` (top-level API: `config`, `register`, `start!`, `handle!`, `load`)
+- Configuration tree: `lib/sourced/config.rb`
 - Store: `lib/sourced/store.rb` + `lib/sourced/installer.rb` + `lib/sourced/migrations/`
 - Reactors: `lib/sourced/{decider,projector,durable_workflow,consumer}.rb`
 - Reactor protocol: `lib/sourced/reactor_defaults.rb` (duck-typed defaults)

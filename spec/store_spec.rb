@@ -69,7 +69,7 @@ module StoreTestMessages
     encoder PointEncoder
   end
 
-  # Unregistered: only StoreCodec can serialize it, and every Sourced.setup!
+  # Unregistered: only StoreCodec can serialize it, and every Store#setup!
   # in the suite walks the global registry.
   PointPlotted = CodecSpecHelpers.unregistered_message('store_test.point.plotted') do
     attribute :plot_id, String
@@ -83,6 +83,15 @@ RSpec.describe Sourced::Store do
 
   before do
     store.install!
+  end
+
+  describe '.new' do
+    it "doesn't touch the database" do
+      fresh_db = Sequel.sqlite
+      expect(fresh_db).not_to receive(:run)
+
+      Sourced::Store.new(fresh_db)
+    end
   end
 
   describe '#installed?' do
@@ -116,6 +125,11 @@ RSpec.describe Sourced::Store do
 
     it 'is idempotent' do
       expect { store.install! }.not_to raise_error
+    end
+
+    it 'configures the connection' do
+      expect(db.fetch('PRAGMA foreign_keys').first.values.first).to eq(1)
+      expect(db.fetch('PRAGMA busy_timeout').first.values.first).to eq(5000)
     end
   end
 
@@ -168,42 +182,34 @@ RSpec.describe Sourced::Store do
   end
 
   describe '#notifier' do
-    let(:fake_notifier) do
-      double('Notifier', subscribe: nil, notify_new_messages: nil,
-                         notify_reactor_resumed: nil, start: nil, stop: nil)
+    let(:announced) { [] }
+    let(:resumed) { [] }
+    let(:notifier) do
+      announced = self.announced
+      resumed = self.resumed
+      Class.new(Sourced::InlineNotifier) do
+        define_method(:notify_new_messages) { |types| announced << types }
+        define_method(:notify_reactor_resumed) { |group_id| resumed << group_id }
+      end.new
+    end
+    let(:store) { described_class.new(db, notifier:) }
+
+    it 'defaults to an InlineNotifier of its own' do
+      default = described_class.new(Sequel.sqlite)
+
+      expect(default.notifier).to be_a(Sourced::InlineNotifier)
+      expect(default.notifier).not_to be(described_class.new(Sequel.sqlite).notifier)
     end
 
-    # These assign the process-global configuration; drop it afterwards.
-    after { Sourced.reset! }
-
-    it 'resolves Sourced.config.notifier on each call when none was injected' do
-      expect(store.notifier).to be(Sourced.config.notifier)
-
-      Sourced.config.notifier = fake_notifier
-      expect(store.notifier).to be(fake_notifier)
-    end
-
-    it 'keeps an explicitly injected notifier over the configured one' do
-      injected = Sourced::InlineNotifier.new
-      explicit = described_class.new(Sequel.sqlite, notifier: injected)
-      Sourced.config.notifier = fake_notifier
-
-      expect(explicit.notifier).to be(injected)
-    end
-
-    it 'announces appends through the configured notifier' do
-      Sourced.config.notifier = fake_notifier
-      expect(fake_notifier).to receive(:notify_new_messages).with(['store_test.device.registered'])
+    it 'announces appends through the notifier' do
+      expect(store.notifier).to be(notifier)
 
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+
+      expect(announced).to eq([['store_test.device.registered']])
     end
 
     it 'announces only after the outermost transaction commits' do
-      announced = []
-      Sourced.config.notifier = Class.new(Sourced::InlineNotifier) do
-        define_method(:notify_new_messages) { |types| announced << types }
-      end.new
-
       store.transaction do
         store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
         expect(announced).to be_empty
@@ -213,11 +219,6 @@ RSpec.describe Sourced::Store do
     end
 
     it 'announces nothing when the enclosing transaction rolls back' do
-      announced = []
-      Sourced.config.notifier = Class.new(Sourced::InlineNotifier) do
-        define_method(:notify_new_messages) { |types| announced << types }
-      end.new
-
       store.transaction do
         store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
         raise Sequel::Rollback
@@ -227,10 +228,6 @@ RSpec.describe Sourced::Store do
     end
 
     it 'announces a resumed group only after the enclosing transaction commits' do
-      resumed = []
-      Sourced.config.notifier = Class.new(Sourced::InlineNotifier) do
-        define_method(:notify_reactor_resumed) { |group_id| resumed << group_id }
-      end.new
       store.register_consumer_group('g1', partition_by: 'device_id')
       store.stop_consumer_group('g1')
 
@@ -2519,24 +2516,22 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      expect {
-        store.advance_offset('nonexistent',
-          partition: { 'device_id' => 'dev-1' },
-          position: 1
-        )
-      }.not_to raise_error
+      advanced = store.advance_offset('nonexistent',
+        partition: { 'device_id' => 'dev-1' },
+        position: 1
+      )
 
+      expect(advanced).to be(false)
       expect(db[:sourced_offsets].count).to eq(0)
     end
 
     it 'is a no-op when partition has no messages in the store' do
-      expect {
-        store.advance_offset(group_id,
-          partition: { 'device_id' => 'dev-1' },
-          position: 1
-        )
-      }.not_to raise_error
+      advanced = store.advance_offset(group_id,
+        partition: { 'device_id' => 'dev-1' },
+        position: 1
+      )
 
+      expect(advanced).to be(true)
       expect(db[:sourced_offsets].count).to eq(0)
     end
 
