@@ -34,7 +34,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'sequel'
   spec.add_dependency 'sqlite3'
   spec.add_dependency 'sourced-message', '>= 0.4'
-  spec.add_dependency 'sourced-component'
+  spec.add_dependency 'sourced-component', '~> 0.1'
 
   # For more information and examples about making a new gem, check out our
   # guide at: https://bundler.io/guides/creating_gem.html

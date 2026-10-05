@@ -28,7 +28,7 @@ Sourced is a Ruby library for **aggregateless, stream-less event sourcing**. Mes
 - **PeriodicTask** (`lib/sourced/periodic_task.rb`) — base of the three loops below: `start(context)` spawns (via `Spawner`: `spawn`/`async`, else a Thread), `stop` wakes the loop and waits, restartable. Each is its own component (see Configuration).
 - **StaleClaimReaper** (`lib/sourced/stale_claim_reaper.rb`) — releases abandoned partition claims from dead workers via heartbeats.
 - **ScheduledMessagePoller** (`lib/sourced/scheduled_message_poller.rb`) — promotes due scheduled messages into the main log.
-- **Config** (`lib/sourced/config.rb`) — `Config.build` returns Sourced's configuration as a [sourced-component](../sourced-system) tree (see Configuration below). Holds `StoreInterface`, `NotifierInterface`, `ReactorInterface`.
+- **Config** (`lib/sourced/config.rb`) — `Config.build` returns Sourced's configuration as a [sourced-component](https://github.com/ismasan/sourced-component) tree (see Configuration below). Holds `StoreInterface`, `NotifierInterface`, `ReactorInterface`.
 - **Supervisor** (`lib/sourced/supervisor.rb`) — top-level process entry point: builds the root of the config tree, starts it inside the `executor` (so the dispatcher spawns workers into the executor task), and tears it down on INT/TERM via a self-pipe (lifecycle methods can't run in trap context).
 - **CommandContext** (`lib/sourced/command_context.rb`) — builds commands from raw attributes; supports per-message and `any` hooks.
 - **Topology** (`lib/sourced/topology.rb`) — graph of reactors / message flows.
@@ -87,7 +87,7 @@ bin/console
 
 ## Configuration
 
-`Sourced.config` **is** the root of a `Sourced::Component` tree (from the sourced-component gem, a path dependency on `../sourced-system` until it's released), built by `Sourced::Config.build`. There is no `Configuration` class: settings are typed components with defaults, overridden with the component DSL.
+`Sourced.config` **is** the root of a `Sourced::Component` tree (from the sourced-component gem, `~> 0.1`), built by `Sourced::Config.build`. There is no `Configuration` class: settings are typed components with defaults, overridden with the component DSL.
 
 ```ruby
 Sourced.configure do |c|                          # yields Sourced.config

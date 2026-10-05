@@ -7,21 +7,13 @@ GIT
       kramdown-parser-gfm
 
 PATH
-  remote: ../sourced-system
-  specs:
-    sourced-component (0.1.0)
-      plumb (~> 0.4)
-      sourced-message
-      tsort (~> 0.2)
-
-PATH
   remote: .
   specs:
     sourced (0.0.1)
       async
       plumb (= 0.4.0)
       sequel
-      sourced-component
+      sourced-component (~> 0.1)
       sourced-message (>= 0.4)
       sqlite3
 
@@ -117,6 +109,10 @@ GEM
     ruby-progressbar (1.13.0)
     sequel (5.84.0)
       bigdecimal
+    sourced-component (0.1.0)
+      plumb (~> 0.4)
+      sourced-message
+      tsort (~> 0.2)
     sourced-message (0.4.0)
       fugit
       plumb (>= 0.4)
@@ -148,7 +144,6 @@ DEPENDENCIES
   rubocop
   sequel
   sourced!
-  sourced-component!
   sqlite3
   timecop
 

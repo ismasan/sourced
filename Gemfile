@@ -3,9 +3,6 @@
 source 'https://rubygems.org'
 
 # Specify your gem's dependencies in sourced.gemspec
-
-# Unreleased: needs wildcard dependencies ('reactors.*')
-gem 'sourced-component', path: '../sourced-system'
 gemspec
 
 gem 'debug'
