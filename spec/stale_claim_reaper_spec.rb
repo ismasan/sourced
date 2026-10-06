@@ -2,6 +2,7 @@
 
 require 'spec_helper'
 require 'sourced'
+require 'sourced/thread_executor'
 require 'sequel'
 
 module StaleClaimReaperTestMessages
@@ -243,6 +244,21 @@ RSpec.describe Sourced::StaleClaimReaper do
       thread.join(1)
 
       expect(logger).to have_received(:info).with('Sourced::StaleClaimReaper: stopped')
+    end
+
+    it 'refreshes planner statistics on its first tick, then only every optimize_interval' do
+      reaper = described_class.new(
+        store: store,
+        interval: 0.01,
+        ttl_seconds: 120,
+        optimize_interval: 3600,
+        logger: logger
+      )
+      expect(store).to receive(:optimize!).once.and_call_original
+
+      reaper.start(Sourced::ThreadExecutor.new)
+      sleep 0.05
+      expect(reaper.stop).to be(true)
     end
   end
 end

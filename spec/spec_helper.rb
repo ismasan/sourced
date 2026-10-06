@@ -12,10 +12,10 @@ ENV['ENVIRONMENT'] ||= 'test'
 module CodecSpecHelpers
   # Build a message class without adding it to the global registry.
   #
-  # Store#setup! (run when Sourced starts) refuses to boot when a registered
-  # message type can't be serialized, and this suite plays several apps at once,
-  # so an app-specific type must stay out of the registry every other spec's
-  # store setup walks.
+  # Sourced refuses to boot when a registered message type can't be serialized
+  # (the store component compiles the codec), and this suite plays several apps
+  # at once, so an app-specific type must stay out of the registry every other
+  # spec's boot compiles.
   #
   # @param type_str [String] message type string
   # @param base [Class<Sourced::Message>]
@@ -69,7 +69,7 @@ RSpec.configure do |config|
 
   config.include Sourced::Testing::RSpec
 
-  # Stores share one codec per format, compiled once per process — Store#setup!
-  # does it at boot, this does it for specs that build stores directly.
+  # Stores share one codec per format, compiled once per process — the store
+  # component does it at boot, this does it for specs that build stores directly.
   config.before(:suite) { Sourced::Store::MessageCodec.default.compile! }
 end

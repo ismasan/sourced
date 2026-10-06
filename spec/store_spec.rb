@@ -69,8 +69,8 @@ module StoreTestMessages
     encoder PointEncoder
   end
 
-  # Unregistered: only StoreCodec can serialize it, and every Store#setup!
-  # in the suite walks the global registry.
+  # Unregistered: only StoreCodec can serialize it, and every boot in the
+  # suite compiles the global registry.
   PointPlotted = CodecSpecHelpers.unregistered_message('store_test.point.plotted') do
     attribute :plot_id, String
     attribute :point, Sourced::Types::Any[Point]
@@ -126,57 +126,23 @@ RSpec.describe Sourced::Store do
     it 'is idempotent' do
       expect { store.install! }.not_to raise_error
     end
+
+    it 'sets a file database to WAL' do
+      path = File.join(Dir.mktmpdir, 'install.db')
+      file_db = Sequel.sqlite(path)
+      expect(file_db.fetch('PRAGMA journal_mode').first.values.first).to eq('delete')
+
+      Sourced::Store.new(file_db).install!
+
+      expect(file_db.fetch('PRAGMA journal_mode').first.values.first).to eq('wal')
+    ensure
+      file_db&.disconnect
+    end
   end
 
   describe '#message_codec' do
     it 'is the serializer shared by every store in the process' do
       expect(Sourced::Store.new(Sequel.sqlite).message_codec).to be(Sourced::Store::MessageCodec.default)
-    end
-  end
-
-  describe '#setup!' do
-    # Its own store: whether the tables are installed is part of what #setup! is tested for
-    let(:fresh_db) { Sequel.sqlite }
-    let(:fresh_store) { Sourced::Store.new(fresh_db) }
-
-    it 'requires the tables to be installed, by a migration or #install!' do
-      expect { fresh_store.setup! }.to raise_error(Sourced::Store::NotInstalledError, /migration.*Store#install!/)
-
-      fresh_store.install!
-      expect { fresh_store.setup! }.not_to raise_error
-    end
-
-    it 'sets a file database to WAL, and compiles the codecs' do
-      path = File.join(Dir.mktmpdir, 'setup.db')
-      file_db = Sequel.sqlite(path)
-      file_store = Sourced::Store.new(file_db)
-      file_store.install!
-      expect(file_db.fetch('PRAGMA journal_mode').first.values.first).to eq('delete')
-
-      file_store.setup!
-
-      expect(file_db.fetch('PRAGMA journal_mode').first.values.first).to eq('wal')
-      expect(file_store.message_codec.registered?('store_test.device.registered')).to be true
-    ensure
-      file_db&.disconnect
-    end
-
-    it 'is idempotent' do
-      fresh_store.install!
-      fresh_store.setup!
-      expect { fresh_store.setup! }.not_to raise_error
-    end
-
-    it 'fails when a registered message type cannot be serialized' do
-      unserializable = CodecSpecHelpers.unregistered_message('store_test.unserializable') do
-        attribute :thing, Sourced::Types::Any[Object]
-      end
-      fresh_store.message_codec = Sourced::Store::MessageCodec.new(
-        registry: CodecSpecHelpers::Registry.new([unserializable])
-      )
-      fresh_store.install!
-
-      expect { fresh_store.setup! }.to raise_error(Plumb::TypeError, /field `payload\.thing`/)
     end
   end
 

@@ -285,7 +285,7 @@ RSpec.describe Sourced::Config do
       expect(config['store'].installed?).to be(true)
     end
 
-    it 'runs the lifecycle a custom store brings, which needs no setup!' do
+    it 'runs the lifecycle a custom store brings' do
       custom_store = Class.new do
         attr_reader :connected
 

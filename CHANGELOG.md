@@ -66,11 +66,14 @@
   - `Config::StoreInterface` no longer requires `setup!`: how a store gets ready is
     the `store` component's lifecycle. The default component calls `Store#setup!` on
     start; a component implementing another store brings its own hooks.
-  - `Store#setup!` no longer creates tables: it sets WAL mode, refreshes
-    planner statistics and compiles the codec, and raises `Store::NotInstalledError`
-    if the tables aren't there. Apps install them with a migration; `Store#install!`
-    (tables only) is for scripts and specs, and `store.install_tables` (default false)
-    makes the `store` component install them on start, ex. for an in-memory database.
+  - Removed `Store#setup!`: the store has no boot step of its own. The migration (and
+    `Store#install!`, which applies it) creates the tables and sets `journal_mode = WAL`,
+    outside a transaction; per-connection PRAGMAs are Sequel's; the stale claim reaper
+    runs `ANALYZE` on its first tick, then hourly; and the `store` component's start hook
+    checks the tables are installed (`Store::NotInstalledError`, pointing at the
+    migration) and compiles the codec. Apps install tables with a migration;
+    `store.install_tables` (default false) makes the `store` component install them on
+    start, ex. for an in-memory database in tests.
   - `Router.new(store:, reactors:, error_strategy:)`; `Router#setup!` registers
     consumer groups and freezes the error strategy. Reactors no
     longer get a default `on_exception`: the router calls a reactor's own, or its

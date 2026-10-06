@@ -27,7 +27,8 @@ module Sourced
   #   notifier          InlineNotifier
   #   executor          AsyncExecutor. Runs workers under Sourced::Supervisor
   #   error_strategy    ErrorStrategy
-  #   store             Store over db. Compiles its codec on prepare, and sets itself up on start
+  #   store             Store over db. Compiles its codec on prepare; on start, checks the tables
+  #                     are installed and compiles the codec it was given
   #   store.table_prefix  prefix of the store's table names, ex. 'sourced' => sourced_messages
   #   store.install_tables  whether the store creates its tables on start (default false: apps
   #                     install them with a migration; the store checks they're there)
@@ -123,11 +124,17 @@ module Sourced
           build do |db, notifier, logger, prefix, install_tables|
             Store.new(db, notifier:, logger:, prefix:, install_tables:)
           end
-          # Configures the connection and compiles the store's codec (if it was given
-          # another), with the tables there: installed by a migration, or here when asked
+          # With the tables there (installed by a migration, or here when asked), compile
+          # the store's codec: a no-op unless it was given one other than the default
           start do |store, _|
             store.install! if store.install_tables?
-            store.setup!
+            unless store.installed?
+              raise Store::NotInstalledError,
+                    "Sourced tables are not installed for #{store.inspect}: apps install " \
+                    'them with a migration (see Store#copy_migration_to), scripts and specs with Store#install!, ' \
+                    'and store.install_tables makes Sourced install them on start'
+            end
+            store.message_codec.compile!
           end
         end
 

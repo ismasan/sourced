@@ -36,7 +36,7 @@ module Sourced
       @ttl_seconds = ttl_seconds
       @worker_ids_provider = worker_ids_provider
       @optimize_interval = optimize_interval
-      @last_optimized_at = Time.now
+      @last_optimized_at = nil # so the first tick refreshes statistics
     end
 
     private
@@ -68,11 +68,12 @@ module Sourced
       optimize
     end
 
-    # Periodically refresh SQLite planner statistics. Store#optimize! is bounded
-    # by analysis_limit, so this is cheap even on large stores; without fresh
-    # stats the claim scan's query plan degrades badly (see Store#optimize!).
+    # Refresh SQLite planner statistics on the first tick, then periodically.
+    # Store#optimize! is bounded by analysis_limit, so this is cheap even on
+    # large stores; without fresh stats the claim scan's query plan degrades
+    # badly (see Store#optimize!).
     def optimize
-      return unless Time.now - @last_optimized_at >= @optimize_interval
+      return if @last_optimized_at && Time.now - @last_optimized_at < @optimize_interval
 
       @last_optimized_at = Time.now
       @store.optimize!

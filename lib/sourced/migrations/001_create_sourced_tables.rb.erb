@@ -1,7 +1,15 @@
 # frozen_string_literal: true
 
 Sequel.migration do
+  # SQLite can't change journal_mode inside a transaction. Every statement here
+  # is idempotent (create_table?, create_index?), so a half-applied run is re-run.
+  no_transaction
+
   up do
+    # WAL is a property of the database file, so setting it here covers every
+    # connection and process. Readers don't block the writer, and vice versa.
+    run 'PRAGMA journal_mode = WAL'
+
     create_table?(:<%= messages_table %>) do
       primary_key :position
       String :message_id, null: false, unique: true

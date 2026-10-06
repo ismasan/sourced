@@ -45,8 +45,8 @@ module MessageCodecTests
     encoder MoneyEncoder
   end
 
-  # Unregistered: the default codec can't serialize it, and every
-  # Store#setup! in the suite walks the global registry.
+  # Unregistered: the default codec can't serialize it, and every boot
+  # in the suite compiles the global registry.
   Priced = CodecSpecHelpers.unregistered_message('message_codec_test.priced') do
     attribute :price, Sourced::Types::Any[Money]
   end
@@ -58,7 +58,7 @@ module MessageCodecTests
 end
 
 RSpec.describe Sourced::Store::MessageCodec do
-  # Scoped to the types these specs use, and compiled the way Store#setup! does.
+  # Scoped to the types these specs use, and compiled the way a boot does.
   subject(:codec) { codec_for(TYPES) }
 
   TYPES = [
