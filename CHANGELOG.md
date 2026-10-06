@@ -66,6 +66,11 @@
   - `Config::StoreInterface` no longer requires `setup!`: how a store gets ready is
     the `store` component's lifecycle. The default component calls `Store#setup!` on
     start; a component implementing another store brings its own hooks.
+  - `Store#setup!` no longer creates tables: it configures the connection, refreshes
+    planner statistics and compiles the codec, and raises `Store::NotInstalledError`
+    if the tables aren't there. Apps install them with a migration; `Store#install!`
+    (tables only) is for scripts and specs, and `store.install_tables` (default false)
+    makes the `store` component install them on start, ex. for an in-memory database.
   - `Router.new(store:, reactors:, error_strategy:)`; `Router#setup!` registers
     consumer groups and freezes the error strategy. Reactors no
     longer get a default `on_exception`: the router calls a reactor's own, or its

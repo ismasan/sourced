@@ -70,7 +70,8 @@ require 'sequel'
 
 db = Sequel.sqlite('my_app.db')
 store = Sourced::Store.new(db)
-store.install!  # creates tables (idempotent)
+store.install!  # creates the tables (idempotent; apps use a migration instead, see Database setup)
+store.setup!    # configures the connection and compiles the message codec
 ```
 
 ### Appending messages
@@ -1189,6 +1190,7 @@ See `examples/app/` for a complete Sinatra application with:
 | `error_strategy` | `#call` | `Sourced::ErrorStrategy` |
 | `store` | `Sourced::Config::StoreInterface` | `Sourced::Store` over `db`. Sets itself up on start |
 | `store.table_prefix` | `String` (an identifier) | `'sourced'`: tables are named `sourced_messages`, ... |
+| `store.install_tables` | `Boolean` | `false`: whether the store creates its tables on start. Apps use a [migration](#database-setup) |
 | `reactors.*` | `#handled_messages`, `#handle_claim` | one per `Sourced.register` |
 | `router` | `Sourced::Router` | routes to `reactors.*`, using `store` and `error_strategy` |
 | `topology` | `Array` | the message-flow graph of `reactors.*`, built on each read |
@@ -1226,7 +1228,7 @@ Sourced.start!   # build every component, set up the store and consumer groups, 
 Sourced.teardown! # stop workers, then tear down in reverse dependency order
 ```
 
-Values are checked against their types when they're built, so `config!('workers.count') { '4' }` fails the boot naming `workers.count`. Preparing compiles the store's codec, and building only constructs objects: the store creates its tables, and the router registers consumer groups, when Sourced starts.
+Values are checked against their types when they're built, so `config!('workers.count') { '4' }` fails the boot naming `workers.count`. Preparing compiles the store's codec, and building only constructs objects: the store configures its connection (and creates its tables, if `store.install_tables`), and the router registers consumer groups, when Sourced starts.
 
 Re-implementing a component replaces its lifecycle hooks along with how it's built. Overriding `db` (ex. a file-backed SQLite database) or `store.table_prefix` keeps the store's setup, but a re-implemented `store` must bring its own. A component can depend on others, too:
 
@@ -1338,7 +1340,16 @@ Two things the codec does not reach:
 
 ### Database setup
 
-`Store#install!` creates all required tables directly (useful for scripts, tests, and quick prototyping). For production apps using Sequel migrations, the store can export a migration file instead.
+Installing the tables and preparing the store are separate steps:
+
+- `Store#install!` creates all required tables and indexes (idempotent). Apps install them with a Sequel migration instead, exported by the store (below); `install!` is for scripts, tests and quick prototyping.
+- `Store#setup!` prepares a store whose tables are there: it configures the connection (`journal_mode = WAL`, `foreign_keys`, `busy_timeout`), refreshes SQLite's planner statistics and compiles the message codec. It raises `Store::NotInstalledError` if the tables aren't installed. The `store` component runs it when Sourced starts.
+
+By default, booting Sourced doesn't create tables. Set `store.install_tables` for environments without migrations, ex. an in-memory database in tests, and the store installs them on start, before setting up:
+
+```ruby
+Sourced.config.config!('store.install_tables') { true }
+```
 
 #### Quick setup (e.g. scripts, tests)
 
@@ -1346,6 +1357,7 @@ Two things the codec does not reach:
 db = Sequel.sqlite('my_app.db')
 store = Sourced::Store.new(db)
 store.install!
+store.setup!
 ```
 
 #### Exporting a Sequel migration

@@ -35,6 +35,7 @@ RSpec.describe Sourced::Config do
   subject(:config) do
     described_class.build.tap do |c|
       c.config!('logger') { Sourced::NULL_LOGGER }
+      c.config!('store.install_tables') { true } # in-memory databases have no migrations
     end
   end
 
@@ -43,7 +44,8 @@ RSpec.describe Sourced::Config do
   describe '.build' do
     it 'declares every component, without building anything' do
       expect(config.index.keys).to include(
-        'logger', 'db', 'notifier', 'executor', 'error_strategy', 'store', 'store.table_prefix', 'router', 'topology',
+        'logger', 'db', 'notifier', 'executor', 'error_strategy', 'store', 'store.table_prefix', 'store.install_tables',
+        'router', 'topology',
         'workers.count', 'workers.batch_size', 'workers.max_drain_rounds', 'workers.catchup_interval',
         'workers.shutdown_timeout',
         'housekeeping.interval', 'housekeeping.claim_ttl_seconds', 'dispatcher',
@@ -91,7 +93,7 @@ RSpec.describe Sourced::Config do
       described_class.register(config, ConfigTestReactor)
       components = config.graph.components.to_h { |c| [c[:key], c] }
 
-      expect(components['store'][:deps]).to eq(%w[db notifier logger store.table_prefix])
+      expect(components['store'][:deps]).to eq(%w[db notifier logger store.table_prefix store.install_tables])
       expect(components['router'][:deps]).to eq(%w[store reactors.ConfigTestReactor error_strategy])
       expect(components['topology'][:deps]).to eq(%w[reactors.ConfigTestReactor])
       expect(components['dispatcher'][:deps]).to include('router', 'workers.count')
@@ -252,6 +254,25 @@ RSpec.describe Sourced::Config do
       )
 
       expect { config.start! }.to raise_error(Plumb::TypeError, /field `payload\.thing`/)
+    end
+
+    it "doesn't install the tables by default, and fails to boot without them" do
+      config.config!('store.install_tables') { false }
+
+      expect { config.start! }.to raise_error(Sourced::Store::NotInstalledError, /migration/)
+      expect(config.boot_status).to eq(:torn_down)
+    end
+
+    it 'sets up a store whose tables a migration installed' do
+      config.config!('store.install_tables') { false }
+      db = Sequel.sqlite
+      Sourced::Store.new(db).install! # what the migration does
+      config.config!('db') { db }
+
+      config.start!
+
+      expect(config['store'].install_tables?).to be(false)
+      expect(config['store'].message_codec.compiled?).to be(true)
     end
 
     it 'sets up the store over an overriding db' do
@@ -438,6 +459,7 @@ RSpec.describe 'Sourced.config' do
     Sourced.reset!
     Sourced.config.config!('logger') { Sourced::NULL_LOGGER }
     Sourced.config.config!('workers.count') { 0 }
+    Sourced.config.config!('store.install_tables') { true }
   end
 
   after do

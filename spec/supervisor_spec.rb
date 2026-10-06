@@ -10,6 +10,7 @@ RSpec.describe Sourced::Supervisor do
     Sourced::Config.build.tap do |c|
       c.config!('logger') { Sourced::NULL_LOGGER }
       c.config!('workers.count') { 0 }
+      c.config!('store.install_tables') { true }
     end
   end
 

@@ -126,11 +126,6 @@ RSpec.describe Sourced::Store do
     it 'is idempotent' do
       expect { store.install! }.not_to raise_error
     end
-
-    it 'configures the connection' do
-      expect(db.fetch('PRAGMA foreign_keys').first.values.first).to eq(1)
-      expect(db.fetch('PRAGMA busy_timeout').first.values.first).to eq(5000)
-    end
   end
 
   describe '#message_codec' do
@@ -140,20 +135,29 @@ RSpec.describe Sourced::Store do
   end
 
   describe '#setup!' do
-    # Its own store: the outer `before` installs `store`, and installing is
-    # part of what #setup! is being tested for.
-    let(:fresh_store) { Sourced::Store.new(Sequel.sqlite) }
+    # Its own store: whether the tables are installed is part of what #setup! is tested for
+    let(:fresh_db) { Sequel.sqlite }
+    let(:fresh_store) { Sourced::Store.new(fresh_db) }
 
-    it 'installs the tables and compiles the codecs' do
-      expect(fresh_store.installed?).to be false
+    it 'requires the tables to be installed, by a migration or #install!' do
+      expect { fresh_store.setup! }.to raise_error(Sourced::Store::NotInstalledError, /migration.*Store#install!/)
 
+      fresh_store.install!
+      expect { fresh_store.setup! }.not_to raise_error
+    end
+
+    it 'configures the connection, refreshes planner statistics and compiles the codecs' do
+      fresh_store.install!
       fresh_store.setup!
 
-      expect(fresh_store.installed?).to be true
+      expect(fresh_db.fetch('PRAGMA foreign_keys').first.values.first).to eq(1)
+      expect(fresh_db.fetch('PRAGMA busy_timeout').first.values.first).to eq(5000)
+      expect(fresh_db.fetch('PRAGMA journal_mode').first.values.first).to eq('memory').or eq('wal')
       expect(fresh_store.message_codec.registered?('store_test.device.registered')).to be true
     end
 
     it 'is idempotent' do
+      fresh_store.install!
       fresh_store.setup!
       expect { fresh_store.setup! }.not_to raise_error
     end
@@ -165,6 +169,7 @@ RSpec.describe Sourced::Store do
       fresh_store.message_codec = Sourced::Store::MessageCodec.new(
         registry: CodecSpecHelpers::Registry.new([unserializable])
       )
+      fresh_store.install!
 
       expect { fresh_store.setup! }.to raise_error(Plumb::TypeError, /field `payload\.thing`/)
     end

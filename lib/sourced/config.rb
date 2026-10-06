@@ -27,8 +27,10 @@ module Sourced
   #   notifier          InlineNotifier
   #   executor          AsyncExecutor. Runs workers under Sourced::Supervisor
   #   error_strategy    ErrorStrategy
-  #   store             Store over db. Compiles its codec on prepare, and installs its tables on start
+  #   store             Store over db. Compiles its codec on prepare, and sets itself up on start
   #   store.table_prefix  prefix of the store's table names, ex. 'sourced' => sourced_messages
+  #   store.install_tables  whether the store creates its tables on start (default false: apps
+  #                     install them with a migration; the store checks they're there)
   #   reactors.*        one component per registered reactor (see .register)
   #   router            routes to reactors.*. On start, registers consumer groups and
   #                     freezes the error strategy (see Router#setup!)
@@ -111,15 +113,22 @@ module Sourced
         # store replaces it, along with its hooks: the new store brings its own.
         c.declare('store', StoreInterface)
         c.declare('store.table_prefix', Installer::TablePrefix) { 'sourced' }
-        c.component!('store', %w[db notifier logger store.table_prefix]) do
+        c.declare('store.install_tables', T::Boolean) { false }
+        c.component!('store', %w[db notifier logger store.table_prefix store.install_tables]) do
           # Compiles the codec stores are built with, which only needs the message
           # types, so a message type the store can't persist fails the boot before
           # anything connects. A process that prepares before forking shares the
           # compiled codec with its children.
           prepare { Store::MessageCodec.default.compile! }
-          build { |db, notifier, logger, prefix| Store.new(db, notifier:, logger:, prefix:) }
-          # Creates the tables (and compiles the store's codec, if it was given another)
-          start { |store, _| store.setup! }
+          build do |db, notifier, logger, prefix, install_tables|
+            Store.new(db, notifier:, logger:, prefix:, install_tables:)
+          end
+          # Configures the connection and compiles the store's codec (if it was given
+          # another), with the tables there: installed by a migration, or here when asked
+          start do |store, _|
+            store.install! if store.install_tables?
+            store.setup!
+          end
         end
 
         # The router's start freezes the error strategy (see Router#setup!), so an

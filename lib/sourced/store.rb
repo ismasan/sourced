@@ -139,10 +139,13 @@ module Sourced
     #   dispatch signals (default: an in-process {InlineNotifier})
     # @param logger [Logger]
     # @param prefix [String] table name prefix (default 'sourced')
-    def initialize(db, notifier: InlineNotifier.new, logger: NULL_LOGGER, prefix: 'sourced')
+    # @param install_tables [Boolean] whether to create the tables on boot (see
+    #   {#install_tables?}). Off by default: apps install them with a migration
+    def initialize(db, notifier: InlineNotifier.new, logger: NULL_LOGGER, prefix: 'sourced', install_tables: false)
       @db = db
       @notifier = notifier
       @logger = logger
+      @install_tables = install_tables
       @message_codec = MessageCodec.default
       Sequel.extension(:fiber_concurrency)
 
@@ -193,24 +196,40 @@ module Sourced
       installer.installed?
     end
 
-    # Create all required tables and indexes. Idempotent.
+    # Raised by {#setup!} when the tables aren't installed
+    NotInstalledError = Class.new(Sourced::Error)
+
+    # Whether the +store+ component installs the tables before setting up (see {Config}).
+    # Off by default: apps install them with a migration (see {#copy_migration_to}),
+    # and the store expects them there.
+    def install_tables? = @install_tables
+
+    # Create all required tables and indexes. Idempotent. For scripts, specs and
+    # a store with {#install_tables?}: apps install them with a migration (see
+    # {#copy_migration_to}). Doesn't prepare the store for use: see {#setup!}.
     # @return [void]
     def install!
-      configure_connection!
       installer.install
-      optimize!
     end
 
-    # Prepare this store for use: create its tables and compile its serializer.
-    # Called once at boot by the +store+ component's start hook (see {Config}), so no request pays for the
-    # compilation and a message type this store can't persist fails the boot.
-    # Idempotent.
+    # Prepare this store for use, with its tables already installed: configure
+    # the connection, refresh the planner statistics and compile the serializer.
+    # Called once at boot by the +store+ component's start hook (see {Config}),
+    # so no request pays for the compilation and a message type this store
+    # can't persist fails the boot. Idempotent.
     #
     # @return [self]
+    # @raise [NotInstalledError] if the tables aren't installed
     # @raise [Plumb::TypeError] naming a message type and attribute this store
     #   can't serialize
     def setup!
-      install!
+      configure_connection!
+      unless installed?
+        raise NotInstalledError, "Sourced tables (prefix #{@prefix.inspect}) are not installed: apps install " \
+                                 'them with a migration (see Store#copy_migration_to), scripts and specs with Store#install!'
+      end
+
+      optimize!
       message_codec.compile!
       self
     end
@@ -1210,7 +1229,7 @@ module Sourced
     # foreign_keys and busy_timeout are already applied on every connection by
     # Sequel's SQLite adapter defaults; we set them explicitly for clarity.
     # journal_mode = WAL is a persistent, database-level property, so once is enough.
-    # Run on install rather than construction, so building a store doesn't touch the database.
+    # Run on setup rather than construction, so building a store doesn't touch the database.
     def configure_connection!
       db.run('PRAGMA foreign_keys = ON')
       db.run('PRAGMA journal_mode = WAL')
