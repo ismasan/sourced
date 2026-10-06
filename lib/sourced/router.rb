@@ -118,7 +118,7 @@ module Sourced
     # @param reactor_or_id [Class, String] a registered reactor class, or its +group_id+ string
     # @param message [String, nil] optional reason for stopping (persisted in the group's error_context)
     # @return [void]
-    # @raise [UnregisteredReactorError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    # @raise [UnregisteredReactorError] if the reactor class, or the group_id, isn't registered with this router
     #
     # @example Stop with a reactor class
     #   router.stop_consumer_group(CourseDecider, 'maintenance window')
@@ -140,7 +140,7 @@ module Sourced
     #
     # @param reactor_or_id [Class, String] a registered reactor class, or its +group_id+ string
     # @return [void]
-    # @raise [UnregisteredReactorError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    # @raise [UnregisteredReactorError] if the reactor class, or the group_id, isn't registered with this router
     #
     # @example
     #   router.reset_consumer_group(CourseDecider)
@@ -157,7 +157,7 @@ module Sourced
     #
     # @param reactor_or_id [Class, String] a registered reactor class, or its +group_id+ string
     # @return [void]
-    # @raise [UnregisteredReactorError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    # @raise [UnregisteredReactorError] if the reactor class, or the group_id, isn't registered with this router
     #
     # @example
     #   router.start_consumer_group(CourseDecider)
@@ -262,14 +262,16 @@ module Sourced
 
     # Resolve a reactor class or group_id string to a registered reactor class.
     #
-    # @param reactor_or_id [Class, String] a reactor class (returned as-is) or a +group_id+ string
+    # @param reactor_or_id [Class, String] a registered reactor class, or its +group_id+
     # @return [Class] the matching registered reactor class
-    # @raise [UnregisteredReactorError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    # @raise [UnregisteredReactorError] if the class, or the group_id, isn't registered with this router
     def resolve_reactor_class(reactor_or_id)
-      return reactor_or_id if reactor_or_id.is_a?(Module)
-
-      @reactors.find { |r| r.group_id == reactor_or_id } ||
-        raise(UnregisteredReactorError.new(reactor_or_id, @reactors))
+      reactor = if reactor_or_id.is_a?(Module)
+                  @reactors.find { |r| r.equal?(reactor_or_id) }
+                else
+                  @reactors.find { |r| r.group_id == reactor_or_id }
+                end
+      reactor || raise(UnregisteredReactorError.new(reactor_or_id, @reactors))
     end
 
     # Interpret the reactor's returned action signals against the store, then

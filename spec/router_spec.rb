@@ -709,6 +709,14 @@ RSpec.describe Sourced::Router do
           router.stop_consumer_group('unknown-group')
         }.to raise_error(Sourced::Router::UnregisteredReactorError, /group_id "unknown-group" is not registered with this router \(registered: RouterTestDecider \(router-test-decider\)/)
       end
+
+      it 'raises for an unregistered reactor class, even one whose group exists in the store' do
+        store.register_consumer_group(RouterTestQueueWorker.group_id, partition_by: ['queue_id'])
+
+        expect {
+          router.stop_consumer_group(RouterTestQueueWorker)
+        }.to raise_error(Sourced::Router::UnregisteredReactorError, /RouterTestQueueWorker is not registered with this router/)
+      end
     end
 
     describe 'no-op default callbacks' do

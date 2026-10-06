@@ -57,7 +57,8 @@
     the root of the tree, and replaces its old keyword arguments.
   - `Router#stop_consumer_group`, `#start_consumer_group`, `#reset_consumer_group` and
     `#handle_next_for` raise `Router::UnregisteredReactorError`, naming the registered
-    reactors, for a group_id or reactor class the router doesn't know (was `ArgumentError`).
+    reactors, for a group_id or reactor class the router doesn't know (was `ArgumentError`
+    for a group_id; a class was passed through to the store).
   - `Store#stop_consumer_group`, `#start_consumer_group`, `#reset_consumer_group` and
     `#updating_consumer_group` raise `Store::UnknownConsumerGroupError`, naming the
     registered groups, for a group that isn't registered (start and reset were silent
