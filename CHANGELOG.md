@@ -55,6 +55,9 @@
   - Removed `Dispatcher.start(task)`; the `dispatcher` component spawns workers into
     the context Sourced starts with. `Supervisor.new(config: Sourced.config)` boots
     the root of the tree, and replaces its old keyword arguments.
+  - `Router#stop_consumer_group`, `#start_consumer_group`, `#reset_consumer_group` and
+    `#handle_next_for` raise `Router::UnregisteredReactorError`, naming the registered
+    reactors, for a group_id or reactor class the router doesn't know (was `ArgumentError`).
   - `Store#stop_consumer_group`, `#start_consumer_group`, `#reset_consumer_group` and
     `#updating_consumer_group` raise `Store::UnknownConsumerGroupError`, naming the
     registered groups, for a group that isn't registered (start and reset were silent

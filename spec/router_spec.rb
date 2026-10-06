@@ -278,7 +278,7 @@ RSpec.describe Sourced::Router do
 
       expect {
         routed.handle_next_for(RouterTestQueueWorker)
-      }.to raise_error(ArgumentError, /RouterTestQueueWorker is not registered with this router \(its reactors: RouterTestDecider\)/)
+      }.to raise_error(Sourced::Router::UnregisteredReactorError, /RouterTestQueueWorker is not registered with this router \(registered: RouterTestDecider \(router-test-decider\)\)/)
     end
   end
 
@@ -704,10 +704,10 @@ RSpec.describe Sourced::Router do
     end
 
     describe 'resolve_reactor_class' do
-      it 'raises ArgumentError for unregistered group_id' do
+      it 'raises for an unregistered group_id, naming the registered reactors' do
         expect {
           router.stop_consumer_group('unknown-group')
-        }.to raise_error(ArgumentError, /No reactor registered with group_id 'unknown-group'/)
+        }.to raise_error(Sourced::Router::UnregisteredReactorError, /group_id "unknown-group" is not registered with this router \(registered: RouterTestDecider \(router-test-decider\)/)
       end
     end
 

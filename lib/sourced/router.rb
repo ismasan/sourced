@@ -5,6 +5,16 @@ require 'sourced/error_strategy'
 
 module Sourced
   class Router
+    # Raised for a reactor class, or group_id, that isn't registered with this router
+    class UnregisteredReactorError < Sourced::Error
+      def initialize(reactor_or_id, reactors)
+        what = reactor_or_id.is_a?(Module) ? reactor_or_id.to_s : "group_id #{reactor_or_id.inspect}"
+        registered = reactors.empty? ? 'none' : reactors.map { |r| "#{r} (#{r.group_id})" }.join(', ')
+        super("#{what} is not registered with this router (registered: #{registered}). " \
+              'Sourced.register adds reactors to the configured router before it starts')
+      end
+    end
+
     attr_reader :store, :reactors, :error_strategy
 
     # @param store [Config::StoreInterface]
@@ -54,9 +64,7 @@ module Sourced
 
     def handle_next_for(reactor_class, worker_id: 'default', batch_size: nil)
       group_id = reactor_class.group_id
-      group = @groups.fetch(reactor_class) do
-        raise ArgumentError, "#{reactor_class} is not registered with this router (its reactors: #{@reactors.join(', ')})"
-      end
+      group = @groups.fetch(reactor_class) { raise UnregisteredReactorError.new(reactor_class, @reactors) }
 
       claim = store.claim_next(
         group_id,
@@ -110,7 +118,7 @@ module Sourced
     # @param reactor_or_id [Class, String] a registered reactor class, or its +group_id+ string
     # @param message [String, nil] optional reason for stopping (persisted in the group's error_context)
     # @return [void]
-    # @raise [ArgumentError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    # @raise [UnregisteredReactorError] if +reactor_or_id+ is a String that doesn't match any registered reactor
     #
     # @example Stop with a reactor class
     #   router.stop_consumer_group(CourseDecider, 'maintenance window')
@@ -132,7 +140,7 @@ module Sourced
     #
     # @param reactor_or_id [Class, String] a registered reactor class, or its +group_id+ string
     # @return [void]
-    # @raise [ArgumentError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    # @raise [UnregisteredReactorError] if +reactor_or_id+ is a String that doesn't match any registered reactor
     #
     # @example
     #   router.reset_consumer_group(CourseDecider)
@@ -149,7 +157,7 @@ module Sourced
     #
     # @param reactor_or_id [Class, String] a registered reactor class, or its +group_id+ string
     # @return [void]
-    # @raise [ArgumentError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    # @raise [UnregisteredReactorError] if +reactor_or_id+ is a String that doesn't match any registered reactor
     #
     # @example
     #   router.start_consumer_group(CourseDecider)
@@ -256,12 +264,12 @@ module Sourced
     #
     # @param reactor_or_id [Class, String] a reactor class (returned as-is) or a +group_id+ string
     # @return [Class] the matching registered reactor class
-    # @raise [ArgumentError] if +reactor_or_id+ is a String that doesn't match any registered reactor
+    # @raise [UnregisteredReactorError] if +reactor_or_id+ is a String that doesn't match any registered reactor
     def resolve_reactor_class(reactor_or_id)
       return reactor_or_id if reactor_or_id.is_a?(Module)
 
       @reactors.find { |r| r.group_id == reactor_or_id } ||
-        raise(ArgumentError, "No reactor registered with group_id '#{reactor_or_id}'")
+        raise(UnregisteredReactorError.new(reactor_or_id, @reactors))
     end
 
     # Interpret the reactor's returned action signals against the store, then

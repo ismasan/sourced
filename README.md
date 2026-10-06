@@ -850,7 +850,7 @@ Sourced.stop_consumer_group('CourseApp::CourseDecider')
 
 These delegate to `Router#stop_consumer_group`, `Router#reset_consumer_group`, and `Router#start_consumer_group`, which:
 
-1. Resolve the argument to a registered reactor class (raising `ArgumentError` if the string doesn't match any registered reactor)
+1. Resolve the argument to a registered reactor class (raising `Sourced::Router::UnregisteredReactorError`, which names the registered reactors, if the string doesn't match any)
 2. Call the corresponding `Store` method
 3. Invoke the reactor's callback (`on_stop`, `on_reset`, `on_start`)
 
