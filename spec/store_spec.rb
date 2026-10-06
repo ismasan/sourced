@@ -127,6 +127,14 @@ RSpec.describe Sourced::Store do
       expect { store.install! }.not_to raise_error
     end
 
+    it 'is a no-op for a store built with install_tables: false' do
+      fresh_db = Sequel.sqlite
+      fresh_store = Sourced::Store.new(fresh_db, install_tables: false)
+
+      expect(fresh_store.install!).to be(false)
+      expect(fresh_store.installed?).to be(false)
+    end
+
     it 'sets a file database to WAL' do
       path = File.join(Dir.mktmpdir, 'install.db')
       file_db = Sequel.sqlite(path)

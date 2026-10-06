@@ -72,8 +72,9 @@
     runs `ANALYZE` on its first tick, then hourly; and the `store` component's start hook
     checks the tables are installed (`Store::NotInstalledError`, pointing at the
     migration) and compiles the codec. Apps install tables with a migration;
-    `store.install_tables` (default false) makes the `store` component install them on
-    start, ex. for an in-memory database in tests.
+    `store.install_tables` (default false) makes `Store#install!` create them when the
+    `store` component starts, ex. for an in-memory database in tests. A store built
+    directly (`Store.new(db)`) installs on `install!` unless given `install_tables: false`.
   - `Router.new(store:, reactors:, error_strategy:)`; `Router#setup!` registers
     consumer groups and freezes the error strategy. Reactors no
     longer get a default `on_exception`: the router calls a reactor's own, or its

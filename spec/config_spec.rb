@@ -273,6 +273,7 @@ RSpec.describe Sourced::Config do
 
       expect(config['store'].install_tables?).to be(false)
       expect(config['store'].message_codec.compiled?).to be(true)
+      expect(config['store'].installed?).to be(true)
     end
 
     it 'sets up the store over an overriding db' do

@@ -139,9 +139,10 @@ module Sourced
     #   dispatch signals (default: an in-process {InlineNotifier})
     # @param logger [Logger]
     # @param prefix [String] table name prefix (default 'sourced')
-    # @param install_tables [Boolean] whether to create the tables on boot (see
-    #   {#install_tables?}). Off by default: apps install them with a migration
-    def initialize(db, notifier: InlineNotifier.new, logger: NULL_LOGGER, prefix: 'sourced', install_tables: false)
+    # @param install_tables [Boolean] whether {#install!} creates the tables (see
+    #   {#install_tables?}). Sourced's store component passes false by default:
+    #   apps install them with a migration
+    def initialize(db, notifier: InlineNotifier.new, logger: NULL_LOGGER, prefix: 'sourced', install_tables: true)
       @db = db
       @notifier = notifier
       @logger = logger
@@ -199,19 +200,23 @@ module Sourced
     # Raised when Sourced boots on a database without the tables (see Config)
     NotInstalledError = Class.new(Sourced::Error)
 
-    # Whether the +store+ component installs the tables before Sourced starts (see {Config}).
-    # Off by default: apps install them with a migration (see {#copy_migration_to}),
-    # and the store expects them there.
+    # Whether {#install!} creates the tables. True for a store built directly;
+    # Sourced's +store+ component sets it from +store.install_tables+, false by
+    # default, so booting doesn't create tables: apps install them with a
+    # migration (see {#copy_migration_to}), and the store expects them there.
     def install_tables? = @install_tables
 
-    # Create all required tables and indexes, and set the database to WAL.
-    # Idempotent. For scripts, specs and a store with {#install_tables?}: apps
-    # install them with a migration (see {#copy_migration_to}), which does the same.
+    # Create all required tables and indexes, and set the database to WAL, unless
+    # {#install_tables?} is off. Idempotent. For scripts and specs: apps install
+    # them with a migration (see {#copy_migration_to}), which does the same.
     # To use the store afterwards, compile its serializer: +message_codec.compile!+
     # (Sourced does it when it boots).
-    # @return [void]
+    # @return [Boolean] whether it installed
     def install!
+      return false unless install_tables?
+
       installer.install
+      true
     end
 
     # Refresh SQLite planner statistics (sqlite_stat1) with a bounded ANALYZE.

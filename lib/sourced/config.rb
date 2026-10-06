@@ -127,7 +127,7 @@ module Sourced
           # With the tables there (installed by a migration, or here when asked), compile
           # the store's codec: a no-op unless it was given one other than the default
           start do |store, _|
-            store.install! if store.install_tables?
+            store.install! # a no-op unless store.install_tables
             unless store.installed?
               raise Store::NotInstalledError,
                     "Sourced tables are not installed for #{store.inspect}: apps install " \
