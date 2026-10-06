@@ -66,7 +66,7 @@
   - `Config::StoreInterface` no longer requires `setup!`: how a store gets ready is
     the `store` component's lifecycle. The default component calls `Store#setup!` on
     start; a component implementing another store brings its own hooks.
-  - `Store#setup!` no longer creates tables: it configures the connection, refreshes
+  - `Store#setup!` no longer creates tables: it sets WAL mode, refreshes
     planner statistics and compiles the codec, and raises `Store::NotInstalledError`
     if the tables aren't there. Apps install them with a migration; `Store#install!`
     (tables only) is for scripts and specs, and `store.install_tables` (default false)

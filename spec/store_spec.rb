@@ -146,14 +146,19 @@ RSpec.describe Sourced::Store do
       expect { fresh_store.setup! }.not_to raise_error
     end
 
-    it 'configures the connection, refreshes planner statistics and compiles the codecs' do
-      fresh_store.install!
-      fresh_store.setup!
+    it 'sets a file database to WAL, and compiles the codecs' do
+      path = File.join(Dir.mktmpdir, 'setup.db')
+      file_db = Sequel.sqlite(path)
+      file_store = Sourced::Store.new(file_db)
+      file_store.install!
+      expect(file_db.fetch('PRAGMA journal_mode').first.values.first).to eq('delete')
 
-      expect(fresh_db.fetch('PRAGMA foreign_keys').first.values.first).to eq(1)
-      expect(fresh_db.fetch('PRAGMA busy_timeout').first.values.first).to eq(5000)
-      expect(fresh_db.fetch('PRAGMA journal_mode').first.values.first).to eq('memory').or eq('wal')
-      expect(fresh_store.message_codec.registered?('store_test.device.registered')).to be true
+      file_store.setup!
+
+      expect(file_db.fetch('PRAGMA journal_mode').first.values.first).to eq('wal')
+      expect(file_store.message_codec.registered?('store_test.device.registered')).to be true
+    ensure
+      file_db&.disconnect
     end
 
     it 'is idempotent' do

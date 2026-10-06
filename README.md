@@ -71,7 +71,7 @@ require 'sequel'
 db = Sequel.sqlite('my_app.db')
 store = Sourced::Store.new(db)
 store.install!  # creates the tables (idempotent; apps use a migration instead, see Database setup)
-store.setup!    # configures the connection and compiles the message codec
+store.setup!    # sets WAL mode and compiles the message codec
 ```
 
 ### Appending messages
@@ -1228,7 +1228,7 @@ Sourced.start!   # build every component, set up the store and consumer groups, 
 Sourced.teardown! # stop workers, then tear down in reverse dependency order
 ```
 
-Values are checked against their types when they're built, so `config!('workers.count') { '4' }` fails the boot naming `workers.count`. Preparing compiles the store's codec, and building only constructs objects: the store configures its connection (and creates its tables, if `store.install_tables`), and the router registers consumer groups, when Sourced starts.
+Values are checked against their types when they're built, so `config!('workers.count') { '4' }` fails the boot naming `workers.count`. Preparing compiles the store's codec, and building only constructs objects: the store sets WAL mode and compiles its codec (and creates its tables, if `store.install_tables`), and the router registers consumer groups, when Sourced starts.
 
 Re-implementing a component replaces its lifecycle hooks along with how it's built. Overriding `db` (ex. a file-backed SQLite database) or `store.table_prefix` keeps the store's setup, but a re-implemented `store` must bring its own. A component can depend on others, too:
 
@@ -1343,7 +1343,7 @@ Two things the codec does not reach:
 Installing the tables and preparing the store are separate steps:
 
 - `Store#install!` creates all required tables and indexes (idempotent). Apps install them with a Sequel migration instead, exported by the store (below); `install!` is for scripts, tests and quick prototyping.
-- `Store#setup!` prepares a store whose tables are there: it configures the connection (`journal_mode = WAL`, `foreign_keys`, `busy_timeout`), refreshes SQLite's planner statistics and compiles the message codec. It raises `Store::NotInstalledError` if the tables aren't installed. The `store` component runs it when Sourced starts.
+- `Store#setup!` prepares a store whose tables are there: it sets the database to `journal_mode = WAL` (a property of the file, so once is enough), refreshes SQLite's planner statistics and compiles the message codec. Per-connection settings are the connection's: Sequel's SQLite adapter enables foreign keys and a 5s busy timeout on each connection it opens, configurable with `Sequel.sqlite(path, foreign_keys:, timeout:)`. It raises `Store::NotInstalledError` if the tables aren't installed. The `store` component runs it when Sourced starts.
 
 By default, booting Sourced doesn't create tables. Set `store.install_tables` for environments without migrations, ex. an in-memory database in tests, and the store installs them on start, before setting up:
 

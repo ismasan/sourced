@@ -212,8 +212,8 @@ module Sourced
       installer.install
     end
 
-    # Prepare this store for use, with its tables already installed: configure
-    # the connection, refresh the planner statistics and compile the serializer.
+    # Prepare this store for use, with its tables already installed: set the
+    # database to WAL, refresh the planner statistics and compile the serializer.
     # Called once at boot by the +store+ component's start hook (see {Config}),
     # so no request pays for the compilation and a message type this store
     # can't persist fails the boot. Idempotent.
@@ -1226,14 +1226,15 @@ module Sourced
 
     private
 
-    # foreign_keys and busy_timeout are already applied on every connection by
-    # Sequel's SQLite adapter defaults; we set them explicitly for clarity.
-    # journal_mode = WAL is a persistent, database-level property, so once is enough.
+    # journal_mode = WAL is a property of the database file, so setting it once,
+    # from any connection, covers every connection and process. Per-connection
+    # settings (foreign_keys, busy_timeout) belong to the connection: Sequel's
+    # SQLite adapter applies them to each connection it opens (foreign keys on,
+    # 5s timeout, configurable with Sequel.sqlite's :foreign_keys and :timeout),
+    # and a PRAGMA run here would only reach the pooled connection it ran on.
     # Run on setup rather than construction, so building a store doesn't touch the database.
     def configure_connection!
-      db.run('PRAGMA foreign_keys = ON')
       db.run('PRAGMA journal_mode = WAL')
-      db.run('PRAGMA busy_timeout = 5000')
     end
 
     # Resolve a group_id argument that is either a String
