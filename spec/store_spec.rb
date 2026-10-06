@@ -1212,6 +1212,16 @@ RSpec.describe Sourced::Store do
   end
 
   describe '#stop/start_consumer_group' do
+    it 'raises for a group that is not registered, naming the registered ones' do
+      store.register_consumer_group('my-group')
+
+      %i[stop_consumer_group start_consumer_group reset_consumer_group].each do |method|
+        expect { store.public_send(method, 'typo') }
+          .to raise_error(Sourced::Store::UnknownConsumerGroupError, /No consumer group "typo".*registered groups: my-group/)
+      end
+      expect { store.updating_consumer_group('typo') { |_| } }.to raise_error(Sourced::Store::UnknownConsumerGroupError)
+    end
+
     it 'toggles status' do
       store.register_consumer_group('my-group')
       store.stop_consumer_group('my-group')
@@ -1285,10 +1295,10 @@ RSpec.describe Sourced::Store do
       expect(ctx[:retry_count]).to eq(2)
     end
 
-    it 'raises ArgumentError for nonexistent group' do
+    it 'raises for a nonexistent group' do
       expect {
         store.updating_consumer_group('nonexistent') { |_| }
-      }.to raise_error(ArgumentError, /nonexistent/)
+      }.to raise_error(Sourced::Store::UnknownConsumerGroupError, /No consumer group "nonexistent"/)
     end
 
     it 'stop sets status to STOPPED and clears retry_at' do

@@ -55,6 +55,11 @@
   - Removed `Dispatcher.start(task)`; the `dispatcher` component spawns workers into
     the context Sourced starts with. `Supervisor.new(config: Sourced.config)` boots
     the root of the tree, and replaces its old keyword arguments.
+  - `Store#stop_consumer_group`, `#start_consumer_group`, `#reset_consumer_group` and
+    `#updating_consumer_group` raise `Store::UnknownConsumerGroupError`, naming the
+    registered groups, for a group that isn't registered (start and reset were silent
+    no-ops, and start announced a resume for a group that didn't exist; stop raised
+    `ArgumentError`).
   - `Store.new` no longer reads a late-bound `Sourced.config.notifier`: it takes
     `notifier:` (default: its own `InlineNotifier`), and runs no queries until
     `install!`.

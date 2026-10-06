@@ -230,7 +230,7 @@ In reactions: `dispatch(Cmd, ...).at(time)` (the produced message is future-date
 - `claim_next(reactor, worker_id:)` → `ClaimResult` with partition batch + guard. Supports compound partitions and replaying flag.
 - `ack(claim, last_position:)` / `release(claim)` / `advance_offset(group_id, partition:, position:)`.
 - `ack_and_delete(group_id, offset_id:, positions:)` / `delete_messages(positions)` — delete-on-ack helpers.
-- `register_consumer_group(group_id, partition_by:, exclusive:, handled_types:)`, `start_consumer_group`, `stop_consumer_group`, `reset_consumer_group` (no-op for queue groups).
+- `register_consumer_group(group_id, partition_by:, exclusive:, handled_types:)`, `start_consumer_group`, `stop_consumer_group`, `reset_consumer_group` (no-op for queue groups); all raise `Store::UnknownConsumerGroupError` for an unregistered group id.
 - `read_offsets(group_id:, limit:, from_id:)` → `OffsetsResult` (cursor-paginated, `to_enum`).
 - `stats` → `Stats(max_position, groups)` including `error_context`.
 - `worker_heartbeat` / `release_stale_claims` — claim liveness. `release_drained_offsets` / `prune_orphan_key_pairs` — queue cleanup.

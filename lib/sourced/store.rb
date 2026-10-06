@@ -200,6 +200,16 @@ module Sourced
     # Raised when Sourced boots on a database without the tables (see Config)
     NotInstalledError = Class.new(Sourced::Error)
 
+    # Raised by the consumer group lifecycle methods (stop, start, reset,
+    # updating) for a group id that isn't registered with this store
+    class UnknownConsumerGroupError < Sourced::Error
+      def initialize(group_id, known)
+        known_list = known.empty? ? 'none are registered' : "registered groups: #{known.sort.join(', ')}"
+        super("No consumer group #{group_id.inspect} in this store (#{known_list}). " \
+              'Groups are registered with Store#register_consumer_group, which Sourced does for each reactor when it starts')
+      end
+    end
+
     # Whether {#install!} creates the tables. True for a store built directly;
     # Sourced's +store+ component sets it from +store.install_tables+, false by
     # default, so booting doesn't create tables: apps install them with a
@@ -644,6 +654,7 @@ module Sourced
     # @return [void]
     def start_consumer_group(group_id)
       group_id = resolve_group_id(group_id)
+      consumer_group_row!(group_id)
       db[@consumer_groups_table]
         .where(group_id: group_id)
         .update(
@@ -668,8 +679,7 @@ module Sourced
     # @return [void]
     def updating_consumer_group(group_id)
       dataset = db[@consumer_groups_table].where(group_id: group_id)
-      row = dataset.first
-      raise ArgumentError, "Consumer group #{group_id} not found" unless row
+      row = consumer_group_row!(group_id)
 
       ctx = row[:error_context] ? JSON.parse(row[:error_context], symbolize_names: true) : {}
       row[:error_context] = ctx
@@ -688,8 +698,7 @@ module Sourced
     # @return [void]
     def reset_consumer_group(group_id)
       group_id = resolve_group_id(group_id)
-      cg = db[@consumer_groups_table].where(group_id: group_id).first
-      return unless cg
+      cg = consumer_group_row!(group_id)
 
       # Exclusive (delete-on-ack) groups have nothing to replay — processed
       # messages were deleted. Resetting offsets would only orphan the partition
@@ -1210,6 +1219,13 @@ module Sourced
     end
 
     private
+
+    # The consumer group's row, for the lifecycle methods
+    # @raise [UnknownConsumerGroupError]
+    def consumer_group_row!(group_id)
+      db[@consumer_groups_table].where(group_id: group_id).first ||
+        raise(UnknownConsumerGroupError.new(group_id, db[@consumer_groups_table].select_map(:group_id)))
+    end
 
 
     # Resolve a group_id argument that is either a String

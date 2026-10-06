@@ -830,6 +830,8 @@ store.consumer_group_active?(CourseDecider)  # => true/false
 store.stop_consumer_group('CourseApp::CourseDecider')
 ```
 
+All three raise `Sourced::Store::UnknownConsumerGroupError`, naming the registered groups, for a group that isn't registered with the store (a typo, or a reactor that isn't registered): consumer groups are registered when Sourced starts.
+
 When retries are configured via the `error_strategy` component, failed consumer groups remain active but paused until their `retry_at` time. Once that time passes, they become claimable again automatically.
 
 ### Lifecycle hooks via Router
