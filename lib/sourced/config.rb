@@ -32,6 +32,8 @@ module Sourced
   #   store.table_prefix  prefix of the store's table names, ex. 'sourced' => sourced_messages
   #   store.install_tables  whether the store creates its tables on start (default false: apps
   #                     install them with a migration; the store checks they're there)
+  #   store.codec       the store's MessageCodec, compiled from the message registry on
+  #                     prepare and build. Recycle it to pick up reloaded message classes
   #   reactors.*        one component per registered reactor (see .register)
   #   router            routes to reactors.*. On start, registers consumer groups and
   #                     freezes the error strategy (see Router#setup!)
@@ -86,6 +88,9 @@ module Sourced
     # Reactors are duck-typed (see Router#register)
     ReactorInterface = T::Interface[:handled_messages, :handle_claim]
 
+    # What a store serializes messages with (see Store::MessageCodec)
+    MessageCodecInterface = T::Interface[:compile!, :encode, :decode]
+
     LoggerInterface = T::Interface[:debug, :info, :warn, :error]
     ExecutorInterface = T::Interface[:start]
     ErrorStrategyInterface = T::Interface[:call]
@@ -115,17 +120,28 @@ module Sourced
         c.declare('store', StoreInterface)
         c.declare('store.table_prefix', Installer::TablePrefix) { 'sourced' }
         c.declare('store.install_tables', T::Boolean) { false }
-        c.component!('store', %w[db notifier logger store.table_prefix store.install_tables]) do
-          # Compiles the codec stores are built with, which only needs the message
-          # types, so a message type the store can't persist fails the boot before
-          # anything connects. A process that prepares before forking shares the
-          # compiled codec with its children.
-          prepare { Store::MessageCodec.default.compile! }
-          build do |db, notifier, logger, prefix, install_tables|
-            Store.new(db, notifier:, logger:, prefix:, install_tables:)
+
+        # A codec of its own, compiled from the message registry when it's built, rather
+        # than the process-wide MessageCodec.default: recycling it (ex. after a class
+        # reloader replaced message classes) compiles a fresh one from the current
+        # registry, and recycles the store and everything built on it.
+        c.declare('store.codec', MessageCodecInterface)
+        c.component!('store.codec') do
+          # Compiles on prepare too, which only needs the message types, so a message
+          # type the store can't persist fails the boot before anything connects. The
+          # compiled pairs are cached by message class (see MessageCodec.pairs), so the
+          # build only collects them, and a process that prepares before forking shares
+          # them with its children.
+          prepare { Store::MessageCodec.new.compile! }
+          build { Store::MessageCodec.new.compile! }
+        end
+
+        c.component!('store', %w[db notifier logger store.table_prefix store.install_tables store.codec]) do
+          build do |db, notifier, logger, prefix, install_tables, message_codec|
+            Store.new(db, notifier:, logger:, prefix:, install_tables:, message_codec:)
           end
           # With the tables there (installed by a migration, or here when asked), compile
-          # the store's codec: a no-op unless it was given one other than the default
+          # the store's codec: a no-op unless it was given an uncompiled one
           start do |store, _|
             store.install! # a no-op unless store.install_tables
             unless store.installed?

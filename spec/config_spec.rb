@@ -45,7 +45,7 @@ RSpec.describe Sourced::Config do
     it 'declares every component, without building anything' do
       expect(config.index.keys).to include(
         'logger', 'db', 'notifier', 'executor', 'error_strategy', 'store', 'store.table_prefix', 'store.install_tables',
-        'router', 'topology',
+        'store.codec', 'router', 'topology',
         'workers.count', 'workers.batch_size', 'workers.max_drain_rounds', 'workers.catchup_interval',
         'workers.shutdown_timeout',
         'housekeeping.interval', 'housekeeping.claim_ttl_seconds', 'dispatcher',
@@ -93,7 +93,8 @@ RSpec.describe Sourced::Config do
       described_class.register(config, ConfigTestReactor)
       components = config.graph.components.to_h { |c| [c[:key], c] }
 
-      expect(components['store'][:deps]).to eq(%w[db notifier logger store.table_prefix store.install_tables])
+      expect(components['store'][:deps])
+        .to eq(%w[db notifier logger store.table_prefix store.install_tables store.codec])
       expect(components['router'][:deps]).to eq(%w[store reactors.ConfigTestReactor error_strategy])
       expect(components['topology'][:deps]).to eq(%w[reactors.ConfigTestReactor])
       expect(components['dispatcher'][:deps]).to include('router', 'workers.count')
@@ -215,19 +216,57 @@ RSpec.describe Sourced::Config do
       expect(task.spawned.size).to eq(3)
     end
 
-    it 'compiles the default store codec on prepare, before anything is built' do
-      Sourced::Store::MessageCodec.reset!
+    it 'compiles the store codec on prepare, before anything is built' do
       klass = Sourced::Event.define("config_test.prepared_#{SecureRandom.hex(4)}") do
         attribute :name, String
       end
 
       config.prepare!
 
-      expect(Sourced::Store::MessageCodec.default.registered?(klass.type)).to be(true)
-      expect(config.node('store').status).to eq(:prepared)
-    ensure
-      # The rest of the suite builds stores on the shared, compiled default codec
-      Sourced::Store::MessageCodec.default.compile!
+      # Compiled pairs are cached by message class, for the build to collect
+      expect(Sourced::Store::MessageCodec.pairs).to have_key(klass)
+      expect(config.node('store.codec').status).to eq(:prepared)
+    end
+
+    it 'builds the store with its own codec, compiled from the message registry' do
+      config.build!
+
+      expect(config['store'].message_codec).to be(config['store.codec'])
+      expect(config['store.codec']).not_to be(Sourced::Store::MessageCodec.default)
+      expect(config['store.codec'].registered?(ConfigTestMessages::ThingAdded.type)).to be(true)
+    end
+
+    it 'builds the store with an overriding store.codec' do
+      klass = CodecSpecHelpers.unregistered_message('config_test.scoped') do
+        attribute :name, String
+      end
+      codec = Sourced::Store::MessageCodec.new(registry: CodecSpecHelpers::Registry.new([klass]))
+      config.config!('store.codec') { codec }
+
+      config.start!
+
+      expect(config['store'].message_codec).to be(codec)
+      expect(codec.registered?('config_test.scoped')).to be(true) # the store's start compiles it
+    end
+
+    it 'picks up message types defined since boot when store.codec is recycled, along with the store' do
+      described_class.register(config, ConfigTestReactor)
+      config.start!(task)
+      store = config['store']
+      router = config['router']
+      klass = Sourced::Event.define("config_test.reloaded_#{SecureRandom.hex(4)}") do
+        attribute :name, String
+      end
+      expect(config['store.codec'].registered?(klass.type)).to be(false)
+
+      config.recycle_component!('store.codec', task)
+
+      expect(config['store.codec'].registered?(klass.type)).to be(true)
+      expect(config['store'].message_codec).to be(config['store.codec'])
+      expect(config['store']).not_to be(store)
+      expect(config['router']).not_to be(router)
+      expect(config['router'].store).to be(config['store'])
+      expect(config.node('dispatcher').status).to eq(:started)
     end
 
     it 'compiles the codec of the store' do

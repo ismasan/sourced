@@ -26,9 +26,13 @@
   - `Sourced.register` declares the reactor as `reactors.<group_id>`: registering two
     reactors with the same group_id raises, and so does registering after boot.
     Removed `Sourced.reset_topology`.
-  - The `store` component compiles the default codec on `prepare!`, which touches no
-    database, so a forking server prepares once in the parent and its children share
-    the compiled codec. Register encoders and define message types before that.
+  - The store's codec is its own component, `store.codec`: a `Store::MessageCodec`
+    compiled from the message registry on `prepare!` and `build!`, and passed to the
+    store (`Store.new(db, message_codec:)`). Preparing touches no database, so a
+    forking server prepares once in the parent and its children share the compiled
+    pairs. Register encoders and define message types before that, or recycle
+    `store.codec` to pick up message types defined since (ex. by a class reloader),
+    which rebuilds the store and everything built on it.
   - `Dispatcher` is restartable: `#stop` waits for the run's workers, and `#start`
     runs fresh workers, pollers and work queue; notifications are dropped while
     stopped and the catch-up poll covers them. The `dispatcher` component uses a

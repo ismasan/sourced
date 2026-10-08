@@ -129,8 +129,8 @@ module Sourced
     # @return [#notify_new_messages, #notify_reactor_resumed, #subscribe, #start, #stop]
     attr_reader :notifier
 
-    # This store's serializer, shared with every other store in the process.
-    # Assignable, so a store can be given one scoped to its own message registry.
+    # This store's serializer: by default the one shared with every other store in
+    # the process. Assignable, so a store can be given one scoped to its own message registry.
     # @return [MessageCodec]
     attr_accessor :message_codec
 
@@ -142,12 +142,16 @@ module Sourced
     # @param install_tables [Boolean] whether {#install!} creates the tables (see
     #   {#install_tables?}). Sourced's store component passes false by default:
     #   apps install them with a migration
-    def initialize(db, notifier: InlineNotifier.new, logger: NULL_LOGGER, prefix: 'sourced', install_tables: true)
+    # @param message_codec [MessageCodec] serializer for messages (default: the
+    #   process-wide {MessageCodec.default}). Sourced's store component passes
+    #   +store.codec+'s value
+    def initialize(db, notifier: InlineNotifier.new, logger: NULL_LOGGER, prefix: 'sourced', install_tables: true,
+                   message_codec: MessageCodec.default)
       @db = db
       @notifier = notifier
       @logger = logger
       @install_tables = install_tables
-      @message_codec = MessageCodec.default
+      @message_codec = message_codec
       Sequel.extension(:fiber_concurrency)
 
       @prefix = prefix
