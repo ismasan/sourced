@@ -69,7 +69,6 @@ end
 
 # Refuses ActivateDevice until the device exists, instead of raising.
 class HandleTestGatedDecider < HandleTestDecider
-  partition_by :device_id # not inherited
   consumer_group 'handle-test-gated-decider'
 
   def handles_command?(command)
