@@ -22,6 +22,10 @@ module HandleTestMessages
   DeviceActivated = Sourced::Event.define('handle_test.device_activated') do
     attribute :device_id, String
   end
+
+  NotifyCreated = Sourced::Command.define('handle_test.notify_created') do
+    attribute :device_id, String
+  end
 end
 
 class HandleTestDecider < Sourced::Decider
@@ -47,6 +51,19 @@ class HandleTestDecider < Sourced::Decider
     raise 'Not found' unless context[:exists]
     raise 'Already active' if context[:active]
     event HandleTestMessages::DeviceActivated, device_id: cmd.payload.device_id
+  end
+end
+
+class HandleTestReactingDecider < Sourced::Decider
+  partition_by :device_id
+  consumer_group 'handle-test-reacting-decider'
+
+  command HandleTestMessages::CreateDevice do |_context, cmd|
+    event HandleTestMessages::DeviceCreated, device_id: cmd.payload.device_id, name: cmd.payload.name
+  end
+
+  reaction HandleTestMessages::DeviceCreated do |_context, evt|
+    dispatch HandleTestMessages::NotifyCreated, device_id: evt.payload.device_id
   end
 end
 
@@ -252,6 +269,24 @@ RSpec.describe 'Sourced.handle!' do
       # Background worker should still find no work
       handled = router.handle_next_for(HandleTestDecider, worker_id: 'test-worker')
       expect(handled).to be false
+    end
+
+    it "lets background workers run the reactor's reactions to the events it produced" do
+      router.register(HandleTestReactingDecider)
+      Sourced.register(HandleTestReactingDecider)
+
+      cmd = HandleTestMessages::CreateDevice.new(payload: { device_id: 'd1', name: 'Sensor' })
+      Sourced.handle!(HandleTestReactingDecider, cmd, store: store)
+
+      expect(router.handle_next_for(HandleTestReactingDecider, worker_id: 'test-worker')).to be true
+      expect(router.handle_next_for(HandleTestReactingDecider, worker_id: 'test-worker')).to be false
+
+      types = store.read_all(limit: 10).messages.map(&:type)
+      expect(types).to eq(%w[
+        handle_test.create_device
+        handle_test.device_created
+        handle_test.notify_created
+      ])
     end
 
     it "raises when the reactor is registered but Sourced hasn't started, without appending the command" do
