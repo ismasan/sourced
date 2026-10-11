@@ -172,7 +172,10 @@
   *checkpoint* event. Checkpoints (`checkpoint`, `final`, and the `initial` position) list
   the commands they accept and the checkpoints each may decide into
   (`command PlaceOrder => OrderPlaced`, `=> A | B`, `=> A | nil`, or data-only without an
-  arrow); other events are data, evolved into the machine's domain `context`. Entry and exit
+  arrow); other events are data, evolved into the machine's domain `context`. Checkpoints
+  can have `region`s, all active while the checkpoint is: commands go to the deepest
+  active checkpoints that accept them, can move the machine to an ancestor region's
+  checkpoint, and `done Evt` appends a join once every region is final. Entry and exit
   actions run as reactions; `after(seconds) { dispatch Cmd }` blocks dispatch commands
   delivered that long after the checkpoint was entered, refused once the machine has
   moved to a newer checkpoint. Commands the current checkpoint doesn't accept raise
