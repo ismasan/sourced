@@ -16,7 +16,7 @@ class OrderState
   def all_packed?(count) = @packed.size == count
 end
 
-# Compiles to ONE Decider partitioned by :order_id. Regions are orthogonal (active together),
+# ONE reactor (one consumer group) partitioned by :order_id. Regions are orthogonal (active together),
 # but every message for an order is decided one at a time, run-to-completion, under one guard.
 class OrderMachine < Sourced::Machine
   partition_by :order_id
@@ -117,7 +117,7 @@ snapshot.context     # => #<OrderState total=100 card="tok_…" packed=[]>
 - **Write `A | nil`, never `nil | A`.** `NilClass#|` is boolean or, so `nil | A` is `true`.
 - **Auto-appended checkpoints take what they can from the command.** A checkpoint's job is to advance the state, so it needn't mirror the command: it's built with `Evt.new(payload: cmd.payload.to_h)`, which keeps the attributes `Evt` declares and drops the rest. Beyond the partition keys it may carry any of the command's attributes, for data collection. The same applies after a block runs, when the block didn't emit the checkpoint itself.
 - **Checkpoints must declare the partition keys**, checked at definition time (as for every event the machine evolves, or it wouldn't be in the partition read).
-- **Blockless checkpoints must be buildable from the command, checked at definition time.** Every checkpoint attribute that isn't a partition key and that the command doesn't declare must be allowed to be missing: `key.optional? || type.resolve(Plumb::Undefined).valid?` over `Evt::Payload._schema._schema` (so declared with `attribute?`, or with a default; `nullable` alone isn't enough). Checkpoints auto-appended after a block are checked the same way.
+- **Blockless checkpoints must be buildable from the command, checked at definition time.** Every checkpoint attribute that isn't a partition key and that the command doesn't declare must be allowed to be missing: `key.optional? || type.resolve(Plumb::Undefined).valid?` over `Evt::Payload._schema._schema` (so declared with `attribute?`, or with a default; `nullable` alone isn't enough). A checkpoint auto-appended after a block isn't checked at definition time, since the block may emit it itself with attributes the command lacks; the runtime check below covers it.
 - **What stays a runtime check:** values that don't fit (the command's `Integer` into the checkpoint's `String`), and attributes the command declares with `attribute?` but leaves out of a particular instance. The runtime validates the checkpoint before appending it.
 - **Targets are checkpoints of the command's own region or an ancestor region**, never a sibling region. An ancestor target exits every region below it, as `ExpirePayment => OrderCancelled` does. Checked at definition time.
 - **A command accepted by several active regions** runs each region's handler in definition order, and each sees the events of the ones before it. The one-checkpoint rule applies per handler. A handler whose region has already been exited by an earlier one in the same decision doesn't run.
