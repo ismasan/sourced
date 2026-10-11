@@ -27,7 +27,7 @@ It keeps the signatures that `Sourced.handle!`, `Sourced.load`, the Router and t
 
 Split by source, through one protocol method:
 
-- **`#handles_command?(command)`**, an instance method, because the answer depends on loaded state. `Decider`'s default is `self.class.handled_commands.include?(command.class)`. `ReactorDefaults` fills it in as `true` where a reactor doesn't define it. `Machine` scopes it to the active checkpoints, and answers `false` for a stale timer command. The class-level `handled_commands` stays for routing.
+- **`#handles_command?(command)`**, an instance method, because the answer depends on loaded state. `Decider`'s default is `self.class.handled_commands.include?(command.class)`. `handle!` only asks reactors that define it (`ReactorDefaults` fills in class methods at Router registration, and `handle!` doesn't need a registered reactor). `Machine` scopes it to the active checkpoints, and answers `false` for a stale timer command. The class-level `handled_commands` stays for routing.
 - **`Sourced.handle!`** asks it before deciding. On `false` it raises `Sourced::CommandNotHandledError` and appends nothing.
 - **Workers:** the reactor's `handle_batch` asks it per claimed command, and on `false` acks with no events.
 
@@ -38,7 +38,7 @@ It's the command-side counterpart of `reacts_to?` / `should_react?`: a Decider c
 | # | Commit | Contents |
 |---|---|---|
 | 0a | `handle!` runs the decider's own reactions | Advance registered offsets to the command's position only, so workers claim the decider's own events. |
-| 0b | `handles_command?` | Protocol method with the Decider default and `ReactorDefaults` entry; `handle!` raises `CommandNotHandledError`; `Decider#handle_batch` acks commands it doesn't handle. |
+| 0b | `handles_command?` | Protocol method with the Decider default; `handle!` raises `CommandNotHandledError` for reactors that define it; `Decider#handle_batch` acks commands it doesn't handle. |
 | 1 | Flat machines | `Sourced::Machine`; `state` / `evolve`; `initial` / `checkpoint` / `final`; the five command forms and the one-checkpoint check; auto-appended checkpoints; partition keys filled in on emitted and dispatched messages; read-only `machine` view; `load` snapshot (`value`, `state`); `entry` / `exit`; `handles_command?`; definition-time checks; GWT specs. |
 | 2 | `after` timers | `entered_by` metadata, stale check, scheduled-message specs with Timecop. |
 | 3 | Regions | `region`, configuration across regions, history scoping by entering checkpoint, ancestor targets, multi-region commands in definition order, `done` joins: in the deciding command, or in `handle_batch` for external facts (gated by `replaying`). |

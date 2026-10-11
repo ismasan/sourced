@@ -168,6 +168,12 @@
 
 ### Added
 
+- `Decider#handles_command?(command)`: whether the decider handles a command in its
+  current state. Defaults to whether a handler is registered for the command's class;
+  override it to refuse commands based on state without raising, the command-side
+  counterpart of `should_react?`. `Sourced.handle!` raises
+  `Sourced::CommandNotHandledError` when it's false, appending nothing, and background
+  workers ack the command with no events.
 - **Message codecs.** Messages are declared with native Ruby types (`Date`, `Time`,
   `Symbol`, `BigDecimal`, `URI`, `Range`, …) and `Plumb::Codec::JSON` translates them to
   and from the store's JSON columns. Apps register encoders for their own value types

@@ -67,6 +67,18 @@ class HandleTestReactingDecider < Sourced::Decider
   end
 end
 
+# Refuses ActivateDevice until the device exists, instead of raising.
+class HandleTestGatedDecider < HandleTestDecider
+  partition_by :device_id # not inherited
+  consumer_group 'handle-test-gated-decider'
+
+  def handles_command?(command)
+    return super unless command.is_a?(HandleTestMessages::ActivateDevice)
+
+    super && state[:exists]
+  end
+end
+
 RSpec.describe 'Sourced.handle!' do
   let(:db) { Sequel.sqlite }
   let(:store) { Sourced::Store.new(db) }
@@ -186,6 +198,35 @@ RSpec.describe 'Sourced.handle!' do
       expect {
         Sourced.handle!(HandleTestDecider, cmd, store: store)
       }.to raise_error(RuntimeError, 'Not found')
+    end
+  end
+
+  describe 'commands the reactor does not handle' do
+    it 'raises CommandNotHandledError for a command class without a handler, appending nothing' do
+      cmd = HandleTestMessages::NotifyCreated.new(payload: { device_id: 'd1' })
+
+      expect {
+        Sourced.handle!(HandleTestDecider, cmd, store: store)
+      }.to raise_error(Sourced::CommandNotHandledError, /HandleTestDecider doesn't handle/)
+      expect(store.read_all(limit: 10).messages).to be_empty
+    end
+
+    it "raises CommandNotHandledError when the reactor's state refuses the command" do
+      cmd = HandleTestMessages::ActivateDevice.new(payload: { device_id: 'd1' })
+
+      expect {
+        Sourced.handle!(HandleTestGatedDecider, cmd, store: store)
+      }.to raise_error(Sourced::CommandNotHandledError)
+      expect(store.read_all(limit: 10).messages).to be_empty
+    end
+
+    it 'handles the command once the state allows it' do
+      Sourced.handle!(HandleTestGatedDecider, HandleTestMessages::CreateDevice.new(payload: { device_id: 'd1', name: 'Sensor' }), store: store)
+      _cmd, _reactor, events = Sourced.handle!(
+        HandleTestGatedDecider, HandleTestMessages::ActivateDevice.new(payload: { device_id: 'd1' }), store: store
+      )
+
+      expect(events.map(&:class)).to eq([HandleTestMessages::DeviceActivated])
     end
   end
 

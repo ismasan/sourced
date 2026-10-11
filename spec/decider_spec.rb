@@ -123,6 +123,16 @@ class TestCountingDecider < Sourced::Decider
   end
 end
 
+# Refuses BindDevice until the device is registered, instead of raising.
+class TestGatedDeviceDecider < TestDeviceDecider
+  partition_by :device_id # not inherited
+  consumer_group 'device-gated-decider-test'
+
+  def handles_command?(command)
+    super && state[:exists]
+  end
+end
+
 RSpec.describe Sourced::Decider do
   describe '.command' do
     it 'registers handler and #decide runs it' do
@@ -433,6 +443,35 @@ RSpec.describe Sourced::Decider do
       actions, _source_msg = pairs.first
       append = Array(actions).find { |a| a.is_a?(Sourced::Actions::Append) }
       expect(append.messages.first.payload.device_id).to eq('d1')
+    end
+  end
+
+  describe '#handles_command?' do
+    include Sourced::Testing::RSpec
+
+    it 'defaults to whether a handler is registered for the command class' do
+      instance = TestDeviceDecider.new(device_id: 'd1')
+
+      expect(instance.handles_command?(DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' }))).to be(true)
+      expect(instance.handles_command?(DeciderTestMessages::NotifyBound.new(payload: { device_id: 'd1' }))).to be(false)
+    end
+
+    it 'acks a command it does not handle in its current state, with no events' do
+      cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+
+      with_reactor(TestGatedDeviceDecider, device_id: 'd1')
+        .when(cmd)
+        .then do |result|
+          expect(result.pairs).to eq([[Sourced::Actions::OK, cmd]])
+          expect(result.messages).to be_empty
+        end
+    end
+
+    it 'decides the command once its state allows it' do
+      with_reactor(TestGatedDeviceDecider, device_id: 'd1')
+        .given(DeciderTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+        .when(DeciderTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
+        .then(DeciderTestMessages::DeviceBound, device_id: 'd1', asset_id: 'a1')
     end
   end
 
