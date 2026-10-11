@@ -95,6 +95,24 @@ module Sourced
     # what it dispatches by +delay+ seconds from the entering event.
     After = Data.define(:delay, :block)
 
+    # A child machine the parent tracks, declared with {.spawns} or {NodeBuilder#invoke}.
+    # +node+, +keys+ and +on_done+ are for invoked children; +stop_on+ for spawned ones.
+    ChildSpec = Data.define(:as, :machine, :kind, :stop_on, :node, :keys, :on_done) do
+      def invoke? = kind == :invoke
+    end
+
+    # A child as its parent knows it: its own keys (beyond the parent's), its latest
+    # start or final checkpoint, and for an invoked child, the parent checkpoint
+    # entry it was invoked for.
+    ChildRef = Data.define(:keys, :state, :final, :entry_id) do
+      def final? = final
+    end
+
+    # A join over children: once every child spawned as +as+ is final.
+    ChildrenJoin = Data.define(:as, :definition)
+
+    NONE = [].freeze
+
     # A set of checkpoints, one of them current while the region is active.
     # The root region is always active; any other belongs to a checkpoint, and
     # is active while that checkpoint is.
@@ -122,7 +140,7 @@ module Sourced
 
     # A checkpoint (or a region's initial position) and what it accepts.
     class Node
-      attr_reader :key, :region, :commands, :entries, :exits, :afters, :regions
+      attr_reader :key, :region, :commands, :entries, :exits, :afters, :regions, :invokes, :children_joins
       attr_accessor :done
 
       # @param key [Class, Symbol] the checkpoint event class, or {INITIAL}
@@ -137,6 +155,8 @@ module Sourced
         @exits = []
         @afters = []
         @regions = []
+        @invokes = []
+        @children_joins = []
         @done = nil
       end
 
@@ -236,6 +256,49 @@ module Sourced
 
         @node.done = event_class
       end
+
+      # Run a child machine while this checkpoint is active: spawned in the
+      # decision that enters the checkpoint, sent its +Stop+ when the checkpoint
+      # is left, and its final checkpoint mapped onto one of ours.
+      #
+      #   checkpoint AwaitingPayment do
+      #     invoke PaymentMachine, as: :payment,
+      #            keys: ->(_order) { { payment_id: SecureRandom.uuid } },
+      #            on_done: { PaymentCaptured => OrderPaid, PaymentDeclined => PaymentFailed }
+      #   end
+      #
+      # @param child [Class<Machine>] a machine with +start+ and +on_stop+
+      # @param as [Symbol] name for {View#children}
+      # @param keys [#call(context)] the child's start payload: its own keys, and anything else it needs
+      # @param on_done [Hash{Class => Class}] child final checkpoint => our checkpoint
+      def invoke(child, as:, keys:, on_done: {})
+        raise DefinitionError, "#{@machine}: #{@node.label} can't invoke" if @node.initial? || @node.final?
+
+        @machine.send(:__define_child, child, as:, kind: :invoke, node: @node, keys:, on_done:)
+      end
+
+      # Join over spawned children: once every child spawned as +as+ is at a
+      # final checkpoint (and at least one was spawned), the machine decides
+      # into the declared checkpoint, as a command handler would.
+      #
+      #   children_done :lines => LinesDone | LinesPartiallyFailed do |order|
+      #     machine.children(:lines).all? { |line| line.state == LinePicked } ? event(LinesDone) : event(LinesPartiallyFailed)
+      #   end
+      def children_done(declaration, &block)
+        unless declaration.is_a?(Hash) && declaration.size == 1
+          raise DefinitionError, "#{@machine}: children_done takes { as => checkpoint }, got #{declaration.inspect}"
+        end
+
+        as, target = declaration.first
+        targets = @machine.send(:__flatten_targets, target)
+        raise DefinitionError, "#{@machine}: children_done #{as.inspect} must decide into a checkpoint, not nil" if targets.include?(nil)
+        if block.nil? && targets.size > 1
+          raise DefinitionError, "#{@machine}: children_done #{as.inspect} with several checkpoints needs a block"
+        end
+
+        definition = CommandDef.new(command_class: "children_done #{as.inspect}", targets: targets.uniq, block:)
+        @node.children_joins << ChildrenJoin.new(as:, definition:)
+      end
     end
 
     # Read-only view of a machine's runtime state, available as {#machine}.
@@ -263,6 +326,12 @@ module Sourced
       # Whether the root region is at a final checkpoint.
       def final? = @runtime.current_node(@runtime.root).final?
 
+      # @overload children(as)
+      #   @return [Array<ChildRef>] the children spawned or invoked as +as+
+      # @overload children
+      #   @return [Hash{Symbol => Array<ChildRef>}] every child, by +as+
+      def children(as = nil) = as ? @runtime.children(as) : @runtime.all_children
+
       # The event that entered the current checkpoint of the root region, or of
       # +region_name+ (nil while it's at its initial position or inactive).
       def entered_by(region_name = nil)
@@ -271,9 +340,10 @@ module Sourced
       end
     end
 
-    # A loaded machine, as returned by {.load}.
-    # +value+ is the current configuration (see {View#value}); +context+ is the domain context.
-    Snapshot = Data.define(:value, :context)
+    # A loaded machine, as returned by {.load}. +value+ is the current
+    # configuration (see {View#value}), +children+ its children by name, and
+    # +context+ the domain context.
+    Snapshot = Data.define(:value, :context, :children)
 
     # The machine's own bookkeeping, separate from the domain context: the
     # current checkpoint and its entering event, per region.
@@ -287,7 +357,19 @@ module Sourced
         @positions = {}
         @exited = {}
         @ignored = {}
+        @children = {}
       end
+
+      # Record a child's start or final checkpoint. An invoked child keeps the
+      # entry it was first invoked for.
+      def track_child(spec, keys, state:, final:, entry_id:)
+        refs = (@children[spec.as] ||= {})
+        known = refs[keys]
+        refs[keys] = ChildRef.new(keys:, state:, final:, entry_id: known ? known.entry_id : entry_id)
+      end
+
+      def children(as) = (@children[as] || {}).values
+      def all_children = @children.transform_values(&:values)
 
       def current_node(region)
         key = position(region).current
@@ -379,6 +461,70 @@ module Sourced
       # @return [Hash{Symbol => Region}] every region but the root
       def regions = @regions ||= {}
 
+      # @return [Hash{Symbol => ChildSpec}] child machines, by +as+
+      def children_specs = @children_specs ||= {}
+
+      # @return [Hash{Class => Array<Array(ChildSpec, Symbol)>}] the children's start
+      #   (+:start+) and root final (+:final+) checkpoint classes this machine tracks
+      def child_events = @child_events ||= {}
+
+      # @param klass [Class]
+      def child_event?(klass) = child_events.key?(klass)
+
+      # The checkpoint a parent appends to spawn or invoke this machine.
+      # @return [Class, nil]
+      attr_reader :start_event
+
+      # The final checkpoint this machine's +Stop+ decides into.
+      # @return [Class, nil]
+      attr_reader :stop_event
+
+      # Declare the checkpoint a parent appends to spawn or invoke this machine:
+      # its first checkpoint, entered without a command.
+      # @param event_class [Class]
+      def start(event_class, &block)
+        raise DefinitionError, "#{self}: start is declared twice" if @start_event
+
+        @start_event = event_class
+        checkpoint(event_class, &block)
+      end
+
+      # Declare what this machine becomes when its parent stops it. Generates a
+      # +Stop+ command (+self::Stop+, keyed by this machine's partition keys),
+      # accepted from any started, non-final position, that decides into
+      # +event_class+, a final checkpoint of the root region (declared here when
+      # it isn't already). Leaving that way runs exit actions as usual.
+      # @param event_class [Class]
+      def on_stop(event_class)
+        raise DefinitionError, "#{self}: on_stop is declared twice" if @stop_event
+        raise DefinitionError, 'a machine with on_stop needs a name' unless name
+        raise DefinitionError, "#{self}: declare partition_by before on_stop" if partition_keys.empty?
+
+        @stop_event = event_class
+        node = checkpoints[event_class] || final(event_class)
+        unless node.final? && node.region.root?
+          raise DefinitionError, "#{self}: on_stop #{event_class} must be a final checkpoint of the root region"
+        end
+
+        keys = partition_keys
+        const_set(:Stop, Sourced::Command.define("#{type_prefix}.stop") { keys.each { |k| attribute k, String } })
+      end
+
+      # Track a child machine: its start checkpoint (appended by {Machine#spawn})
+      # and its root final checkpoints are evolved, for {View#children} and
+      # +children_done+. Children are stopped, through their +Stop+, when this
+      # machine reaches one of the +stop_on+ checkpoints.
+      #
+      # @param child [Class<Machine>] a machine with +start+ and +on_stop+
+      # @param as [Symbol]
+      # @param stop_on [Class, Array<Class>] checkpoints of this machine
+      def spawns(child, as:, stop_on: [])
+        __define_child(child, as:, kind: :spawn, stop_on: Array(stop_on))
+      end
+
+      # Message type prefix derived from the class name: +Shop::OrderMachine+ => +shop.order_machine+.
+      def type_prefix = Types::Underscore.parse(name.gsub('::', '.'))
+
       # The machine's position before its first checkpoint.
       def initial(&block) = __define_node(root, INITIAL, final: false, &block)
 
@@ -399,14 +545,19 @@ module Sourced
       # @return [Array<Node>] every node, initial positions included
       def all_nodes = [root, *regions.values].flat_map { |region| region.nodes.values }
 
-      # @return [Array<Class>] every command any checkpoint accepts
-      def handled_commands = all_nodes.flat_map { |node| node.commands.keys }.uniq
+      # @return [Array<Class>] every command any checkpoint accepts, and +Stop+
+      def handled_commands
+        commands = all_nodes.flat_map { |node| node.commands.keys }
+        commands << self::Stop if stop_event
+        commands.uniq
+      end
 
       # Claimed: commands to decide, checkpoints to run entry and exit actions
-      # for, and any events with a +reaction+. Every checkpoint is claimed, with
-      # or without actions: claiming them is also how a machine notices
-      # checkpoints appended by other reactors, which joins decide on.
-      def handled_messages = (handled_commands + checkpoint_classes + handled_messages_for_react).uniq
+      # for, children's start and final checkpoints, and any events with a
+      # +reaction+. Every checkpoint is claimed, with or without actions:
+      # claiming them is also how a machine notices checkpoints appended by
+      # other reactors (children included), which joins decide on.
+      def handled_messages = (handled_commands + checkpoint_classes + child_events.keys + handled_messages_for_react).uniq
 
       # Check the definition. Memoised; runs before the first instance is built,
       # and when the machine is registered with a Router.
@@ -457,7 +608,7 @@ module Sourced
       # @return [Snapshot]
       def load(store: nil, **values)
         instance, = Sourced.load(self, store:, **values)
-        Snapshot.new(value: instance.machine.value, context: instance.context)
+        Snapshot.new(value: instance.machine.value, context: instance.context, children: instance.machine.children)
       end
 
       private
@@ -489,6 +640,26 @@ module Sourced
         node.regions << region
         RegionBuilder.new(self, region).instance_eval(&block) if block
         region
+      end
+
+      def __define_child(child, as:, kind:, node: nil, keys: nil, on_done: {}, stop_on: [])
+        raise DefinitionError, "#{self}: #{child.inspect} isn't a Sourced::Machine" unless child.is_a?(Class) && child < Machine
+        raise DefinitionError, "#{self}: child #{as.inspect} is declared twice" if children_specs.key?(as)
+        raise DefinitionError, "#{self}: #{child} is already a child as another name" if children_specs.values.any? { |c| c.machine == child }
+        raise DefinitionError, "#{self}: #{child} has no start checkpoint" unless child.start_event
+        raise DefinitionError, "#{self}: #{child} has no on_stop" unless child.stop_event
+        raise DefinitionError, "#{self}: invoke #{child} needs keys: ->(context) { … }" if kind == :invoke && !keys.respond_to?(:call)
+
+        spec = ChildSpec.new(as:, machine: child, kind:, stop_on:, node:, keys:, on_done:)
+        children_specs[as] = spec
+        node.invokes << spec if node
+
+        finals = child.root.nodes.values.select(&:final?).map(&:key)
+        [[child.start_event, :start], *finals.map { |f| [f, :final] }].each do |klass, role|
+          (child_events[klass] ||= []) << [spec, role]
+          handled_messages_for_evolve << klass unless handled_messages_for_evolve.include?(klass)
+        end
+        spec
       end
 
       def __command_definition(declaration, block)
@@ -549,7 +720,42 @@ module Sourced
           end
 
           __check_join!(node) if node.done || node.regions.any?
+          node.children_joins.each { |join| __check_children_join!(node, join) }
         end
+
+        handled_messages_for_react.each { |klass| __check_partition_keys!(klass, 'reaction') }
+        children_specs.each_value { |spec| __check_child!(spec) }
+      end
+
+      def __check_child!(spec)
+        child = spec.machine
+        missing = partition_keys - child.partition_keys
+        unless missing.empty?
+          raise DefinitionError, "#{self}: child #{child} must partition by our keys too, missing #{missing.join(', ')}"
+        end
+
+        spec.stop_on.each do |klass|
+          raise DefinitionError, "#{self}: stop_on #{klass} isn't a checkpoint" unless checkpoint?(klass)
+        end
+
+        finals = child.root.nodes.values.select(&:final?).map(&:key)
+        spec.on_done.each do |child_final, target|
+          unless finals.include?(child_final)
+            raise DefinitionError, "#{self}: on_done #{child_final} isn't a final checkpoint of #{child}'s root region"
+          end
+          __check_reachable!(spec.node, target, "invoke #{child}'s on_done targets")
+          __check_buildable!(target, nil)
+        end
+      end
+
+      def __check_children_join!(node, join)
+        spec = children_specs[join.as]
+        raise DefinitionError, "#{self}: children_done #{join.as.inspect} doesn't name spawned children" unless spec && !spec.invoke?
+
+        join.definition.checkpoint_targets.each do |target|
+          __check_reachable!(node, target, "#{join.definition.command_class} targets")
+        end
+        __check_buildable!(join.definition.targets.first, nil) if join.definition.auto? && join.definition.block.nil?
       end
 
       # A checkpoint can move the machine within its own region, or out to an
@@ -596,7 +802,7 @@ module Sourced
                   "#{self}: #{source} => #{checkpoint} has no block, " \
                     "and #{checkpoint} requires #{key.to_sym}, which #{source} doesn't declare"
                 else
-                  "#{self}: done #{checkpoint} is appended with the partition keys only, " \
+                  "#{self}: #{checkpoint} is appended with the partition keys only, " \
                     "and requires #{key.to_sym}"
                 end
         end
@@ -622,10 +828,11 @@ module Sourced
               { events: appended }
             end
             [actions, msg]
-          elsif (checkpoint?(msg.class) || instance.reacts_to?(msg)) &&
+          elsif (checkpoint?(msg.class) || child_event?(msg.class) || instance.reacts_to?(msg)) &&
                 instance.should_react?(instance.context, msg, replaying:)
-            # A checkpoint appended elsewhere can complete a join: decided here, under the guard.
-            joins = checkpoint?(msg.class) ? instance.__decide_joins : EMPTY_ARRAY
+            # A checkpoint appended elsewhere (a child's, included) can complete a
+            # join, or enter a checkpoint that invokes a child: decided here, under the guard.
+            joins = checkpoint?(msg.class) || child_event?(msg.class) ? instance.__decide_eventless : NONE
             actions = Actions.build_for(joins, guard:, source: msg)
             actions += Actions.build_for(instance.__react(msg), source: msg)
             actions += instance.collect_actions(context: instance.context, messages: [msg], events: [])
@@ -658,6 +865,7 @@ module Sourced
       Array(messages).each do |msg|
         node = self.class.checkpoints[msg.class]
         @runtime.enter(msg, node) if node
+        track_child(msg)
         super([msg])
       end
       context
@@ -673,6 +881,7 @@ module Sourced
     # @param command [Sourced::Message]
     # @return [Boolean]
     def handles_command?(command)
+      return stoppable? if stop_command?(command)
       return false if stale_timer?(command)
 
       handlers_for(command).any?
@@ -693,29 +902,32 @@ module Sourced
     # @return [Array<Sourced::Message>] the events produced
     # @raise [CheckpointError] if a handler emitted other checkpoints
     def decide(command)
+      if stop_command?(command)
+        return [] unless stoppable?
+
+        return deciding do
+          event(self.class.stop_event)
+          append_eventless
+        end
+      end
+
       handlers = handlers_for(command)
       return [] if handlers.empty?
 
       deciding do
         handlers.each do |node|
-          next unless @runtime.active_node?(node)
-
-          definition = node.commands.fetch(command.class)
-          started = @uncommitted_events.size
-          instance_exec(context, command, &definition.block) if definition.block
-          emitted = @uncommitted_events.drop(started).select { |evt| self.class.checkpoint?(evt.class) }
-          emitted << event(definition.targets.first, command.payload&.to_h || {}) if emitted.empty? && definition.auto?
-          check_checkpoints!(definition, emitted)
+          run_handler(node.commands.fetch(command.class), command) if @runtime.active_node?(node)
         end
-        append_joins
+        append_eventless
       end
     end
 
-    # Joins the current configuration completes: for each active checkpoint
-    # whose regions are all final, its +done+ checkpoint, until none is left.
+    # What the current configuration decides without a command, until nothing
+    # is left: +done+ joins, +children_done+ joins, invoking children for the
+    # checkpoints that invoke them, and mapping invoked children's results.
     # @api private
     # @return [Array<Sourced::Message>]
-    def __decide_joins = deciding { append_joins }
+    def __decide_eventless = deciding { append_eventless }
 
     # Produce an event from within a command handler and apply it immediately.
     # Partition keys the event declares are filled in.
@@ -737,8 +949,10 @@ module Sourced
     end
 
     # Run the exit actions of the checkpoints +msg+ made the machine leave
-    # (innermost first), the entry actions and timers of +msg+'s checkpoint,
-    # then any +reaction+ to it. A checkpoint of an inactive region runs nothing.
+    # (innermost first, stopping the children they invoked), the entry actions
+    # and timers of +msg+'s checkpoint (stopping the children whose +stop_on+
+    # it is), then any +reaction+ to it. A checkpoint of an inactive region runs
+    # nothing.
     # @api private
     # @return [Array<Sourced::Message>] dispatched messages
     def __react(msg)
@@ -746,10 +960,14 @@ module Sourced
         if self.class.checkpoint?(message.class) && !@runtime.ignored?(message)
           @runtime.exited_by(message).each do |left|
             left.exits.each { |blk| instance_exec(context, message, &blk) }
+            left.invokes.each { |spec| stop_children(spec) }
           end
           entered = self.class.checkpoints.fetch(message.class)
           entered.entries.each { |blk| instance_exec(context, message, &blk) }
           start_timers(entered, message)
+          self.class.children_specs.each_value do |spec|
+            stop_children(spec) if spec.stop_on.include?(message.class)
+          end
         end
 
         method_name = Sourced.message_method_name(React::PREFIX, message.class.to_s)
@@ -773,16 +991,101 @@ module Sourced
       accepting.reject { |node| accepting.any? { |other| other.descendant_of?(node) } }
     end
 
-    def append_joins
+    def append_eventless
       MAX_JOINS.times do
-        node = @runtime.active_nodes.find do |n|
-          n.done && n.regions.all? { |region| @runtime.current_node(region).final? }
-        end
-        return unless node
-
-        event(node.done)
+        return unless join_step || children_join_step || invoke_step
       end
       raise Error, "#{self.class}: more than #{MAX_JOINS} joins in one decision"
+    end
+
+    def join_step
+      node = @runtime.active_nodes.find do |n|
+        n.done && n.regions.all? { |region| @runtime.current_node(region).final? }
+      end
+      return false unless node
+
+      event(node.done)
+      true
+    end
+
+    def children_join_step
+      @runtime.active_nodes.each do |node|
+        node.children_joins.each do |join|
+          refs = @runtime.children(join.as)
+          next if refs.empty? || !refs.all?(&:final?)
+
+          run_handler(join.definition, nil)
+          return true
+        end
+      end
+      false
+    end
+
+    # An active checkpoint that invokes a child, with no child for its current
+    # entry, spawns one; one whose child reached a mapped final checkpoint
+    # decides into the mapped checkpoint.
+    def invoke_step
+      @runtime.active_nodes.each do |node|
+        node.invokes.each do |spec|
+          entry_id = @runtime.entered_by(node.region)&.id
+          ref = @runtime.children(spec.as).find { |child| child.entry_id == entry_id }
+          if ref.nil?
+            event(spec.machine.start_event, spec.keys.call(context).to_h)
+            return true
+          elsif ref.final? && (target = spec.on_done[ref.state])
+            event(target)
+            return true
+          end
+        end
+      end
+      false
+    end
+
+    # Run one handler: its block, its auto-appended checkpoint, and the
+    # one-checkpoint check.
+    def run_handler(definition, command)
+      started = @uncommitted_events.size
+      instance_exec(context, command, &definition.block) if definition.block
+      emitted = @uncommitted_events.drop(started).select { |evt| self.class.checkpoint?(evt.class) }
+      emitted << event(definition.targets.first, command&.payload&.to_h || {}) if emitted.empty? && definition.auto?
+      check_checkpoints!(definition, emitted)
+    end
+
+    # Spawn a child declared with {.spawns}: append its start checkpoint, with
+    # our partition keys filled in. Data, as far as the one-checkpoint rule goes.
+    #
+    # @param as [Symbol]
+    # @param payload [Hash] the child's own keys, and anything else its start needs
+    # @return [Sourced::Message] the start event
+    def spawn(as, payload = {})
+      spec = self.class.children_specs.fetch(as) { raise Error, "#{self.class} doesn't spawn #{as.inspect}" }
+      raise Error, "#{self.class}: #{as.inspect} is invoked, not spawned" if spec.invoke?
+
+      event(spec.machine.start_event, payload)
+    end
+
+    def track_child(msg)
+      self.class.child_events.fetch(msg.class, NONE).each do |spec, role|
+        keys = msg.payload.to_h.slice(*(spec.machine.partition_keys - self.class.partition_keys))
+        entry_id = spec.invoke? && role == :start ? invoking_entry(spec) : nil
+        @runtime.track_child(spec, keys, state: msg.class, final: role == :final, entry_id:)
+      end
+    end
+
+    def invoking_entry(spec)
+      @runtime.active_node?(spec.node) ? @runtime.entered_by(spec.node.region)&.id : nil
+    end
+
+    def stop_children(spec)
+      @runtime.children(spec.as).reject(&:final?).each { |child| dispatch(spec.machine::Stop, child.keys) }
+    end
+
+    def stop_command?(command) = self.class.stop_event && command.instance_of?(self.class::Stop)
+
+    # +Stop+ applies once the machine has started, until it's final.
+    def stoppable?
+      root = @runtime.current_node(self.class.root)
+      !root.initial? && !root.final?
     end
 
     # Timers for a checkpoint entry the machine has already left would only be
