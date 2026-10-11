@@ -69,6 +69,7 @@ Phases 1 to 3 run within one partition. Phase 4 is the first with several reacto
   - `children_done` can't declare `nil` (it would fire forever), and only fires once at least one child was spawned.
   - A child class can be registered once per parent, and must be named (its `Stop` type derives from its name).
   - Reactions must use types that declare every partition key, like commands and checkpoints.
+- **5:** done. Topology has a machine branch: command nodes list their declared checkpoints without parsing, plus the events and children their blocks emit and spawn (Prism, through `SourceAnalyzer#calls_in_block`, which reads a block's `source_location`). Entry/exit/`after` actions, `done` and `children_done` joins, `invoke`, `on_done` and stopping children are automations. `Machine.to_mermaid` draws a `stateDiagram-v2`; transitions to an ancestor region's checkpoint start from the composite state containing the source, since Mermaid can't draw between states in different composites. The output hasn't been rendered with a Mermaid tool here. README has a Machines section.
 
 ## Open
 
