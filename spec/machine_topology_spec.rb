@@ -131,8 +131,32 @@ RSpec.describe 'Sourced::Machine topology' do
       MERMAID
     end
 
-    it "draws a child's Stop" do
-      expect(LegMachine.to_mermaid).to include('MachineTopologyTest_LegAdded --> MachineTopologyTest_LegDropped : Stop')
+    it "draws a child's start and Stop" do
+      diagram = LegMachine.to_mermaid
+      expect(diagram).to include('[*] --> MachineTopologyTest_LegAdded')
+      expect(diagram).to include('MachineTopologyTest_LegAdded --> MachineTopologyTest_LegDropped : Stop')
+    end
+
+    it "draws transitions to an ancestor region's checkpoint from the state that takes them" do
+      m = Class.new(Sourced::Machine) do
+        def self.name = 'MachineTopologyTest::Ancestors'
+        partition_by :trip_id
+        initial { command Open => Opened }
+        checkpoint Opened do
+          region :payment do
+            initial do
+              command Pay => Paid
+              command Note => Cancelled
+            end
+            checkpoint(Paid) { command Cancel => Cancelled }
+          end
+        end
+        final Cancelled
+      end
+      diagram = m.to_mermaid.gsub('MachineTopologyTest_', '')
+
+      expect(diagram).to include("\n  Paid --> Cancelled : Cancel\n")
+      expect(diagram).to include("\n  Opened --> Cancelled : Note\n")
     end
   end
 end
