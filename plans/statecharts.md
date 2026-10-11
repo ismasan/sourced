@@ -278,8 +278,7 @@ class OrderMachine < Sourced::Machine
     # Spawned in the same decision that enters AwaitingPayment, so entering the state
     # and starting the payment commit together. Sent Stop when the state is left.
     invoke PaymentMachine, as: :payment,
-           start: PaymentRequested,
-           keys: ->(_order, _cmd) { { payment_id: SecureRandom.uuid } },  # decided once, then a fact
+           keys: ->(_order) { { payment_id: SecureRandom.uuid } },  # decided once, then a fact; the child's start is its own
            on_done: {
              PaymentCaptured => OrderPaid,      # child final checkpoint => our checkpoint
              PaymentDeclined => PaymentFailed

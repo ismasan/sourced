@@ -63,6 +63,12 @@ Phases 1 to 3 run within one partition. Phase 4 is the first with several reacto
   - Region history scoping is "a checkpoint of an inactive region is ignored, and entering a checkpoint resets its regions", which needs no positions.
   - Joins are evaluated after every decision, and when any checkpoint event is claimed (not replaying), against the latest state; the guard makes concurrent joins safe.
   - Timers in regions are stale once their checkpoint entry is no longer active anywhere in the configuration.
+- **4:** done. Differences from the plan:
+  - `invoke` takes no `start:`: the child declares its own `start`. `keys:` receives the domain state only, since a checkpoint can be entered by a join or by a checkpoint appended elsewhere, not only by a command.
+  - One loop decides everything that needs no command, after every decision and whenever a checkpoint or a child's start/final checkpoint is claimed (not replaying): `done` joins, `children_done` joins, invoking a child for the current entry of an active invoking checkpoint, and `on_done` mappings.
+  - `children_done` can't declare `nil` (it would fire forever), and only fires once at least one child was spawned.
+  - A child class can be registered once per parent, and must be named (its `Stop` type derives from its name).
+  - Reactions must use types that declare every partition key, like commands and checkpoints.
 
 ## Open
 

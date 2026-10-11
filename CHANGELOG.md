@@ -175,7 +175,11 @@
   arrow); other events are data, evolved into the machine's domain `state`. Checkpoints
   can have `region`s, all active while the checkpoint is: commands go to the deepest
   active checkpoints that accept them, can move the machine to an ancestor region's
-  checkpoint, and `done Evt` appends a join once every region is final. Entry and exit
+  checkpoint, and `done Evt` appends a join once every region is final. Child machines
+  run in their own partitions (keys including the parent's): a child declares `start Evt`
+  and `on_stop Evt` (generating its `Stop` command); a parent `spawns Child, as:,
+  stop_on:` and `spawn`s it from a command, joins with `children_done`, or `invoke`s one
+  for the duration of a checkpoint, mapping its final checkpoint with `on_done`. Entry and exit
   actions run as reactions; `after(seconds) { dispatch Cmd }` blocks dispatch commands
   delivered that long after the checkpoint was entered, refused once the machine has
   moved to a newer checkpoint. Commands the current checkpoint doesn't accept raise
