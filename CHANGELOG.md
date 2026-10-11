@@ -186,7 +186,9 @@
   `CommandNotHandledError` in `Sourced.handle!` and are acked by workers. Definitions are
   checked when the machine is registered. `Sourced.topology` describes machines (commands
   with their declared checkpoints, actions, joins and children as automations), and
-  `Machine.to_mermaid` draws one as a Mermaid state diagram. Design in
+  `Machine.to_mermaid` draws one as a Mermaid state diagram. `Machine.to_h` returns the
+  definition as a JSON-serializable Hash for rendering, and `Machine#to_h` the same Hash
+  with the instance's status (active, visited and current checkpoints, children). Design in
   `plans/statecharts.md`.
 - `Decider#handles_command?(command)`: whether the decider handles a command in its
   current context. Defaults to whether a handler is registered for the command's class;
