@@ -183,6 +183,8 @@ module Sourced
     #   invalid partitioning or exclusive ownership
     def add(reactor_class)
       ReactorDefaults.apply(reactor_class)
+      # Reactors with a definition to check (ex. Sourced::Machine) fail at registration, not on first use.
+      reactor_class.validate! if reactor_class.respond_to?(:validate!)
       if (existing = @reactors.find { |r| r.group_id == reactor_class.group_id })
         raise ArgumentError, "Cannot register #{reactor_class}: #{existing} already uses group_id #{reactor_class.group_id.inspect}"
       end
