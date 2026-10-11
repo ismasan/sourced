@@ -173,7 +173,9 @@
   the commands they accept and the checkpoints each may decide into
   (`command PlaceOrder => OrderPlaced`, `=> A | B`, `=> A | nil`, or data-only without an
   arrow); other events are data, evolved into the machine's domain `state`. Entry and exit
-  actions run as reactions. Commands the current checkpoint doesn't accept raise
+  actions run as reactions; `after(seconds) { dispatch Cmd }` blocks dispatch commands
+  delivered that long after the checkpoint was entered, refused once the machine has
+  moved to a newer checkpoint. Commands the current checkpoint doesn't accept raise
   `CommandNotHandledError` in `Sourced.handle!` and are acked by workers. Definitions are
   checked when the machine is registered. Design in `plans/statecharts.md`.
 - `Decider#handles_command?(command)`: whether the decider handles a command in its

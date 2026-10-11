@@ -71,6 +71,13 @@ module MachineTest
     attribute :note, Sourced::Types::String.nullable
   end
 
+  Expire = Sourced::Command.define('machine_test.expire') do
+    attribute :cart_id, String
+  end
+  CartExpired = Sourced::Event.define('machine_test.cart_expired') do
+    attribute :cart_id, String
+  end
+
   # Not a valid checkpoint for a cart machine: it lacks cart_id
   Unkeyed = Sourced::Event.define('machine_test.unkeyed') do
     attribute :order_id, String
@@ -130,6 +137,27 @@ module MachineTest
     end
 
     final CartPaid
+  end
+
+  class TimerMachine < Sourced::Machine
+    partition_by :cart_id
+
+    initial do
+      command OpenCart => CartOpened
+    end
+
+    checkpoint CartOpened do
+      after(3600) { |_cart, _evt| dispatch Expire }
+      command Expire => CartExpired
+      command(Checkout => CheckedOut) { |_cart, _cmd| event CheckedOut, total: 0 }
+      command(Reopen => CartOpened) { |_cart, _cmd| event CartOpened, currency: 'EUR' }  # re-entry
+    end
+
+    checkpoint CheckedOut do
+      command Expire => CartExpired  # accepted here too: a stale timer must still be refused
+    end
+
+    final CartExpired
   end
 
 RSpec.describe Sourced::Machine do
@@ -380,6 +408,133 @@ RSpec.describe Sourced::Machine do
 
       pairs = CartMachine.handle_batch({ cart_id: 'c1' }, [checked_out], history:, replaying: true)
       expect(pairs).to eq([[Sourced::Actions::OK, checked_out]])
+    end
+  end
+
+  describe 'after timers' do
+    let(:checked_out) { CheckedOut.new(payload: { cart_id: 'c1', total: 0 }) }
+
+    # A command as an `after` block of +checkpoint+ dispatches it, correlated by the runner.
+    def timer_command(checkpoint)
+      checkpoint.correlate(Expire.new(payload: { cart_id: 'c1' }).with_metadata(entered_by: checkpoint.id))
+    end
+
+    it 'dispatches future-dated commands that carry the entering event id' do
+      with_reactor(TimerMachine, cart_id: 'c1')
+        .when(opened)
+        .then do |result|
+          expire, = result.messages
+          expect(expire).to be_a(Expire)
+          expect(expire.created_at).to be_within(0.001).of(opened.created_at + 3600)
+          expect(expire.metadata[:entered_by]).to eq(opened.id)
+          expect(expire.causation_id).to eq(opened.id)
+        end
+    end
+
+    it 'accepts a timer command while its checkpoint entry is current' do
+      instance = TimerMachine.new(cart_id: 'c1')
+      instance.evolve([opened])
+
+      expect(instance.handles_command?(timer_command(opened))).to be(true)
+    end
+
+    it 'refuses a timer command once the machine has moved on, even where the command is accepted' do
+      instance = TimerMachine.new(cart_id: 'c1')
+      instance.evolve([opened, checked_out])
+
+      expect(instance.handles_command?(timer_command(opened))).to be(false)
+      expect(instance.handles_command?(Expire.new(payload: { cart_id: 'c1' }))).to be(true)
+    end
+
+    it 'refuses a timer command from an earlier entry of the same checkpoint' do
+      reentered = CartOpened.new(payload: { cart_id: 'c1', currency: 'EUR' })
+      instance = TimerMachine.new(cart_id: 'c1')
+      instance.evolve([opened, reentered])
+
+      expect(instance.handles_command?(timer_command(opened))).to be(false)
+      expect(instance.handles_command?(timer_command(reentered))).to be(true)
+    end
+
+    it "doesn't treat a command that inherited the metadata as a timer" do
+      instance = TimerMachine.new(cart_id: 'c1')
+      instance.evolve([opened, checked_out])
+      # Metadata is copied along correlation chains: caused by checked_out, naming opened.
+      inherited = checked_out.correlate(Expire.new(payload: { cart_id: 'c1' }).with_metadata(entered_by: opened.id))
+
+      expect(instance.handles_command?(inherited)).to be(true)
+    end
+
+    it "doesn't start timers for a checkpoint the machine has already left" do
+      claimed = Sourced::PositionedMessage.new(opened, 1)
+      claim = Sourced::ClaimResult.new(
+        offset_id: 1, key_pair_ids: [], partition_key: 'cart_id:c1', partition_value: { 'cart_id' => 'c1' },
+        messages: [claimed], replaying: false, guard: Sourced::ConsistencyGuard.new(conditions: [], last_position: 2)
+      )
+      history = Sourced::ReadResult.new(
+        messages: [claimed, Sourced::PositionedMessage.new(checked_out, 2)],
+        guard: Sourced::ConsistencyGuard.new(conditions: [], last_position: 2)
+      )
+
+      expect(TimerMachine.handle_claim(claim, history:)).to eq([[[], claimed]])
+    end
+
+    it 'rejects timers on the initial position, and without a delay or block' do
+      expect { machine { initial { after(60) { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /no timers/)
+      expect { machine { checkpoint(CartOpened) { after('1h') { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /delay in seconds/)
+      expect { machine { checkpoint(CartOpened) { after(60) } } }.to raise_error(Sourced::Machine::DefinitionError, /needs a block/)
+    end
+
+    describe 'on a store' do
+      let(:store) { Sourced::Store.new(Sequel.sqlite).tap(&:install!) }
+      let(:router) { Sourced::Router.new(store:, reactors: [TimerMachine]).setup! }
+
+      def deliver_timers(after:)
+        Timecop.travel(Time.now + after) do
+          promoted = store.update_schedule!
+          router.drain
+          promoted
+        end
+      end
+
+      def value = TimerMachine.load(store:, cart_id: 'c1').value
+
+      before do
+        store.append(OpenCart.new(payload: { cart_id: 'c1', currency: 'EUR' }))
+        router.drain
+      end
+
+      it 'fires the timer when it falls due' do
+        expect(deliver_timers(after: 3599)).to eq(0)
+        expect(value).to eq(CartOpened)
+
+        expect(deliver_timers(after: 3601)).to eq(1)
+        expect(value).to eq(CartExpired)
+      end
+
+      it 'ignores the timer once the machine has moved on' do
+        store.append(Checkout.new(payload: { cart_id: 'c1' }))
+        router.drain
+
+        expect(deliver_timers(after: 3601)).to eq(1)
+        expect(value).to eq(CheckedOut)
+        types = store.read_all(limit: 50).messages.map(&:type)
+        expect(types).to include('machine_test.expire')
+        expect(types).not_to include('machine_test.cart_expired')
+      end
+
+      it "doesn't schedule a timer when the checkpoint was left before it was claimed" do
+        fresh = Sourced::Store.new(Sequel.sqlite).tap(&:install!)
+        fresh_router = Sourced::Router.new(store: fresh, reactors: [TimerMachine]).setup!
+        fresh.append([
+          OpenCart.new(payload: { cart_id: 'c2', currency: 'EUR' }),
+          Checkout.new(payload: { cart_id: 'c2' })
+        ])
+        fresh_router.drain
+
+        Timecop.travel(Time.now + 3601) do
+          expect(fresh.update_schedule!).to eq(0)
+        end
+      end
     end
   end
 
