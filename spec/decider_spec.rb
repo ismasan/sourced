@@ -125,7 +125,6 @@ end
 
 # Refuses BindDevice until the device is registered, instead of raising.
 class TestGatedDeviceDecider < TestDeviceDecider
-  partition_by :device_id # not inherited
   consumer_group 'device-gated-decider-test'
 
   def handles_command?(command)
