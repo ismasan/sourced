@@ -168,6 +168,14 @@
 
 ### Added
 
+- `Sourced::Machine`, Sourced's statecharts: a reactor whose position is its latest
+  *checkpoint* event. Checkpoints (`checkpoint`, `final`, and the `initial` position) list
+  the commands they accept and the checkpoints each may decide into
+  (`command PlaceOrder => OrderPlaced`, `=> A | B`, `=> A | nil`, or data-only without an
+  arrow); other events are data, evolved into the machine's domain `state`. Entry and exit
+  actions run as reactions. Commands the current checkpoint doesn't accept raise
+  `CommandNotHandledError` in `Sourced.handle!` and are acked by workers. Definitions are
+  checked when the machine is registered. Design in `plans/statecharts.md`.
 - `Decider#handles_command?(command)`: whether the decider handles a command in its
   current state. Defaults to whether a handler is registered for the command's class;
   override it to refuse commands based on state without raising, the command-side

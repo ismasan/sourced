@@ -47,6 +47,15 @@ It's the command-side counterpart of `reacts_to?` / `should_react?`: a Decider c
 
 Phases 1 to 3 run within one partition. Phase 4 is the first with several reactors, so it gets the store-backed specs.
 
+## Progress
+
+- **0a, 0b:** done.
+- **1:** done. Differences from the plan:
+  - The buildable check applies to blockless commands only. A single checkpoint auto-appended after a block isn't checked at definition time, because the block may emit it itself; it's validated when built (`InvalidEventError`).
+  - Every checkpoint type is claimed, with or without entry/exit actions, so the claim path already sees checkpoints appended by other reactors (phase 3's joins).
+  - `handle_claim` evolves the full, unbounded history, which already holds the claimed checkpoints: commands decide on the latest state, and entry/exit actions see the whole entering decision (a data event emitted after the checkpoint in the same decision). The runtime records which checkpoint each checkpoint event replaced, for exit actions.
+  - No log line for commands workers ack because they aren't accepted (the Router has no logger); still open below.
+
 ## Open
 
 - **Before phase 3:** a command accepted by both a checkpoint and an active descendant. XState lets the deepest state win, ancestors only as a fallback. Or run both in definition order, like sibling regions?
