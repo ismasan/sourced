@@ -346,9 +346,10 @@ module Sourced
     Snapshot = Data.define(:value, :state, :children)
 
     # The machine's own bookkeeping, separate from the domain state: the
-    # current checkpoint and its entering event, per region.
+    # current checkpoint, its entering event and the checkpoints entered so
+    # far, per region.
     class Runtime
-      Position = Struct.new(:current, :entered_by)
+      Position = Struct.new(:current, :entered_by, :visited)
 
       attr_reader :root
 
@@ -377,6 +378,14 @@ module Sourced
       end
 
       def entered_by(region) = position(region).entered_by
+
+      # Whether +node+ was entered since its region was last entered (or, for
+      # the root region, ever). The current position counts as visited, and a
+      # region's initial position is visited once it has moved on from it.
+      def visited?(node)
+        visited = position(node.region).visited
+        node.initial? ? active_node?(node) || visited.any? : visited.include?(node.key)
+      end
 
       def active?(region)
         region.root? || (active?(region.parent.region) && position(region.parent.region).current == region.parent.key)
@@ -413,6 +422,7 @@ module Sourced
         pos = position(node.region)
         pos.current = node.key
         pos.entered_by = event
+        pos.visited << node.key unless pos.visited.include?(node.key)
         # A fresh activation of the checkpoint's regions
         node.regions.each { |region| reset(region) }
       end
@@ -425,7 +435,7 @@ module Sourced
 
       private
 
-      def position(region) = @positions[region] ||= Position.new(INITIAL, nil)
+      def position(region) = @positions[region] ||= Position.new(INITIAL, nil, [])
 
       def active_nodes_in(region)
         node = current_node(region)
@@ -438,7 +448,7 @@ module Sourced
       end
 
       def reset(region)
-        @positions[region] = Position.new(INITIAL, nil)
+        @positions[region] = Position.new(INITIAL, nil, [])
         region.nodes.each_value { |node| node.regions.each { |child| reset(child) } }
       end
 
@@ -520,6 +530,14 @@ module Sourced
       # @param stop_on [Class, Array<Class>] checkpoints of this machine
       def spawns(child, as:, stop_on: [])
         __define_child(child, as:, kind: :spawn, stop_on: Array(stop_on))
+      end
+
+      # The machine's definition as a JSON-serializable Hash. See {Chart}.
+      #
+      # @return [Hash]
+      def to_h
+        validate!
+        Chart.new(self).to_h
       end
 
       # The machine as a Mermaid state diagram. See {Mermaid}.
@@ -867,6 +885,12 @@ module Sourced
     # @return [View]
     def machine = View.new(@runtime)
 
+    # The machine's definition as {.to_h} returns it, with this instance's
+    # status filled in. See {Chart}.
+    #
+    # @return [Hash]
+    def to_h = Chart.new(self.class, runtime: @runtime).to_h
+
     # Evolve messages in log order: checkpoints move the machine, then any
     # +evolve+ handler updates the domain state.
     def evolve(messages)
@@ -1149,4 +1173,5 @@ module Sourced
   end
 end
 
+require 'sourced/machine/chart'
 require 'sourced/machine/mermaid'
