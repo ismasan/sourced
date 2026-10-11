@@ -152,6 +152,8 @@
 
 ### Fixed
 
+- Reactor subclasses inherit their superclass's `partition_by` keys unless they declare
+  their own. They had no partition keys, so their partition reads came back empty.
 - `Date` and `Time` payload attributes never round-tripped through the store: they
   were written via `#to_s` and read back as Strings, producing invalid messages. This
   affected `DurableWorkflow`'s `WaitStarted#at`.

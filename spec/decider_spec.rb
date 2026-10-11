@@ -524,5 +524,11 @@ RSpec.describe Sourced::Decider do
       subclass = Class.new(TestDeviceDecider)
       expect(subclass.handled_commands).to include(DeciderTestMessages::BindDevice)
     end
+
+    it 'subclass inherits partition keys unless it declares its own' do
+      expect(Class.new(TestDeviceDecider).partition_keys).to eq([:device_id])
+      expect(Class.new(TestDeviceDecider) { partition_by :other_id }.partition_keys).to eq([:other_id])
+      expect(TestDeviceDecider.partition_keys).to eq([:device_id])
+    end
   end
 end

@@ -49,6 +49,15 @@ module Sourced
       base.extend ClassMethods
     end
 
+    # Copy partition keys into subclasses, which can redeclare them.
+    #
+    # @param subclass [Class] subclass being created
+    # @return [void]
+    def inherited(subclass)
+      super
+      subclass.partition_by(@partition_keys) if @partition_keys
+    end
+
     def partition_keys
       @partition_keys ||= []
     end
