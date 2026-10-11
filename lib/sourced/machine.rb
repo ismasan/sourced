@@ -527,9 +527,11 @@ module Sourced
       # joins) that take them. Data-only commands, which don't move the
       # machine, aren't drawn.
       #
-      # Mermaid can't draw a transition between states inside different
-      # composite states, so a transition to an ancestor region's checkpoint
-      # starts from the composite state that contains its source.
+      # A transition to an ancestor region's checkpoint starts from the state
+      # that takes it, and is declared in the ancestor region. From a region's
+      # initial position, which has no state of its own, it starts from the
+      # composite state that contains the region. A child's +start+ checkpoint
+      # is entered from the diagram's start.
       #
       # @return [String]
       def to_mermaid
@@ -684,7 +686,7 @@ module Sourced
       def __mermaid_edge(edges, node, target, label)
         target_region = checkpoints.fetch(target).region
         source = node
-        source = source.region.parent until source.region == target_region
+        source = source.region.parent while source.initial? && source.region != target_region
         edges[target_region] << [source, checkpoints.fetch(target), label]
       end
 
@@ -705,6 +707,7 @@ module Sourced
             lines << "#{indent}}"
           end
         end
+        lines << "#{indent}[*] --> #{__mermaid_id(start_event)}" if region == root && start_event
         edges[region].uniq.each do |source, target, label|
           from = source.initial? ? '[*]' : __mermaid_id(source.key)
           lines << "#{indent}#{from} --> #{__mermaid_id(target.key)} : #{label}"
