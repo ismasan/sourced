@@ -27,7 +27,8 @@ module Sourced
     # same code:
     #
     # * a region: +{ active:, current:, done: }+, +current+ being the region's
-    #   latest position (also for an inactive region: where it was left). The
+    #   latest position (also for an inactive region: where it was left; +nil+
+    #   for a child machine that hasn't started). The
     #   machine's (its root region's) also has +value+, as in {View#value}, with ids;
     # * a node: +{ active:, visited:, entered_by: }+. Visited means entered
     #   since its region was last entered, the current checkpoint included;
@@ -143,7 +144,7 @@ module Sourced
 
       def region_status(region)
         current = @runtime.current_node(region)
-        { active: @runtime.active?(region), current: id(current), done: current.final? }
+        { active: @runtime.active?(region), current: position_id(current), done: current.final? }
       end
 
       def node_status(node)
@@ -158,10 +159,13 @@ module Sourced
 
       def value(region)
         current = @runtime.current_node(region)
-        return id(current) if current.regions.empty?
+        return position_id(current) if current.regions.empty?
 
         { id(current) => current.regions.to_h { |child| [child.name.to_s, value(child)] } }
       end
+
+      # A child machine that hasn't started has no node for its position.
+      def position_id(node) = node.initial? && !initial_node?(node.region) ? nil : id(node)
 
       def targets(classes) = classes.map { |klass| target_id(klass) }
       def target_id(klass) = id(@machine.checkpoints.fetch(klass))

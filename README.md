@@ -1263,13 +1263,14 @@ OrderMachine.to_h                    # the definition: every status is nil
 
 order, = Sourced.load(OrderMachine, order_id: 'o1')
 order.to_h                           # the same keys, with the instance's status
-order.to_h[:status]                  # => { active: true, current: 'orders.placed', done: false, value: 'orders.placed' }
+order.to_h[:status]                  # => { active: true, current: 'orders.placed', done: false,
+                                     #      value: { 'orders.placed' => { 'payment' => 'payment/initial', 'shipping' => 'shipping/initial' } } }
 
 result = Sourced.handle!(OrderMachine, PlaceOrder.new(payload: { order_id: 'o1' }))
 result.reactor.to_h                  # status after the command, including the events it decided
 ```
 
-- A region's status is `{ active:, current:, done: }`. The machine's (its root region's) adds `value`, the current configuration.
+- A region's status is `{ active:, current:, done: }`. The machine's (its root region's) adds `value`, the current configuration, with checkpoints as message types (`'orders.placed'` stands in for `OrderPlaced.type`).
 - A checkpoint's is `{ active:, visited:, entered_by: }`. Visited means entered since its region was last entered, and `entered_by` is the event that entered an active checkpoint (`id`, `type`, `at`).
 - A child's is `{ instances: [{ keys:, state:, final: }] }`.
 - The domain `state` isn't included.
