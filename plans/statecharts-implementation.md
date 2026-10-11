@@ -55,6 +55,7 @@ Phases 1 to 3 run within one partition. Phase 4 is the first with several reacto
   - Every checkpoint type is claimed, with or without entry/exit actions, so the claim path already sees checkpoints appended by other reactors (phase 3's joins).
   - `handle_claim` evolves the full, unbounded history, which already holds the claimed checkpoints: commands decide on the latest state, and entry/exit actions see the whole entering decision (a data event emitted after the checkpoint in the same decision). The runtime records which checkpoint each checkpoint event replaced, for exit actions.
   - No log line for commands workers ack because they aren't accepted (the Router has no logger); still open below.
+- **2:** done. `after` blocks dispatch ordinary commands, future-dated from the entering event and tagged `metadata[:entered_by]`. Since `Message#correlate` copies metadata along correlation chains, the tag alone would leak into later commands. So a command counts as a timer only when its `entered_by` equals its `causation_id` (it was dispatched in reaction to that checkpoint), and it's stale when that event no longer entered the current checkpoint. Timers aren't started for a checkpoint the machine had already left when it claimed the event.
 
 ## Open
 
