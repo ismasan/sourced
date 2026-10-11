@@ -53,6 +53,9 @@ module MachineChildrenTest
 
   LineState = Struct.new(:sku, :currency)
 
+  # What parents' after_sync hooks saw: [claimed message class, event classes]
+  SYNCED = []
+
   class LineItemMachine < Sourced::Machine
     partition_by :order_id, :line_id
 
@@ -100,6 +103,8 @@ module MachineChildrenTest
     final LinesDone
     final LinesPartiallyFailed
     final OrderCancelled
+
+    after_sync { |messages:, events:, **| SYNCED << [messages.first.class, events.map(&:class)] }
   end
 
   PaymentState = Struct.new(:amount)
@@ -145,6 +150,8 @@ module MachineChildrenTest
 
     checkpoint PaymentTimedOut
     final OrderPaid
+
+    after_sync { |messages:, events:, **| SYNCED << [messages.first.class, events.map(&:class)] }
   end
 
 RSpec.describe 'Sourced::Machine children' do
@@ -158,6 +165,8 @@ RSpec.describe 'Sourced::Machine children' do
   end
 
   def log = store.read_all(limit: 200).messages
+
+  before { SYNCED.clear }
   def types = log.map { |m| m.type.delete_prefix('machine_children_test.') }
 
   describe 'Stop' do
@@ -217,6 +226,14 @@ RSpec.describe 'Sourced::Machine children' do
       expect(lines).to eq('l1' => LinePicked, 'l2' => LinePicked)
     end
 
+    it "hands a join completed by a child's checkpoint to after_sync" do
+      place_and_add_lines
+      run(router, line(StockReserved, 'l1'), line(StockReserved, 'l2'), line(PickLine, 'l1'), line(PickLine, 'l2'))
+
+      expect(SYNCED).to include([LinePicked, [LinesDone]])
+      expect(SYNCED).to include([AddLine, [LineAdded]])
+    end
+
     it 'decides the join from the children it ended with' do
       place_and_add_lines
       run(router, line(StockReserved, 'l1'), line(PickLine, 'l1'), line(StockUnavailable, 'l2'))
@@ -272,6 +289,14 @@ RSpec.describe 'Sourced::Machine children' do
       run(router, gateway(GatewayCaptured, payment_ids.first))
 
       expect(billing.value).to eq(OrderPaid)
+    end
+
+    it 'hands on_done mappings and invoked children to after_sync' do
+      run(router, gateway(GatewayCaptured, payment_ids.first))
+
+      expect(SYNCED).to include([RequestPayment, [AwaitingPayment, PaymentRequested]])
+      expect(SYNCED).to include([PaymentCaptured, [OrderPaid]])
+      expect(SYNCED.select { |source, _| source == PaymentRequested }).to eq([[PaymentRequested, []]])
     end
 
     it 'stops the child when the checkpoint is left, and ignores its late results' do
