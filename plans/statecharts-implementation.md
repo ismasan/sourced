@@ -57,7 +57,13 @@ Phases 1 to 3 run within one partition. Phase 4 is the first with several reacto
   - No log line for commands workers ack because they aren't accepted (the Router has no logger); still open below.
 - **2:** done. `after` blocks dispatch ordinary commands, future-dated from the entering event and tagged `metadata[:entered_by]`. Since `Message#correlate` copies metadata along correlation chains, the tag alone would leak into later commands. So a command counts as a timer only when its `entered_by` equals its `causation_id` (it was dispatched in reaction to that checkpoint), and it's stale when that event no longer entered the current checkpoint. Timers aren't started for a checkpoint the machine had already left when it claimed the event.
 
+- **3:** done. Deepest wins: a checkpoint's handler runs only when none of its active regions accepts the command. Differences from the plan:
+  - Regions nest to any depth (the runtime is a tree: a current checkpoint per region), rather than one level.
+  - Region names and checkpoint classes are unique within a machine, so `machine.in?(:payment, PaymentStarted)` and `entered_by(:payment)` can name a region directly.
+  - Region history scoping is "a checkpoint of an inactive region is ignored, and entering a checkpoint resets its regions", which needs no positions.
+  - Joins are evaluated after every decision, and when any checkpoint event is claimed (not replaying), against the latest state; the guard makes concurrent joins safe.
+  - Timers in regions are stale once their checkpoint entry is no longer active anywhere in the configuration.
+
 ## Open
 
-- **Before phase 3:** a command accepted by both a checkpoint and an active descendant. XState lets the deepest state win, ancestors only as a fallback. Or run both in definition order, like sibling regions?
-- **In phase 1:** logging a command a worker acks because it isn't accepted. Reactors have no logger; an `:ack` signal with a `reason:` that the Router logs is one option.
+- Logging a command a worker acks because it isn't accepted. Reactors have no logger; an `:ack` signal with a `reason:` that the Router logs is one option.

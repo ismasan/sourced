@@ -120,6 +120,7 @@ snapshot.context     # => #<OrderState total=100 card="tok_…" packed=[]>
 - **Blockless checkpoints must be buildable from the command, checked at definition time.** Every checkpoint attribute that isn't a partition key and that the command doesn't declare must be allowed to be missing: `key.optional? || type.resolve(Plumb::Undefined).valid?` over `Evt::Payload._schema._schema` (so declared with `attribute?`, or with a default; `nullable` alone isn't enough). A checkpoint auto-appended after a block isn't checked at definition time, since the block may emit it itself with attributes the command lacks; the runtime check below covers it.
 - **What stays a runtime check:** values that don't fit (the command's `Integer` into the checkpoint's `String`), and attributes the command declares with `attribute?` but leaves out of a particular instance. The runtime validates the checkpoint before appending it.
 - **Targets are checkpoints of the command's own region or an ancestor region**, never a sibling region. An ancestor target exits every region below it, as `ExpirePayment => OrderCancelled` does. Checked at definition time.
+- **The deepest active checkpoints that accept a command handle it**, as in XState: a checkpoint's handler runs only when none of its active regions accepts the command.
 - **A command accepted by several active regions** runs each region's handler in definition order, and each sees the events of the ones before it. The one-checkpoint rule applies per handler. A handler whose region has already been exited by an earlier one in the same decision doesn't run.
 - **Partition keys are filled in** on every event the machine emits and every message it dispatches (when the message declares them), so `event PaymentStarted` and `dispatch CancelOrder` need no `order_id`.
 - **The transition graph is static.** Every edge (state, command, possible checkpoints) is known when the class loads. That allows checking at definition time that each target is a declared checkpoint, finding unreachable states and states that can't be left, and drawing the machine without running it.
@@ -353,5 +354,4 @@ The machine enforces this at definition time: **a message type that lacks any of
 
 ## Open
 
-- **A command accepted by both a state and an active descendant.** In XState the deepest state that handles an event wins, and ancestors are only a fallback. Do the same here (the parent's handler runs only if no active descendant accepts the command), or run both in definition order like sibling regions?
 - **How much of a child the parent sees.** Start and final checkpoints only, or opt-in to more (`spawns LineItemMachine, as: :lines, track: [LineReserved]`) at the cost of guard conflicts?
