@@ -184,7 +184,10 @@
   delivered that long after the checkpoint was entered, refused once the machine has
   moved to a newer checkpoint. Commands the current checkpoint doesn't accept raise
   `CommandNotHandledError` in `Sourced.handle!` and are acked by workers. Definitions are
-  checked when the machine is registered. Design in `plans/statecharts.md`.
+  checked when the machine is registered. `Sourced.topology` describes machines (commands
+  with their declared checkpoints, actions, joins and children as automations), and
+  `Machine.to_mermaid` draws one as a Mermaid state diagram. Design in
+  `plans/statecharts.md`.
 - `Decider#handles_command?(command)`: whether the decider handles a command in its
   current context. Defaults to whether a handler is registered for the command's class;
   override it to refuse commands based on context without raising, the command-side
