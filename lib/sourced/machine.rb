@@ -861,7 +861,10 @@ module Sourced
             joins = checkpoint?(msg.class) || child_event?(msg.class) ? instance.__decide_eventless : NONE
             actions = Actions.build_for(joins, guard:, source: msg)
             actions += Actions.build_for(instance.__react(msg), source: msg)
-            actions += instance.collect_actions(state: instance.state, messages: [msg], events: [])
+            # The joins are the pair's first appends; what reactions dispatch isn't decided events.
+            actions += instance.collect_actions(state: instance.state, messages: [msg]) do |appended|
+              { events: appended.first(joins.size) }
+            end
             [actions, msg]
           else
             [Actions::OK, msg]
