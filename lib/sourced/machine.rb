@@ -62,6 +62,10 @@ module Sourced
 
     INITIAL = :initial
 
+    # Metadata key on messages dispatched by an +after+ block: the id of the
+    # checkpoint event that started the timer.
+    ENTERED_BY = :entered_by
+
     # A command a checkpoint accepts, and the checkpoints it may decide into.
     # +nil+ among the targets means "may emit no checkpoint".
     CommandDef = Data.define(:command_class, :targets, :block) do
@@ -71,9 +75,13 @@ module Sourced
       def checkpoint_targets = targets.compact
     end
 
+    # A delayed action: runs when its checkpoint is entered, and future-dates
+    # what it dispatches by +delay+ seconds from the entering event.
+    After = Data.define(:delay, :block)
+
     # A checkpoint (or the initial position) and what it accepts.
     class Node
-      attr_reader :key, :commands, :entries, :exits
+      attr_reader :key, :commands, :entries, :exits, :afters
 
       # @param key [Class, Symbol] the checkpoint event class, or {INITIAL}
       # @param final [Boolean]
@@ -83,6 +91,7 @@ module Sourced
         @commands = {}
         @entries = []
         @exits = []
+        @afters = []
       end
 
       def final? = @final
@@ -121,6 +130,26 @@ module Sourced
       # checkpoint that replaced it.
       # @yield [context, replacing_checkpoint_event]
       def exit(&block) = @node.exits << block
+
+      # Runs when the machine enters this checkpoint, as a reaction. Messages it
+      # dispatches are delivered +delay+ seconds after the entering event, and
+      # carry that event's id: a command delivered after the machine has moved
+      # to a newer checkpoint is stale, and refused (see {Machine#handles_command?}).
+      #
+      #   checkpoint PaymentStarted do
+      #     after(3600) { |_context, _evt| dispatch ExpirePayment }
+      #     command ExpirePayment => PaymentExpired
+      #   end
+      #
+      # @param delay [Numeric] seconds
+      # @yield [context, checkpoint_event]
+      def after(delay, &block)
+        raise DefinitionError, "#{@machine}: the initial position has no event, so no timers" if @node.initial?
+        raise DefinitionError, "#{@machine}: after needs a delay in seconds, got #{delay.inspect}" unless delay.is_a?(Numeric)
+        raise DefinitionError, "#{@machine}: after(#{delay}) needs a block" unless block
+
+        @node.afters << After.new(delay:, block:)
+      end
 
       private
 
@@ -402,14 +431,20 @@ module Sourced
       context
     end
 
-    # Whether the current checkpoint accepts +command+.
+    # Whether the current checkpoint accepts +command+. A command dispatched by
+    # an +after+ block is refused once the machine has left the checkpoint
+    # entry that started it, even if the current checkpoint accepts it.
     #
     # {Sourced.handle!} raises {Sourced::CommandNotHandledError} when it doesn't,
     # appending nothing; in background workers the command is acked with no events.
     #
     # @param command [Sourced::Message]
     # @return [Boolean]
-    def handles_command?(command) = !command_definition_for(command).nil?
+    def handles_command?(command)
+      return false if stale_timer?(command)
+
+      !command_definition_for(command).nil?
+    end
 
     # Decide +command+ against the current checkpoint and context.
     #
@@ -463,7 +498,9 @@ module Sourced
         if self.class.checkpoint?(message.class)
           left = self.class.nodes[@runtime.replaced_by(message)]
           left&.exits&.each { |blk| instance_exec(context, message, &blk) }
-          self.class.nodes.fetch(message.class).entries.each { |blk| instance_exec(context, message, &blk) }
+          entered = self.class.nodes.fetch(message.class)
+          entered.entries.each { |blk| instance_exec(context, message, &blk) }
+          start_timers(entered, message)
         end
 
         method_name = Sourced.message_method_name(React::PREFIX, message.class.to_s)
@@ -472,6 +509,31 @@ module Sourced
     end
 
     private
+
+    # Timers for a checkpoint the machine has already left would only be stale
+    # when delivered, so they aren't started.
+    def start_timers(node, checkpoint)
+      return unless @runtime.entered_by&.id == checkpoint.id
+
+      node.afters.each do |timer|
+        started = @__reaction_dispatchers.size
+        instance_exec(context, checkpoint, &timer.block)
+        @__reaction_dispatchers.drop(started).each do |dispatcher|
+          dispatcher.at(checkpoint.created_at + timer.delay).with_metadata(ENTERED_BY => checkpoint.id)
+        end
+      end
+    end
+
+    # A timer command was caused by the checkpoint event it names: dispatched in
+    # reaction to it. Metadata is copied along correlation chains, so a command
+    # that merely inherited the key names an event other than its cause, and
+    # isn't a timer.
+    def stale_timer?(command)
+      started_by = command.metadata[ENTERED_BY] || command.metadata[ENTERED_BY.to_s]
+      return false unless started_by && started_by == command.causation_id
+
+      started_by != @runtime.entered_by&.id
+    end
 
     def current_node = self.class.nodes.fetch(@runtime.current) { Node.new(@runtime.current, final: false) }
 
