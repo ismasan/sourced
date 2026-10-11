@@ -522,6 +522,43 @@ module Sourced
         __define_child(child, as:, kind: :spawn, stop_on: Array(stop_on))
       end
 
+      # The machine as a Mermaid state diagram: checkpoints, regions as
+      # concurrent sections, and transitions labelled with the commands (or
+      # joins) that take them. Data-only commands, which don't move the
+      # machine, aren't drawn.
+      #
+      # Mermaid can't draw a transition between states inside different
+      # composite states, so a transition to an ancestor region's checkpoint
+      # starts from the composite state that contains its source.
+      #
+      # @return [String]
+      def to_mermaid
+        validate!
+        edges = Hash.new { |h, k| h[k] = [] }
+        all_nodes.each do |node|
+          node.commands.each_value do |definition|
+            label = definition.command_class.name.split('::').last
+            definition.checkpoint_targets.each { |target| __mermaid_edge(edges, node, target, label) }
+          end
+          __mermaid_edge(edges, node, node.done, 'done') if node.done
+          node.children_joins.each do |join|
+            join.definition.checkpoint_targets.each { |target| __mermaid_edge(edges, node, target, "children_done #{join.as}") }
+          end
+          node.invokes.each do |spec|
+            spec.on_done.each do |child_final, target|
+              __mermaid_edge(edges, node, target, "#{spec.as} #{child_final.name.split('::').last}")
+            end
+          end
+        end
+        if stop_event
+          root.nodes.each_value do |node|
+            __mermaid_edge(edges, node, stop_event, 'Stop') unless node.final? || node.initial?
+          end
+        end
+
+        (['stateDiagram-v2'] + __mermaid_region(root, edges, '  ')).join("\n")
+      end
+
       # Message type prefix derived from the class name: +Shop::OrderMachine+ => +shop.order_machine+.
       def type_prefix = Types::Underscore.parse(name.gsub('::', '.'))
 
@@ -641,6 +678,45 @@ module Sourced
         RegionBuilder.new(self, region).instance_eval(&block) if block
         region
       end
+
+      # Record a transition in the region it's drawn in: the target's, from the
+      # state in that region that contains the source.
+      def __mermaid_edge(edges, node, target, label)
+        target_region = checkpoints.fetch(target).region
+        source = node
+        source = source.region.parent until source.region == target_region
+        edges[target_region] << [source, checkpoints.fetch(target), label]
+      end
+
+      def __mermaid_region(region, edges, indent)
+        lines = []
+        region.nodes.each_value do |node|
+          next if node.initial?
+
+          id = __mermaid_id(node.key)
+          if node.regions.empty?
+            lines << %(#{indent}state "#{__mermaid_label(node.key)}" as #{id})
+          else
+            lines << %(#{indent}state "#{__mermaid_label(node.key)}" as #{id} {)
+            node.regions.each_with_index do |child, i|
+              lines << "#{indent}  --" if i.positive?
+              lines.concat(__mermaid_region(child, edges, "#{indent}  "))
+            end
+            lines << "#{indent}}"
+          end
+        end
+        edges[region].uniq.each do |source, target, label|
+          from = source.initial? ? '[*]' : __mermaid_id(source.key)
+          lines << "#{indent}#{from} --> #{__mermaid_id(target.key)} : #{label}"
+        end
+        region.nodes.each_value do |node|
+          lines << "#{indent}#{__mermaid_id(node.key)} --> [*]" if node.final?
+        end
+        lines
+      end
+
+      def __mermaid_id(klass) = klass.name.gsub('::', '_')
+      def __mermaid_label(klass) = klass.name.split('::').last
 
       def __define_child(child, as:, kind:, node: nil, keys: nil, on_done: {}, stop_on: [])
         raise DefinitionError, "#{self}: #{child.inspect} isn't a Sourced::Machine" unless child.is_a?(Class) && child < Machine

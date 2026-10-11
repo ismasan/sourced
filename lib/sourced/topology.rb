@@ -7,7 +7,7 @@ rescue LoadError
 end
 
 module Sourced
-  # Analyzes registered reactors (Deciders and Projectors) and builds a
+  # Analyzes registered reactors (Deciders, Projectors and Machines) and builds a
   # flat array of node structs describing the message flow graph. Enables
   # visualization, introspection, and Event Modeling diagram generation.
   module Topology
@@ -29,7 +29,9 @@ module Sourced
       reactors.each do |reactor|
         group_id = reactor.group_id
 
-        if reactor.respond_to?(:handled_commands)
+        if reactor.is_a?(Class) && reactor < Sourced::Machine
+          add_machine(reactor, analyzer, nodes, command_ids, event_nodes)
+        elsif reactor.respond_to?(:handled_commands)
           reactor.handled_commands.each do |cmd_class|
             next if command_ids.key?(cmd_class.type)
 
@@ -156,6 +158,97 @@ module Sourced
       nodes + event_nodes.values
     end
 
+    # A machine's commands produce their declared checkpoints, plus what their
+    # blocks emit (+event+) and spawn (+spawn+). Entry, exit and +after+ actions,
+    # joins, invoked and stopped children are automations.
+    # @api private
+    def self.add_machine(machine, analyzer, nodes, command_ids, event_nodes)
+      group_id = machine.group_id
+      produced = Hash.new { |h, k| h[k] = [] }
+
+      machine.all_nodes.each do |node|
+        node.commands.each_value do |definition|
+          produced[definition.command_class] |= machine_block_produces(machine, analyzer, definition)
+        end
+      end
+      produced[machine::Stop] |= [machine.stop_event.type] if machine.stop_event
+
+      produced.each do |cmd_class, types|
+        if (existing = command_ids[cmd_class.type])
+          existing.produces |= types
+        else
+          cmd_node = CommandNode.new(
+            type: 'command', id: cmd_class.type, name: cmd_class.name, group_id:,
+            produces: types, schema: extract_schema(cmd_class)
+          )
+          nodes << cmd_node
+          command_ids[cmd_class.type] = cmd_node
+        end
+        types.each { |type| add_event_node(event_nodes, command_ids, find_event_class(type), group_id) }
+      end
+
+      automation = lambda do |id, name, consumes, produces|
+        nodes << AutomationNode.new(type: 'automation', id: "#{id}-#{group_id}-aut", name:, group_id:, consumes:, produces:)
+      end
+
+      machine.all_nodes.each do |node|
+        next if node.initial?
+
+        actions = node.entries + node.exits + node.afters.map(&:block)
+        dispatched = actions.flat_map { |blk| resolve_refs(analyzer.calls_in_block(blk, :dispatch), machine) }.uniq
+        automation.call(node.key.type, "actions(#{node.key.name})", [node.key.type], dispatched) if dispatched.any?
+
+        if node.done
+          finals = node.regions.flat_map { |region| region.nodes.values.select(&:final?).map { |n| n.key.type } }
+          automation.call("#{node.key.type}-done", "done(#{node.key.name})", finals, [node.done.type])
+        end
+
+        node.children_joins.each do |join|
+          child = machine.children_specs.fetch(join.as).machine
+          finals = child.root.nodes.values.select(&:final?).map { |n| n.key.type }
+          automation.call("#{node.key.type}-children-done-#{join.as}", "children_done(#{join.as})", finals,
+                          machine_block_produces(machine, analyzer, join.definition))
+        end
+
+        node.invokes.each do |spec|
+          automation.call("#{node.key.type}-invoke-#{spec.as}", "invoke(#{spec.machine.name})",
+                          [node.key.type], [spec.machine.start_event.type])
+          automation.call("#{node.key.type}-stop-#{spec.as}", "stop(#{spec.machine.name})",
+                          [node.key.type], [spec.machine::Stop.type])
+          spec.on_done.each do |child_final, target|
+            automation.call("#{child_final.type}-on-done", "on_done(#{child_final.name})", [child_final.type], [target.type])
+          end
+        end
+      end
+
+      machine.children_specs.each_value do |spec|
+        next if spec.invoke? || spec.stop_on.empty?
+
+        automation.call("stop-#{spec.as}", "stop(#{spec.machine.name})", spec.stop_on.map(&:type), [spec.machine::Stop.type])
+      end
+    end
+
+    # @api private
+    def self.machine_block_produces(machine, analyzer, definition)
+      types = definition.checkpoint_targets.map(&:type)
+      types += resolve_refs(analyzer.calls_in_block(definition.block, :event), machine)
+      types += analyzer.calls_in_block(definition.block, :spawn).filter_map do |kind, value|
+        machine.children_specs[value.to_sym]&.machine&.start_event&.type if kind == :symbol
+      end
+      types.uniq
+    end
+
+    # @api private
+    def self.add_event_node(event_nodes, command_ids, evt_class, group_id)
+      return unless evt_class
+      return if event_nodes.key?(evt_class.type) || command_ids.key?(evt_class.type)
+
+      event_nodes[evt_class.type] = EventNode.new(
+        type: 'event', id: evt_class.type, name: evt_class.name, group_id:,
+        produces: [], schema: extract_schema(evt_class)
+      )
+    end
+
     # @api private
     def self.resolve_refs(refs, reactor)
       refs.filter_map do |ref_type, ref_value|
@@ -252,7 +345,8 @@ module Sourced
       {}
     end
 
-    private_class_method :resolve_refs, :resolve_ref, :resolve_symbol_ref,
+    private_class_method :add_machine, :machine_block_produces, :add_event_node,
+                         :resolve_refs, :resolve_ref, :resolve_symbol_ref,
                          :resolve_const_ref, :resolve_const_path_ref,
                          :resolve_const_index_ref,
                          :resolve_constant_in_context, :find_event_class,
@@ -279,6 +373,14 @@ module Sourced
         extract_calls_from_handler(reactor, method_name, :dispatch)
       end
 
+      # Calls to +call_name+ inside a block (ex. a machine's command handler).
+      # @param block [Proc, nil]
+      def calls_in_block(block, call_name)
+        return [] unless @prism_available && block
+
+        calls_at(*block.source_location, call_name)
+      end
+
       private
 
       def check_prism
@@ -290,16 +392,16 @@ module Sourced
       end
 
       def extract_calls_from_handler(reactor, method_name, call_name)
-        file, line = reactor.instance_method(method_name).source_location
-        return [] unless file && line
-
-        result = parse_file(file)
-        block = find_block_at_line(result.value, line)
-        return [] unless block
-
-        collect_calls(block, call_name)
+        calls_at(*reactor.instance_method(method_name).source_location, call_name)
       rescue NameError
         []
+      end
+
+      def calls_at(file, line, call_name)
+        return [] unless file && line && File.exist?(file)
+
+        block = find_block_at_line(parse_file(file).value, line)
+        block ? collect_calls(block, call_name) : []
       end
 
       def find_block_at_line(program, target_line)
