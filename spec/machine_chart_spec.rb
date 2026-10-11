@@ -241,6 +241,19 @@ module MachineChartTest
         expect(trip.to_h[:status]).to include(done: true, value: t(:cancelled))
       end
 
+      it 'reflects what a decision just emitted' do
+        trip = evolved(Opened)
+        trip.decide(message(Quote))                     # the block emits the checkpoint
+        expect(trip.to_h[:status][:current]).to eq(t(:quoted))
+
+        trip.decide(message(Book))                      # blockless: auto-appended
+        expect(trip.to_h[:status][:current]).to eq(t(:booked))
+      end
+
+      it "has no current position for a child machine that hasn't started" do
+        expect(LegMachine.new(trip_id: 't1', leg_id: 'l1').to_h[:status]).to eq(active: true, current: nil, done: false, value: nil)
+      end
+
       it "lists children's instances" do
         trip = evolved(Opened)
         trip.evolve([message(LegAdded, leg_id: 'l1'), message(LegAdded, leg_id: 'l2'), message(LegConfirmed, leg_id: 'l1')])
