@@ -1261,6 +1261,24 @@ Sourced.topology
 
 For a machine's own shape, `MyMachine.to_mermaid` returns a Mermaid `stateDiagram-v2`: checkpoints, regions as concurrent sections, and transitions labelled with the commands or joins that take them.
 
+To render a machine yourself, `MyMachine.to_h` returns its definition as a JSON-serializable Hash. It borrows XState's vocabulary and nesting (`states`, `initial`, `type: 'parallel' | 'final'`, `on`, `entry` / `exit`, `after`, `invoke`). Checkpoints are keyed by class name and identified by message type, each command is one transition listing every checkpoint it may decide into, and a region's initial position is a node of its own. An instance's `#to_h` returns the same Hash with every `status` key filled in, which is `nil` in the definition:
+
+```ruby
+OrderMachine.to_h                    # the definition: every status is nil
+
+order, = Sourced.load(OrderMachine, order_id: 'o1')
+order.to_h                           # the same keys, with the instance's status
+order.to_h[:status]                  # => { active: true, current: 'orders.placed', done: false, value: 'orders.placed' }
+
+result = Sourced.handle!(OrderMachine, PlaceOrder.new(payload: { order_id: 'o1' }))
+result.reactor.to_h                  # status after the command, including the events it decided
+```
+
+- A region's status is `{ active:, current:, done: }`. The machine's (its root region's) adds `value`, the current configuration.
+- A checkpoint's is `{ active:, visited:, entered_by: }`. Visited means entered since its region was last entered, and `entered_by` is the event that entered an active checkpoint (`id`, `type`, `at`).
+- A child's is `{ instances: [{ keys:, state:, final: }] }`.
+- The domain `context` isn't included.
+
 ## Testing
 
 Sourced ships with RSpec helpers for Given-When-Then testing of deciders and projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
