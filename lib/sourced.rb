@@ -23,6 +23,10 @@ module Sourced
   # consumer group isn't in the store, which registers groups when Sourced starts.
   ConsumerGroupNotRegisteredError = Class.new(Error)
 
+  # Raised by {.handle!} when the reactor doesn't handle the command in its current
+  # state (its +#handles_command?+ is false). Nothing is appended.
+  CommandNotHandledError = Class.new(Error)
+
   # Default logger for components built outside a configured system, ex. in specs.
   NULL_LOGGER = Logger.new(nil)
 
@@ -136,6 +140,8 @@ module Sourced
   end
 
   # Handle a command synchronously: validate, load history, decide, append, ACK.
+  #
+  # @raise [CommandNotHandledError] if the loaded reactor's +#handles_command?+ is false
   def self.handle!(reactor_class, command, store: nil)
     partition_attrs = extract_partition_attrs(command, reactor_class)
     values = reactor_class.partition_keys.map { |k| partition_attrs[k]&.to_s }
@@ -150,6 +156,10 @@ module Sourced
       instance, read_result = load(reactor_class, store: store, **partition_attrs)
     else
       instance = reactor_class.new(values)
+    end
+
+    if instance.respond_to?(:handles_command?) && !instance.handles_command?(command)
+      raise CommandNotHandledError, "#{reactor_class} doesn't handle #{command.class} (#{command.type}) in its current state"
     end
 
     raw_events = instance.decide(command)
