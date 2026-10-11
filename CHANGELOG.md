@@ -186,6 +186,10 @@
 
 - Reactor subclasses inherit their superclass's `partition_by` keys unless they declare
   their own. They had no partition keys, so their partition reads came back empty.
+- `Sourced.handle!` skipped the reactor's reactions to its own events: it advanced the
+  reactor's offset past everything it appended, so workers never claimed those events.
+  It now advances offsets past the command only, appending the command and its events
+  separately within one transaction.
 - `Date` and `Time` payload attributes never round-tripped through the store: they
   were written via `#to_s` and read back as Strings, producing invalid messages. This
   affected `DurableWorkflow`'s `WaitStarted#at`.

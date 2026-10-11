@@ -167,12 +167,16 @@ module Sourced
     correlated_events = raw_events.map { |e| command.correlate(e) }
 
     guard = read_result&.guard
-    to_append = [command] + correlated_events
-    # One transaction, so a command whose offset can't be advanced isn't committed either
+    # One transaction, so a command whose offset can't be advanced isn't committed either.
+    # The command is appended on its own to learn its position: offsets advance past the
+    # command only, so the reactor's workers still claim the events it just produced and
+    # run its reactions to them. The transaction holds the write lock, so nothing lands
+    # between the two appends, and the guard is checked by whichever appends to the log first.
     store.transaction do
-      last_position = store.append(to_append, guard: guard)
+      command_position = store.append(command, guard: guard)
+      store.append(correlated_events, guard: command_position ? nil : guard)
       # nil when the command itself was future-dated and scheduled: nothing to skip past.
-      advance_registered_offsets(store, reactor_class, partition_attrs, last_position) if last_position
+      advance_registered_offsets(store, reactor_class, partition_attrs, command_position) if command_position
     end
 
     HandleResult.new(command: command, reactor: instance, events: correlated_events)
