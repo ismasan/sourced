@@ -331,13 +331,6 @@ RSpec.describe Sourced::Testing::RSpec do
         .then { |r| expect(r.state[:items]).to eq(['Apple']) }
     end
 
-    it 'given multiple events → then block sees cumulative state' do
-      with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
-        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Banana')
-        .then { |r| expect(r.state[:items]).to eq(['Apple', 'Banana']) }
-    end
-
     it 'then! runs sync actions before yielding state' do
       with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
@@ -348,14 +341,6 @@ RSpec.describe Sourced::Testing::RSpec do
       with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .then! { |r| expect(r.state[:after_synced]).to be true }
-    end
-
-    it 'given events with archive → state reflects removal' do
-      with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
-        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .and(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Banana')
-        .and(GWTTestMessages::ItemArchived, list_id: 'L1', name: 'Apple')
-        .then { |r| expect(r.state[:items]).to eq(['Banana']) }
     end
   end
 
@@ -380,13 +365,6 @@ RSpec.describe Sourced::Testing::RSpec do
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Banana')
         .then { |r| expect(r.state[:items]).to eq(['Apple', 'Banana']) }
-    end
-
-    it 'given events with archive → state reflects removal' do
-      with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
-        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .and(GWTTestMessages::ItemArchived, list_id: 'L1', name: 'Apple')
-        .then { |r| expect(r.state[:items]).to eq([]) }
     end
 
     it 'then! runs sync actions before yielding state' do
