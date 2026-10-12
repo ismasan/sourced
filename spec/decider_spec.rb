@@ -27,16 +27,6 @@ module DeciderTestMessages
   DelayedNotifyBound = Sourced::Message.define('decider_test.delayed_notify_bound') do
     attribute :device_id, String
   end
-
-  SymbolicBound = Sourced::Message.define('decider_test.symbolic_bound') do
-    attribute :device_id, String
-    attribute :asset_id, String
-  end
-
-  BindDeviceWithSymbol = Sourced::Message.define('decider_test.bind_device_with_symbol') do
-    attribute :device_id, String
-    attribute :asset_id, String
-  end
 end
 
 class TestDeviceDecider < Sourced::Decider
@@ -57,12 +47,6 @@ class TestDeviceDecider < Sourced::Decider
     raise 'Not found' unless state[:exists]
     raise 'Already bound' if state[:bound]
     event DeciderTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
-  end
-
-  command DeciderTestMessages::BindDeviceWithSymbol do |state, cmd|
-    raise 'Not found' unless state[:exists]
-    raise 'Already bound' if state[:bound]
-    event :decider_test_symbolic_bound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
   reaction DeciderTestMessages::DeviceBound do |_state, evt|
@@ -143,7 +127,6 @@ RSpec.describe Sourced::Decider do
   describe '.command' do
     it 'registers handler and #decide runs it' do
       expect(TestDeviceDecider.handled_commands).to include(DeciderTestMessages::BindDevice)
-      expect(TestDeviceDecider.handled_commands).to include(DeciderTestMessages::BindDeviceWithSymbol)
 
       instance = TestDeviceDecider.new
       instance.instance_variable_set(:@state, { exists: true, bound: false })
@@ -168,18 +151,6 @@ RSpec.describe Sourced::Decider do
 
       expect(events.size).to eq(1)
       expect(instance.state[:bound]).to be true
-    end
-
-    it 'resolves event classes from symbols' do
-      instance = TestDeviceDecider.new
-      instance.instance_variable_set(:@state, { exists: true, bound: false })
-
-      events = instance.decide(
-        DeciderTestMessages::BindDeviceWithSymbol.new(payload: { device_id: 'd1', asset_id: 'a1' })
-      )
-
-      expect(events.size).to eq(1)
-      expect(events.first).to be_a(DeciderTestMessages::SymbolicBound)
     end
   end
 

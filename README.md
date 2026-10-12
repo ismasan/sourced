@@ -526,9 +526,9 @@ class EnrolmentDecider < Sourced::Decider
       .at(Time.now + 300)
   end
 
-  # Dispatch by symbol (resolved via the reactor's message registry)
-  reaction :student_enrolled do |_state, event|
-    dispatch(:notify_student, student_id: event.payload.student_id)
+  # React to several message types with one block
+  reaction StudentEnrolled, StudentRejoined do |_state, event|
+    dispatch(NotifyStudent, student_id: event.payload.student_id)
   end
 
   # Wildcard: react to every evolve type without an explicit handler.
@@ -539,7 +539,7 @@ class EnrolmentDecider < Sourced::Decider
 end
 ```
 
-`dispatch` accepts either a message class or a symbol. Symbols are looked up via `self.class[symbol]` against the reactor's command/event registry and raise if unresolved. The returned `Dispatcher` supports:
+`dispatch` takes a message class and its payload. The returned `Dispatcher` supports:
 
 - `.with_metadata(hash)` — merges into the message metadata (the `producer` key is already set).
 - `.at(time)` — stamps the message for delayed delivery (promoted by the `ScheduledMessagePoller`).

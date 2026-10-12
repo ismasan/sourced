@@ -106,24 +106,22 @@ module Sourced
     # The returned {Dispatcher} can be chained to delay the message
     # or add metadata before it is appended.
     #
-    # @param message_class [Class, Symbol] messages class, or a symbol
-    #   resolved via <tt>.[]</tt>
+    # @param message_class [Class] message class
     # @param payload [Hash] message payload attributes
     # @return [Dispatcher] chainable wrapper around the dispatched message
     #
-    # @example Dispatch by class
+    # @example Dispatch
     #   reaction StudentEnrolled do |_state, event|
     #     dispatch(NotifyStudent, student_id: event.payload.student_id)
     #   end
     #
-    # @example Dispatch by symbol with delay and metadata
+    # @example Dispatch with delay and metadata
     #   reaction StudentEnrolled do |_state, event|
-    #     dispatch(:notify_student, student_id: event.payload.student_id)
+    #     dispatch(NotifyStudent, student_id: event.payload.student_id)
     #       .with_metadata(channel: 'email')
     #       .at(Time.now + 300)
     #   end
     def dispatch(message_class, payload = {})
-      message_class = self.class[message_class] if message_class.is_a?(Symbol)
       message = @__message_for_reaction
         .correlate(message_class.new(payload: payload))
         .with_metadata(producer: self.class.group_id)
@@ -154,18 +152,17 @@ module Sourced
 
       # Register a reaction handler for one or more messages types.
       #
-      # Accepts message classes, symbols resolved via <tt>.[]</tt>,
-      # multiple arguments, or no arguments for a catch-all reaction across
-      # all evolve types without an explicit handler.
+      # Accepts one or more message classes, or no arguments for a
+      # catch-all reaction across all evolve types without an explicit handler.
       #
       # @example React to a specific event class
       #   reaction StudentEnrolled do |state, event|
       #     dispatch(NotifyStudent, student_id: event.payload.student_id)
       #   end
       #
-      # @example React to a symbol-resolved message class
-      #   reaction :student_enrolled do |state, event|
-      #     dispatch(:notify_student, student_id: event.payload.student_id)
+      # @example React to several message classes
+      #   reaction StudentEnrolled, StudentRejoined do |state, event|
+      #     dispatch(NotifyStudent, student_id: event.payload.student_id)
       #   end
       def reaction(*args, &block)
         case args
@@ -178,20 +175,11 @@ module Sourced
             reaction(message_class, &block)
           end
 
-        in [Symbol => message_symbol]
-          message_class = self[message_symbol].tap do |klass|
-            raise(
-              ArgumentError,
-              "Cannot resolve message symbol #{message_symbol.inspect} for #{self}.reaction"
-            ) unless klass
-          end
-
-          reaction(message_class, &block)
         in [Class => message_class] if message_class < Sourced::Message
           __validate_message_for_reaction!(message_class)
           handled_messages_for_react << message_class
           define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block) if block_given?
-        in Array => values if values.none?(&:nil?)
+        in [_, _, *] => values
           values.each { |value| reaction(value, &block) }
         else
           raise(

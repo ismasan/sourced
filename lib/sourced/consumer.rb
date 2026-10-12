@@ -44,11 +44,6 @@ module Sourced
   # Shared consumer configuration for reactors.
   # Extended (not included) onto reactor classes.
   module Consumer
-    def self.extended(base)
-      super
-      base.extend ClassMethods
-    end
-
     # Copy partition keys into subclasses, which can redeclare them.
     #
     # @param subclass [Class] subclass being created
@@ -148,42 +143,6 @@ module Sourced
         raise Sourced::PartialBatchError.new(results, msg, e)
       end
       results
-    end
-
-    module ClassMethods
-      # Resolve a messages class from a symbol or type-like string.
-      #
-      # Symbols are normalized by replacing dots with underscores before
-      # matching against registered message types. For example,
-      # +:course_created+ matches <tt>"course.created"</tt> and
-      # <tt>"course_created"</tt>.
-      #
-      # @param message_symbol [Symbol, String] symbolic message identifier
-      # @return [Class, nil] matching messages class, or +nil+ if none found
-      #
-      # @example
-      #   CourseDecider[:courses_created]
-      #   # => CourseCreated
-      def [](message_symbol)
-        normalized = message_symbol.to_s.tr('.', '_')
-        find_registered_message_class(normalized)
-      end
-
-      private
-
-      def find_registered_message_class(normalized_name, base = Sourced::Message)
-        base.registry.keys.each do |type|
-          klass = base.registry[type]
-          return klass if type.tr('.', '_') == normalized_name
-        end
-
-        base.subclasses.each do |subclass|
-          klass = find_registered_message_class(normalized_name, subclass)
-          return klass if klass
-        end
-
-        nil
-      end
     end
   end
 end

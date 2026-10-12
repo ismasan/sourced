@@ -2,6 +2,12 @@
 
 ### Changed
 
+- **Message types are referenced by class only.** `reaction`, `#dispatch` and
+  `Decider#event` no longer accept symbols (`reaction :student_enrolled`,
+  `dispatch(:notify_student, ...)`), and the reactor-level `.[]` lookup is
+  removed. Symbols were resolved against the global message registry, not the
+  reactor's own messages, so they could match an unrelated type. Use the message
+  constant instead.
 - **Configuration is a component tree.** `Sourced.config` is the root of a
   [sourced-component](https://github.com/ismasan/sourced-component) tree built by
   `Sourced::Config.build`, declaring typed components with defaults and dependencies:

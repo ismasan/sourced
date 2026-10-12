@@ -162,23 +162,15 @@ module Sourced
     # Produce a new event from within a command handler and apply it
     # to the decider's in-memory state immediately.
     #
-    # Accepts either a messages class or a symbol resolved via <tt>.[]</tt>.
-    #
-    # @param event_class [Class, Symbol] event class or symbolic event name
+    # @param event_class [Class] event class
     # @param payload [Hash] payload attributes for the event
     # @return [Sourced::Message] the newly built event
     #
-    # @example Produce by class
+    # @example
     #   command RegisterDevice do |_state, cmd|
     #     event DeviceRegistered, device_id: cmd.payload.device_id
     #   end
-    #
-    # @example Produce by symbol
-    #   command RegisterDevice do |_state, cmd|
-    #     event :device_registered, device_id: cmd.payload.device_id
-    #   end
     def event(event_class, payload = {})
-      event_class = self.class[event_class] if event_class.is_a?(Symbol)
       evt = event_class.new(payload: payload)
       @uncommitted_events << evt
       evolve([evt])

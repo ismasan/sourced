@@ -101,6 +101,14 @@ RSpec.describe Sourced::React do
     end
   end
 
+  describe '.reaction' do
+    it 'rejects symbols' do
+      expect {
+        reactor_class.reaction(:react_test_something_happened) { |_state, _msg| nil }
+      }.to raise_error(ArgumentError, /Invalid arguments/)
+    end
+  end
+
   describe 'inheritance' do
     it 'subclass inherits reaction handlers' do
       subclass = Class.new(reactor_class)
@@ -135,8 +143,8 @@ RSpec.describe Sourced::React do
           dispatch(ReactTestMessages::DoNext, thing_id: msg.payload.thing_id)
         end
 
-        reaction :react_test_delayed_command do |_state, msg|
-          dispatch(:react_test_delayed_command, thing_id: msg.payload.thing_id)
+        reaction ReactTestMessages::DelayedCommand do |_state, msg|
+          dispatch(ReactTestMessages::DelayedCommand, thing_id: msg.payload.thing_id)
             .with_metadata(foo: 'bar')
             .at(Time.now + 10)
         end
