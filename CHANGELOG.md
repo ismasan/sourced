@@ -2,6 +2,18 @@
 
 ### Changed
 
+- **Reactor state lives in a `Sourced::Projection`.** A reactor's `state` /
+  `evolve` declarations now define a projection subclass the reactor owns, and
+  `#state` / `#evolve` delegate to it. Evolve blocks run in the projection's
+  scope, so they no longer see the reactor's methods or collaborators.
+  - Projections can be standalone classes (`class CartProjection <
+    Sourced::Projection`), shared between reactors with `evolve CartProjection`.
+    Each reactor subclasses it, so its own extra `evolve` blocks don't leak.
+  - `Projector::StateStored` loads stored state with a new `load_state` block,
+    which runs in the reactor's scope. Move snapshot loading out of `state`
+    blocks into `load_state`.
+  - `Sourced::Evolve` can no longer be included into a plain class for state;
+    use `Sourced::Projection`. `DurableWorkflow` no longer includes it.
 - **Message types are referenced by class only.** `reaction`, `#dispatch` and
   `Decider#event` no longer accept symbols (`reaction :student_enrolled`,
   `dispatch(:notify_student, ...)`), and the reactor-level `.[]` lookup is

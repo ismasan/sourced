@@ -203,7 +203,9 @@ class CourseDecider < Sourced::Decider
     { name_taken: false }
   end
 
-  # Evolve state from events (rebuilds history)
+  # Evolve state from events (rebuilds history).
+  # Evolve blocks run in the reactor's projection, not the reactor itself:
+  # see Projections below.
   evolve CourseCreated do |state, _event|
     state[:name_taken] = true
   end
@@ -500,6 +502,56 @@ def execute
   notify_finished
 end
 ```
+
+### Projections
+
+A reactor's `state` and `evolve` declarations define a `Sourced::Projection`: a plain in-memory object that builds state from events and knows nothing about stores, commands or side effects. Evolve blocks run in the projection's scope, so they can't reach the reactor's methods or collaborators, such as a database.
+
+A projection can also be its own class, unit-tested on its own and shared between reactors:
+
+```ruby
+class CartProjection < Sourced::Projection
+  state do |partition_values|
+    { cart_id: partition_values[:cart_id], items: [] }
+  end
+
+  evolve ItemAdded do |state, event|
+    state[:items] << event.payload.item_id
+  end
+end
+
+projection = CartProjection.new(cart_id: 'c1')
+projection.evolve([item_added])
+projection.state # => { cart_id: 'c1', items: ['i1'] }
+```
+
+Reactors adopt it with `evolve`:
+
+```ruby
+class Carts < Sourced::Decider
+  partition_by :cart_id
+  evolve CartProjection
+
+  # More evolve blocks extend this reactor's copy, not CartProjection itself
+  evolve CartClosed do |state, _event|
+    state[:closed] = true
+  end
+
+  command AddItem do |state, cmd|
+    raise 'Cart closed' if state[:closed]
+    event ItemAdded, cart_id: cmd.payload.cart_id, item_id: cmd.payload.item_id
+  end
+end
+
+class CartListing < Sourced::Projector::EventSourced
+  partition_by :cart_id
+  evolve CartProjection
+
+  sync { |state:, **| MyDB.upsert(state) }
+end
+```
+
+Each reactor works on a projection subclass of its own, so its extra `evolve` blocks never leak into the shared class or other reactors. `evolve SomeProjection` must come before the reactor's own `state` / `evolve` declarations.
 
 ### Reactions
 
