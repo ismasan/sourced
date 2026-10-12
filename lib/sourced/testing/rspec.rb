@@ -12,9 +12,10 @@ module Sourced
       #
       # Works with any reactor that responds to the standard
       # <tt>handle_batch(partition_values, new_messages, history:, replaying:)</tt>
-      # contract (Deciders, Projectors, DurableWorkflows).
+      # contract (Deciders, Projectors, DurableWorkflows), and with
+      # {Sourced::Projection} classes, which only evolve state.
       #
-      # @param reactor_class [Class] a reactors class
+      # @param reactor_class [Class] a reactor or projection class
       # @param partition_attrs [Hash] partition key-value pairs (e.g. device_id: 'd1')
       # @return [GWT]
       #
@@ -28,6 +29,11 @@ module Sourced
       #   with_reactor(MyProjector, list_id: 'L1')
       #     .given(ItemAdded, list_id: 'L1', name: 'Apple')
       #     .then { |r| expect(r.state[:items]).to eq(['Apple']) }
+      #
+      # @example Projection — evolve given messages, assert state via block
+      #   with_reactor(CartProjection, cart_id: 'c1')
+      #     .given(ItemAdded, cart_id: 'c1', item_id: 'i1')
+      #     .then { |r| expect(r.state[:items]).to eq(['i1']) }
       def with_reactor(reactor_class, **partition_attrs)
         GWT.new(reactor_class, **partition_attrs)
       end
@@ -103,19 +109,20 @@ module Sourced
         # The batch of new messages to process via +handle_batch+. Can be
         # called multiple times to supply several messages.
         #
-        # Not for projectors: they consume events that already exist, so the
-        # events they process go to {#given}, and there is nothing to
-        # dispatch. See {#run_handle_batch}.
+        # Not for projectors or projections: they consume events that already
+        # exist, so the events they process go to {#given}, and there is
+        # nothing to dispatch. See {#run_handle_batch}.
         #
         # @param klass_or_instance [Class, Sourced::Message]
         # @param payload [Hash]
         # @return [self]
-        # @raise [ArgumentError] on a projector
+        # @raise [ArgumentError] on a projector or projection
         def when(klass_or_instance = nil, **payload)
           raise 'test case already asserted' if @asserted
-          if projector?
+          if projector? || projection?
             raise ArgumentError,
-                  "#{@reactor_class} is a projector: it consumes events that already exist, " \
+                  "#{@reactor_class} is a #{projection? ? 'projection' : 'projector'}: " \
+                  'it consumes events that already exist, ' \
                   'so pass them to `given` and assert with `then`/`then!`'
           end
 
@@ -167,6 +174,12 @@ module Sourced
             return self
           end
 
+          if projection? && !build_expected(*expected).empty?
+            raise ArgumentError,
+                  "#{@reactor_class} is a projection: it produces no messages, " \
+                  'so assert its state with a `then` block'
+          end
+
           pairs = run_handle_batch
 
           # With a block, the hooks run inside compute_state, on the instance
@@ -208,7 +221,15 @@ module Sourced
         # batch, and its history — read unbounded — includes that batch. So
         # for a projector the {#given} messages are both, and its hooks see
         # them as +messages:+ exactly as they would in production.
+        #
+        # A projection has no +handle_batch+: it evolves the {#given}
+        # messages and produces nothing, so evolve errors still surface here.
         def run_handle_batch
+          if projection?
+            @reactor_class.new(@partition_values).evolve(@given_messages)
+            return []
+          end
+
           guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 0)
           history = Sourced::ReadResult.new(messages: @given_messages, guard: guard)
           @reactor_class.handle_batch(
@@ -221,6 +242,10 @@ module Sourced
 
         def projector?
           @reactor_class <= Sourced::Projector
+        end
+
+        def projection?
+          @reactor_class <= Sourced::Projection
         end
 
         # Run each pair's Sync / AfterSync actions as the runner runs them:

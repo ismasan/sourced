@@ -1173,7 +1173,7 @@ end
 
 ### Testing projectors
 
-Projectors use `.given` (events to evolve) and `.then` with a block that receives the projected state. `.when` is not supported — projectors don't handle commands.
+Projectors use `.given` (events to evolve) and `.then` with a block that receives a result whose `state` is the projected state. `.when` is not supported — projectors don't handle commands.
 
 #### StateStored
 
@@ -1185,27 +1185,27 @@ RSpec.describe ItemProjector do
     with_reactor(ItemProjector, list_id: 'L1')
       .given(ItemAdded, list_id: 'L1', name: 'Apple')
       .given(ItemAdded, list_id: 'L1', name: 'Banana')
-      .then { |state| expect(state[:items]).to eq(['Apple', 'Banana']) }
+      .then { |r| expect(r.state[:items]).to eq(['Apple', 'Banana']) }
   end
 
   it 'handles removal' do
     with_reactor(ItemProjector, list_id: 'L1')
       .given(ItemAdded, list_id: 'L1', name: 'Apple')
       .and(ItemArchived, list_id: 'L1', name: 'Apple')
-      .then { |state| expect(state[:items]).to eq([]) }
+      .then { |r| expect(r.state[:items]).to eq([]) }
   end
 
   it 'runs sync actions with then!' do
     with_reactor(ItemProjector, list_id: 'L1')
       .given(ItemAdded, list_id: 'L1', name: 'Apple')
-      .then! { |state| expect(state[:synced]).to be true }
+      .then! { |r| expect(r.state[:synced]).to be true }
   end
 end
 ```
 
 #### EventSourced
 
-Same API — the helper creates an instance, evolves from all given messages, and yields state:
+Same API — the helper creates an instance, evolves from all given messages, and yields the result:
 
 ```ruby
 RSpec.describe CatalogProjector do
@@ -1215,7 +1215,24 @@ RSpec.describe CatalogProjector do
     with_reactor(CatalogProjector, course_id: 'c1')
       .given(CourseCreated, course_id: 'c1', course_name: 'Algebra')
       .given(StudentEnrolled, course_id: 'c1', student_id: 's1')
-      .then { |state| expect(state[:students]).to eq(['s1']) }
+      .then { |r| expect(r.state[:students]).to eq(['s1']) }
+  end
+end
+```
+
+### Testing projections
+
+A bare `Sourced::Projection` takes the same `.given` / `.then` chain: the helper builds it from the partition attributes, evolves the given messages, and yields the result. Projections produce no messages, so `.when` and expected messages raise; an exception class asserts an error raised while evolving.
+
+```ruby
+RSpec.describe CartProjection do
+  include Sourced::Testing::RSpec
+
+  it 'collects added items' do
+    with_reactor(CartProjection, cart_id: 'c1')
+      .given(ItemAdded, cart_id: 'c1', item_id: 'i1')
+      .given(ItemAdded, cart_id: 'c1', item_id: 'i2')
+      .then { |r| expect(r.state[:items]).to eq(%w[i1 i2]) }
   end
 end
 ```
