@@ -279,6 +279,16 @@ RSpec.describe Sourced::Testing::RSpec do
       expect(recording_projector.seen).to eq([apple, pear])
     end
 
+    it 'starts state from load_state' do
+      projector = Class.new(GWTTestStateStoredProjector) do
+        load_state { |values| { list_id: values[:list_id], items: ['Stored'] } }
+      end
+
+      with_reactor(projector, list_id: 'L1')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .then { |r| expect(r.state[:items]).to eq(%w[Stored Apple]) }
+    end
+
     it 'refuses when: a projector consumes events that already exist' do
       expect {
         with_reactor(GWTTestStateStoredProjector, list_id: 'L1')

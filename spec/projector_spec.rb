@@ -520,6 +520,62 @@ RSpec.describe Sourced::Projector do
     end
   end
 
+  describe '.load_state (StateStored)' do
+    let(:stored) { {} }
+
+    let(:projector) do
+      db = stored
+      Class.new(Sourced::Projector::StateStored) do
+        partition_by :list_id
+
+        state { |values| { list_id: values[:list_id], items: [] } }
+
+        evolve ProjectorTestMessages::ItemAdded do |state, msg|
+          state[:items] << msg.payload.name
+        end
+
+        load_state { |values| find(values[:list_id]) }
+
+        # Reactions see the evolved state, so they show what handle_batch built.
+        reaction ProjectorTestMessages::ItemArchived do |state, msg|
+          ProjectorTestMessages::NotifyArchive.new(payload: { list_id: state[:items].join(',') })
+        end
+
+        define_method(:find) { |list_id| db[list_id] }
+      end
+    end
+
+    def item_added(name) = ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: })
+
+    it 'starts from the stored state, loaded in the reactor scope' do
+      stored['L1'] = { list_id: 'L1', items: ['Stored'] }
+
+      instance = projector.new(list_id: 'L1')
+      instance.evolve([item_added('Apple')])
+      expect(instance.state).to eq(list_id: 'L1', items: %w[Stored Apple])
+    end
+
+    it 'falls back to the projection state block when nothing is stored' do
+      expect(projector.new(list_id: 'L1').state).to eq(list_id: 'L1', items: [])
+    end
+
+    it 'evolves the claimed batch on top of the stored state in handle_batch' do
+      stored['L1'] = { list_id: 'L1', items: ['Stored'] }
+      msgs = [
+        Sourced::PositionedMessage.new(item_added('Apple'), 1),
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'x' }), 2
+        )
+      ]
+
+      pairs = projector.handle_batch({ list_id: 'L1' }, msgs)
+      notified = pairs.flat_map { |actions, _| Array(actions) }
+        .grep(Sourced::Actions::Append).flat_map(&:messages)
+
+      expect(notified.map { |m| m.payload.list_id }).to eq(['Stored,Apple'])
+    end
+  end
+
   describe '.context_for' do
     it 'builds conditions from partition_keys × handled_messages_for_evolve' do
       conditions = TestItemProjector.context_for(list_id: 'L1')

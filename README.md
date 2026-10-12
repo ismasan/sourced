@@ -391,16 +391,19 @@ end
 
 #### StateStored projector
 
-Loads persisted state via the `state` block, evolves only new (unprocessed) messages.
+Loads persisted state via the `load_state` block, evolves only new (unprocessed) messages on top of it. `load_state` runs in the reactor's scope, so it can read your storage; when it returns `nil`, the `state` block builds the initial state.
 
 ```ruby
 class MyProjector < Sourced::Projector::StateStored
   partition_by :course_id
 
   state do |partition_values|
-    # Load existing state from your storage
-    existing = MyDB.find(partition_values[:course_id])
-    existing || { course_id: nil, students: [] }
+    { course_id: partition_values[:course_id], students: [] }
+  end
+
+  # Load existing state from your storage
+  load_state do |partition_values|
+    MyDB.find(partition_values[:course_id])
   end
 
   evolve StudentEnrolled do |state, event|
