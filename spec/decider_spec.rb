@@ -129,7 +129,7 @@ RSpec.describe Sourced::Decider do
       expect(TestDeviceDecider.handled_commands).to include(DeciderTestMessages::BindDevice)
 
       instance = TestDeviceDecider.new
-      instance.instance_variable_set(:@state, { exists: true, bound: false })
+      instance.evolve([DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1' })])
 
       events = instance.decide(
         DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
@@ -143,7 +143,7 @@ RSpec.describe Sourced::Decider do
   describe '#event inside command handler' do
     it 'adds to uncommitted events and evolves state immediately' do
       instance = TestDeviceDecider.new
-      instance.instance_variable_set(:@state, { exists: true, bound: false })
+      instance.evolve([DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1' })])
 
       events = instance.decide(
         DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
