@@ -251,7 +251,7 @@ module Sourced
         # handing them the messages the +pairs+ would have appended.
         def compute_state(pairs, sync: false)
           instance = @reactor_class.new(@partition_values)
-          return nil unless instance.respond_to?(:evolve)
+          return nil unless instance.respond_to?(:evolve) && instance.respond_to?(:state)
 
           messages = @given_messages + @when_messages
           instance.evolve(messages)

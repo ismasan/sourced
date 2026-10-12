@@ -16,7 +16,6 @@ module Sourced
   # allows +durable+ / +wait+ / +context+ / +execute+ to be re-entered safely.
   class DurableWorkflow
     extend Sourced::Consumer
-    include Sourced::Evolve
 
     partition_by :workflow_id
 
@@ -290,8 +289,8 @@ module Sourced
       self
     end
 
-    # Override Sourced::Evolve#evolve so {Sourced.load} (which calls +instance.evolve+)
-    # applies workflow events via our manual dispatcher.
+    # Applies workflow events via our manual dispatcher. {Sourced.load} and the
+    # GWT helpers call +instance.evolve+.
     def evolve(messages)
       __replay(messages)
     end
