@@ -112,7 +112,7 @@ RSpec.describe Sourced::Evolve do
       decider.evolve(EvolveTestMessages::CartClosed) { |state, _| state[:closed] = true }
 
       expect(decider.handled_messages_for_evolve).to include(EvolveTestMessages::CartClosed)
-      expect(EvolveTestMessages::CartProjection.handled_messages_for_evolve).not_to include(EvolveTestMessages::CartClosed)
+      expect(EvolveTestMessages::CartProjection.handled_messages).not_to include(EvolveTestMessages::CartClosed)
       expect(projector.handled_messages_for_evolve).not_to include(EvolveTestMessages::CartClosed)
       expect(EvolveTestMessages::CartProjection.new.respond_to?(
         Sourced.message_method_name(Sourced::Projection::PREFIX, EvolveTestMessages::CartClosed.to_s)

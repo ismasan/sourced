@@ -33,12 +33,12 @@ module Sourced
     class << self
       def inherited(subclass)
         super
-        subclass.handled_messages_for_evolve.concat(handled_messages_for_evolve)
+        subclass.handled_messages.concat(handled_messages)
       end
 
       # @return [Array<Class>] message classes this projection evolves from
-      def handled_messages_for_evolve
-        @handled_messages_for_evolve ||= []
+      def handled_messages
+        @handled_messages ||= []
       end
 
       # Define the initial state factory. The block receives the partition values hash.
@@ -56,7 +56,7 @@ module Sourced
           raise ArgumentError, "#{self}.evolve expects a Sourced::Message subclass, got #{message_class.inspect}"
         end
 
-        handled_messages_for_evolve << message_class unless handled_messages_for_evolve.include?(message_class)
+        handled_messages << message_class unless handled_messages.include?(message_class)
         define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
       end
     end

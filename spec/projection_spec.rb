@@ -98,7 +98,7 @@ RSpec.describe Sourced::Projection do
   describe '.evolve' do
     it 'tracks registered classes once' do
       projection_class.evolve(ProjectionTestMessages::ItemAdded) { |_, _| nil }
-      expect(projection_class.handled_messages_for_evolve).to eq([
+      expect(projection_class.handled_messages).to eq([
         ProjectionTestMessages::ItemAdded,
         ProjectionTestMessages::ItemRemoved
       ])
@@ -115,7 +115,7 @@ RSpec.describe Sourced::Projection do
   describe 'inheritance' do
     it 'subclasses inherit the state block and handlers' do
       subclass = Class.new(projection_class)
-      expect(subclass.handled_messages_for_evolve).to eq(projection_class.handled_messages_for_evolve)
+      expect(subclass.handled_messages).to eq(projection_class.handled_messages)
 
       projection = subclass.new
       projection.evolve([added('i1', 'Apple')])
@@ -127,8 +127,8 @@ RSpec.describe Sourced::Projection do
         evolve(ProjectionTestMessages::Unhandled) { |state, _| state[:seen] = true }
       end
 
-      expect(subclass.handled_messages_for_evolve).to include(ProjectionTestMessages::Unhandled)
-      expect(projection_class.handled_messages_for_evolve).not_to include(ProjectionTestMessages::Unhandled)
+      expect(subclass.handled_messages).to include(ProjectionTestMessages::Unhandled)
+      expect(projection_class.handled_messages).not_to include(ProjectionTestMessages::Unhandled)
     end
   end
 end

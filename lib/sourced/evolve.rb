@@ -65,7 +65,7 @@ module Sourced
 
       # @return [Array<Class>] message classes this reactor's projection evolves from
       def handled_messages_for_evolve
-        projection_class.handled_messages_for_evolve
+        projection_class.handled_messages
       end
 
       # Define the projection's initial state factory.
