@@ -51,7 +51,7 @@ module Sourced
           partition_by: @machine.partition_keys.map(&:to_s),
           start: @machine.start_event&.type,
           stop: stop,
-          children: @machine.children_specs.values.map { |spec| child(spec) },
+          children: @machine.tree.children_specs.values.map { |spec| child(spec) },
           status: @runtime && region_status(@machine.tree.root).merge(value: value(@machine.tree.root))
         )
       end

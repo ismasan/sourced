@@ -60,13 +60,16 @@ module Sourced
     extend Sourced::Consumer
 
     # Checkpoints and the children's start and final events are evolved too,
-    # alongside the projection's evolve types. They're the machine's own, not
-    # its projection's (which has no handlers for them), so adopting a
+    # alongside the projection's evolve types, as are the evolve types of the
+    # machines mounted as regions. Checkpoints and children are the machine's
+    # own, not its projection's (which has no handlers for them), so adopting a
     # projection with +evolve SomeProjection+ keeps them. Prepended after
     # Sourced::Evolve's class methods, so +super+ is the projection's list.
     module EvolveTypes
       def handled_messages_for_evolve
-        (super + tree.checkpoints.keys + child_events.keys).uniq
+        tree = self.tree
+        mounted = tree.mounted_machines.flat_map { |machine| machine.projection_class.handled_messages }
+        (super + tree.checkpoints.keys + tree.child_events.keys + mounted).uniq
       end
     end
     singleton_class.prepend EvolveTypes
@@ -122,6 +125,12 @@ module Sourced
 
     # A join over children: once every child spawned as +as+ is final.
     ChildrenJoin = Data.define(:as, :definition)
+
+    # A region whose checkpoints are another machine's, declared with
+    # +region :name, SomeMachine+. Its definition isn't copied: the tree places
+    # the machine's root region under the checkpoint (see {Tree}). +on_done+
+    # maps the machine's root final checkpoints onto the parent's.
+    RegionMount = Data.define(:name, :machine, :on_done)
 
     NONE = [].freeze
 
@@ -250,12 +259,31 @@ module Sourced
 
       # Declare a region, active while this checkpoint is. A checkpoint with
       # regions is parallel: all of its regions are active at once.
-      # @param name [Symbol] unique within the machine
-      def region(name, &block)
+      #
+      # With a block, the region's checkpoints are declared inline. With a
+      # machine, they're that machine's: it runs as this region, in this
+      # machine's partition, decided with it, its state this machine's (its
+      # +evolve+ blocks apply to it too). It escalates through its root final
+      # checkpoints, which +on_done+ maps onto ours.
+      #
+      #   region :payment, PaymentMachine, on_done: { PaymentExpired => OrderCancelled }
+      #
+      # @param name [Symbol] unique within the machine's tree
+      # @param machine [Class<Machine>, nil]
+      # @param on_done [Hash{Class => Class}] the machine's root final => our checkpoint
+      def region(name, machine = nil, on_done: {}, &block)
         raise DefinitionError, "#{@machine}: the initial position can't have regions" if @node.initial?
         raise DefinitionError, "#{@machine}: final checkpoint #{@node.key} can't have regions" if @node.final?
 
-        @machine.send(:__define_region, @node, name.to_sym, &block)
+        if machine
+          raise DefinitionError, "#{@machine}: region #{name.inspect} takes a machine or a block, not both" if block
+
+          @machine.send(:__mount_region, @node, name.to_sym, machine, on_done)
+        else
+          raise DefinitionError, "#{@machine}: region #{name.inspect}: on_done is for a mounted machine" if on_done.any?
+
+          @machine.send(:__define_region, @node, name.to_sym, &block)
+        end
       end
 
       # Join: once every region of this checkpoint is at a final checkpoint,
@@ -480,8 +508,11 @@ module Sourced
       # @return [Hash{Class => Node}] every checkpoint, in any region
       def checkpoints = @checkpoints ||= {}
 
-      # @return [Hash{Symbol => Region}] every region but the root
+      # @return [Hash{Symbol => Region}] every region but the root, declared inline
       def regions = @regions ||= {}
+
+      # @return [Hash{Symbol => RegionMount}] regions that are other machines
+      def mounts = @mounts ||= {}
 
       # @return [Hash{Symbol => ChildSpec}] child machines, by +as+
       def children_specs = @children_specs ||= {}
@@ -491,7 +522,7 @@ module Sourced
       def child_events = @child_events ||= {}
 
       # @param klass [Class]
-      def child_event?(klass) = child_events.key?(klass)
+      def child_event?(klass) = tree.child_event?(klass)
 
       # The checkpoint a parent appends to spawn or invoke this machine.
       # @return [Class, nil]
@@ -601,7 +632,7 @@ module Sourced
       # +reaction+. Every checkpoint is claimed, with or without actions:
       # claiming them is also how a machine notices checkpoints appended by
       # other reactors (children included), which joins decide on.
-      def handled_messages = (handled_commands + checkpoint_classes + child_events.keys + handled_messages_for_react).uniq
+      def handled_messages = (handled_commands + checkpoint_classes + tree.child_events.keys + handled_messages_for_react).uniq
 
       # Check the definition. Memoised; runs before the first instance is built,
       # and when the machine is registered with a Router.
@@ -676,13 +707,35 @@ module Sourced
       end
 
       def __define_region(node, name, &block)
-        raise DefinitionError, "#{self}: region #{name.inspect} is declared twice" if regions.key?(name)
+        raise DefinitionError, "#{self}: region #{name.inspect} is declared twice" if regions.key?(name) || mounts.key?(name)
 
         region = Region.new(name, node)
         regions[name] = region
         node.regions << region
         RegionBuilder.new(self, region).instance_eval(&block) if block
         region
+      end
+
+      def __mount_region(node, name, machine, on_done)
+        raise DefinitionError, "#{self}: region #{name.inspect} is declared twice" if regions.key?(name) || mounts.key?(name)
+        unless machine.is_a?(Class) && machine < Machine
+          raise DefinitionError, "#{self}: region #{name.inspect}: #{machine.inspect} isn't a Sourced::Machine"
+        end
+        raise DefinitionError, "#{self}: region #{name.inspect}: a machine can't be its own region" if machine <= self
+        # Reactions are methods, and sync blocks the machine's own: neither can
+        # run on this machine's instance. What every machine inherits is ours too.
+        if (machine.handled_messages_for_react - Machine.handled_messages_for_react).any? ||
+           (machine.sync_blocks - Machine.sync_blocks).any? ||
+           (machine.after_sync_blocks - Machine.after_sync_blocks).any?
+          raise DefinitionError,
+                "#{self}: region #{name.inspect}: #{machine} declares reactions or sync blocks, " \
+                "which it can't run as a region; declare them on #{self}"
+        end
+
+        mount = RegionMount.new(name:, machine:, on_done:)
+        mounts[name] = mount
+        node.regions << mount
+        mount
       end
 
       def __define_child(child, as:, kind:, node: nil, keys: nil, on_done: {}, stop_on: [])
@@ -770,10 +823,28 @@ module Sourced
         end
 
         handled_messages_for_react.each { |klass| __check_partition_keys!(klass, 'reaction') }
-        children_specs.each_value { |spec| __check_child!(spec) }
+        tree.regions.each_value { |region| __check_mount!(region) if region.mount }
+        tree.children_specs.each_value { |spec| __check_child!(spec, tree.owner(spec)) }
       end
 
-      def __check_child!(spec)
+      # A mounted machine escalates through its root finals, mapped onto the
+      # checkpoints reachable from the checkpoint that mounts it.
+      # @param region [PlacedRegion]
+      def __check_mount!(region)
+        machine = region.machine
+        finals = machine.root.nodes.values.select(&:final?).map(&:key)
+        node = region.parent
+        region.on_done.each do |final, target|
+          unless finals.include?(final)
+            raise DefinitionError, "#{self}: region #{region.name.inspect} on_done #{final} isn't a final checkpoint of #{machine}'s root region"
+          end
+          node.machine.send(:__check_reachable!, node.node, target, "region #{region.name.inspect}'s on_done targets")
+          __check_buildable!(target, nil)
+        end
+      end
+
+      # @param owner [Class<Machine>] the machine that declares the child
+      def __check_child!(spec, owner)
         child = spec.machine
         missing = partition_keys - child.partition_keys
         unless missing.empty?
@@ -789,14 +860,14 @@ module Sourced
           unless finals.include?(child_final)
             raise DefinitionError, "#{self}: on_done #{child_final} isn't a final checkpoint of #{child}'s root region"
           end
-          __check_reachable!(spec.node, target, "invoke #{child}'s on_done targets")
+          owner.send(:__check_reachable!, spec.node, target, "invoke #{child}'s on_done targets")
           __check_buildable!(target, nil)
         end
       end
 
       # @param node [PlacedNode]
       def __check_children_join!(node, join)
-        spec = children_specs[join.as]
+        spec = tree.children_specs[join.as]
         raise DefinitionError, "#{self}: children_done #{join.as.inspect} doesn't name spawned children" unless spec && !spec.invoke?
 
         join.definition.checkpoint_targets.each do |target|
@@ -924,6 +995,7 @@ module Sourced
         @runtime.enter(msg, node) if node
         track_child(msg)
         super([msg])
+        __region_projections.each { |region_projection| region_projection.evolve([msg]) }
       end
       state
     end
@@ -1022,7 +1094,7 @@ module Sourced
           entered = self.class.tree.checkpoints.fetch(message.class)
           entered.entries.each { |blk| instance_exec(state, message, &blk) }
           start_timers(entered, message)
-          self.class.children_specs.each_value do |spec|
+          self.class.tree.children_specs.each_value do |spec|
             stop_children(spec) if spec.stop_on.include?(message.class)
           end
         end
@@ -1050,9 +1122,34 @@ module Sourced
 
     def append_eventless
       MAX_JOINS.times do
-        return unless join_step || children_join_step || invoke_step
+        return unless mount_done_step || join_step || children_join_step || invoke_step
       end
       raise Error, "#{self.class}: more than #{MAX_JOINS} joins in one decision"
+    end
+
+    # A mounted machine at one of its root finals that +on_done+ maps: decide
+    # into the mapped checkpoint. Before +done+ joins, so a region's escalation
+    # (ex. a payment expiring) wins over completing its checkpoint.
+    def mount_done_step
+      @runtime.active_nodes.each do |node|
+        node.regions.each do |region|
+          current = @runtime.current_node(region)
+          next unless current.final? && (target = region.on_done[current.key])
+
+          event(target)
+          return true
+        end
+      end
+      false
+    end
+
+    # The projections of the machines mounted as regions, built from our
+    # state: their +evolve+ blocks apply to the same object as ours.
+    def __region_projections
+      @__region_projections ||= self.class.tree.mounted_machines
+                                    .map(&:projection_class)
+                                    .reject { |klass| klass.handled_messages.empty? }
+                                    .map { |klass| klass.new(projection.state) }
     end
 
     def join_step
@@ -1115,14 +1212,14 @@ module Sourced
     # @param payload [Hash] the child's own keys, and anything else its start needs
     # @return [Sourced::Message] the start event
     def spawn(as, payload = {})
-      spec = self.class.children_specs.fetch(as) { raise Error, "#{self.class} doesn't spawn #{as.inspect}" }
+      spec = self.class.tree.children_specs.fetch(as) { raise Error, "#{self.class} doesn't spawn #{as.inspect}" }
       raise Error, "#{self.class}: #{as.inspect} is invoked, not spawned" if spec.invoke?
 
       event(spec.machine.start_event, payload)
     end
 
     def track_child(msg)
-      self.class.child_events.fetch(msg.class, NONE).each do |spec, role|
+      self.class.tree.child_events.fetch(msg.class, NONE).each do |spec, role|
         keys = msg.payload.to_h.slice(*(spec.machine.partition_keys - self.class.partition_keys))
         entry_id = spec.invoke? && role == :start ? invoking_entry(spec) : nil
         @runtime.track_child(spec, keys, state: msg.class, final: role == :final, entry_id:)
