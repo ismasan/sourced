@@ -211,7 +211,7 @@ module Sourced
         end
 
         node.children_joins.each do |join|
-          child = machine.children_specs.fetch(join.as).machine
+          child = machine.tree.children_specs.fetch(join.as).machine
           finals = child.root.nodes.values.select(&:final?).map { |n| n.key.type }
           automation.call("#{node.key.type}-children-done-#{join.as}", "children_done(#{join.as})", finals,
                           machine_block_produces(machine, analyzer, join.definition))
@@ -228,7 +228,7 @@ module Sourced
         end
       end
 
-      machine.children_specs.each_value do |spec|
+      machine.tree.children_specs.each_value do |spec|
         next if spec.invoke? || spec.stop_on.empty?
 
         automation.call("stop-#{spec.as}", "stop(#{spec.machine.name})", spec.stop_on.map(&:type), [spec.machine::Stop.type])
@@ -240,7 +240,7 @@ module Sourced
       types = definition.checkpoint_targets.map(&:type)
       types += resolve_refs(analyzer.calls_in_block(definition.block, :event), machine)
       types += analyzer.calls_in_block(definition.block, :spawn).filter_map do |kind, value|
-        machine.children_specs[value.to_sym]&.machine&.start_event&.type if kind == :symbol
+        machine.tree.children_specs[value.to_sym]&.machine&.start_event&.type if kind == :symbol
       end
       types.uniq
     end
