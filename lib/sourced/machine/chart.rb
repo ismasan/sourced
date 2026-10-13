@@ -13,6 +13,9 @@ module Sourced
     # * A checkpoint's id is its message type. Its key in +states+ is the class
     #   name without modules (the full name, with +::+ as +_+, if that's taken).
     # * A checkpoint with regions is +type: 'parallel'+, its +states+ the regions.
+    # * A compound checkpoint (a machine's, see {Machine.checkpoint}) is
+    #   +type: 'compound'+, its +states+ the machine's checkpoints, its +initial+
+    #   the machine's start, which has id +"<message type>/start"+.
     # * Each command is one transition, listing every checkpoint it may decide
     #   into as +targets+ (empty for a data-only command). Transitions are listed
     #   on the checkpoint that takes them, targets in any region.
@@ -72,15 +75,26 @@ module Sourced
           id: region.name.to_s,
           key: region.name.to_s,
           type: 'compound',
-          initial: initial_node?(region) ? id(region.initial_node) : id(@machine.tree.checkpoints.fetch(@machine.start_event)),
+          initial: id(initial_node?(region) ? region.initial_node : start_node(region)),
           states:,
           status: @runtime && region_status(region)
         }
       end
 
-      def initial_node?(region) = !(region.root? && @machine.start_event && !region.nodes.key?(INITIAL))
+      def initial_node?(region)
+        !region.compound? && !(region.root? && @machine.start_event && !region.nodes.key?(INITIAL))
+      end
+
+      # Where a region without an initial position starts: a compound
+      # checkpoint's machine's start, or the machine's own +start+.
+      def start_node(region)
+        region.compound? ? region.nodes.fetch(region.start) : @machine.tree.checkpoints.fetch(@machine.start_event)
+      end
+
+      def compound_region(node) = node.regions.find(&:compound?)
 
       def node(node, key)
+        compound = compound_region(node)
         {
           id: id(node),
           key:,
@@ -98,14 +112,15 @@ module Sourced
           invoke: node.invokes.map do |spec|
             { id: spec.as.to_s, src: spec.machine.name, on_done: spec.on_done.to_h { |final, target| [final.type, target_id(target)] } }
           end,
-          states: node.regions.to_h { |child| [child.name.to_s, region(child)] },
+          states: compound ? region(compound)[:states] : node.regions.to_h { |child| [child.name.to_s, region(child)] },
           status: @runtime && node_status(node)
-        }
+        }.tap { |hash| hash[:initial] = id(start_node(compound)) if compound }
       end
 
       def node_type(node)
         if node.initial? then 'initial'
         elsif node.final? then 'final'
+        elsif compound_region(node) then 'compound'
         elsif node.regions.any? then 'parallel'
         else 'atomic'
         end
@@ -132,7 +147,7 @@ module Sourced
           as: spec.as.to_s,
           machine: spec.machine.name,
           kind: spec.kind.to_s,
-          checkpoint: spec.node && id(spec.node),
+          checkpoint: spec.node && id(@machine.tree.placed(spec.node)),
           stop_on: Array(spec.stop_on).map(&:type),
           status: @runtime && { instances: @runtime.children(spec.as).map { |ref| child_ref(ref) } }
         }
@@ -160,6 +175,7 @@ module Sourced
       def value(region)
         current = @runtime.current_node(region)
         return position_id(current) if current.regions.empty?
+        return { id(current) => value(compound_region(current)) } if compound_region(current)
 
         { id(current) => current.regions.to_h { |child| [child.name.to_s, value(child)] } }
       end
@@ -169,7 +185,12 @@ module Sourced
 
       def targets(classes) = classes.map { |klass| target_id(klass) }
       def target_id(klass) = id(@machine.tree.checkpoints.fetch(klass))
-      def id(node) = node.initial? ? "#{node.region.name}/initial" : node.key.type
+      def id(node)
+        if node.initial? then "#{node.region.name}/initial"
+        elsif node.compound_start? then "#{node.key.type}/start"
+        else node.key.type
+        end
+      end
       def short_name(klass) = klass.name.split('::').last
     end
   end
