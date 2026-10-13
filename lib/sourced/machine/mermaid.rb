@@ -11,7 +11,9 @@ module Sourced
     # that takes it, and is declared in the ancestor region. From a region's
     # initial position, which has no state of its own, it starts from the
     # composite state that contains the region. A child's +start+ checkpoint
-    # is entered from the diagram's start.
+    # is entered from the diagram's start. A compound checkpoint (a machine's)
+    # is a composite state entered at its machine's start, drawn as
+    # +<id>__start+ since it's the same event.
     #
     #   Sourced::Machine::Mermaid.new(OrderMachine).to_s
     class Mermaid
@@ -66,9 +68,9 @@ module Sourced
           next if node.initial?
 
           if node.regions.empty?
-            lines << %(#{indent}state "#{short_name(node.key)}" as #{id(node.key)})
+            lines << %(#{indent}state "#{short_name(node.key)}" as #{node_id(node)})
           else
-            lines << %(#{indent}state "#{short_name(node.key)}" as #{id(node.key)} {)
+            lines << %(#{indent}state "#{short_name(node.key)}" as #{node_id(node)} {)
             node.regions.each_with_index do |child, i|
               lines << "#{indent}  --" if i.positive?
               lines.concat(region_lines(child, "#{indent}  "))
@@ -77,17 +79,19 @@ module Sourced
           end
         end
         lines << "#{indent}[*] --> #{id(@machine.start_event)}" if region.root? && @machine.start_event
+        lines << "#{indent}[*] --> #{node_id(region.nodes.fetch(region.start))}" if region.compound?
         @edges[region].uniq.each do |source, target, label|
-          from = source.initial? ? '[*]' : id(source.key)
-          lines << "#{indent}#{from} --> #{id(target.key)} : #{label}"
+          from = source.initial? ? '[*]' : node_id(source)
+          lines << "#{indent}#{from} --> #{node_id(target)} : #{label}"
         end
         region.nodes.each_value do |node|
-          lines << "#{indent}#{id(node.key)} --> [*]" if node.final?
+          lines << "#{indent}#{node_id(node)} --> [*]" if node.final?
         end
         lines
       end
 
       def id(klass) = klass.name.gsub('::', '_')
+      def node_id(node) = node.compound_start? ? "#{id(node.key)}__start" : id(node.key)
       def short_name(klass) = klass.name.split('::').last
     end
   end
