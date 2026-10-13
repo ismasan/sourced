@@ -25,7 +25,7 @@ module Sourced
       def to_s
         @edges.clear
         collect_edges
-        (['stateDiagram-v2'] + region_lines(@machine.root, '  ')).join("\n")
+        (['stateDiagram-v2'] + region_lines(@machine.tree.root, '  ')).join("\n")
       end
 
       private
@@ -46,7 +46,7 @@ module Sourced
         end
         return unless @machine.stop_event
 
-        @machine.root.nodes.each_value do |node|
+        @machine.tree.root.nodes.each_value do |node|
           edge(node, @machine.stop_event, 'Stop') unless node.final? || node.initial?
         end
       end
@@ -54,7 +54,7 @@ module Sourced
       # Record a transition in the region it's drawn in: the target's, from the
       # state that takes it, or the state containing a region's initial position.
       def edge(node, target, label)
-        target_node = @machine.checkpoints.fetch(target)
+        target_node = @machine.tree.checkpoints.fetch(target)
         source = node
         source = source.region.parent while source.initial? && source.region != target_node.region
         @edges[target_node.region] << [source, target_node, label]
@@ -76,7 +76,7 @@ module Sourced
             lines << "#{indent}}"
           end
         end
-        lines << "#{indent}[*] --> #{id(@machine.start_event)}" if region == @machine.root && @machine.start_event
+        lines << "#{indent}[*] --> #{id(@machine.start_event)}" if region.root? && @machine.start_event
         @edges[region].uniq.each do |source, target, label|
           from = source.initial? ? '[*]' : id(source.key)
           lines << "#{indent}#{from} --> #{id(target.key)} : #{label}"

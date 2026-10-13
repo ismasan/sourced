@@ -66,7 +66,7 @@ module Sourced
     # Sourced::Evolve's class methods, so +super+ is the projection's list.
     module EvolveTypes
       def handled_messages_for_evolve
-        (super + checkpoints.keys + child_events.keys).uniq
+        (super + tree.checkpoints.keys + child_events.keys).uniq
       end
     end
     singleton_class.prepend EvolveTypes
@@ -574,14 +574,20 @@ module Sourced
       # @param event_class [Class]
       def final(event_class, &block) = __define_node(root, event_class, final: true, &block)
 
-      # @return [Array<Class>] declared checkpoint event classes
-      def checkpoint_classes = checkpoints.keys
+      # The machine's definition placed into one tree (see {Tree}), which the
+      # runtime, routing and rendering work on. Built once the machine is
+      # validated; before that (while the class body runs), built on each call.
+      # @return [Tree]
+      def tree = @tree || Tree.new(self)
+
+      # @return [Array<Class>] the checkpoint event classes in the machine's tree
+      def checkpoint_classes = tree.checkpoints.keys
 
       # @param klass [Class]
-      def checkpoint?(klass) = checkpoints.key?(klass)
+      def checkpoint?(klass) = tree.checkpoint?(klass)
 
-      # @return [Array<Node>] every node, initial positions included
-      def all_nodes = [root, *regions.values].flat_map { |region| region.nodes.values }
+      # @return [Array<PlacedNode>] every node in the machine's tree, initial positions included
+      def all_nodes = tree.all_nodes
 
       # @return [Array<Class>] every command any checkpoint accepts, and +Stop+
       def handled_commands
@@ -605,6 +611,7 @@ module Sourced
       def validate!
         @validated ||= begin
           __validate!
+          @tree = Tree.new(self)
           true
         end
       end
@@ -738,8 +745,12 @@ module Sourced
       def __validate!
         raise DefinitionError, "#{self} needs partition_by" if partition_keys.empty?
 
-        checkpoint_classes.each { |klass| __check_partition_keys!(klass, 'checkpoint') }
-        all_nodes.each do |node|
+        # The whole tree is checked against our partition keys, which are the
+        # partition its events and commands are in; where a checkpoint can move
+        # the machine is checked within the machine that declares it.
+        tree = Tree.new(self)
+        tree.checkpoints.each_key { |klass| __check_partition_keys!(klass, 'checkpoint') }
+        tree.all_nodes.each do |node|
           if node.final? && node.commands.any?
             raise DefinitionError, "#{self}: final checkpoint #{node.key} can't accept commands"
           end
@@ -747,7 +758,7 @@ module Sourced
           node.commands.each_value do |definition|
             __check_partition_keys!(definition.command_class, 'command')
             definition.checkpoint_targets.each do |target|
-              __check_reachable!(node, target, "#{definition.command_class} targets")
+              node.machine.send(:__check_reachable!, node.node, target, "#{definition.command_class} targets")
             end
             if definition.auto? && definition.block.nil?
               __check_buildable!(definition.targets.first, definition.command_class)
@@ -783,12 +794,13 @@ module Sourced
         end
       end
 
+      # @param node [PlacedNode]
       def __check_children_join!(node, join)
         spec = children_specs[join.as]
         raise DefinitionError, "#{self}: children_done #{join.as.inspect} doesn't name spawned children" unless spec && !spec.invoke?
 
         join.definition.checkpoint_targets.each do |target|
-          __check_reachable!(node, target, "#{join.definition.command_class} targets")
+          node.machine.send(:__check_reachable!, node.node, target, "#{join.definition.command_class} targets")
         end
         __check_buildable!(join.definition.targets.first, nil) if join.definition.auto? && join.definition.block.nil?
       end
@@ -805,11 +817,12 @@ module Sourced
               "#{node.label} can only reach #{node.region.label} or its ancestors"
       end
 
+      # @param node [PlacedNode]
       def __check_join!(node)
         raise DefinitionError, "#{self}: #{node.label} declares done but has no regions" if node.regions.empty?
         return unless node.done
 
-        __check_reachable!(node, node.done, "#{node.label}'s done is")
+        node.machine.send(:__check_reachable!, node.node, node.done, "#{node.label}'s done is")
         __check_buildable!(node.done, nil)
       end
 
@@ -888,7 +901,7 @@ module Sourced
     def initialize(partition_values = {})
       self.class.validate!
       @partition_values = partition_values
-      @runtime = Runtime.new(self.class.root)
+      @runtime = Runtime.new(self.class.tree.root)
       @uncommitted_events = nil
     end
 
@@ -907,7 +920,7 @@ module Sourced
     # +evolve+ handler updates the domain context.
     def evolve(messages)
       Array(messages).each do |msg|
-        node = self.class.checkpoints[msg.class]
+        node = self.class.tree.checkpoints[msg.class]
         @runtime.enter(msg, node) if node
         track_child(msg)
         super([msg])
@@ -1006,7 +1019,7 @@ module Sourced
             left.exits.each { |blk| instance_exec(context, message, &blk) }
             left.invokes.each { |spec| stop_children(spec) }
           end
-          entered = self.class.checkpoints.fetch(message.class)
+          entered = self.class.tree.checkpoints.fetch(message.class)
           entered.entries.each { |blk| instance_exec(context, message, &blk) }
           start_timers(entered, message)
           self.class.children_specs.each_value do |spec|
@@ -1117,7 +1130,8 @@ module Sourced
     end
 
     def invoking_entry(spec)
-      @runtime.active_node?(spec.node) ? @runtime.entered_by(spec.node.region)&.id : nil
+      node = self.class.tree.placed(spec.node)
+      @runtime.active_node?(node) ? @runtime.entered_by(node.region)&.id : nil
     end
 
     def stop_children(spec)
@@ -1128,7 +1142,7 @@ module Sourced
 
     # +Stop+ applies once the machine has started, until it's final.
     def stoppable?
-      root = @runtime.current_node(self.class.root)
+      root = @runtime.current_node(self.class.tree.root)
       !root.initial? && !root.final?
     end
 
@@ -1185,5 +1199,6 @@ module Sourced
   end
 end
 
+require 'sourced/machine/tree'
 require 'sourced/machine/chart'
 require 'sourced/machine/mermaid'
