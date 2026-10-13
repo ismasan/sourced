@@ -59,7 +59,7 @@ module MachineChildrenTest
   class LineItemMachine < Sourced::Machine
     partition_by :order_id, :line_id
 
-    context { |_| LineState.new }
+    context { LineState.new }
     evolve(LineAdded) { |line, evt| line.sku = evt.payload.sku }
     # The parent's fact: never wakes a line, but is in its partition reads
     evolve(OrderPlaced) { |line, evt| line.currency = evt.payload.currency }
@@ -112,7 +112,7 @@ module MachineChildrenTest
   class PaymentMachine < Sourced::Machine
     partition_by :order_id, :payment_id
 
-    context { |_| PaymentState.new }
+    context { PaymentState.new }
     evolve(OrderPlaced) { |pay, evt| pay.amount = evt.payload.total }
 
     start PaymentRequested do
