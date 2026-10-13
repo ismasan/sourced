@@ -190,6 +190,15 @@
   definition as a JSON-serializable Hash for rendering, and `Machine#to_h` the same Hash
   with the instance's status (active, visited and current checkpoints, children). Design in
   `plans/statecharts.md`.
+- Composing machines: `region :payment, PaymentMachine, on_done: { PaymentExpired =>
+  OrderCancelled }` runs another machine as a region, and `checkpoint ThingStarted,
+  ThingMachine, on_done: { … }` (or `checkpoint ThingMachine`) as a compound checkpoint
+  whose sub-states start at its `start`. A composed machine runs in the parent's
+  partition and instance, its projection built from the parent's state; it escalates
+  through its root finals, which `on_done` maps onto the parent's checkpoints. Machines
+  work on `Machine.tree`, their definitions placed into one tree, which validation,
+  routing, `to_h`, `to_mermaid` and the topology read. Design in
+  `plans/statecharts-region-machines.md`.
 - `Decider#handles_command?(command)`: whether the decider handles a command in its
   current state. Defaults to whether a handler is registered for the command's class;
   override it to refuse commands based on state without raising, the command-side
