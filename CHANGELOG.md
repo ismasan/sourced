@@ -16,6 +16,10 @@
     use `Sourced::Projection`. `DurableWorkflow` no longer includes it.
   - The GWT helpers take projection classes: `with_reactor(CartProjection, ...)`
     evolves the `given` messages and yields the state to a `then` block.
+  - `Sourced.load(CartProjection, cart_id: 'c1')` loads a projection's state
+    from the log. `Sourced.load` takes any class with `handled_messages_for_evolve`,
+    `new(values)` and `#evolve`; `partition_keys` is optional, and without it the
+    given values are the partition.
 - **Message types are referenced by class only.** `reaction`, `#dispatch` and
   `Decider#event` no longer accept symbols (`reaction :student_enrolled`,
   `dispatch(:notify_student, ...)`), and the reactor-level `.[]` lookup is

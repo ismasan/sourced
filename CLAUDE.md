@@ -107,7 +107,7 @@ Tree: `logger`, `db`, `notifier`, `executor`, `error_strategy`, `store` (deps db
 - **Forking**: `Sourced.config.prepare!` in the parent, `start!` in each child. A torn-down tree can't be restarted (`TornDownError`); specs use `Sourced.reset!` for a fresh tree.
 - `Sourced.store`, `.router`, `.topology`, `.logger` read components and raise `NotBuiltError` before build. Core classes (Store, Router, Worker, Dispatcher, pollers) never read globals: they take explicit kwargs (loggers default to `NULL_LOGGER`), and only the tree wires them.
 - `Sourced.handle!(ReactorClass, command)` — synchronous command dispatch (for web controllers): validates, loads history via partition read, decides, appends with guard, advances registered offsets. Returns `HandleResult(command, reactor, events)`.
-- `Sourced.load(ReactorClass, **partition_values)` — loads a reactor instance by evolving over AND-filtered partition history. Returns `[instance, read_result]`.
+- `Sourced.load(ReactorClass, **partition_values)` — loads a reactor (or `Projection`) instance by evolving over AND-filtered partition history. Returns `[instance, read_result]`. Duck-typed: needs `.handled_messages_for_evolve` (aliased on `Projection`), `.new(values)` and `#evolve`; `.partition_keys` is optional, and without it all given values are the partition.
 
 ## DSL Patterns
 

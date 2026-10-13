@@ -553,6 +553,15 @@ end
 
 Each reactor works on a projection subclass of its own, so its extra `evolve` blocks never leak into the shared class or other reactors. `evolve SomeProjection` must come before the reactor's own `state` / `evolve` declarations.
 
+`Sourced.load` reads a projection's state straight from the log, with no projector or read model. The attributes you pass are its partition:
+
+```ruby
+cart, read_result = Sourced.load(CartProjection, cart_id: 'c1')
+cart.state # => { cart_id: 'c1', items: [...] }
+```
+
+This reads the partition's whole history on every call, so it suits small partitions; persist larger read models with a projector.
+
 ### Reactions
 
 Both deciders and projectors can react to events to produce follow-up messages, enabling workflow orchestration. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.

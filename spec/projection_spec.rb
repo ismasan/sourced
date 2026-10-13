@@ -104,6 +104,10 @@ RSpec.describe Sourced::Projection do
       ])
     end
 
+    it 'exposes them as handled_messages_for_evolve too' do
+      expect(projection_class.handled_messages_for_evolve).to equal(projection_class.handled_messages)
+    end
+
     it 'rejects anything but a message class' do
       expect { projection_class.evolve(:projection_test_item_added) { nil } }
         .to raise_error(ArgumentError, /Sourced::Message subclass/)

@@ -41,6 +41,10 @@ module Sourced
         @handled_messages ||= []
       end
 
+      # The name reactors use for the types they evolve from, so a projection
+      # can be loaded the same way (see {Sourced.load}).
+      alias handled_messages_for_evolve handled_messages
+
       # Define the initial state factory. The block receives the partition values hash.
       def state(&blk)
         define_method(:init_state, &blk)

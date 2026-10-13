@@ -37,6 +37,14 @@ class LoadTestDecider < Sourced::Decider
   end
 end
 
+class LoadTestProjection < Sourced::Projection
+  state { |values| { course_id: values[:course_id], students: [] } }
+
+  evolve LoadTestMessages::StudentEnrolled do |state, evt|
+    state[:students] << evt.payload.student_id
+  end
+end
+
 class LoadTestProjector < Sourced::Projector::StateStored
   partition_by :course_id
   consumer_group 'load-test-projector'
@@ -306,6 +314,30 @@ RSpec.describe 'Sourced.load' do
       )
 
       expect(instance.state[:course_id]).to eq('algebra')
+    end
+  end
+
+  describe 'loading a Projection' do
+    before do
+      store.append([
+        LoadTestMessages::StudentEnrolled.new(payload: { course_id: 'algebra', student_id: 'joe' }),
+        LoadTestMessages::StudentEnrolled.new(payload: { course_id: 'physics', student_id: 'ann' }),
+        LoadTestMessages::StudentEnrolled.new(payload: { course_id: 'algebra', student_id: 'jane' })
+      ])
+    end
+
+    it 'uses the given values as the partition' do
+      projection, read_result = Sourced.load(LoadTestProjection, store: store, course_id: 'algebra')
+
+      expect(projection).to be_a(LoadTestProjection)
+      expect(projection.state).to eq(course_id: 'algebra', students: %w[joe jane])
+      expect(read_result.messages.size).to eq(2)
+    end
+
+    it 'evolves over at most upto messages' do
+      projection, _read_result = Sourced.load(LoadTestProjection, store: store, upto: 1, course_id: 'algebra')
+
+      expect(projection.state[:students]).to eq(['joe'])
     end
   end
 

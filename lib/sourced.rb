@@ -167,12 +167,27 @@ module Sourced
     HandleResult.new(command: command, reactor: instance, events: correlated_events)
   end
 
-  # Load a reactor instance from its event history using AND-filtered partition reads.
+  # Load a reactor or projection instance from its event history using
+  # AND-filtered partition reads.
   # Pass +upto:+ (partition-local rank) to evolve over at most the first N matching
   # messages in the partition — useful for time-travel, deterministic replay, or debugging.
+  #
+  # +reactor_class+ must respond to +handled_messages_for_evolve+ and +new(values)+,
+  # and its instances to +evolve(messages)+. If it also responds to +partition_keys+,
+  # only those keys of +values+ are the partition; otherwise all of +values+ are,
+  # as for a {Sourced::Projection}.
+  #
+  # @example
+  #   cart, read_result = Sourced.load(CartProjection, cart_id: 'c1')
+  #   cart.state
   def self.load(reactor_class, store: nil, upto: nil, **values)
     store ||= self.store
-    partition_attrs = reactor_class.partition_keys.to_h { |k| [k, values[k]] }
+    partition_attrs =
+      if reactor_class.respond_to?(:partition_keys)
+        reactor_class.partition_keys.to_h { |k| [k, values[k]] }
+      else
+        values
+      end
     handled_types = reactor_class.handled_messages_for_evolve.map(&:type).uniq
     read_result = store.read_partition(partition_attrs, handled_types:, upto: upto)
     instance = reactor_class.new(values)
