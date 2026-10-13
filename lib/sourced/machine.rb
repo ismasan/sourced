@@ -127,10 +127,15 @@ module Sourced
     ChildrenJoin = Data.define(:as, :definition)
 
     # A region whose checkpoints are another machine's, declared with
-    # +region :name, SomeMachine+. Its definition isn't copied: the tree places
+    # +region :name, SomeMachine+ or, for a compound checkpoint,
+    # +checkpoint SomeMachine+. Its definition isn't copied: the tree places
     # the machine's root region under the checkpoint (see {Tree}). +on_done+
-    # maps the machine's root final checkpoints onto the parent's.
-    RegionMount = Data.define(:name, :machine, :on_done)
+    # maps the machine's root final checkpoints onto the parent's. +start+ is
+    # the region's starting checkpoint: +nil+ for a region (it starts at its
+    # initial position), the machine's start event for a compound checkpoint.
+    RegionMount = Data.define(:name, :machine, :on_done, :start) do
+      def compound? = !start.nil?
+    end
 
     NONE = [].freeze
 
@@ -200,7 +205,10 @@ module Sourced
       end
 
       def initial(&block) = @machine.send(:__define_node, @region, INITIAL, final: false, &block)
-      def checkpoint(event_class, &block) = @machine.send(:__define_node, @region, event_class, final: false, &block)
+      def checkpoint(event_class, machine = nil, on_done: {}, &block)
+        @machine.send(:__define_checkpoint, @region, event_class, machine, on_done, &block)
+      end
+
       def final(event_class, &block) = @machine.send(:__define_node, @region, event_class, final: true, &block)
     end
 
@@ -274,6 +282,9 @@ module Sourced
       def region(name, machine = nil, on_done: {}, &block)
         raise DefinitionError, "#{@machine}: the initial position can't have regions" if @node.initial?
         raise DefinitionError, "#{@machine}: final checkpoint #{@node.key} can't have regions" if @node.final?
+        if @node.regions.any? { |r| r.is_a?(RegionMount) && r.compound? }
+          raise DefinitionError, "#{@machine}: #{@node.key} is a machine's compound checkpoint, so it can't have regions"
+        end
 
         if machine
           raise DefinitionError, "#{@machine}: region #{name.inspect} takes a machine or a block, not both" if block
@@ -464,7 +475,7 @@ module Sourced
         pos.entered_by = event
         pos.visited << node.key unless pos.visited.include?(node.key)
         # A fresh activation of the checkpoint's regions
-        node.regions.each { |region| reset(region) }
+        node.regions.each { |region| reset(region, event) }
       end
 
       # The checkpoints +event+ made the machine leave, innermost first.
@@ -487,14 +498,25 @@ module Sourced
         node.regions.flat_map { |region| exits_from(current_node(region)) } + [node]
       end
 
-      def reset(region)
-        @positions[region] = Position.new(INITIAL, nil, [])
-        region.nodes.each_value { |node| node.regions.each { |child| reset(child) } }
+      # A region starts at its initial position; a compound checkpoint's at its
+      # machine's start checkpoint, entered by +event+, which entered the
+      # compound checkpoint.
+      def reset(region, event)
+        @positions[region] =
+          if region.compound?
+            Position.new(region.start, event, [region.start])
+          else
+            Position.new(INITIAL, nil, [])
+          end
+        region.nodes.each_value { |node| node.regions.each { |child| reset(child, event) } }
       end
 
       def value_of(region)
         node = current_node(region)
         return node.key if node.regions.empty?
+
+        compound = node.regions.find(&:compound?)
+        return { node.key => value_of(compound) } if compound
 
         { node.key => node.regions.to_h { |child| [child.name, value_of(child)] } }
       end
@@ -598,8 +620,25 @@ module Sourced
       def initial(&block) = __define_node(root, INITIAL, final: false, &block)
 
       # Declare a checkpoint, and the commands it accepts.
-      # @param event_class [Class]
-      def checkpoint(event_class, &block) = __define_node(root, event_class, final: false, &block)
+      #
+      # With a machine, the checkpoint is compound: its sub-states are that
+      # machine's checkpoints, starting at its +start+ checkpoint, which is
+      # this one. The event can be left out, as it's the machine's start:
+      #
+      #   checkpoint ThingStarted, ThingMachine, on_done: { ThingFinished => OrderReady }
+      #   checkpoint ThingMachine                # the same, without on_done
+      #
+      # The block declares the compound checkpoint's own commands and actions.
+      # The machine runs in this machine's partition and instance, its context
+      # this machine's; it escalates through its root finals, which +on_done+
+      # maps onto our checkpoints.
+      #
+      # @param event_class [Class] the checkpoint event, or a machine with +start+
+      # @param machine [Class<Machine>, nil] a machine whose +start+ is +event_class+
+      # @param on_done [Hash{Class => Class}] the machine's root final => our checkpoint
+      def checkpoint(event_class, machine = nil, on_done: {}, &block)
+        __define_checkpoint(root, event_class, machine, on_done, &block)
+      end
 
       # Declare a final checkpoint. It accepts no commands.
       # @param event_class [Class]
@@ -689,7 +728,32 @@ module Sourced
 
       private
 
-      def __define_node(region, key, final:, &block)
+      def __define_checkpoint(region, event_class, machine, on_done, &block)
+        if machine.nil? && event_class.is_a?(Class) && event_class < Machine
+          machine = event_class
+          event_class = machine.start_event
+          raise DefinitionError, "#{self}: checkpoint #{machine} needs a machine with start" unless event_class
+        end
+        if machine.nil?
+          raise DefinitionError, "#{self}: checkpoint #{event_class}: on_done is for a compound checkpoint" if on_done.any?
+
+          return __define_node(region, event_class, final: false, &block)
+        end
+        unless machine.is_a?(Class) && machine < Machine
+          raise DefinitionError, "#{self}: checkpoint #{event_class}: #{machine.inspect} isn't a Sourced::Machine"
+        end
+        unless machine.start_event == event_class
+          raise DefinitionError,
+                "#{self}: checkpoint #{event_class}: #{machine} must start at it, " \
+                "its start is #{machine.start_event || 'not declared'}"
+        end
+
+        name = Types::Underscore.parse((machine.name || event_class.name).split('::').last).to_sym
+        mount = __mount(name, machine, on_done, start: event_class)
+        __define_node(region, event_class, final: false, mount:, &block)
+      end
+
+      def __define_node(region, key, final:, mount: nil, &block)
         unless key == INITIAL || (key.is_a?(Class) && key < Sourced::Message)
           raise DefinitionError, "#{self}: checkpoints are message classes, got #{key.inspect}"
         end
@@ -702,6 +766,7 @@ module Sourced
         unless key == INITIAL
           checkpoints[key] = node
         end
+        node.regions << mount if mount
         NodeBuilder.new(self, node).instance_eval(&block) if block
         node
       end
@@ -717,10 +782,18 @@ module Sourced
       end
 
       def __mount_region(node, name, machine, on_done)
-        raise DefinitionError, "#{self}: region #{name.inspect} is declared twice" if regions.key?(name) || mounts.key?(name)
         unless machine.is_a?(Class) && machine < Machine
           raise DefinitionError, "#{self}: region #{name.inspect}: #{machine.inspect} isn't a Sourced::Machine"
         end
+
+        mount = __mount(name, machine, on_done)
+        node.regions << mount
+        mount
+      end
+
+      # Record a mount of +machine+ under +name+, unique among this machine's regions.
+      def __mount(name, machine, on_done, start: nil)
+        raise DefinitionError, "#{self}: region #{name.inspect} is declared twice" if regions.key?(name) || mounts.key?(name)
         raise DefinitionError, "#{self}: region #{name.inspect}: a machine can't be its own region" if machine <= self
         # Reactions are methods, and sync blocks the machine's own: neither can
         # run on this machine's instance. What every machine inherits is ours too.
@@ -732,10 +805,7 @@ module Sourced
                 "which it can't run as a region; declare them on #{self}"
         end
 
-        mount = RegionMount.new(name:, machine:, on_done:)
-        mounts[name] = mount
-        node.regions << mount
-        mount
+        mounts[name] = RegionMount.new(name:, machine:, on_done:, start:)
       end
 
       def __define_child(child, as:, kind:, node: nil, keys: nil, on_done: {}, stop_on: [])
@@ -1091,9 +1161,10 @@ module Sourced
             left.exits.each { |blk| instance_exec(context, message, &blk) }
             left.invokes.each { |spec| stop_children(spec) }
           end
-          entered = self.class.tree.checkpoints.fetch(message.class)
-          entered.entries.each { |blk| instance_exec(context, message, &blk) }
-          start_timers(entered, message)
+          __entered_nodes(self.class.tree.checkpoints.fetch(message.class)).each do |entered|
+            entered.entries.each { |blk| instance_exec(context, message, &blk) }
+            start_timers(entered, message)
+          end
           self.class.tree.children_specs.each_value do |spec|
             stop_children(spec) if spec.stop_on.include?(message.class)
           end
@@ -1105,6 +1176,13 @@ module Sourced
     end
 
     private
+
+    # The checkpoints a checkpoint event enters, outermost first: its own, and
+    # for a compound checkpoint its machine's start, entered by the same event.
+    def __entered_nodes(node)
+      starts = node.regions.select(&:compound?).map { |region| region.nodes.fetch(region.start) }
+      [node, *starts.flat_map { |start| __entered_nodes(start) }]
+    end
 
     def deciding
       @uncommitted_events = []
