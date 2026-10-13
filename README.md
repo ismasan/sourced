@@ -789,8 +789,6 @@ Rules for composed machines:
 
 `Sourced.topology` describes machines' commands, checkpoints and actions, and `OrderMachine.to_mermaid` draws the machine as a Mermaid state diagram.
 
-The design, with the reasoning behind these rules, is in [`plans/statecharts.md`](plans/statecharts.md).
-
 ### Reactions
 
 Both deciders and projectors can react to events to produce follow-up messages, enabling workflow orchestration. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
