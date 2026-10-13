@@ -782,7 +782,8 @@ So a machine with `start` can be used three ways: standalone, as a child (its ow
 Rules for composed machines:
 
 - **Context**: the composed machine's projection is built from the parent's context, so its `evolve` blocks update the same object, and its handlers receive it. The parent's context must respond to what they call.
-- **Escalation**: a composed machine's commands can only target its own checkpoints. It reaches the parent through its root final checkpoints, which `on_done` maps onto the parent's, appended in the deciding command's decision (as `done` joins).
+- **Escalation**: a composed machine's commands can only target its own checkpoints. It reaches the parent through its root final checkpoints, which `on_done` maps onto the parent's, appended in the deciding command's decision (as `done` joins). When a decision both makes a region reach a mapped final and completes the parent's `done` join, `on_done` wins.
+- **A compound checkpoint's machine shares its start event with the checkpoint.** A sub-machine command that targets its own `start` re-enters the whole compound checkpoint: the parent checkpoint's exit and entry actions run too, and the sub-machine starts over.
 - **Handlers run on the parent's instance**: `event`, `dispatch` and `machine` are the parent's, and partition keys are the parent's, so its events and commands must declare them. It may `spawn` and `invoke` children of its own.
 - **Not allowed**: reactions and sync blocks of its own (they can't run on the parent's instance; declare them on the parent), and mounting the same machine twice (its checkpoints would be ambiguous). Checkpoints, region names and children must not clash across the composed machines.
 
