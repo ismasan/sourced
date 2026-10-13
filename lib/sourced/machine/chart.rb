@@ -46,13 +46,13 @@ module Sourced
 
       # @return [Hash]
       def to_h
-        region(@machine.root).merge(
+        region(@machine.tree.root).merge(
           machine: @machine.name,
           partition_by: @machine.partition_keys.map(&:to_s),
           start: @machine.start_event&.type,
           stop: stop,
           children: @machine.children_specs.values.map { |spec| child(spec) },
-          status: @runtime && region_status(@machine.root).merge(value: value(@machine.root))
+          status: @runtime && region_status(@machine.tree.root).merge(value: value(@machine.tree.root))
         )
       end
 
@@ -72,7 +72,7 @@ module Sourced
           id: region.name.to_s,
           key: region.name.to_s,
           type: 'compound',
-          initial: initial_node?(region) ? id(region.initial_node) : id(@machine.checkpoints.fetch(@machine.start_event)),
+          initial: initial_node?(region) ? id(region.initial_node) : id(@machine.tree.checkpoints.fetch(@machine.start_event)),
           states:,
           status: @runtime && region_status(region)
         }
@@ -91,7 +91,7 @@ module Sourced
           exit: node.exits.size,
           after: node.afters.map { |timer| { delay: timer.delay } },
           on: node.commands.values.to_h { |definition| [definition.command_class.type, transition(definition)] },
-          on_done: node.done && @machine.checkpoints.fetch(node.done).then { |target| id(target) },
+          on_done: node.done && @machine.tree.checkpoints.fetch(node.done).then { |target| id(target) },
           children_done: node.children_joins.map do |join|
             { as: join.as.to_s, targets: targets(join.definition.checkpoint_targets) }
           end,
@@ -168,7 +168,7 @@ module Sourced
       def position_id(node) = node.initial? && !initial_node?(node.region) ? nil : id(node)
 
       def targets(classes) = classes.map { |klass| target_id(klass) }
-      def target_id(klass) = id(@machine.checkpoints.fetch(klass))
+      def target_id(klass) = id(@machine.tree.checkpoints.fetch(klass))
       def id(node) = node.initial? ? "#{node.region.name}/initial" : node.key.type
       def short_name(klass) = klass.name.split('::').last
     end
