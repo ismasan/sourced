@@ -53,7 +53,7 @@ module MachineRegionsTest
   class OrderMachine < Sourced::Machine
     partition_by :order_id
 
-    context { |_| OrderState.new }
+    context { OrderState.new }
     evolve(OrderPlaced) { |order, evt| order.total = evt.payload.total }
     evolve(PaymentInfoAdded) { |order, evt| order.card = evt.payload.card }
     evolve(ItemPacked) { |order, evt| order.packed << evt.payload.sku }

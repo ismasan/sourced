@@ -89,11 +89,10 @@ module MachineTest
   end
 
   class CartState
-    attr_reader :cart_id, :items
+    attr_reader :items
     attr_accessor :currency
 
-    def initialize(cart_id)
-      @cart_id = cart_id
+    def initialize
       @items = {}
     end
 
@@ -105,7 +104,7 @@ module MachineTest
   class CartMachine < Sourced::Machine
     partition_by :cart_id
 
-    context { |keys| CartState.new(keys[:cart_id]) }
+    context { CartState.new }
     evolve(CartOpened) { |cart, evt| cart.currency = evt.payload.currency }
     evolve(ItemAdded) { |cart, evt| cart.add(evt.payload.sku, evt.payload.qty, evt.payload.unit_price) }
 
@@ -185,6 +184,22 @@ RSpec.describe Sourced::Machine do
       expect(CartMachine.handled_messages_for_evolve).to contain_exactly(
         CartOpened, ItemAdded, CheckedOut, CheckoutRejected, CartPaid
       )
+    end
+
+    it "keeps its checkpoints out of its projection, so adopting one keeps them" do
+      items = Class.new(Sourced::Projection) do
+        context { CartState.new }
+        evolve(ItemAdded) { |cart, evt| cart.add(evt.payload.sku, evt.payload.qty, evt.payload.unit_price) }
+      end
+      machine = Class.new(Sourced::Machine) do
+        partition_by :cart_id
+        initial { command OpenCart => CartOpened }
+        final CartOpened
+        evolve items
+      end
+
+      expect(machine.projection_class.handled_messages).to eq([ItemAdded])
+      expect(machine.handled_messages_for_evolve).to contain_exactly(ItemAdded, CartOpened)
     end
   end
 
@@ -636,7 +651,7 @@ RSpec.describe Sourced::Machine do
       m = Class.new(Sourced::Machine) do
         def self.name = 'MachineTest::PingMachine'
         partition_by :cart_id
-        context { |_| { note: nil } }
+        context { { note: nil } }
         evolve(NoteTaken) { |s, evt| s[:note] = evt.payload.note }
 
         initial do
