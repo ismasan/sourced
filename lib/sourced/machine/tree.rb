@@ -67,7 +67,13 @@ module Sourced
 
           @regions[name] = placed
         end
-        region.nodes.each_value { |node| place_node(node, placed, machine) }
+        region.nodes.each_value do |node|
+          # A compound checkpoint's machine starts at its start checkpoint: its
+          # initial position is never reached, so it isn't part of the tree.
+          next if node.initial? && placed.start != INITIAL
+
+          place_node(node, placed, machine)
+        end
         placed
       end
 
@@ -75,7 +81,8 @@ module Sourced
         placed = PlacedNode.new(node, region)
         @placed[node] = placed
         @all_nodes << placed
-        unless node.initial?
+        # A compound checkpoint's start is the parent's checkpoint, already indexed.
+        unless node.initial? || placed.compound_start?
           if @checkpoints.key?(node.key)
             raise DefinitionError, "#{@top}: checkpoint #{node.key} is declared twice (#{@checkpoints[node.key].label}, #{placed.label})"
           end
@@ -110,7 +117,7 @@ module Sourced
 
     # A {Region} at its position in a {Tree}.
     class PlacedRegion
-      attr_reader :region, :name, :parent, :machine, :mount, :nodes
+      attr_reader :region, :name, :parent, :machine, :mount, :nodes, :start
 
       # @param region [Region] the definition
       # @param name [Symbol]
@@ -123,10 +130,15 @@ module Sourced
         @parent = parent
         @machine = machine
         @mount = mount
+        @start = mount&.start || INITIAL
         @nodes = {}
       end
 
       def root? = parent.nil?
+
+      # A compound checkpoint's region: it starts at its machine's start
+      # checkpoint, entered by the event that enters the checkpoint.
+      def compound? = start != INITIAL
 
       # @return [Hash{Class => Class}] a mounted machine's root finals => the parent's checkpoints
       def on_done = mount ? mount.on_done : NONE_MAP
@@ -169,6 +181,10 @@ module Sourced
       def children_joins = node.children_joins
       def done = node.done
       def label = initial? ? "#{region.label}'s initial position" : key.to_s
+
+      # Whether this is a compound checkpoint's machine's start: the same
+      # event as the compound checkpoint, one level down.
+      def compound_start? = region.compound? && key == region.start
 
       # Whether this checkpoint is inside +other+'s regions, at any depth.
       def descendant_of?(other)

@@ -201,26 +201,29 @@ module Sourced
       machine.all_nodes.each do |node|
         next if node.initial?
 
+        # A compound checkpoint's machine's start is the same event, one level down.
+        node_id = node.compound_start? ? "#{node.key.type}-start" : node.key.type
+
         actions = node.entries + node.exits + node.afters.map(&:block)
         dispatched = actions.flat_map { |blk| resolve_refs(analyzer.calls_in_block(blk, :dispatch), machine) }.uniq
-        automation.call(node.key.type, "actions(#{node.key.name})", [node.key.type], dispatched) if dispatched.any?
+        automation.call(node_id, "actions(#{node.key.name})", [node.key.type], dispatched) if dispatched.any?
 
         if node.done
           finals = node.regions.flat_map { |region| region.nodes.values.select(&:final?).map { |n| n.key.type } }
-          automation.call("#{node.key.type}-done", "done(#{node.key.name})", finals, [node.done.type])
+          automation.call("#{node_id}-done", "done(#{node.key.name})", finals, [node.done.type])
         end
 
         node.children_joins.each do |join|
           child = machine.tree.children_specs.fetch(join.as).machine
           finals = child.root.nodes.values.select(&:final?).map { |n| n.key.type }
-          automation.call("#{node.key.type}-children-done-#{join.as}", "children_done(#{join.as})", finals,
+          automation.call("#{node_id}-children-done-#{join.as}", "children_done(#{join.as})", finals,
                           machine_block_produces(machine, analyzer, join.definition))
         end
 
         node.invokes.each do |spec|
-          automation.call("#{node.key.type}-invoke-#{spec.as}", "invoke(#{spec.machine.name})",
+          automation.call("#{node_id}-invoke-#{spec.as}", "invoke(#{spec.machine.name})",
                           [node.key.type], [spec.machine.start_event.type])
-          automation.call("#{node.key.type}-stop-#{spec.as}", "stop(#{spec.machine.name})",
+          automation.call("#{node_id}-stop-#{spec.as}", "stop(#{spec.machine.name})",
                           [node.key.type], [spec.machine::Stop.type])
           spec.on_done.each do |child_final, target|
             automation.call("#{child_final.type}-on-done", "on_done(#{child_final.name})", [child_final.type], [target.type])
