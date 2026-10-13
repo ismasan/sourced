@@ -12,7 +12,7 @@ module Sourced
   #   class OrderMachine < Sourced::Machine
   #     partition_by :order_id
   #
-  #     state { |keys| OrderState.new(keys[:order_id]) }
+  #     state { OrderState.new }
   #     evolve(ItemAdded) { |order, evt| order.add(evt.payload.sku) }
   #
   #     initial do
@@ -58,6 +58,18 @@ module Sourced
     include Sourced::React
     include Sourced::Sync
     extend Sourced::Consumer
+
+    # Checkpoints and the children's start and final events are evolved too,
+    # alongside the projection's evolve types. They're the machine's own, not
+    # its projection's (which has no handlers for them), so adopting a
+    # projection with +evolve SomeProjection+ keeps them. Prepended after
+    # Sourced::Evolve's class methods, so +super+ is the projection's list.
+    module EvolveTypes
+      def handled_messages_for_evolve
+        (super + checkpoints.keys + child_events.keys).uniq
+      end
+    end
+    singleton_class.prepend EvolveTypes
 
     Error = Class.new(Sourced::Error)
 
@@ -651,8 +663,6 @@ module Sourced
         region.nodes[key] = node
         unless key == INITIAL
           checkpoints[key] = node
-          # Checkpoints are always evolved, alongside any +evolve+ types.
-          handled_messages_for_evolve << key unless handled_messages_for_evolve.include?(key)
         end
         NodeBuilder.new(self, node).instance_eval(&block) if block
         node
@@ -683,7 +693,6 @@ module Sourced
         finals = child.root.nodes.values.select(&:final?).map(&:key)
         [[child.start_event, :start], *finals.map { |f| [f, :final] }].each do |klass, role|
           (child_events[klass] ||= []) << [spec, role]
-          handled_messages_for_evolve << klass unless handled_messages_for_evolve.include?(klass)
         end
         spec
       end
