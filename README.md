@@ -592,8 +592,9 @@ This reads the partition's whole history on every call, so it suits small partit
 class OrderMachine < Sourced::Machine
   partition_by :order_id
 
-  # Domain context, as in a Decider: any object, mutated by evolve handlers
-  context { |keys| OrderState.new(keys[:order_id]) }
+  # Domain context, as in a Decider: any object, mutated by evolve handlers.
+  # Like any projection's, the context block takes no arguments.
+  context { OrderState.new }
   evolve(OrderPlaced) { |order, evt| order.total = evt.payload.total }
   evolve(PaymentInfoAdded) { |order, evt| order.card = evt.payload.card }
 
@@ -680,7 +681,7 @@ Regions are for modelling. For work that runs in parallel, a machine spawns or i
 class LineItemMachine < Sourced::Machine
   partition_by :order_id, :line_id
 
-  context { |_keys| LineState.new }
+  context { LineState.new }
   evolve(LineAdded) { |line, evt| line.sku = evt.payload.sku }
   evolve(OrderPlaced) { |line, evt| line.currency = evt.payload.currency }  # the parent's fact
 
