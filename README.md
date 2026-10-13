@@ -718,6 +718,74 @@ end
 
 A child is only woken by messages carrying all of its partition keys: its own events, the parent's `spawn`, and the `Stop` the parent sends. Parent facts with fewer keys (`OrderPlaced`, `OrderCancelled`) are in the child's partition reads, so it can evolve them, but they never wake it. The parent tracks each child's start and final checkpoints (`machine.children(:lines)`), which drive `children_done` and `on_done`.
 
+#### Composing machines
+
+A machine's definition can be split into other machines, which run as part of it: in its partition, decided with it under one guard, on its domain context. Unlike a child machine, a composed one isn't a separate reactor.
+
+**A region** can be another machine. Its checkpoints become the region's, starting at its `initial` position each time the checkpoint is entered:
+
+```ruby
+class PaymentMachine < Sourced::Machine
+  evolve(PaymentInfoAdded) { |order, evt| order.card = evt.payload.card }  # updates the parent's context
+
+  initial { command StartPayment => PaymentStarted }
+  checkpoint PaymentStarted do
+    command Capture => PaymentCaptured
+    command ExpirePayment => PaymentExpired
+  end
+  final PaymentCaptured
+  final PaymentExpired
+end
+
+class OrderMachine < Sourced::Machine
+  partition_by :order_id
+  context { OrderState.new }
+
+  checkpoint OrderPlaced do
+    region :payment, PaymentMachine, on_done: { PaymentExpired => OrderCancelled }
+    region :shipping do                            # inline and composed regions mix
+      # ...
+    end
+    done OrderCompleted
+  end
+  # ...
+end
+```
+
+**A checkpoint** can be another machine: a compound checkpoint, whose sub-states are that machine's checkpoints, starting at its `start`, which is the checkpoint's own event. The event can be left out:
+
+```ruby
+class ThingMachine < Sourced::Machine
+  start ThingStarted do
+    command Progress => ThingProgressed
+  end
+  checkpoint(ThingProgressed) { command Finish => ThingFinished }
+  final ThingFinished
+end
+
+class OrderMachine < Sourced::Machine
+  checkpoint OrderPlaced do
+    command StartThing => ThingStarted
+  end
+
+  checkpoint ThingStarted, ThingMachine, on_done: { ThingFinished => OrderReady } do
+    command Cancel => OrderCancelled               # the compound checkpoint's own commands
+  end
+  # or, without on_done or commands of its own: checkpoint ThingMachine
+end
+```
+
+Entering `ThingStarted` puts `ThingMachine` at its start, and runs both checkpoints' entry actions, outermost first. Commands go to the deepest checkpoint that accepts them (`Progress` to the sub-machine, `Cancel` to `ThingStarted`), leaving `ThingStarted` exits the sub-machine first, and re-entering it starts the sub-machine over. `machine.value` is `{ ThingStarted => ThingProgressed }`.
+
+So a machine with `start` can be used three ways: standalone, as a child (its own partition, started by the parent's append of its start event), or as a compound checkpoint (the parent's partition, started by the parent entering its start event).
+
+Rules for composed machines:
+
+- **Context**: the composed machine's projection is built from the parent's context, so its `evolve` blocks update the same object, and its handlers receive it. The parent's context must respond to what they call.
+- **Escalation**: a composed machine's commands can only target its own checkpoints. It reaches the parent through its root final checkpoints, which `on_done` maps onto the parent's, appended in the deciding command's decision (as `done` joins).
+- **Handlers run on the parent's instance**: `event`, `dispatch` and `machine` are the parent's, and partition keys are the parent's, so its events and commands must declare them. It may `spawn` and `invoke` children of its own.
+- **Not allowed**: reactions and sync blocks of its own (they can't run on the parent's instance; declare them on the parent), and mounting the same machine twice (its checkpoints would be ambiguous). Checkpoints, region names and children must not clash across the composed machines.
+
 `Sourced.topology` describes machines' commands, checkpoints and actions, and `OrderMachine.to_mermaid` draws the machine as a Mermaid state diagram.
 
 The design, with the reasoning behind these rules, is in [`plans/statecharts.md`](plans/statecharts.md).
