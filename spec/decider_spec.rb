@@ -33,7 +33,7 @@ class TestDeviceDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'device-decider-test'
 
-  state { |_| { exists: false, bound: false } }
+  state { { exists: false, bound: false } }
 
   evolve DeciderTestMessages::DeviceRegistered do |state, _evt|
     state[:exists] = true
@@ -62,7 +62,7 @@ class TestDelayedReactionDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'device-delayed-decider-test'
 
-  state { |_| { exists: false, bound: false } }
+  state { { exists: false, bound: false } }
 
   evolve DeciderTestMessages::DeviceRegistered do |state, _evt|
     state[:exists] = true
@@ -89,7 +89,7 @@ class TestReplayingReactionDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'device-replaying-decider-test'
 
-  state { |_| { exists: false, bound: false } }
+  state { { exists: false, bound: false } }
 
   evolve DeciderTestMessages::DeviceBound do |state, _evt|
     state[:bound] = true
@@ -111,7 +111,7 @@ class TestCountingDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'device-counting-decider-test'
 
-  state { |_| { bound_count: 0 } }
+  state { { bound_count: 0 } }
 
   evolve DeciderTestMessages::DeviceBound do |state, _evt|
     state[:bound_count] += 1

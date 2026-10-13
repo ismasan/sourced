@@ -97,11 +97,7 @@ module Sourced
       def projection
         @projection ||= begin
           stored = load_state(partition_values)
-          if stored.nil?
-            self.class.projection_class.new(partition_values)
-          else
-            self.class.projection_class.new(partition_values, stored)
-          end
+          stored.nil? ? self.class.projection_class.new : self.class.projection_class.new(stored)
         end
       end
     end

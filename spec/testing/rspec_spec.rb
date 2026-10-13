@@ -48,7 +48,7 @@ class GWTTestDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'gwt-test-decider'
 
-  state { |_| { exists: false, bound: false } }
+  state { { exists: false, bound: false } }
 
   evolve GWTTestMessages::DeviceRegistered do |state, _evt|
     state[:exists] = true
@@ -86,7 +86,7 @@ class GWTTestSimpleDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'gwt-test-simple-decider'
 
-  state { |_| { exists: false } }
+  state { { exists: false } }
 
   evolve GWTTestMessages::DeviceRegistered do |state, _evt|
     state[:exists] = true
@@ -102,8 +102,8 @@ class GWTTestStateStoredProjector < Sourced::Projector::StateStored
   partition_by :list_id
   consumer_group 'gwt-test-ss-projector'
 
-  state do |(list_id)|
-    { list_id: list_id, items: [], synced: false, after_synced: false }
+  state do
+    { items: [], synced: false, after_synced: false }
   end
 
   evolve GWTTestMessages::ItemAdded do |state, msg|
@@ -127,8 +127,8 @@ class GWTTestEventSourcedProjector < Sourced::Projector::EventSourced
   partition_by :list_id
   consumer_group 'gwt-test-es-projector'
 
-  state do |(list_id)|
-    { list_id: list_id, items: [], synced: false, after_synced: false }
+  state do
+    { items: [], synced: false, after_synced: false }
   end
 
   evolve GWTTestMessages::ItemAdded do |state, msg|
@@ -149,13 +149,14 @@ class GWTTestEventSourcedProjector < Sourced::Projector::EventSourced
 end
 
 class GWTTestProjection < Sourced::Projection
-  state do |values|
-    { list_id: values[:list_id], items: [] }
+  state do
+    { list_id: nil, items: [] }
   end
 
   evolve GWTTestMessages::ItemAdded do |state, msg|
     raise ArgumentError, 'no blanks' if msg.payload.name.empty?
 
+    state[:list_id] = msg.payload.list_id
     state[:items] << msg.payload.name
   end
 
@@ -382,8 +383,8 @@ RSpec.describe Sourced::Testing::RSpec do
   end
 
   describe 'Projection' do
-    it 'evolves given messages from the partition values and yields the state' do
-      with_reactor(GWTTestProjection, list_id: 'L1')
+    it 'evolves given messages and yields the state' do
+      with_reactor(GWTTestProjection)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .and(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Pear')
         .and(GWTTestMessages::ItemArchived, list_id: 'L1', name: 'Apple')
@@ -391,37 +392,42 @@ RSpec.describe Sourced::Testing::RSpec do
     end
 
     it 'yields no messages' do
-      with_reactor(GWTTestProjection, list_id: 'L1')
+      with_reactor(GWTTestProjection)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .then { |r| expect([r.pairs, r.messages]).to eq([[], []]) }
     end
 
     it 'accepts then! and an empty expectation' do
-      with_reactor(GWTTestProjection, list_id: 'L1')
+      with_reactor(GWTTestProjection)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .then! { |r| expect(r.state[:items]).to eq(['Apple']) }
 
-      with_reactor(GWTTestProjection, list_id: 'L1')
+      with_reactor(GWTTestProjection)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .then(Sourced::Testing::RSpec::NONE)
     end
 
     it 'asserts errors raised while evolving' do
-      with_reactor(GWTTestProjection, list_id: 'L1')
+      with_reactor(GWTTestProjection)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: '')
         .then(ArgumentError, 'no blanks')
     end
 
+    it 'refuses partition values: a projection takes none' do
+      expect { with_reactor(GWTTestProjection, list_id: 'L1') }
+        .to raise_error(ArgumentError, /takes no partition values/)
+    end
+
     it 'refuses when: a projection consumes events that already exist' do
       expect {
-        with_reactor(GWTTestProjection, list_id: 'L1')
+        with_reactor(GWTTestProjection)
           .when(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
       }.to raise_error(ArgumentError, /projection.*given/)
     end
 
     it 'refuses expected messages: a projection produces none' do
       expect {
-        with_reactor(GWTTestProjection, list_id: 'L1')
+        with_reactor(GWTTestProjection)
           .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
           .then(GWTTestMessages::ItemArchived, list_id: 'L1', name: 'Apple')
       }.to raise_error(ArgumentError, /produces no messages/)

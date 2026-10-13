@@ -26,7 +26,7 @@ class LoadTestDecider < Sourced::Decider
   partition_by :course_id, :student_id
   consumer_group 'load-test-decider'
 
-  state { |_| { enrolled: false, grades: [] } }
+  state { { enrolled: false, grades: [] } }
 
   evolve LoadTestMessages::StudentEnrolled do |state, _evt|
     state[:enrolled] = true
@@ -38,9 +38,10 @@ class LoadTestDecider < Sourced::Decider
 end
 
 class LoadTestProjection < Sourced::Projection
-  state { |values| { course_id: values[:course_id], students: [] } }
+  state { { course_id: nil, students: [] } }
 
   evolve LoadTestMessages::StudentEnrolled do |state, evt|
+    state[:course_id] = evt.payload.course_id
     state[:students] << evt.payload.student_id
   end
 end
@@ -49,11 +50,12 @@ class LoadTestProjector < Sourced::Projector::StateStored
   partition_by :course_id
   consumer_group 'load-test-projector'
 
-  state do |partition_values|
-    { course_id: partition_values[:course_id], title: nil, student_count: 0 }
+  state do
+    { course_id: nil, title: nil, student_count: 0 }
   end
 
   evolve LoadTestMessages::CourseCreated do |state, evt|
+    state[:course_id] = evt.payload.course_id
     state[:title] = evt.payload.title
   end
 
@@ -307,14 +309,6 @@ RSpec.describe 'Sourced.load' do
       expect(instance.state[:student_count]).to eq(2)
     end
 
-    it 'passes partition values to state initializer' do
-      instance, _read_result = Sourced.load(
-        LoadTestProjector, store: store,
-        course_id: 'algebra'
-      )
-
-      expect(instance.state[:course_id]).to eq('algebra')
-    end
   end
 
   describe 'loading a Projection' do

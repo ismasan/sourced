@@ -28,7 +28,7 @@ class HandleTestDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'handle-test-decider'
 
-  state { |_| { exists: false, active: false } }
+  state { { exists: false, active: false } }
 
   evolve HandleTestMessages::DeviceCreated do |state, _evt|
     state[:exists] = true

@@ -16,7 +16,8 @@ module Sourced
       # {Sourced::Projection} classes, which only evolve state.
       #
       # @param reactor_class [Class] a reactor or projection class
-      # @param partition_attrs [Hash] partition key-value pairs (e.g. device_id: 'd1')
+      # @param partition_attrs [Hash] partition key-value pairs (e.g. device_id: 'd1');
+      #   none for a projection, which takes no partition values
       # @return [GWT]
       #
       # @example Decider
@@ -31,7 +32,7 @@ module Sourced
       #     .then { |r| expect(r.state[:items]).to eq(['Apple']) }
       #
       # @example Projection — evolve given messages, assert state via block
-      #   with_reactor(CartProjection, cart_id: 'c1')
+      #   with_reactor(CartProjection)
       #     .given(ItemAdded, cart_id: 'c1', item_id: 'i1')
       #     .then { |r| expect(r.state[:items]).to eq(['i1']) }
       def with_reactor(reactor_class, **partition_attrs)
@@ -84,6 +85,10 @@ module Sourced
 
       class GWT
         def initialize(reactor_class, **partition_attrs)
+          if reactor_class <= Sourced::Projection && partition_attrs.any?
+            raise ArgumentError, "#{reactor_class} is a projection: it takes no partition values"
+          end
+
           @reactor_class = reactor_class
           @partition_values = partition_attrs
           @given_messages = []
@@ -226,7 +231,7 @@ module Sourced
         # messages and produces nothing, so evolve errors still surface here.
         def run_handle_batch
           if projection?
-            @reactor_class.new(@partition_values).evolve(@given_messages)
+            @reactor_class.new.evolve(@given_messages)
             return []
           end
 
@@ -275,7 +280,7 @@ module Sourced
         # blocks against this instance so their state mutations are visible,
         # handing them the messages the +pairs+ would have appended.
         def compute_state(pairs, sync: false)
-          instance = @reactor_class.new(@partition_values)
+          instance = projection? ? @reactor_class.new : @reactor_class.new(@partition_values)
           return nil unless instance.respond_to?(:evolve) && instance.respond_to?(:state)
 
           messages = @given_messages + @when_messages

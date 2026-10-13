@@ -588,7 +588,7 @@ RSpec.describe 'Sourced.config' do
         partition_by :thing_id
         consumer_group 'config-load-decider'
 
-        state { |_| { count: 0 } }
+        state { { count: 0 } }
       end
     end
 

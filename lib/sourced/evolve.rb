@@ -11,11 +11,9 @@ module Sourced
   # adopted projection, or from its parent reactor's), so inline +evolve+ blocks
   # never change a projection class another reactor uses.
   #
-  # Including classes must define +partition_values+.
-  #
   # @example Inline projection
   #   class Carts < Sourced::Decider
-  #     state { |_| { items: [] } }
+  #     state { { items: [] } }
   #
   #     evolve ItemAdded do |state, evt|
   #       state[:items] << evt.payload.item_id
@@ -36,7 +34,7 @@ module Sourced
 
     # @return [Sourced::Projection] this reactor's projection, built on first access
     def projection
-      @projection ||= self.class.projection_class.new(partition_values)
+      @projection ||= self.class.projection_class.new
     end
 
     # @return [Object] the projection's current state

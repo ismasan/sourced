@@ -3,25 +3,30 @@
 module Sourced
   # In-memory state evolved from a history of messages.
   #
-  # A projection knows nothing about stores, claims, commands or side effects:
-  # it declares an initial state and how each message type changes it. Evolve
-  # blocks run in the projection's own scope.
+  # A projection knows nothing about stores, partitions, commands or side
+  # effects: it declares an initial state and how each message type changes it,
+  # so its state is a function of the messages it evolves. Evolve blocks run in
+  # the projection's own scope.
+  #
+  # Identifying values (ex. a cart's id) come from the messages, not from
+  # outside: set them in the evolve blocks.
   #
   # Reactors evolve their state through a projection class (see {Sourced::Evolve}),
   # either one declared inline or a standalone class shared between reactors.
   #
   # @example
   #   class CartProjection < Sourced::Projection
-  #     state do |_partition_values|
-  #       { items: [] }
+  #     state do
+  #       { cart_id: nil, items: [] }
   #     end
   #
   #     evolve ItemAdded do |state, evt|
+  #       state[:cart_id] = evt.payload.cart_id
   #       state[:items] << evt.payload.item_id
   #     end
   #   end
   #
-  #   projection = CartProjection.new(cart_id: 'c1')
+  #   projection = CartProjection.new
   #   projection.evolve(messages)
   #   projection.state # => { items: [...] }
   class Projection
@@ -45,8 +50,17 @@ module Sourced
       # can be loaded the same way (see {Sourced.load}).
       alias handled_messages_for_evolve handled_messages
 
-      # Define the initial state factory. The block receives the partition values hash.
+      # Define the initial state factory.
+      #
+      # @yieldreturn [Object] the initial state
+      # @raise [ArgumentError] if the block declares arguments: it receives none
       def state(&blk)
+        if blk.arity.positive?
+          raise ArgumentError,
+                "#{self}.state takes a block with no arguments; " \
+                'set identifying values (ex. ids) from messages in evolve blocks'
+        end
+
         define_method(:init_state, &blk)
       end
 
@@ -65,17 +79,12 @@ module Sourced
       end
     end
 
-    attr_reader :partition_values
-
-    # @param partition_values [Hash{Symbol => String}] partition key-value pairs,
-    #   passed to the +state+ block
     # @param state [Object] starting state, used instead of the +state+ block
-    def initialize(partition_values = {}, state = UNSET)
-      @partition_values = partition_values
+    def initialize(state = UNSET)
       @state = state unless UNSET.equal?(state)
     end
 
-    def init_state(_partition_values)
+    def init_state
       nil
     end
 
@@ -83,7 +92,7 @@ module Sourced
     def state
       return @state if defined?(@state)
 
-      @state = init_state(partition_values)
+      @state = init_state
     end
 
     # Apply messages to state via registered handlers.

@@ -19,11 +19,12 @@ module EvolveTestMessages
   end
 
   class CartProjection < Sourced::Projection
-    state do |partition_values|
-      { cart_id: partition_values[:cart_id], items: [] }
+    state do
+      { cart_id: nil, items: [] }
     end
 
     evolve ItemAdded do |state, evt|
+      state[:cart_id] = evt.payload.cart_id
       state[:items] << evt.payload.item_id
     end
 
@@ -41,9 +42,10 @@ RSpec.describe Sourced::Evolve do
       Class.new(Sourced::Decider) do
         partition_by :cart_id
 
-        state { |values| { cart_id: values[:cart_id], items: [] } }
+        state { { cart_id: nil, items: [] } }
 
         evolve EvolveTestMessages::ItemAdded do |state, evt|
+          state[:cart_id] = evt.payload.cart_id
           state[:items] << evt.payload.item_id
         end
 
@@ -51,7 +53,7 @@ RSpec.describe Sourced::Evolve do
       end
     end
 
-    it 'evolves the reactor instance state from its partition values' do
+    it 'evolves the reactor instance state through its projection' do
       instance = decider.new(cart_id: 'c1')
       expect(instance.evolve([added('i1')])).to eq(cart_id: 'c1', items: ['i1'])
       expect(instance.state).to eq(cart_id: 'c1', items: ['i1'])
@@ -122,7 +124,7 @@ RSpec.describe Sourced::Evolve do
     it 'raises after the reactor own state or evolve declarations' do
       expect {
         Class.new(Sourced::Decider) do
-          state { |_| {} }
+          state { {} }
           evolve EvolveTestMessages::CartProjection
         end
       }.to raise_error(ArgumentError, /must come before/)
@@ -153,7 +155,7 @@ RSpec.describe Sourced::Evolve do
   describe 'reactor inheritance' do
     let(:parent) do
       Class.new(Sourced::Decider) do
-        state { |_| { items: [] } }
+        state { { items: [] } }
         evolve(EvolveTestMessages::ItemAdded) { |state, evt| state[:items] << evt.payload.item_id }
       end
     end
@@ -181,7 +183,7 @@ RSpec.describe Sourced::Evolve do
       child = Class.new(parent) { evolve EvolveTestMessages::CartProjection }
 
       expect(child.handled_messages_for_evolve).to eq([EvolveTestMessages::ItemAdded, EvolveTestMessages::ItemRemoved])
-      expect(child.new(cart_id: 'c1').state).to eq(cart_id: 'c1', items: [])
+      expect(child.new(cart_id: 'c1').state).to eq(cart_id: nil, items: [])
     end
   end
 end

@@ -58,7 +58,7 @@ class RouterTestDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'router-test-decider'
 
-  state { |_| { exists: false, bound: false } }
+  state { { exists: false, bound: false } }
 
   evolve RouterTestMessages::DeviceRegistered do |state, _evt|
     state[:exists] = true
@@ -93,7 +93,7 @@ class RouterTestProjector < Sourced::Projector::StateStored
   partition_by :device_id
   consumer_group 'router-test-projector'
 
-  state { |_| { devices: [] } }
+  state { { devices: [] } }
 
   evolve RouterTestMessages::DeviceRegistered do |state, evt|
     state[:devices] << evt.payload.name

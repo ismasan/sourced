@@ -21,8 +21,8 @@ end
 RSpec.describe Sourced::Projection do
   let(:projection_class) do
     Class.new(Sourced::Projection) do
-      state do |partition_values|
-        { items: [], partition_values: partition_values }
+      state do
+        { items: [] }
       end
 
       evolve ProjectionTestMessages::ItemAdded do |state, msg|
@@ -38,10 +38,14 @@ RSpec.describe Sourced::Projection do
   def added(id, name) = ProjectionTestMessages::ItemAdded.new(payload: { item_id: id, name: name })
 
   describe '#state' do
-    it 'builds the initial state from the state block and partition values' do
-      projection = projection_class.new(key1: 'val1')
-      expect(projection.state).to eq(items: [], partition_values: { key1: 'val1' })
-      expect(projection.partition_values).to eq(key1: 'val1')
+    it 'builds the initial state from the state block' do
+      expect(projection_class.new.state).to eq(items: [])
+    end
+
+    it 'builds a fresh state per instance' do
+      first = projection_class.new
+      first.evolve([added('i1', 'Apple')])
+      expect(projection_class.new.state).to eq(items: [])
     end
 
     it 'is nil without a state block' do
@@ -49,13 +53,13 @@ RSpec.describe Sourced::Projection do
     end
 
     it 'starts from a given state instead of the state block' do
-      projection = projection_class.new({}, { items: [{ id: 'i0', name: 'Pear' }] })
+      projection = projection_class.new({ items: [{ id: 'i0', name: 'Pear' }] })
       projection.evolve([added('i1', 'Apple')])
       expect(projection.state[:items].map { |i| i[:id] }).to eq(%w[i0 i1])
     end
 
     it 'keeps an explicit nil starting state' do
-      expect(projection_class.new({}, nil).state).to be_nil
+      expect(projection_class.new(nil).state).to be_nil
     end
   end
 
@@ -86,7 +90,7 @@ RSpec.describe Sourced::Projection do
 
     it 'runs evolve blocks in the projection scope' do
       klass = Class.new(Sourced::Projection) do
-        state { |_| {} }
+        state { {} }
         evolve(ProjectionTestMessages::ItemAdded) { |state, _| state[:scope] = self }
       end
       projection = klass.new
@@ -106,6 +110,13 @@ RSpec.describe Sourced::Projection do
 
     it 'exposes them as handled_messages_for_evolve too' do
       expect(projection_class.handled_messages_for_evolve).to equal(projection_class.handled_messages)
+    end
+
+    it 'rejects state blocks that take arguments' do
+      expect { Class.new(Sourced::Projection) { state { |values| values } } }
+        .to raise_error(ArgumentError, /no arguments/)
+      expect { Class.new(Sourced::Projection) { state { |_| {} } } }
+        .to raise_error(ArgumentError, /no arguments/)
     end
 
     it 'rejects anything but a message class' do
