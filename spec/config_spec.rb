@@ -298,7 +298,7 @@ RSpec.describe Sourced::Config do
     it "doesn't install the tables by default, and fails to boot without them" do
       config.config!('store.install_tables') { false }
 
-      expect { config.start! }.to raise_error(Sourced::Store::NotInstalledError, /migration/)
+      expect { config.start! }.to raise_error(Sourced::Store::NotInstalledError, /migration.*store\.install_tables/)
       expect(config.boot_status).to eq(:torn_down)
     end
 

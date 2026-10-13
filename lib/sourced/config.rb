@@ -147,8 +147,8 @@ module Sourced
             unless store.installed?
               raise Store::NotInstalledError,
                     "Sourced tables are not installed for #{store.inspect}: apps install " \
-                    'them with a migration (see Store#copy_migration_to), scripts and specs with Store#install!, ' \
-                    'and store.install_tables makes Sourced install them on start'
+                    'them with a migration (see Store#copy_migration_to), or set store.install_tables ' \
+                    '(ex. in specs) to have Sourced install them on start'
             end
             store.message_codec.compile!
           end
