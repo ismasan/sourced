@@ -167,15 +167,27 @@ module Sourced
     HandleResult.new(command: command, reactor: instance, events: correlated_events)
   end
 
-  # Load a reactor instance from its event history using AND-filtered partition reads.
+  # Load a reactor or projection instance from its event history using
+  # AND-filtered partition reads.
   # Pass +upto:+ (partition-local rank) to evolve over at most the first N matching
   # messages in the partition — useful for time-travel, deterministic replay, or debugging.
+  #
+  # +reactor_class+ must respond to +handled_messages_for_evolve+, and its
+  # instances to +evolve(messages)+. If it responds to +partition_keys+, only
+  # those keys of +values+ are the partition and instances are built with
+  # +new(values)+; otherwise, as for a {Sourced::Projection}, all of +values+ are
+  # the partition and instances are built with +new+.
+  #
+  # @example
+  #   cart, read_result = Sourced.load(CartProjection, cart_id: 'c1')
+  #   cart.state
   def self.load(reactor_class, store: nil, upto: nil, **values)
     store ||= self.store
-    partition_attrs = reactor_class.partition_keys.to_h { |k| [k, values[k]] }
+    partitioned = reactor_class.respond_to?(:partition_keys)
+    partition_attrs = partitioned ? reactor_class.partition_keys.to_h { |k| [k, values[k]] } : values
     handled_types = reactor_class.handled_messages_for_evolve.map(&:type).uniq
     read_result = store.read_partition(partition_attrs, handled_types:, upto: upto)
-    instance = reactor_class.new(values)
+    instance = partitioned ? reactor_class.new(values) : reactor_class.new
 
     instance.evolve(read_result.messages)
 
@@ -217,6 +229,7 @@ require 'sourced/actions'
 require 'sourced/action_runner'
 require 'sourced/reactor_defaults'
 require 'sourced/consumer'
+require 'sourced/projection'
 require 'sourced/evolve'
 require 'sourced/react'
 require 'sourced/sync'

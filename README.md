@@ -198,12 +198,14 @@ class CourseDecider < Sourced::Decider
   # Defines the consistency boundary
   partition_by :course_name
 
-  # Initial state factory (receives partition values hash)
-  state do |_partition_values|
+  # Initial state factory (takes no arguments)
+  state do
     { name_taken: false }
   end
 
-  # Evolve state from events (rebuilds history)
+  # Evolve state from events (rebuilds history).
+  # Evolve blocks run in the reactor's projection, not the reactor itself:
+  # see Projections below.
   evolve CourseCreated do |state, _event|
     state[:name_taken] = true
   end
@@ -360,7 +362,7 @@ Rebuilds state from full history on every batch (like deciders).
 class CourseCatalogProjector < Sourced::Projector::EventSourced
   partition_by :course_id
 
-  state do |_partition_values|
+  state do
     { course_id: nil, course_name: nil, students: [] }
   end
 
@@ -391,19 +393,23 @@ end
 
 #### StateStored projector
 
-Loads persisted state via the `state` block, evolves only new (unprocessed) messages.
+Loads persisted state via the `load_state` block, evolves only new (unprocessed) messages on top of it. `load_state` runs in the reactor's scope, so it can read your storage; when it returns `nil`, the `state` block builds the initial state.
 
 ```ruby
 class MyProjector < Sourced::Projector::StateStored
   partition_by :course_id
 
-  state do |partition_values|
-    # Load existing state from your storage
-    existing = MyDB.find(partition_values[:course_id])
-    existing || { course_id: nil, students: [] }
+  state do
+    { course_id: nil, students: [] }
+  end
+
+  # Load existing state from your storage
+  load_state do |partition_values|
+    MyDB.find(partition_values[:course_id])
   end
 
   evolve StudentEnrolled do |state, event|
+    state[:course_id] = event.payload.course_id
     state[:students] << event.payload.student_id
   end
 
@@ -497,6 +503,85 @@ def execute
   notify_finished
 end
 ```
+
+### Projections
+
+A reactor's `state` and `evolve` declarations define a `Sourced::Projection`: a plain in-memory object that builds state from events and knows nothing about stores, partitions, commands or side effects. Evolve blocks run in the projection's scope, so they can't reach the reactor's methods or collaborators, such as a database.
+
+A projection's state is a function of the events it evolves. The `state` block takes no arguments: identifying values, such as a cart's id, come from the events, so set them in `evolve` blocks, or once in a `before_evolve` block (below) when any of several events can come first. A `state` block that declares arguments (`state { |values| ... }`, even `|_|`) raises `ArgumentError` when the class loads.
+
+A projection can also be its own class, unit-tested on its own and shared between reactors:
+
+```ruby
+class CartProjection < Sourced::Projection
+  state do
+    { cart_id: nil, items: [] }
+  end
+
+  evolve ItemAdded do |state, event|
+    state[:cart_id] = event.payload.cart_id
+    state[:items] << event.payload.item_id
+  end
+end
+
+projection = CartProjection.new
+projection.evolve([item_added])
+projection.state # => { cart_id: 'c1', items: ['i1'] }
+```
+
+`before_evolve` runs a block before the handler of every event the projection handles (events without a handler are still skipped), for changes common to all of them:
+
+```ruby
+class CartProjection < Sourced::Projection
+  state { { cart_id: nil, items: [], updated_at: nil } }
+
+  before_evolve do |state, event|
+    state[:cart_id] ||= event.payload.cart_id
+    state[:updated_at] = event.created_at
+  end
+
+  evolve ItemAdded do |state, event|
+    state[:items] << event.payload.item_id
+  end
+end
+```
+
+Reactors adopt it with `evolve`:
+
+```ruby
+class Carts < Sourced::Decider
+  partition_by :cart_id
+  evolve CartProjection
+
+  # More evolve blocks extend this reactor's copy, not CartProjection itself
+  evolve CartClosed do |state, _event|
+    state[:closed] = true
+  end
+
+  command AddItem do |state, cmd|
+    raise 'Cart closed' if state[:closed]
+    event ItemAdded, cart_id: cmd.payload.cart_id, item_id: cmd.payload.item_id
+  end
+end
+
+class CartListing < Sourced::Projector::EventSourced
+  partition_by :cart_id
+  evolve CartProjection
+
+  sync { |state:, **| MyDB.upsert(state) }
+end
+```
+
+Each reactor works on a projection subclass of its own, so its extra `evolve` blocks never leak into the shared class or other reactors. `evolve SomeProjection` must come before the reactor's own `state` / `evolve` declarations.
+
+`Sourced.load` reads a projection's state straight from the log, with no projector or read model. The attributes you pass are its partition:
+
+```ruby
+cart, read_result = Sourced.load(CartProjection, cart_id: 'c1')
+cart.state # => { cart_id: 'c1', items: [...] }
+```
+
+This reads the partition's whole history on every call, so it suits small partitions; persist larger read models with a projector.
 
 ### Reactions
 
@@ -1118,7 +1203,7 @@ end
 
 ### Testing projectors
 
-Projectors use `.given` (events to evolve) and `.then` with a block that receives the projected state. `.when` is not supported — projectors don't handle commands.
+Projectors use `.given` (events to evolve) and `.then` with a block that receives a result whose `state` is the projected state. `.when` is not supported — projectors don't handle commands.
 
 #### StateStored
 
@@ -1130,27 +1215,27 @@ RSpec.describe ItemProjector do
     with_reactor(ItemProjector, list_id: 'L1')
       .given(ItemAdded, list_id: 'L1', name: 'Apple')
       .given(ItemAdded, list_id: 'L1', name: 'Banana')
-      .then { |state| expect(state[:items]).to eq(['Apple', 'Banana']) }
+      .then { |r| expect(r.state[:items]).to eq(['Apple', 'Banana']) }
   end
 
   it 'handles removal' do
     with_reactor(ItemProjector, list_id: 'L1')
       .given(ItemAdded, list_id: 'L1', name: 'Apple')
       .and(ItemArchived, list_id: 'L1', name: 'Apple')
-      .then { |state| expect(state[:items]).to eq([]) }
+      .then { |r| expect(r.state[:items]).to eq([]) }
   end
 
   it 'runs sync actions with then!' do
     with_reactor(ItemProjector, list_id: 'L1')
       .given(ItemAdded, list_id: 'L1', name: 'Apple')
-      .then! { |state| expect(state[:synced]).to be true }
+      .then! { |r| expect(r.state[:synced]).to be true }
   end
 end
 ```
 
 #### EventSourced
 
-Same API — the helper creates an instance, evolves from all given messages, and yields state:
+Same API — the helper creates an instance, evolves from all given messages, and yields the result:
 
 ```ruby
 RSpec.describe CatalogProjector do
@@ -1160,7 +1245,24 @@ RSpec.describe CatalogProjector do
     with_reactor(CatalogProjector, course_id: 'c1')
       .given(CourseCreated, course_id: 'c1', course_name: 'Algebra')
       .given(StudentEnrolled, course_id: 'c1', student_id: 's1')
-      .then { |state| expect(state[:students]).to eq(['s1']) }
+      .then { |r| expect(r.state[:students]).to eq(['s1']) }
+  end
+end
+```
+
+### Testing projections
+
+A bare `Sourced::Projection` takes the same `.given` / `.then` chain: the helper builds it, evolves the given messages, and yields the result. Projections take no partition attributes and produce no messages, so passing attributes, `.when` and expected messages raise; an exception class asserts an error raised while evolving.
+
+```ruby
+RSpec.describe CartProjection do
+  include Sourced::Testing::RSpec
+
+  it 'collects added items' do
+    with_reactor(CartProjection)
+      .given(ItemAdded, cart_id: 'c1', item_id: 'i1')
+      .given(ItemAdded, cart_id: 'c1', item_id: 'i2')
+      .then { |r| expect(r.state[:items]).to eq(%w[i1 i2]) }
   end
 end
 ```

@@ -30,7 +30,7 @@ class DispatchTestDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'dispatch-test-decider'
 
-  state { |_| { exists: false, bound: false } }
+  state { { exists: false, bound: false } }
 
   evolve DispatcherTestMessages::DeviceRegistered do |state, _evt|
     state[:exists] = true
@@ -56,7 +56,7 @@ class DispatchTestProjector < Sourced::Projector::StateStored
   partition_by :device_id
   consumer_group 'dispatch-test-projector'
 
-  state { |_| { devices: [] } }
+  state { { devices: [] } }
 
   evolve DispatcherTestMessages::DeviceRegistered do |state, evt|
     state[:devices] << evt.payload.name

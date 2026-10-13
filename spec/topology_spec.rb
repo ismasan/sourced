@@ -43,7 +43,7 @@ module TopologyTest
   class WidgetDecider < Sourced::Decider
     partition_by :widget_id
 
-    state { |_| { exists: false } }
+    state { { exists: false } }
 
     evolve WidgetCreated do |state, _evt|
       state[:exists] = true
@@ -70,7 +70,7 @@ module TopologyTest
   class NotifierDecider < Sourced::Decider
     partition_by :widget_id
 
-    state { |_| {} }
+    state { {} }
 
     evolve WidgetNotified do |state, _evt|
       state[:notified] = true
@@ -86,7 +86,7 @@ module TopologyTest
     partition_by :widget_id
     consumer_group 'TopologyTest::WidgetListProjector'
 
-    state { |_| { items: [] } }
+    state { { items: [] } }
 
     evolve WidgetCreated do |state, msg|
       state[:items] << msg.payload.name
@@ -98,7 +98,7 @@ module TopologyTest
     partition_by :widget_id
     consumer_group 'TopologyTest::ReactingProjector'
 
-    state { |_| { items: [] } }
+    state { { items: [] } }
 
     evolve WidgetCreated do |state, msg|
       state[:items] << msg.payload.name
@@ -114,7 +114,7 @@ module TopologyTest
     partition_by :widget_id
     consumer_group 'TopologyTest::MixedReactingProjector'
 
-    state { |_| { items: [] } }
+    state { { items: [] } }
 
     evolve WidgetCreated do |state, msg|
       state[:items] << msg.payload.name
@@ -136,7 +136,7 @@ module TopologyTest
   class SchedulingDecider < Sourced::Decider
     partition_by :widget_id
 
-    state { |_| {} }
+    state { {} }
 
     evolve ScheduleEvent do |state, _evt|
       state[:scheduled] = true

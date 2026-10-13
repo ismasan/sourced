@@ -33,7 +33,7 @@ class TestDeviceDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'device-decider-test'
 
-  state { |_| { exists: false, bound: false } }
+  state { { exists: false, bound: false } }
 
   evolve DeciderTestMessages::DeviceRegistered do |state, _evt|
     state[:exists] = true
@@ -62,7 +62,7 @@ class TestDelayedReactionDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'device-delayed-decider-test'
 
-  state { |_| { exists: false, bound: false } }
+  state { { exists: false, bound: false } }
 
   evolve DeciderTestMessages::DeviceRegistered do |state, _evt|
     state[:exists] = true
@@ -89,7 +89,7 @@ class TestReplayingReactionDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'device-replaying-decider-test'
 
-  state { |_| { exists: false, bound: false } }
+  state { { exists: false, bound: false } }
 
   evolve DeciderTestMessages::DeviceBound do |state, _evt|
     state[:bound] = true
@@ -111,7 +111,7 @@ class TestCountingDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'device-counting-decider-test'
 
-  state { |_| { bound_count: 0 } }
+  state { { bound_count: 0 } }
 
   evolve DeciderTestMessages::DeviceBound do |state, _evt|
     state[:bound_count] += 1
@@ -129,7 +129,7 @@ RSpec.describe Sourced::Decider do
       expect(TestDeviceDecider.handled_commands).to include(DeciderTestMessages::BindDevice)
 
       instance = TestDeviceDecider.new
-      instance.instance_variable_set(:@state, { exists: true, bound: false })
+      instance.evolve([DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1' })])
 
       events = instance.decide(
         DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
@@ -143,7 +143,7 @@ RSpec.describe Sourced::Decider do
   describe '#event inside command handler' do
     it 'adds to uncommitted events and evolves state immediately' do
       instance = TestDeviceDecider.new
-      instance.instance_variable_set(:@state, { exists: true, bound: false })
+      instance.evolve([DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1' })])
 
       events = instance.decide(
         DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })

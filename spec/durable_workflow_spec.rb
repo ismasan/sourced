@@ -195,6 +195,18 @@ RSpec.describe Sourced::DurableWorkflow do
     end
   end
 
+  context 'asserting with a block' do
+    it 'yields no state, since workflows keep none' do
+      get_ip_key = Sourced::DurableWorkflow.step_key(:get_ip, [])
+
+      with_reactor(DurableTests::Task, workflow_id: workflow_id)
+        .given(DurableTests::Task::WorkflowStarted, workflow_id:, args: [name])
+        .given(DurableTests::Task::WorkflowFailed, workflow_id:)
+        .when(DurableTests::Task::StepStarted, workflow_id:, key: get_ip_key, step_name: :get_ip, args: [])
+        .then { |result| expect(result.state).to be_nil }
+    end
+  end
+
   context 'with a different workflow handling irrelevant messages' do
     it 'blows up' do
       with_reactor(DurableTests::Task, workflow_id: workflow_id)

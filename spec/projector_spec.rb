@@ -27,8 +27,8 @@ class TestItemProjector < Sourced::Projector::StateStored
   partition_by :list_id
   consumer_group 'item-projector-test'
 
-  state do |(list_id)|
-    { list_id: list_id, items: [], synced: false }
+  state do
+    { items: [], synced: false }
   end
 
   evolve ProjectorTestMessages::ItemAdded do |state, msg|
@@ -57,8 +57,8 @@ class TestItemESProjector < Sourced::Projector::EventSourced
   partition_by :list_id
   consumer_group 'item-es-projector-test'
 
-  state do |(list_id)|
-    { list_id: list_id, items: [], synced: false }
+  state do
+    { items: [], synced: false }
   end
 
   evolve ProjectorTestMessages::ItemAdded do |state, msg|
@@ -87,8 +87,8 @@ class TestDelayedItemProjector < Sourced::Projector::StateStored
   partition_by :list_id
   consumer_group 'delayed-item-projector-test'
 
-  state do |(list_id)|
-    { list_id: list_id, items: [] }
+  state do
+    { items: [] }
   end
 
   evolve ProjectorTestMessages::ItemArchived do |state, msg|
@@ -106,8 +106,8 @@ class TestReplayingItemProjector < Sourced::Projector::StateStored
   partition_by :list_id
   consumer_group 'replaying-item-projector-test'
 
-  state do |(list_id)|
-    { list_id: list_id, items: [] }
+  state do
+    { items: [] }
   end
 
   evolve ProjectorTestMessages::ItemArchived do |state, msg|
@@ -128,8 +128,8 @@ class TestSelectiveItemProjector < Sourced::Projector::StateStored
   partition_by :list_id
   consumer_group 'selective-item-projector-test'
 
-  state do |(list_id)|
-    { list_id: list_id, items: [] }
+  state do
+    { items: [] }
   end
 
   evolve ProjectorTestMessages::ItemArchived do |state, msg|
@@ -517,6 +517,63 @@ RSpec.describe Sourced::Projector do
       sync_actions, source_msg = pairs.last
       expect(Array(sync_actions).any? { |a| a.is_a?(Sourced::Actions::Sync) }).to be(true)
       expect(source_msg.payload.name).to eq('Apple')
+    end
+  end
+
+  describe '.load_state (StateStored)' do
+    let(:stored) { {} }
+
+    let(:projector) do
+      db = stored
+      Class.new(Sourced::Projector::StateStored) do
+        partition_by :list_id
+
+        state { { list_id: nil, items: [] } }
+
+        evolve ProjectorTestMessages::ItemAdded do |state, msg|
+          state[:list_id] = msg.payload.list_id
+          state[:items] << msg.payload.name
+        end
+
+        load_state { |values| find(values[:list_id]) }
+
+        # Reactions see the evolved state, so they show what handle_batch built.
+        reaction ProjectorTestMessages::ItemArchived do |state, msg|
+          ProjectorTestMessages::NotifyArchive.new(payload: { list_id: state[:items].join(',') })
+        end
+
+        define_method(:find) { |list_id| db[list_id] }
+      end
+    end
+
+    def item_added(name) = ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: })
+
+    it 'starts from the stored state, loaded in the reactor scope' do
+      stored['L1'] = { list_id: 'L1', items: ['Stored'] }
+
+      instance = projector.new(list_id: 'L1')
+      instance.evolve([item_added('Apple')])
+      expect(instance.state).to eq(list_id: 'L1', items: %w[Stored Apple])
+    end
+
+    it 'falls back to the projection state block when nothing is stored' do
+      expect(projector.new(list_id: 'L1').state).to eq(list_id: nil, items: [])
+    end
+
+    it 'evolves the claimed batch on top of the stored state in handle_batch' do
+      stored['L1'] = { list_id: 'L1', items: ['Stored'] }
+      msgs = [
+        Sourced::PositionedMessage.new(item_added('Apple'), 1),
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'x' }), 2
+        )
+      ]
+
+      pairs = projector.handle_batch({ list_id: 'L1' }, msgs)
+      notified = pairs.flat_map { |actions, _| Array(actions) }
+        .grep(Sourced::Actions::Append).flat_map(&:messages)
+
+      expect(notified.map { |m| m.payload.list_id }).to eq(['Stored,Apple'])
     end
   end
 

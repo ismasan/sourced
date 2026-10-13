@@ -22,7 +22,8 @@ Sourced is a Ruby library for **aggregateless, stream-less event sourcing**. Mes
 - **Actions / signals** (`lib/sourced/actions.rb`) — a reactor's `handle_claim` returns `[[signals, source_message], …]` pairs. Each signal is **inert data**: a plain Hash (`{type: :append|:sync|:after_sync|:ack, …}`) or a `Sourced::Actions` value object that `deconstruct_keys` to the same shape. A `delete: true` flag marks the source message for deletion on ack. There is **no separate `:schedule` signal** — a future-dated message (built with `Message#at`) in an `:append` is transparently deferred by the store (see below).
 - **ActionRunner** (`lib/sourced/action_runner.rb`) — the only code that touches the store on behalf of actions. Routes each signal to `append`/sync work, applying correlation. Third-party reactors emit plain-Hash signals with no Sourced dependency.
 - **ReactorDefaults** (`lib/sourced/reactor_defaults.rb`) — `ReactorDefaults.apply(reactor)` defines missing optional protocol methods directly on the reactor class (only where absent, so the reactor's own definitions win). Chosen over a `SimpleDelegator` wrapper so the reactor stays a real class and `Injector` signature reflection keeps working.
-- **Mixins**: `Sourced::Evolve` (state evolution from history), `Sourced::React` (event → command/event reactions), `Sourced::Sync` (post-append side effects).
+- **Projection** (`lib/sourced/projection.rb`) — in-memory state container: `state` / `evolve` / `before_evolve` DSL (`before_evolve` blocks run before the handler of every handled message), `handled_messages`, `#evolve(messages)`, `#state`. No store, partitions, commands or side effects; evolve blocks run in the projection's scope. The `state` block takes no arguments (it raises if it declares any): identifying values come from the events. `new(state)` seeds a starting state instead of the `state` block.
+- **Mixins**: `Sourced::Evolve` (reactor state through a projection), `Sourced::React` (event → command/event reactions), `Sourced::Sync` (post-append side effects). `Evolve` gives each reactor its own projection subclass (`projection_class`): inline `state` / `evolve` / `before_evolve` declare on it, `evolve SomeProjection` adopts a standalone one (subclassed, so inline blocks never change the shared class; must precede own declarations), and subclassed reactors subclass their parent's. Reactor `handled_messages_for_evolve` delegates to the projection's `handled_messages`; instance `#state` / `#evolve` delegate to `#projection`. Its class methods are prepended so `handled_messages_for_evolve` wins over `Consumer`'s default. `DurableWorkflow` doesn't include it.
 - **Router** (`lib/sourced/router.rb`) — registers reactors (applies defaults, validates exclusive ownership), dispatches claimed batches via the `ActionRunner`, manages consumer-group lifecycle hooks.
 - **Dispatcher / Worker / WorkQueue** (`lib/sourced/{dispatcher,worker,work_queue}.rb`) — claim-and-drain processing; signal-driven via `InlineNotifier` + `CatchUpPoller`. Restartable: each run has fresh workers and queue; `#push(reactor)` feeds the current run (dropped while stopped).
 - **PeriodicTask** (`lib/sourced/periodic_task.rb`) — base of the three loops below: `start(context)` spawns (via `Spawner`: `spawn`/`async`, else a Thread), `stop` wakes the loop and waits, restartable. Each is its own component (see Configuration).
@@ -106,7 +107,7 @@ Tree: `logger`, `db`, `notifier`, `executor`, `error_strategy`, `store` (deps db
 - **Forking**: `Sourced.config.prepare!` in the parent, `start!` in each child. A torn-down tree can't be restarted (`TornDownError`); specs use `Sourced.reset!` for a fresh tree.
 - `Sourced.store`, `.router`, `.topology`, `.logger` read components and raise `NotBuiltError` before build. Core classes (Store, Router, Worker, Dispatcher, pollers) never read globals: they take explicit kwargs (loggers default to `NULL_LOGGER`), and only the tree wires them.
 - `Sourced.handle!(ReactorClass, command)` — synchronous command dispatch (for web controllers): validates, loads history via partition read, decides, appends with guard, advances registered offsets. Returns `HandleResult(command, reactor, events)`.
-- `Sourced.load(ReactorClass, **partition_values)` — loads a reactor instance by evolving over AND-filtered partition history. Returns `[instance, read_result]`.
+- `Sourced.load(ReactorClass, **partition_values)` — loads a reactor (or `Projection`) instance by evolving over AND-filtered partition history. Returns `[instance, read_result]`. Duck-typed: needs `.handled_messages_for_evolve` (aliased on `Projection`) and `#evolve`. With `.partition_keys`, those keys of the given values are the partition and it builds `new(values)`; without it (a `Projection`), all given values are the partition and it builds `new`.
 
 ## DSL Patterns
 
@@ -168,7 +169,7 @@ Other notes:
 
 ### Projector flavors
 
-- `Projector::StateStored` — evolves only the claimed batch on top of the stored state snapshot.
+- `Projector::StateStored` — evolves only the claimed batch on top of the stored state snapshot, loaded by its `load_state` block (reactor scope, may do IO; `nil` falls back to the projection's `state` block).
 - `Projector::EventSourced` — evolves from full history every claim (via `context_for`).
 
 ### Delete-on-ack queue reactor
@@ -256,6 +257,7 @@ In reactions: `dispatch(Cmd, ...).at(time)` (the produced message is future-date
 - Reactor protocol: `lib/sourced/reactor_defaults.rb` (duck-typed defaults)
 - Actions: `lib/sourced/{actions,action_runner}.rb` (signals + interpreter)
 - Codecs: `lib/sourced/store/message_codec.rb` (payload seams) over `Sourced::Message::JSONCodec` in the sourced-message gem
+- Projections: `lib/sourced/projection.rb`
 - Mixins: `lib/sourced/{evolve,react,sync}.rb`
 - Dispatch: `lib/sourced/{dispatcher,worker,work_queue,stale_claim_reaper,scheduled_message_poller,inline_notifier}.rb`
 - Router/topology: `lib/sourced/{router,topology}.rb`
