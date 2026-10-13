@@ -508,7 +508,7 @@ end
 
 A reactor's `state` and `evolve` declarations define a `Sourced::Projection`: a plain in-memory object that builds state from events and knows nothing about stores, partitions, commands or side effects. Evolve blocks run in the projection's scope, so they can't reach the reactor's methods or collaborators, such as a database.
 
-A projection's state is a function of the events it evolves. The `state` block takes no arguments: identifying values, such as a cart's id, come from the events, so set them in `evolve` blocks.
+A projection's state is a function of the events it evolves. The `state` block takes no arguments: identifying values, such as a cart's id, come from the events, so set them in `evolve` blocks, or once in a `before_evolve` block (below) when any of several events can come first. A `state` block that declares arguments (`state { |values| ... }`, even `|_|`) raises `ArgumentError` when the class loads.
 
 A projection can also be its own class, unit-tested on its own and shared between reactors:
 
