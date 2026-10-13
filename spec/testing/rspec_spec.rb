@@ -413,6 +413,20 @@ RSpec.describe Sourced::Testing::RSpec do
         .then(ArgumentError, 'no blanks')
     end
 
+    it 'works with any class that evolves state and has no handle_batch' do
+      counter = Class.new do
+        attr_reader :state
+
+        def initialize = @state = 0
+        def evolve(messages) = @state += Array(messages).size
+      end
+
+      with_reactor(counter)
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
+        .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Pear')
+        .then { |r| expect(r.state).to eq(2) }
+    end
+
     it 'refuses partition values: a projection takes none' do
       expect { with_reactor(GWTTestProjection, list_id: 'L1') }
         .to raise_error(ArgumentError, /takes no partition values/)

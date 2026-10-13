@@ -12,8 +12,9 @@ module Sourced
       #
       # Works with any reactor that responds to the standard
       # <tt>handle_batch(partition_values, new_messages, history:, replaying:)</tt>
-      # contract (Deciders, Projectors, DurableWorkflows), and with
-      # {Sourced::Projection} classes, which only evolve state.
+      # contract (Deciders, Projectors, DurableWorkflows), and with projections:
+      # classes with no +handle_batch+ whose instances +evolve+ messages, built
+      # with +new+ (ex. {Sourced::Projection}).
       #
       # @param reactor_class [Class] a reactor or projection class
       # @param partition_attrs [Hash] partition key-value pairs (e.g. device_id: 'd1');
@@ -85,11 +86,11 @@ module Sourced
 
       class GWT
         def initialize(reactor_class, **partition_attrs)
-          if reactor_class <= Sourced::Projection && partition_attrs.any?
+          @reactor_class = reactor_class
+          if projection? && partition_attrs.any?
             raise ArgumentError, "#{reactor_class} is a projection: it takes no partition values"
           end
 
-          @reactor_class = reactor_class
           @partition_values = partition_attrs
           @given_messages = []
           @when_messages = []
@@ -249,8 +250,10 @@ module Sourced
           @reactor_class <= Sourced::Projector
         end
 
+        # A projection has no +handle_batch+ to drive: the helper builds it with
+        # +new+ and evolves the {#given} messages.
         def projection?
-          @reactor_class <= Sourced::Projection
+          !@reactor_class.respond_to?(:handle_batch) && @reactor_class.method_defined?(:evolve)
         end
 
         # Run each pair's Sync / AfterSync actions as the runner runs them:
