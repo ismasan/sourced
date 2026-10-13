@@ -39,6 +39,7 @@ module Sourced
       def inherited(subclass)
         super
         subclass.handled_messages.concat(handled_messages)
+        subclass.before_evolve_blocks.concat(before_evolve_blocks)
       end
 
       # @return [Array<Class>] message classes this projection evolves from
@@ -62,6 +63,30 @@ module Sourced
         end
 
         define_method(:init_state, &blk)
+      end
+
+      # @return [Array<Proc>] blocks run before each evolve handler, in order
+      def before_evolve_blocks
+        @before_evolve_blocks ||= []
+      end
+
+      # Register a block to run before the evolve handler of every message this
+      # projection handles, in the projection's scope. Messages without a
+      # handler are still skipped. Blocks run in declaration order, and
+      # subclasses inherit them.
+      #
+      # @example Stamp every order event
+      #   before_evolve do |state, evt|
+      #     state[:order_id] ||= evt.payload.order_id
+      #     state[:updated_at] = evt.created_at
+      #   end
+      #
+      # @yield [state, message]
+      # @raise [ArgumentError] without a block
+      def before_evolve(&block)
+        raise ArgumentError, "#{self}.before_evolve requires a block" unless block
+
+        before_evolve_blocks << block
       end
 
       # Register an evolve handler for a {Sourced::Message} subclass.
@@ -95,15 +120,18 @@ module Sourced
       @state = init_state
     end
 
-    # Apply messages to state via registered handlers.
-    # Skips messages without a registered handler.
+    # Apply messages to state via registered handlers, each preceded by the
+    # +before_evolve+ blocks. Skips messages without a registered handler.
     #
     # @param messages [Sourced::Message, Array<Sourced::Message>]
     # @return [Object] the evolved state
     def evolve(messages)
       Array(messages).each do |msg|
         method_name = Sourced.message_method_name(PREFIX, msg.class.to_s)
-        send(method_name, state, msg) if respond_to?(method_name)
+        next unless respond_to?(method_name)
+
+        self.class.before_evolve_blocks.each { |blk| instance_exec(state, msg, &blk) }
+        send(method_name, state, msg)
       end
       state
     end

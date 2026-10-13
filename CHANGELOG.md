@@ -11,6 +11,9 @@
     values (ex. ids) in `evolve` blocks. A `state` block that declares arguments
     (`state { |values| ... }`, `state { |_| ... }`) raises `ArgumentError`.
     `StateStored#load_state` still receives the partition values.
+  - `before_evolve { |state, event| ... }` runs before the evolve handler of
+    every event a projection (or reactor) handles, ex. to set ids or timestamps
+    common to all events.
   - Projections can be standalone classes (`class CartProjection <
     Sourced::Projection`), shared between reactors with `evolve CartProjection`.
     Each reactor subclasses it, so its own extra `evolve` blocks don't leak.

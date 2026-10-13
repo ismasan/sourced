@@ -127,6 +127,44 @@ RSpec.describe Sourced::Projection do
     end
   end
 
+  describe '.before_evolve' do
+    let(:stamped) do
+      Class.new(projection_class) do
+        before_evolve { |state, msg| (state[:log] ||= []) << [:first, msg.class, state[:items].size] }
+        before_evolve { |state, _| state[:log] << [:second, self.class] }
+      end
+    end
+
+    it 'runs each block in order, in the projection scope, before the handler' do
+      projection = stamped.new
+      projection.evolve([added('i1', 'Apple')])
+
+      expect(projection.state[:log]).to eq([
+        [:first, ProjectionTestMessages::ItemAdded, 0],
+        [:second, stamped]
+      ])
+      expect(projection.state[:items].size).to eq(1)
+    end
+
+    it 'skips messages without a handler' do
+      projection = stamped.new
+      projection.evolve([ProjectionTestMessages::Unhandled.new(payload: { foo: 'bar' })])
+      expect(projection.state).to eq(items: [])
+    end
+
+    it 'is inherited, and blocks added to a subclass do not change the parent' do
+      child = Class.new(stamped) { before_evolve { |state, _| state[:log] << :child } }
+
+      expect(child.before_evolve_blocks.size).to eq(3)
+      expect(stamped.before_evolve_blocks.size).to eq(2)
+      expect(projection_class.before_evolve_blocks).to be_empty
+    end
+
+    it 'requires a block' do
+      expect { projection_class.before_evolve }.to raise_error(ArgumentError, /requires a block/)
+    end
+  end
+
   describe 'inheritance' do
     it 'subclasses inherit the state block and handlers' do
       subclass = Class.new(projection_class)

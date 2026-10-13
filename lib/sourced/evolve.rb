@@ -66,18 +66,24 @@ module Sourced
         projection_class.handled_messages
       end
 
-      # Define the projection's initial state factory.
-      # The block receives the partition values hash.
+      # Define the projection's initial state factory. The block takes no arguments.
       def state(&)
         @declares_projection = true
         projection_class.state(&)
       end
 
+      # Register a block on the reactor's projection to run before the evolve
+      # handler of every message it handles. See {Sourced::Projection.before_evolve}.
+      def before_evolve(&)
+        @declares_projection = true
+        projection_class.before_evolve(&)
+      end
+
       # Register an evolve handler on the reactor's projection, or adopt a
       # standalone projection class.
       #
-      # Adopting must come before this reactor's own +state+ / +evolve+
-      # declarations, which it would otherwise discard. It replaces handlers
+      # Adopting must come before this reactor's own +state+ / +evolve+ /
+      # +before_evolve+ declarations, which it would otherwise discard. It replaces handlers
       # inherited from a parent reactor.
       #
       # @overload evolve(message_class, &block)
@@ -91,7 +97,7 @@ module Sourced
           raise ArgumentError, "#{self}.evolve(#{klass}) takes no block" if block
           if @declares_projection
             raise ArgumentError,
-                  "#{self}.evolve(#{klass}) must come before #{self}'s own state/evolve declarations"
+                  "#{self}.evolve(#{klass}) must come before #{self}'s own state/evolve/before_evolve declarations"
           end
 
           @declares_projection = true

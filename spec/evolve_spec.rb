@@ -140,6 +140,24 @@ RSpec.describe Sourced::Evolve do
         .to raise_error(ArgumentError, /must come before/)
     end
 
+    it 'raises after the reactor own before_evolve declarations' do
+      expect {
+        Class.new(Sourced::Decider) do
+          before_evolve { |_, _| nil }
+          evolve EvolveTestMessages::CartProjection
+        end
+      }.to raise_error(ArgumentError, /must come before/)
+    end
+
+    it 'adds before_evolve blocks to the reactor own subclass, leaving the shared class alone' do
+      decider.before_evolve { |state, _| state[:seen] = (state[:seen] || 0) + 1 }
+
+      instance = decider.new(cart_id: 'c1')
+      instance.evolve([added('i1'), added('i2')])
+      expect(instance.state[:seen]).to eq(2)
+      expect(EvolveTestMessages::CartProjection.before_evolve_blocks).to be_empty
+    end
+
     it 'raises when given a block' do
       expect { Class.new(Sourced::Decider).evolve(EvolveTestMessages::CartProjection) { nil } }
         .to raise_error(ArgumentError, /takes no block/)

@@ -529,6 +529,23 @@ projection.evolve([item_added])
 projection.state # => { cart_id: 'c1', items: ['i1'] }
 ```
 
+`before_evolve` runs a block before the handler of every event the projection handles (events without a handler are still skipped), for changes common to all of them:
+
+```ruby
+class CartProjection < Sourced::Projection
+  state { { cart_id: nil, items: [], updated_at: nil } }
+
+  before_evolve do |state, event|
+    state[:cart_id] ||= event.payload.cart_id
+    state[:updated_at] = event.created_at
+  end
+
+  evolve ItemAdded do |state, event|
+    state[:items] << event.payload.item_id
+  end
+end
+```
+
 Reactors adopt it with `evolve`:
 
 ```ruby
