@@ -137,6 +137,39 @@ module MachineMountsTest
     end
   end
 
+  # A child machine invoked from a mounted region's checkpoint.
+  def self.check_event(name) = Sourced::Event.define("machine_mounts_test.#{name}") { %i[order_id check_id].each { |a| attribute a, String } }
+  StartCheck = command(:start_check)
+  Checking = event(:checking)
+  Checked = event(:checked)
+  CheckStarted = check_event(:check_started)
+  CheckPassed = check_event(:check_passed)
+  CheckCancelled = check_event(:check_cancelled)
+
+  class CheckMachine < Sourced::Machine
+    partition_by :order_id, :check_id
+    start CheckStarted
+    final CheckPassed
+    on_stop CheckCancelled
+  end
+
+  class ChecksRegion < Sourced::Machine
+    initial { command StartCheck => Checking }
+    checkpoint Checking do
+      invoke CheckMachine, as: :check, keys: ->(_order) { { check_id: 'c1' } }, on_done: { CheckPassed => Checked }
+    end
+    final Checked
+  end
+
+  class OrderWithChecks < Sourced::Machine
+    partition_by :order_id
+
+    initial { command PlaceOrder => OrderPlaced }
+    checkpoint OrderPlaced do
+      region :checks, ChecksRegion
+    end
+  end
+
   class OrderWithLines < Sourced::Machine
     partition_by :order_id
 
@@ -248,6 +281,22 @@ RSpec.describe 'Sourced::Machine region mounts' do
       expect(events.map(&:class)).to eq([MachineMountsTest::LineAdded])
       expect(instance.machine.children(:lines).map(&:keys)).to eq([{ line_id: 'l1' }])
       expect(machine.handled_messages).to include(MachineMountsTest::LineAdded, MachineMountsTest::LineCancelled)
+    end
+  end
+
+  describe 'children invoked by a mounted machine' do
+    def after(*events) = MachineMountsTest::OrderWithChecks.new(order_id: 'o1').tap { |m| m.evolve(events) }
+
+    it 'invokes the child when its checkpoint is entered, and maps its final' do
+      placed = msg(MachineMountsTest::OrderPlaced)
+      events = after(placed).decide(msg(MachineMountsTest::StartCheck))
+      expect(events.map(&:class)).to eq([MachineMountsTest::Checking, MachineMountsTest::CheckStarted])
+      expect(events.last.payload.check_id).to eq('c1')
+
+      passed = msg(MachineMountsTest::CheckPassed, check_id: 'c1')
+      instance = after(placed, *events, passed)
+      expect(instance.machine.children(:check).map(&:final?)).to eq([true])
+      expect(instance.__decide_eventless.map(&:class)).to eq([MachineMountsTest::Checked])
     end
   end
 
