@@ -5,48 +5,55 @@ require 'fugit'
 module Sourced
   # Reactor base class for state machines: Sourced's take on statecharts.
   #
-  # A machine's position is defined by *checkpoints*: event classes declared
-  # with {.checkpoint} or {.final}. The machine is at its latest checkpoint;
-  # every other event it evolves is data, and only changes its domain +context+.
-  # Each checkpoint lists the commands it accepts, and the checkpoints each
-  # command may produce:
+  # A machine's position is its *checkpoints*: handles declared with
+  # {.Checkpoint} and placed with {.checkpoint}, {.final} or {.start}. Each
+  # checkpoint lists the commands it accepts, and the checkpoints each command
+  # may move the machine to. Every move is recorded as one event of the
+  # machine's own, +<Machine>::Transitioned+, whose payload says which
+  # checkpoints it left and entered; the machine's position is replayed from
+  # those. Domain facts are data events, which only change the domain +context+:
   #
   #   class OrderMachine < Sourced::Machine
   #     partition_by :order_id
+  #
+  #     Placed    = Checkpoint(:placed)
+  #     Completed = Checkpoint(:completed)
+  #     Cancelled = Checkpoint(:cancelled)
   #
   #     context { OrderState.new }
   #     evolve(ItemAdded) { |order, evt| order.add(evt.payload.sku) }
   #
   #     initial do
-  #       command PlaceOrder => OrderPlaced          # appends OrderPlaced from the command's payload
+  #       command PlaceOrder => Placed
   #     end
   #
-  #     checkpoint OrderPlaced do
-  #       command CancelOrder => OrderCancelled
+  #     checkpoint Placed do
+  #       command CancelOrder => Cancelled
   #
-  #       region :payment do                         # regions are active while OrderPlaced is
+  #       region :payment do                         # regions are active while Placed is
   #         initial do
-  #           command Pay => PaymentCaptured | PaymentDeclined do |order, cmd|
-  #             cmd.payload.ok ? event(PaymentCaptured) : event(PaymentDeclined)
+  #           command Pay => [:captured, :declined] do |order, cmd|   # Symbols: an Array, not |
+  #             event PaymentAttempted, ok: cmd.payload.ok   # data
+  #             to(cmd.payload.ok ? :captured : :declined)
   #           end
   #         end
-  #         final PaymentCaptured
-  #         checkpoint PaymentDeclined
+  #         final :captured
+  #         checkpoint :declined
   #       end
   #
   #       region :shipping do
-  #         initial { command Ship => Shipped }
-  #         final Shipped
+  #         initial { command Ship => :shipped }
+  #         final :shipped
   #       end
   #
-  #       done OrderCompleted                        # appended once every region is final
+  #       done Completed                             # once every region is final
   #     end
   #
-  #     final OrderCompleted
-  #     final OrderCancelled
+  #     final Completed
+  #     final Cancelled
   #   end
   #
-  # A command decides into exactly one of its declared checkpoints, or into none
+  # A command moves the machine to one of its declared checkpoints, or nowhere
   # when the declaration includes +nil+ (or has no arrow). Commands no active
   # checkpoint accepts are refused: see {#handles_command?}.
   #
@@ -54,24 +61,27 @@ module Sourced
   # message for a partition is decided one at a time, under one consistency
   # guard, so regions never run concurrently and share the domain context. Entry
   # and exit actions are reactions: they run when the machine claims the
-  # checkpoint event, after the deciding command has committed.
+  # transition, after the deciding command has committed.
   class Machine
     include Sourced::Evolve
     include Sourced::React
     include Sourced::Sync
     extend Sourced::Consumer
 
-    # Checkpoints and the children's start and final events are evolved too,
-    # alongside the projection's evolve types, as are the evolve types of the
-    # machines mounted as regions. Checkpoints and children are the machine's
-    # own, not its projection's (which has no handlers for them), so adopting a
-    # projection with +evolve SomeProjection+ keeps them. Prepended after
-    # Sourced::Evolve's class methods, so +super+ is the projection's list.
+    # The machine's transitions, its children's starts and finishes, and the
+    # evolve types of the machines mounted in it are evolved too, alongside the
+    # projection's evolve types. They're the machine's own, not its
+    # projection's (which has no handlers for them), so adopting a projection
+    # with +evolve SomeProjection+ keeps them. Prepended after Sourced::Evolve's
+    # class methods, so +super+ is the projection's list.
     module EvolveTypes
+      # Fixed by {Machine.validate!}; computed on each call before it.
       def handled_messages_for_evolve
+        return @__evolve_types if @__evolve_types
+
         tree = self.tree
         mounted = tree.mounted_machines.flat_map { |machine| machine.projection_class.handled_messages }
-        (super + tree.checkpoints.keys + tree.child_events.keys + mounted).uniq
+        (super + __transition_classes + tree.child_events.keys + mounted).uniq
       end
     end
     singleton_class.prepend EvolveTypes
@@ -82,37 +92,66 @@ module Sourced
     # registered with a Router, and before its first instance is built.
     DefinitionError = Class.new(Error)
 
-    # Raised when a decision emits checkpoints its command didn't declare.
-    CheckpointError = Class.new(Error)
+    # Raised when a handler moves the machine somewhere its command didn't declare.
+    TransitionError = Class.new(Error)
 
-    # Raised when a machine builds an event that isn't valid, e.g. a checkpoint
-    # auto-appended from a command that lacks one of its required attributes.
+    # Raised when a machine builds an event that isn't valid.
     InvalidEventError = Class.new(Error)
 
     INITIAL = :initial
 
-    # Metadata key on messages dispatched by an +after+ block: the id of the
-    # checkpoint event that started the timer.
+    # Metadata keys on messages dispatched by an +after+ block: the id of the
+    # transition that entered the checkpoint and started the timer, and the
+    # checkpoint's path. One transition can enter several checkpoints, so a
+    # timer belongs to the pair.
     ENTERED_BY = :entered_by
+    ENTERED_AT = :entered_at
 
     # Joins chain (a join's checkpoint can complete an outer join), but a
     # definition can't make them chain forever. A safety net only.
     MAX_JOINS = 100
 
-    # A command a checkpoint accepts, and the checkpoints it may decide into.
-    # +nil+ among the targets means "may emit no checkpoint".
+    NONE = [].freeze
+
+    # A checkpoint: a position in a machine's chart. A handle is a value, its
+    # name and the machine that declares it ({Machine.Checkpoint}). The tree
+    # places it, once per placement of its machine: a machine mounted twice has
+    # each of its checkpoints at two paths.
+    Checkpoint = Data.define(:name, :machine) do
+      # @param other [Checkpoint, Targets, nil]
+      # @return [Targets]
+      def |(other) = Targets.new(members: [self]) | other
+
+      def to_s = "#{machine.name || machine.inspect}:#{name}"
+      def inspect = "#<checkpoint #{self}>"
+    end
+
+    # The checkpoints a transition may go to; +nil+ means it may stay.
+    Targets = Data.define(:members) do
+      # @param other [Checkpoint, Targets, nil]
+      # @return [Targets]
+      def |(other)
+        case other
+        in Targets then with(members: members | other.members)
+        in Checkpoint | nil then with(members: members | [other])
+        end
+      end
+    end
+
+    # A command a checkpoint accepts, and the checkpoints it may move to.
+    # +nil+ among the targets means "may stay".
     CommandDef = Data.define(:command_class, :targets, :block) do
-      # A single checkpoint is appended for the handler when it doesn't emit it.
+      # Moves to its single target when the handler doesn't choose one.
       def auto? = targets.size == 1 && !targets.first.nil?
       def optional? = targets.include?(nil)
       def checkpoint_targets = targets.compact
     end
 
     # A delayed action: runs when its checkpoint is entered, and future-dates
-    # what it dispatches by +delay+ from the entering event. +delay+ is as
+    # what it dispatches by +delay+ from the entering transition. +delay+ is as
     # declared: seconds, or a duration string; +duration+ is the parsed string.
     After = Data.define(:delay, :duration, :block) do
-      # @param time [Time] the entering event's +created_at+
+      # @param time [Time] the entering transition's +created_at+
       # @return [Time] when what the block dispatches is delivered
       def from(time) = duration ? duration.add_to_time(time).to_local_time : time + delay
     end
@@ -123,9 +162,9 @@ module Sourced
       def invoke? = kind == :invoke
     end
 
-    # A child as its parent knows it: its own keys (beyond the parent's), its latest
-    # start or final checkpoint, and for an invoked child, the parent checkpoint
-    # entry it was invoked for.
+    # A child as its parent knows it: its own keys (beyond the parent's), the
+    # checkpoint it started at, or the final one it finished at, and for an
+    # invoked child, the parent checkpoint entry it was invoked for.
     ChildRef = Data.define(:keys, :state, :final, :entry_id) do
       def final? = final
     end
@@ -135,16 +174,14 @@ module Sourced
 
     # A region whose checkpoints are another machine's, declared with
     # +region :name, SomeMachine+ or, for a compound checkpoint,
-    # +checkpoint SomeMachine+. Its definition isn't copied: the tree places
-    # the machine's root region under the checkpoint (see {Tree}). +on_done+
-    # maps the machine's root final checkpoints onto the parent's. +start+ is
-    # the region's starting checkpoint: +nil+ for a region (it starts at its
-    # initial position), the machine's start event for a compound checkpoint.
-    RegionMount = Data.define(:name, :machine, :on_done, :start) do
-      def compound? = !start.nil?
+    # +checkpoint Handle, SomeMachine+. Its definition isn't copied: the tree
+    # places the machine's root region under the checkpoint (see {Tree}).
+    # +on_done+ maps the machine's root final checkpoints onto the parent's. A
+    # compound region starts at the machine's +start+ checkpoint; any other at
+    # its initial position.
+    RegionMount = Data.define(:name, :machine, :on_done, :compound) do
+      def compound? = compound
     end
-
-    NONE = [].freeze
 
     # A set of checkpoints, one of them current while the region is active.
     # The root region is always active; any other belongs to a checkpoint, and
@@ -165,9 +202,6 @@ module Sourced
       # The region's position before its first checkpoint, declared or not.
       def initial_node = nodes[INITIAL] || (@blank_initial ||= Node.new(INITIAL, final: false, region: self))
 
-      # @return [Array<Region>] this region and its ancestors, innermost first
-      def lineage = root? ? [self] : [self, *parent.region.lineage]
-
       def label = root? ? 'the root region' : "region #{name.inspect}"
     end
 
@@ -176,7 +210,7 @@ module Sourced
       attr_reader :key, :region, :commands, :entries, :exits, :afters, :regions, :invokes, :children_joins
       attr_accessor :done
 
-      # @param key [Class, Symbol] the checkpoint event class, or {INITIAL}
+      # @param key [Checkpoint, Symbol] the checkpoint, or {INITIAL}
       # @param final [Boolean]
       # @param region [Region] the region the checkpoint belongs to
       def initialize(key, final:, region:)
@@ -196,12 +230,6 @@ module Sourced
       def final? = @final
       def initial? = key == INITIAL
       def label = initial? ? "#{region.label}'s initial position" : key.to_s
-
-      # Whether this checkpoint is inside +other+'s regions, at any depth.
-      def descendant_of?(other)
-        parent = region.parent
-        !parent.nil? && (parent == other || parent.descendant_of?(other))
-      end
     end
 
     # Evaluates a region's block: +initial+, +checkpoint+, +final+.
@@ -212,11 +240,15 @@ module Sourced
       end
 
       def initial(&block) = @machine.send(:__define_node, @region, INITIAL, final: false, &block)
-      def checkpoint(event_class, machine = nil, on_done: {}, &block)
-        @machine.send(:__define_checkpoint, @region, event_class, machine, on_done, &block)
+
+      def checkpoint(handle, machine = nil, on_done: {}, &block)
+        @machine.send(:__define_checkpoint, @region, handle, machine, on_done, &block)
       end
 
-      def final(event_class, &block) = @machine.send(:__define_node, @region, event_class, final: true, &block)
+      def final(handle, &block) = @machine.send(:__define_node, @region, @machine.send(:__handle, handle), final: true, &block)
+
+      # @see Machine.Checkpoint
+      def Checkpoint(name) = @machine.Checkpoint(name)
     end
 
     # Evaluates a checkpoint's block: +command+, +entry+, +exit+, +after+, +region+, +done+.
@@ -226,8 +258,11 @@ module Sourced
         @node = node
       end
 
+      # @see Machine.Checkpoint
+      def Checkpoint(name) = @machine.Checkpoint(name)
+
       # @overload command(command_class => target, &block)
-      #   @param target [Class, Plumb::Or, nil] a checkpoint, a union of them, or +nil+
+      #   @param target [Checkpoint, Symbol, Targets, Array, nil] a checkpoint, a union of them, or +nil+
       # @overload command(command_class, &block)
       #   Data only: same as +command_class => nil+.
       def command(declaration, &block)
@@ -240,35 +275,35 @@ module Sourced
       end
 
       # Runs when the machine enters this checkpoint, as a reaction.
-      # @yield [context, checkpoint_event]
+      # @yield [context, transition]
       def entry(&block)
-        raise DefinitionError, "#{@machine}: the initial position has no event, so no entry actions" if @node.initial?
+        raise DefinitionError, "#{@machine}: the initial position is never entered, so no entry actions" if @node.initial?
 
         @node.entries << block
       end
 
       # Runs when the machine leaves this checkpoint, as a reaction to the
-      # checkpoint that replaced it (in this region, or an ancestor's).
-      # @yield [context, replacing_checkpoint_event]
+      # transition that left it.
+      # @yield [context, transition]
       def exit(&block) = @node.exits << block
 
       # Runs when the machine enters this checkpoint, as a reaction. Messages it
-      # dispatches are delivered +delay+ seconds after the entering event, and
-      # carry that event's id: a command delivered after the machine has left
-      # that checkpoint entry is stale, and refused (see {Machine#handles_command?}).
+      # dispatches are delivered +delay+ after the entering transition, and
+      # carry its id: a command delivered after the machine has left that
+      # checkpoint entry is stale, and refused (see {Machine#handles_command?}).
       #
-      #   checkpoint PaymentStarted do
-      #     after(3600) { |_context, _evt| dispatch ExpirePayment }
-      #     command ExpirePayment => PaymentExpired
+      #   checkpoint AwaitingPayment do
+      #     after(3600) { |_context, _transition| dispatch ExpirePayment }
+      #     command ExpirePayment => Expired
       #   end
       #
       # The delay is seconds, or a duration string as {Sourced::Message#at}
       # takes it (+'30m'+, +'1h30m'+, +'P1D'+).
       #
       # @param delay [Numeric, String]
-      # @yield [context, checkpoint_event]
+      # @yield [context, transition]
       def after(delay, &block)
-        raise DefinitionError, "#{@machine}: the initial position has no event, so no timers" if @node.initial?
+        raise DefinitionError, "#{@machine}: the initial position is never entered, so no timers" if @node.initial?
 
         duration = Fugit.parse_duration(delay) if delay.is_a?(String)
         unless delay.is_a?(Numeric) || duration
@@ -288,11 +323,11 @@ module Sourced
       # +evolve+ blocks apply to it too). It escalates through its root final
       # checkpoints, which +on_done+ maps onto ours.
       #
-      #   region :payment, PaymentMachine, on_done: { PaymentExpired => OrderCancelled }
+      #   region :payment, PaymentMachine, on_done: { PaymentMachine::Expired => Cancelled }
       #
-      # @param name [Symbol] unique within the machine's tree
+      # @param name [Symbol] unique within the machine
       # @param machine [Class<Machine>, nil]
-      # @param on_done [Hash{Class => Class}] the machine's root final => our checkpoint
+      # @param on_done [Hash{Checkpoint => Checkpoint}] the machine's root final => our checkpoint
       def region(name, machine = nil, on_done: {}, &block)
         raise DefinitionError, "#{@machine}: the initial position can't have regions" if @node.initial?
         raise DefinitionError, "#{@machine}: final checkpoint #{@node.key} can't have regions" if @node.final?
@@ -312,30 +347,28 @@ module Sourced
       end
 
       # Join: once every region of this checkpoint is at a final checkpoint,
-      # the machine appends +event_class+, in the same decision when one of its
-      # commands completes the last region, or when it claims a checkpoint
-      # appended elsewhere that does.
-      # @param event_class [Class] a checkpoint of this region or an ancestor's
-      def done(event_class)
+      # the machine moves to +target+, in the same decision.
+      # @param target [Checkpoint, Symbol] a checkpoint of this region or an ancestor's
+      def done(target)
         raise DefinitionError, "#{@machine}: #{@node.label} declares done twice" if @node.done
 
-        @node.done = event_class
+        @node.done = @machine.send(:__handle, target)
       end
 
-      # Run a child machine while this checkpoint is active: spawned in the
+      # Run a child machine while this checkpoint is active: started in the
       # decision that enters the checkpoint, sent its +Stop+ when the checkpoint
       # is left, and its final checkpoint mapped onto one of ours.
       #
       #   checkpoint AwaitingPayment do
       #     invoke PaymentMachine, as: :payment,
       #            keys: ->(_order) { { payment_id: SecureRandom.uuid } },
-      #            on_done: { PaymentCaptured => OrderPaid, PaymentDeclined => PaymentFailed }
+      #            on_done: { PaymentMachine::Captured => Paid, PaymentMachine::Declined => PaymentFailed }
       #   end
       #
       # @param child [Class<Machine>] a machine with +start+ and +on_stop+
       # @param as [Symbol] name for {View#children}
-      # @param keys [#call(context)] the child's start payload: its own keys, and anything else it needs
-      # @param on_done [Hash{Class => Class}] child final checkpoint => our checkpoint
+      # @param keys [#call(context)] the child's own keys, and any input for its +Started+
+      # @param on_done [Hash{Checkpoint => Checkpoint}] child final checkpoint => our checkpoint
       def invoke(child, as:, keys:, on_done: {})
         raise DefinitionError, "#{@machine}: #{@node.label} can't invoke" if @node.initial? || @node.final?
 
@@ -343,11 +376,11 @@ module Sourced
       end
 
       # Join over spawned children: once every child spawned as +as+ is at a
-      # final checkpoint (and at least one was spawned), the machine decides
-      # into the declared checkpoint, as a command handler would.
+      # final checkpoint (and at least one was spawned), the machine moves to
+      # the declared checkpoint, as a command handler would.
       #
       #   children_done :lines => LinesDone | LinesPartiallyFailed do |order|
-      #     machine.children(:lines).all? { |line| line.state == LinePicked } ? event(LinesDone) : event(LinesPartiallyFailed)
+      #     to(machine.children(:lines).all? { |line| line.state == LineMachine::Picked } ? LinesDone : LinesPartiallyFailed)
       #   end
       def children_done(declaration, &block)
         unless declaration.is_a?(Hash) && declaration.size == 1
@@ -356,7 +389,7 @@ module Sourced
 
         as, target = declaration.first
         targets = @machine.send(:__flatten_targets, target)
-        raise DefinitionError, "#{@machine}: children_done #{as.inspect} must decide into a checkpoint, not nil" if targets.include?(nil)
+        raise DefinitionError, "#{@machine}: children_done #{as.inspect} must move to a checkpoint, not nil" if targets.include?(nil)
         if block.nil? && targets.size > 1
           raise DefinitionError, "#{@machine}: children_done #{as.inspect} with several checkpoints needs a block"
         end
@@ -370,21 +403,25 @@ module Sourced
     class View
       def initialize(runtime) = @runtime = runtime
 
-      # The current configuration: a checkpoint class (or +:initial+), or for a
-      # checkpoint with regions, +{ checkpoint => { region_name => value, … } }+.
+      # The current configuration: a checkpoint (or +:initial+), or for a
+      # checkpoint with regions, +{ checkpoint => { region_name => value, … } }+,
+      # and for a compound one, +{ checkpoint => value }+.
       def value = @runtime.value
 
       # @overload in?(checkpoint)
       #   Whether +checkpoint+ is active, in any region.
+      # @overload in?(path)
+      #   Whether the checkpoint at +path+ (+'pending.submission.check.submitting'+) is active.
       # @overload in?(region_name, checkpoint)
-      #   Whether +region_name+ is active and at +checkpoint+ (or +:initial+).
+      #   Whether a region named +region_name+ is active and at +checkpoint+ (or +:initial+).
       def in?(*args)
         case args
-        in [checkpoint]
+        in [Checkpoint => checkpoint]
           @runtime.active_nodes.any? { |node| node.key == checkpoint }
+        in [String => path]
+          @runtime.active_nodes.any? { |node| node.path == path }
         in [Symbol => region_name, checkpoint]
-          region = @runtime.active_regions.find { |r| r.name == region_name }
-          !region.nil? && @runtime.current_node(region).key == checkpoint
+          @runtime.active_regions.any? { |r| r.name == region_name && @runtime.current_node(r).key == checkpoint }
         end
       end
 
@@ -397,8 +434,17 @@ module Sourced
       #   @return [Hash{Symbol => Array<ChildRef>}] every child, by +as+
       def children(as = nil) = as ? @runtime.children(as) : @runtime.all_children
 
-      # The event that entered the current checkpoint of the root region, or of
-      # +region_name+ (nil while it's at its initial position or inactive).
+      # The checkpoint the root region, or the active region named
+      # +region_name+, is at: a handle, or +:initial+; nil when no region of
+      # that name is active.
+      def current(region_name = nil)
+        region = region_name ? @runtime.active_regions.find { |r| r.name == region_name } : @runtime.root
+        region && @runtime.current_node(region).key
+      end
+
+      # The transition that entered the current checkpoint of the root region,
+      # or of the active region named +region_name+ (nil while it's at its
+      # initial position or inactive).
       def entered_by(region_name = nil)
         region = region_name ? @runtime.active_regions.find { |r| r.name == region_name } : @runtime.root
         region && @runtime.entered_by(region)
@@ -410,24 +456,24 @@ module Sourced
     # +context+ the domain context.
     Snapshot = Data.define(:value, :context, :children)
 
-    # The machine's own bookkeeping, separate from the domain context: the
-    # current checkpoint, its entering event and the checkpoints entered so
-    # far, per region.
+    # The machine's own bookkeeping, separate from the domain context: per
+    # region, the current checkpoint, the transition that entered it and the
+    # checkpoints entered since the region was; and the children.
     class Runtime
       Position = Struct.new(:current, :entered_by, :visited)
 
       attr_reader :root
 
-      def initialize(root)
-        @root = root
+      # @param tree [Tree]
+      def initialize(tree)
+        @tree = tree
+        @root = tree.root
         @positions = {}
-        @exited = {}
-        @ignored = {}
         @children = {}
       end
 
-      # Record a child's start or final checkpoint. An invoked child keeps the
-      # entry it was first invoked for.
+      # Record a child's start or finish. An invoked child keeps the entry it
+      # was first invoked for.
       def track_child(spec, keys, state:, final:, entry_id:)
         refs = (@children[spec.as] ||= {})
         known = refs[keys]
@@ -456,12 +502,12 @@ module Sourced
         region.root? || (active?(region.parent.region) && position(region.parent.region).current == region.parent.key)
       end
 
-      def active_node?(node) = active?(node.region) && current_node(node.region) == node
+      def active_node?(node) = active?(node.region) && current_node(node.region).equal?(node)
 
-      # @return [Array<Node>] the active checkpoints, outermost first, regions in definition order
+      # @return [Array<PlacedNode>] the active checkpoints, outermost first, regions in definition order
       def active_nodes = active_nodes_in(root)
 
-      # @return [Array<Region>] the active regions, outermost first, in definition order
+      # @return [Array<PlacedRegion>] the active regions, outermost first, in definition order
       def active_regions = active_nodes.flat_map(&:regions).unshift(root)
 
       # Whether +event_id+ entered a checkpoint that's still active.
@@ -469,34 +515,49 @@ module Sourced
         active_regions.any? { |region| position(region).entered_by&.id == event_id }
       end
 
+      # Whether +node+ is active, entered by +event_id+.
+      def active_entry_of?(node, event_id) = active_node?(node) && entered_by(node.region)&.id == event_id
+
       def value = value_of(root)
 
-      # Apply a checkpoint event, in log order. A checkpoint of an inactive
-      # region is ignored: a region's history starts when its parent checkpoint
-      # is entered.
+      # What moving from +source+ to +target+ leaves and enters, given the
+      # current configuration. The transition's domain is the innermost region
+      # that holds both: +source+'s region or an ancestor's, or for a target
+      # below +source+, the one of +source+'s regions it's in. Everything
+      # active in the domain is left, innermost first; the path from the domain
+      # down to +target+ is entered, outermost first, then +target+'s default
+      # configuration: each compound checkpoint's start, all the way down.
       #
-      # @param event [Sourced::Message]
-      # @param node [Node] the checkpoint's node
-      def enter(event, node)
-        unless active?(node.region)
-          @ignored[event.id] = true
-          return
-        end
+      # @param source [PlacedNode] the active checkpoint (or initial position) taking the transition
+      # @param target [PlacedNode]
+      # @return [Array(Array<PlacedNode>, Array<PlacedNode>)] exited and entered
+      def transition_sets(source, target)
+        lineage = target.region.lineage
+        domain = source.regions.find { |r| lineage.include?(r) } || source.region.lineage.find { |r| lineage.include?(r) }
+        raise Error, "no region holds both #{source.label} and #{target.label}" unless domain
 
-        @exited[event.id] = exits_from(current_node(node.region))
-        pos = position(node.region)
-        pos.current = node.key
-        pos.entered_by = event
-        pos.visited << node.key unless pos.visited.include?(node.key)
-        # A fresh activation of the checkpoint's regions
-        node.regions.each { |region| reset(region, event) }
+        exited = exits_from(current_node(domain)).reject(&:initial?)
+        [exited, entry_path(target, domain)]
       end
 
-      # The checkpoints +event+ made the machine leave, innermost first.
-      # @return [Array<Node>]
-      def exited_by(event) = @exited.fetch(event.id) { [] }
+      # Apply a transition, decided now or replayed: each entered checkpoint
+      # becomes its region's current one, entered by +event+, and its regions
+      # start afresh.
+      #
+      # @param event [Sourced::Message] a +Transitioned+ (or a child's +Started+)
+      # @raise [Error] if a path doesn't resolve, or enters an inactive region
+      def apply(event)
+        event.payload.entered.each do |path|
+          node = @tree.node_at(path)
+          raise Error, "#{event.type} #{event.id} enters #{path}, in an inactive region" unless active?(node.region)
 
-      def ignored?(event) = @ignored.key?(event.id)
+          pos = position(node.region)
+          pos.current = node.key
+          pos.entered_by = event
+          pos.visited << node.key unless pos.visited.include?(node.key)
+          node.regions.each { |region| @positions[region] = Position.new(INITIAL, nil, []) }
+        end
+      end
 
       private
 
@@ -512,24 +573,22 @@ module Sourced
         node.regions.flat_map { |region| exits_from(current_node(region)) } + [node]
       end
 
-      # A region starts at its initial position; a compound checkpoint's at its
-      # machine's start checkpoint, entered by +event+, which entered the
-      # compound checkpoint.
-      def reset(region, event)
-        @positions[region] =
-          if region.compound?
-            Position.new(region.start, event, [region.start])
-          else
-            Position.new(INITIAL, nil, [])
-          end
-        region.nodes.each_value { |node| node.regions.each { |child| reset(child, event) } }
+      def entry_path(target, domain)
+        chain = [target]
+        chain.unshift(chain.first.region.parent) until chain.first.region.equal?(domain)
+        chain.each_with_index.flat_map do |node, i|
+          below = chain[i + 1]
+          next [node] if below
+
+          @tree.default_entry(node)
+        end
       end
 
       def value_of(region)
         node = current_node(region)
         return node.key if node.regions.empty?
 
-        compound = node.regions.find(&:compound?)
+        compound = node.compound_region
         return { node.key => value_of(compound) } if compound
 
         { node.key => node.regions.to_h { |child| [child.name, value_of(child)] } }
@@ -541,8 +600,11 @@ module Sourced
       # @return [Region]
       def root = @root ||= Region.new(:root, nil)
 
-      # @return [Hash{Class => Node}] every checkpoint, in any region
-      def checkpoints = @checkpoints ||= {}
+      # @return [Hash{Symbol => Checkpoint}] the checkpoints this machine declares, by name
+      def declared_checkpoints = @declared_checkpoints ||= {}
+
+      # @return [Hash{Checkpoint => Node}] the checkpoints this machine places, in any of its regions
+      def nodes = @nodes ||= {}
 
       # @return [Hash{Symbol => Region}] every region but the root, declared inline
       def regions = @regions ||= {}
@@ -553,62 +615,82 @@ module Sourced
       # @return [Hash{Symbol => ChildSpec}] child machines, by +as+
       def children_specs = @children_specs ||= {}
 
-      # @return [Hash{Class => Array<Array(ChildSpec, Symbol)>}] the children's start
-      #   (+:start+) and root final (+:final+) checkpoint classes this machine tracks
-      def child_events = @child_events ||= {}
-
       # @param klass [Class]
       def child_event?(klass) = tree.child_event?(klass)
 
-      # The checkpoint a parent appends to spawn or invoke this machine.
-      # @return [Class, nil]
-      attr_reader :start_event
+      # The checkpoint a parent starts this machine at, with +Started+.
+      # @return [Checkpoint, nil]
+      attr_reader :start_checkpoint
 
-      # The final checkpoint this machine's +Stop+ decides into.
-      # @return [Class, nil]
-      attr_reader :stop_event
+      # The final checkpoint this machine's +Stop+ moves it to.
+      # @return [Checkpoint, nil]
+      attr_reader :stop_checkpoint
 
-      # Declare the checkpoint a parent appends to spawn or invoke this machine:
-      # its first checkpoint, entered without a command.
-      # @param event_class [Class]
-      def start(event_class, &block)
-        raise DefinitionError, "#{self}: start is declared twice" if @start_event
+      # Declare a checkpoint: a handle naming a position in this machine's
+      # chart. Place it with {.checkpoint}, {.final} or {.start}.
+      #
+      #   Placed = Checkpoint(:placed)
+      #
+      # @param name [Symbol]
+      # @return [Checkpoint] the same handle for the same name
+      def Checkpoint(name)
+        name = name.to_sym
+        raise DefinitionError, "#{self}: a checkpoint can't be named #{INITIAL.inspect}" if name == INITIAL
 
-        @start_event = event_class
-        checkpoint(event_class, &block)
+        declared_checkpoints[name] ||= Checkpoint.new(name:, machine: self)
+      end
+
+      # Declare where a parent starts this machine (with +Started+), without a
+      # command. With a machine, the start is a compound checkpoint, entered at
+      # that machine's own start.
+      # @param handle [Checkpoint, Symbol]
+      def start(handle, machine = nil, on_done: {}, &block)
+        raise DefinitionError, "#{self}: start is declared twice" if @start_checkpoint
+
+        @start_checkpoint = __handle(handle)
+        checkpoint(@start_checkpoint, machine, on_done:, &block)
       end
 
       # Declare what this machine becomes when its parent stops it. Generates a
       # +Stop+ command (+self::Stop+, keyed by this machine's partition keys),
-      # accepted from any started, non-final position, that decides into
-      # +event_class+, a final checkpoint of the root region (declared here when
-      # it isn't already). Leaving that way runs exit actions as usual.
-      # @param event_class [Class]
-      def on_stop(event_class)
-        raise DefinitionError, "#{self}: on_stop is declared twice" if @stop_event
+      # accepted from any started, non-final position, that moves to +handle+,
+      # a final checkpoint of the root region (placed here when it isn't
+      # already). Also generates +Started+ and +Finished+, the events a parent
+      # tracks its children by. Leaving that way runs exit actions as usual.
+      # @param handle [Checkpoint, Symbol]
+      def on_stop(handle)
+        raise DefinitionError, "#{self}: on_stop is declared twice" if @stop_checkpoint
         raise DefinitionError, 'a machine with on_stop needs a name' unless name
         raise DefinitionError, "#{self}: declare partition_by before on_stop" if partition_keys.empty?
 
-        @stop_event = event_class
-        node = checkpoints[event_class] || final(event_class)
+        @stop_checkpoint = __handle(handle)
+        node = nodes[@stop_checkpoint] || final(@stop_checkpoint)
         unless node.final? && node.region.root?
-          raise DefinitionError, "#{self}: on_stop #{event_class} must be a final checkpoint of the root region"
+          raise DefinitionError, "#{self}: on_stop #{@stop_checkpoint} must be a final checkpoint of the root region"
         end
 
         keys = partition_keys
         const_set(:Stop, Sourced::Command.define("#{type_prefix}.stop") { keys.each { |k| attribute k, String } })
+        __define_child_messages
       end
 
-      # Track a child machine: its start checkpoint (appended by {Machine#spawn})
-      # and its root final checkpoints are evolved, for {View#children} and
-      # +children_done+. Children are stopped, through their +Stop+, when this
-      # machine reaches one of the +stop_on+ checkpoints.
+      # Track a child machine: its +Started+ (appended by {Machine#spawn}) and
+      # +Finished+ are evolved, for {View#children} and +children_done+.
+      # Children are stopped, through their +Stop+, when this machine enters
+      # one of the +stop_on+ checkpoints.
       #
       # @param child [Class<Machine>] a machine with +start+ and +on_stop+
       # @param as [Symbol]
-      # @param stop_on [Class, Array<Class>] checkpoints of this machine
+      # @param stop_on [Checkpoint, Symbol, Array] checkpoints of this machine
       def spawns(child, as:, stop_on: [])
-        __define_child(child, as:, kind: :spawn, stop_on: Array(stop_on))
+        __define_child(child, as:, kind: :spawn, stop_on: Array(stop_on).map { |handle| __handle(handle) })
+      end
+
+      # Generates +Transitioned+, the event recording this machine's moves, once
+      # the machine has a name.
+      def partition_by(*keys)
+        super
+        __define_transition_message if name
       end
 
       # The machine's definition as a JSON-serializable Hash. See {Chart}.
@@ -633,30 +715,28 @@ module Sourced
       # The machine's position before its first checkpoint.
       def initial(&block) = __define_node(root, INITIAL, final: false, &block)
 
-      # Declare a checkpoint, and the commands it accepts.
+      # Place a checkpoint, and declare the commands it accepts.
       #
       # With a machine, the checkpoint is compound: its sub-states are that
-      # machine's checkpoints, starting at its +start+ checkpoint, which is
-      # this one. The event can be left out, as it's the machine's start:
+      # machine's checkpoints, entered at its +start+:
       #
-      #   checkpoint ThingStarted, ThingMachine, on_done: { ThingFinished => OrderReady }
-      #   checkpoint ThingMachine                # the same, without on_done
+      #   checkpoint Unsettled, UnsettledMachine, on_done: { UnsettledMachine::Sent => Submitted }
       #
       # The block declares the compound checkpoint's own commands and actions.
       # The machine runs in this machine's partition and instance, its context
       # this machine's; it escalates through its root finals, which +on_done+
       # maps onto our checkpoints.
       #
-      # @param event_class [Class] the checkpoint event, or a machine with +start+
-      # @param machine [Class<Machine>, nil] a machine whose +start+ is +event_class+
-      # @param on_done [Hash{Class => Class}] the machine's root final => our checkpoint
-      def checkpoint(event_class, machine = nil, on_done: {}, &block)
-        __define_checkpoint(root, event_class, machine, on_done, &block)
+      # @param handle [Checkpoint, Symbol] one of this machine's checkpoints; a Symbol declares it
+      # @param machine [Class<Machine>, nil] a machine with +start+, for a compound checkpoint
+      # @param on_done [Hash{Checkpoint => Checkpoint}] the machine's root final => our checkpoint
+      def checkpoint(handle, machine = nil, on_done: {}, &block)
+        __define_checkpoint(root, handle, machine, on_done, &block)
       end
 
-      # Declare a final checkpoint. It accepts no commands.
-      # @param event_class [Class]
-      def final(event_class, &block) = __define_node(root, event_class, final: true, &block)
+      # Place a final checkpoint. It accepts no commands.
+      # @param handle [Checkpoint, Symbol]
+      def final(handle, &block) = __define_node(root, __handle(handle), final: true, &block)
 
       # The machine's definition placed into one tree (see {Tree}), which the
       # runtime, routing and rendering work on. Built once the machine is
@@ -664,28 +744,23 @@ module Sourced
       # @return [Tree]
       def tree = @tree || Tree.new(self)
 
-      # @return [Array<Class>] the checkpoint event classes in the machine's tree
-      def checkpoint_classes = tree.checkpoints.keys
-
-      # @param klass [Class]
-      def checkpoint?(klass) = tree.checkpoint?(klass)
-
       # @return [Array<PlacedNode>] every node in the machine's tree, initial positions included
       def all_nodes = tree.all_nodes
 
+      # Fixed by {.validate!}; computed on each call before it.
       # @return [Array<Class>] every command any checkpoint accepts, and +Stop+
       def handled_commands
+        return @__handled_commands if @__handled_commands
+
         commands = all_nodes.flat_map { |node| node.commands.keys }
-        commands << self::Stop if stop_event
+        commands << self::Stop if stop_checkpoint
         commands.uniq
       end
 
-      # Claimed: commands to decide, checkpoints to run entry and exit actions
-      # for, children's start and final checkpoints, and any events with a
-      # +reaction+. Every checkpoint is claimed, with or without actions:
-      # claiming them is also how a machine notices checkpoints appended by
-      # other reactors (children included), which joins decide on.
-      def handled_messages = (handled_commands + checkpoint_classes + tree.child_events.keys + handled_messages_for_react).uniq
+      # Claimed: commands to decide, transitions to run entry and exit actions
+      # for, children's starts and finishes (which joins decide on), and any
+      # events with a +reaction+.
+      def handled_messages = (handled_commands + __transition_classes + tree.child_events.keys + handled_messages_for_react).uniq
 
       # Check the definition. Memoised; runs before the first instance is built,
       # and when the machine is registered with a Router.
@@ -693,20 +768,35 @@ module Sourced
       # @raise [DefinitionError]
       # @return [true]
       def validate!
-        @validated ||= begin
-          __validate!
-          @tree = Tree.new(self)
-          true
-        end
+        # +@validating+: a child that spawns its parent back.
+        return true if @validated || @validating
+
+        @validating = true
+        raise DefinitionError, "#{self} needs partition_by" if partition_keys.empty?
+        raise DefinitionError, 'a machine needs a name' unless name
+
+        __define_transition_message
+        tree = Tree.new(self)
+        __validate!(tree)
+        # Children are started from here, so they must be valid too.
+        children_specs.each_value { |spec| spec.machine.validate! }
+        @tree = tree
+        # What the runtime reads per message, fixed now that the definition is.
+        @__handled_commands = handled_commands.freeze
+        @__evolve_types = handled_messages_for_evolve.freeze
+        @__start_paths = __start_paths.freeze if start_checkpoint
+        @validated = true
+      ensure
+        @validating = false
       end
 
       # Build executable actions for a claimed batch.
       #
       # +history+ comes from an unbounded read over the machine's evolve types,
-      # so it holds the claimed checkpoint events (and anything appended since),
-      # in log order. The machine evolves all of it: commands are decided against
-      # the latest state, and checkpoint events run the exit and entry actions of
-      # the checkpoints they left and entered.
+      # so it holds the claimed transitions (and anything appended since), in
+      # log order. The machine evolves all of it: commands are decided against
+      # the latest state, and transitions run the exit and entry actions of the
+      # checkpoints they left and entered.
       #
       # @param claim [ClaimResult]
       # @param history [ReadResult]
@@ -727,7 +817,8 @@ module Sourced
       #   default skips entry and exit actions, timers and joins when +true+
       # @return [Array<Array(Array<Object>, Sourced::Message)>] action/source pairs
       def handle_batch(partition_values, new_messages, history:, replaying: false)
-        evolvable = new_messages.select { |msg| handled_messages_for_evolve.include?(msg.class) }
+        types = handled_messages_for_evolve
+        evolvable = new_messages.select { |msg| types.include?(msg.class) }
         __process(partition_values, new_messages, history.messages + evolvable, guard: history.guard, replaying:)
       end
 
@@ -740,46 +831,72 @@ module Sourced
         Snapshot.new(value: instance.machine.value, context: instance.context, children: instance.machine.children)
       end
 
+      # The events that move this machine: +Transitioned+, and for a child, +Started+.
+      # @api private
+      def __transition_classes = @__transition_classes ||= []
+
+      # What a parent's +Started+ enters: this machine's start, and its default configuration.
+      # @api private
+      # @return [Array<String>]
+      def __start_paths = @__start_paths || tree.default_entry_paths(start_checkpoint)
+
+      # @api private
+      # @return [Class, nil] +Finished+, for a machine with +on_stop+
+      def __finished_class = @__finished_class
+
       private
 
-      def __define_checkpoint(region, event_class, machine, on_done, &block)
-        if machine.nil? && event_class.is_a?(Class) && event_class < Machine
-          machine = event_class
-          event_class = machine.start_event
-          raise DefinitionError, "#{self}: checkpoint #{machine} needs a machine with start" unless event_class
-        end
-        if machine.nil?
-          raise DefinitionError, "#{self}: checkpoint #{event_class}: on_done is for a compound checkpoint" if on_done.any?
+      def __define_transition_message
+        return if const_defined?(:Transitioned, false)
 
-          return __define_node(region, event_class, final: false, &block)
+        keys = partition_keys
+        const_set(:Transitioned, Sourced::Event.define("#{type_prefix}.transitioned") do
+          keys.each { |k| attribute k, String }
+          Machine.__transition_attributes(self)
+        end)
+        __transition_classes << self::Transitioned
+      end
+
+      def __define_child_messages
+        keys = partition_keys
+        const_set(:Started, Sourced::Event.define("#{type_prefix}.started") do
+          keys.each { |k| attribute k, String }
+          Machine.__transition_attributes(self)
+          attribute :input, Sourced::Types::Hash.default { {} }
+        end)
+        __transition_classes << (@__started_class = self::Started)
+        @__finished_class = const_set(:Finished, Sourced::Event.define("#{type_prefix}.finished") do
+          keys.each { |k| attribute k, String }
+          attribute :final, String
+        end)
+      end
+
+      def __define_checkpoint(region, handle, machine, on_done, &block)
+        handle = __handle(handle)
+        if machine.nil?
+          raise DefinitionError, "#{self}: checkpoint #{handle}: on_done is for a compound checkpoint" if on_done.any?
+
+          return __define_node(region, handle, final: false, &block)
         end
         unless machine.is_a?(Class) && machine < Machine
-          raise DefinitionError, "#{self}: checkpoint #{event_class}: #{machine.inspect} isn't a Sourced::Machine"
+          raise DefinitionError, "#{self}: checkpoint #{handle}: #{machine.inspect} isn't a Sourced::Machine"
         end
-        unless machine.start_event == event_class
-          raise DefinitionError,
-                "#{self}: checkpoint #{event_class}: #{machine} must start at it, " \
-                "its start is #{machine.start_event || 'not declared'}"
-        end
+        raise DefinitionError, "#{self}: checkpoint #{handle}: #{machine} has no start checkpoint" unless machine.start_checkpoint
 
-        name = Types::Underscore.parse((machine.name || event_class.name).split('::').last).to_sym
-        mount = __mount(name, machine, on_done, start: event_class)
-        __define_node(region, event_class, final: false, mount:, &block)
+        # Named after its checkpoint, so one machine can be several compound checkpoints.
+        mount = __mount(handle.name, machine, on_done, compound: true)
+        __define_node(region, handle, final: false, mount:, &block)
       end
 
       def __define_node(region, key, final:, mount: nil, &block)
-        unless key == INITIAL || (key.is_a?(Class) && key < Sourced::Message)
-          raise DefinitionError, "#{self}: checkpoints are message classes, got #{key.inspect}"
-        end
-        if region.nodes.key?(key) || checkpoints.key?(key)
-          raise DefinitionError, "#{self}: #{key == INITIAL ? "#{region.label}'s initial position" : key} is declared twice"
+        key = __handle(key) unless key == INITIAL
+        if region.nodes.key?(key) || nodes.key?(key)
+          raise DefinitionError, "#{self}: #{key == INITIAL ? "#{region.label}'s initial position" : key} is placed twice"
         end
 
         node = Node.new(key, final:, region:)
         region.nodes[key] = node
-        unless key == INITIAL
-          checkpoints[key] = node
-        end
+        nodes[key] = node unless key == INITIAL
         node.regions << mount if mount
         NodeBuilder.new(self, node).instance_eval(&block) if block
         node
@@ -800,13 +917,13 @@ module Sourced
           raise DefinitionError, "#{self}: region #{name.inspect}: #{machine.inspect} isn't a Sourced::Machine"
         end
 
-        mount = __mount(name, machine, on_done)
+        mount = __mount(name, machine, on_done, compound: false)
         node.regions << mount
         mount
       end
 
       # Record a mount of +machine+ under +name+, unique among this machine's regions.
-      def __mount(name, machine, on_done, start: nil)
+      def __mount(name, machine, on_done, compound:)
         raise DefinitionError, "#{self}: region #{name.inspect} is declared twice" if regions.key?(name) || mounts.key?(name)
         raise DefinitionError, "#{self}: region #{name.inspect}: a machine can't be its own region" if machine <= self
         # Reactions are methods, and sync blocks the machine's own: neither can
@@ -819,26 +936,38 @@ module Sourced
                 "which it can't run as a region; declare them on #{self}"
         end
 
-        mounts[name] = RegionMount.new(name:, machine:, on_done:, start:)
+        on_done = on_done.to_h { |final, target| [machine.send(:__handle, final, declare: false), __handle(target)] }
+        mounts[name] = RegionMount.new(name:, machine:, on_done:, compound:)
       end
 
       def __define_child(child, as:, kind:, node: nil, keys: nil, on_done: {}, stop_on: [])
         raise DefinitionError, "#{self}: #{child.inspect} isn't a Sourced::Machine" unless child.is_a?(Class) && child < Machine
         raise DefinitionError, "#{self}: child #{as.inspect} is declared twice" if children_specs.key?(as)
         raise DefinitionError, "#{self}: #{child} is already a child as another name" if children_specs.values.any? { |c| c.machine == child }
-        raise DefinitionError, "#{self}: #{child} has no start checkpoint" unless child.start_event
-        raise DefinitionError, "#{self}: #{child} has no on_stop" unless child.stop_event
+        raise DefinitionError, "#{self}: #{child} has no start checkpoint" unless child.start_checkpoint
+        raise DefinitionError, "#{self}: #{child} has no on_stop" unless child.stop_checkpoint
         raise DefinitionError, "#{self}: invoke #{child} needs keys: ->(context) { … }" if kind == :invoke && !keys.respond_to?(:call)
 
+        on_done = on_done.to_h { |final, target| [child.send(:__handle, final, declare: false), __handle(target)] }
         spec = ChildSpec.new(as:, machine: child, kind:, stop_on:, node:, keys:, on_done:)
         children_specs[as] = spec
         node.invokes << spec if node
-
-        finals = child.root.nodes.values.select(&:final?).map(&:key)
-        [[child.start_event, :start], *finals.map { |f| [f, :final] }].each do |klass, role|
-          (child_events[klass] ||= []) << [spec, role]
-        end
         spec
+      end
+
+      # One of this machine's checkpoints. A Symbol names one, declaring it
+      # unless +declare+ is false.
+      def __handle(target, declare: true)
+        case target
+        in Checkpoint if target.machine == self then target
+        in Checkpoint
+          raise DefinitionError, "#{self}: #{target} is #{target.machine}'s checkpoint, not #{self}'s"
+        in Symbol | String if declare then Checkpoint(target)
+        in Symbol | String
+          declared_checkpoints.fetch(target.to_sym) { raise DefinitionError, "#{self} has no checkpoint #{target.inspect}" }
+        else
+          raise DefinitionError, "#{self}: checkpoints are Checkpoint handles or Symbols, got #{target.inspect}"
+        end
       end
 
       def __command_definition(declaration, block)
@@ -858,127 +987,113 @@ module Sourced
         if block.nil? && (targets.size > 1 || targets == [nil])
           raise DefinitionError,
                 "#{self}: #{command_class} => #{targets.map { |t| t || 'nil' }.join(' | ')} " \
-                'needs a block to emit its checkpoint'
+                'needs a block to choose where to go'
         end
 
         CommandDef.new(command_class:, targets: targets.uniq, block:)
       end
 
-      # @return [Array<Class, nil>]
+      # @return [Array<Checkpoint, nil>]
       def __flatten_targets(target)
         case target
-        when nil then [nil]
-        when Class then [target]
-        when Plumb::Or then target.children.flat_map { |child| __flatten_targets(child) }
-        when Plumb::ValueClass
-          raise DefinitionError, "#{self}: invalid checkpoint #{target.inspect}" unless target.children == [nil]
-
-          [nil]
-        else
-          raise DefinitionError, "#{self}: invalid checkpoint #{target.inspect}"
+        in nil then [nil]
+        in Targets then target.members.map { |member| member && __target(member) }
+        in Array then target.flat_map { |member| __flatten_targets(member) }
+        else [__target(target)]
         end
       end
 
-      def __validate!
-        raise DefinitionError, "#{self} needs partition_by" if partition_keys.empty?
+      # Where a transition may go: one of our checkpoints, or one of a mounted
+      # machine's, below the checkpoint that declares it (checked on validation).
+      def __target(target, declare: true) = target.is_a?(Checkpoint) ? target : __handle(target, declare:)
 
-        # The whole tree is checked against our partition keys, which are the
-        # partition its events and commands are in; where a checkpoint can move
-        # the machine is checked within the machine that declares it.
-        tree = Tree.new(self)
-        tree.checkpoints.each_key { |klass| __check_partition_keys!(klass, 'checkpoint') }
+      # @param node [PlacedNode]
+      def __check_target!(tree, node, handle)
+        placed = tree.resolve(node, handle)
+        return if handle.machine == node.machine || placed.descendant_of?(node)
+
+        raise DefinitionError,
+              "#{self}: #{node.label} targets #{handle}, another machine's checkpoint that isn't below it; " \
+              'a mounted machine reaches ours through on_done'
+      end
+
+      def __validate!(tree)
+        machines = [self, *tree.mounted_machines]
+        machines.each do |machine|
+          unplaced = machine.declared_checkpoints.values.reject { |handle| machine.nodes.key?(handle) }
+          raise DefinitionError, "#{machine}: #{unplaced.join(', ')} declared but never placed" if unplaced.any?
+        end
+        if start_checkpoint && !root.nodes.key?(start_checkpoint)
+          raise DefinitionError, "#{self}: start #{start_checkpoint} must be a checkpoint of the root region"
+        end
+
         tree.all_nodes.each do |node|
-          if node.final? && node.commands.any?
-            raise DefinitionError, "#{self}: final checkpoint #{node.key} can't accept commands"
-          end
+          raise DefinitionError, "#{self}: final checkpoint #{node.label} can't accept commands" if node.final? && node.commands.any?
 
           node.commands.each_value do |definition|
             __check_partition_keys!(definition.command_class, 'command')
-            definition.checkpoint_targets.each do |target|
-              node.machine.send(:__check_reachable!, node.node, target, "#{definition.command_class} targets")
-            end
-            if definition.auto? && definition.block.nil?
-              __check_buildable!(definition.targets.first, definition.command_class)
-            end
+            definition.checkpoint_targets.each { |target| __check_target!(tree, node, target) }
           end
-
-          __check_join!(node) if node.done || node.regions.any?
-          node.children_joins.each { |join| __check_children_join!(node, join) }
+          __check_join!(tree, node) if node.done || node.regions.any?
+          node.children_joins.each { |join| __check_children_join!(tree, node, join) }
+          node.invokes.each { |spec| __check_invoke!(tree, node, spec) }
         end
 
         handled_messages_for_react.each { |klass| __check_partition_keys!(klass, 'reaction') }
-        tree.regions.each_value { |region| __check_mount!(region) if region.mount }
-        tree.children_specs.each_value { |spec| __check_child!(spec, tree.owner(spec)) }
+        tree.all_regions.each { |region| __check_mount!(tree, region) if region.mount }
+        tree.children_specs.each_value { |spec| __check_child!(tree, spec) }
       end
 
       # A mounted machine escalates through its root finals, mapped onto the
       # checkpoints reachable from the checkpoint that mounts it.
       # @param region [PlacedRegion]
-      def __check_mount!(region)
-        machine = region.machine
-        finals = machine.root.nodes.values.select(&:final?).map(&:key)
-        node = region.parent
+      def __check_mount!(tree, region)
         region.on_done.each do |final, target|
-          unless finals.include?(final)
-            raise DefinitionError, "#{self}: region #{region.name.inspect} on_done #{final} isn't a final checkpoint of #{machine}'s root region"
-          end
-          node.machine.send(:__check_reachable!, node.node, target, "region #{region.name.inspect}'s on_done targets")
-          __check_buildable!(target, nil)
+          __check_root_final!(region.machine, final, "region #{region.path} on_done")
+          tree.resolve(region.parent, target)
         end
       end
 
-      # @param owner [Class<Machine>] the machine that declares the child
-      def __check_child!(spec, owner)
+      def __check_invoke!(tree, node, spec)
+        spec.on_done.each do |child_final, target|
+          __check_root_final!(spec.machine, child_final, "invoke #{spec.machine}'s on_done")
+          tree.resolve(node, target)
+        end
+      end
+
+      def __check_root_final!(machine, handle, what)
+        node = machine.root.nodes[handle]
+        return if node&.final?
+
+        raise DefinitionError, "#{self}: #{what} #{handle} isn't a final checkpoint of #{machine}'s root region"
+      end
+
+      def __check_child!(tree, spec)
         child = spec.machine
         missing = partition_keys - child.partition_keys
         unless missing.empty?
           raise DefinitionError, "#{self}: child #{child} must partition by our keys too, missing #{missing.join(', ')}"
         end
 
-        spec.stop_on.each do |klass|
-          raise DefinitionError, "#{self}: stop_on #{klass} isn't a checkpoint" unless checkpoint?(klass)
-        end
-
-        finals = child.root.nodes.values.select(&:final?).map(&:key)
-        spec.on_done.each do |child_final, target|
-          unless finals.include?(child_final)
-            raise DefinitionError, "#{self}: on_done #{child_final} isn't a final checkpoint of #{child}'s root region"
-          end
-          owner.send(:__check_reachable!, spec.node, target, "invoke #{child}'s on_done targets")
-          __check_buildable!(target, nil)
+        spec.stop_on.each do |handle|
+          raise DefinitionError, "#{self}: stop_on #{handle} isn't a checkpoint" unless tree.checkpoint?(handle)
         end
       end
 
-      # @param node [PlacedNode]
-      def __check_children_join!(node, join)
+      def __check_children_join!(tree, node, join)
         spec = tree.children_specs[join.as]
         raise DefinitionError, "#{self}: children_done #{join.as.inspect} doesn't name spawned children" unless spec && !spec.invoke?
 
-        join.definition.checkpoint_targets.each do |target|
-          node.machine.send(:__check_reachable!, node.node, target, "#{join.definition.command_class} targets")
-        end
-        __check_buildable!(join.definition.targets.first, nil) if join.definition.auto? && join.definition.block.nil?
+        join.definition.checkpoint_targets.each { |target| __check_target!(tree, node, target) }
       end
 
-      # A checkpoint can move the machine within its own region, or out to an
-      # ancestor's; never into a sibling region.
-      def __check_reachable!(node, target, what)
-        target_node = checkpoints[target]
-        raise DefinitionError, "#{self}: #{what} #{target}, which isn't a checkpoint" unless target_node
-        return if node.region.lineage.include?(target_node.region)
-
-        raise DefinitionError,
-              "#{self}: #{what} #{target}, a checkpoint of #{target_node.region.label}; " \
-              "#{node.label} can only reach #{node.region.label} or its ancestors"
-      end
-
-      # @param node [PlacedNode]
-      def __check_join!(node)
+      def __check_join!(tree, node)
         raise DefinitionError, "#{self}: #{node.label} declares done but has no regions" if node.regions.empty?
+
         return unless node.done
 
-        node.machine.send(:__check_reachable!, node.node, node.done, "#{node.label}'s done is")
-        __check_buildable!(node.done, nil)
+        target = tree.resolve(node, node.done)
+        raise DefinitionError, "#{self}: #{node.label}'s done targets #{target.label}, inside its own regions" if target.descendant_of?(node)
       end
 
       def __check_partition_keys!(klass, role)
@@ -987,28 +1102,6 @@ module Sourced
         return if missing.empty?
 
         raise DefinitionError, "#{self}: #{role} #{klass} must declare #{missing.join(', ')}"
-      end
-
-      # A checkpoint the machine builds itself (from +source+'s payload, or from
-      # the partition keys alone when +source+ is nil) must accept every attribute
-      # it isn't given being missing.
-      def __check_buildable!(checkpoint, source)
-        return unless checkpoint.const_defined?(:Payload, false)
-
-        supplied = (source ? __attribute_names(source) : []) + partition_keys
-        checkpoint::Payload._schema._schema.each do |key, type|
-          next if supplied.include?(key.to_sym)
-          next if key.optional? || type.resolve(Plumb::Undefined).valid?
-
-          raise DefinitionError,
-                if source
-                  "#{self}: #{source} => #{checkpoint} has no block, " \
-                    "and #{checkpoint} requires #{key.to_sym}, which #{source} doesn't declare"
-                else
-                  "#{self}: #{checkpoint} is appended with the partition keys only, " \
-                    "and requires #{key.to_sym}"
-                end
-        end
       end
 
       def __attribute_names(klass)
@@ -1031,11 +1124,12 @@ module Sourced
               { events: appended }
             end
             [actions, msg]
-          elsif (checkpoint?(msg.class) || child_event?(msg.class) || instance.reacts_to?(msg)) &&
+          elsif (__transition_classes.include?(msg.class) || child_event?(msg.class) || instance.reacts_to?(msg)) &&
                 instance.should_react?(instance.context, msg, replaying:)
-            # A checkpoint appended elsewhere (a child's, included) can complete a
-            # join, or enter a checkpoint that invokes a child: decided here, under the guard.
-            joins = checkpoint?(msg.class) || child_event?(msg.class) ? instance.__decide_eventless : NONE
+            # A child finishing can complete a join or map onto one of our
+            # checkpoints, and being started can invoke a child of our own:
+            # decided here, under the guard.
+            joins = child_event?(msg.class) || __started?(msg) ? instance.__decide_eventless : NONE
             actions = Actions.build_for(joins, guard:, source: msg)
             actions += Actions.build_for(instance.__react(msg), source: msg)
             # The joins are the pair's first appends; what reactions dispatch isn't decided events.
@@ -1048,6 +1142,19 @@ module Sourced
           end
         end
       end
+
+      def __started?(msg) = msg.class.equal?(@__started_class)
+    end
+
+    # The attributes of a transition: what moved the machine, and the paths it
+    # left and entered.
+    # @api private
+    def self.__transition_attributes(message)
+      message.attribute :trigger, String
+      message.attribute :source, String
+      message.attribute :target, String
+      message.attribute :exited, Sourced::Types::Array[String]
+      message.attribute :entered, Sourced::Types::Array[String]
     end
 
     attr_reader :partition_values
@@ -1056,12 +1163,13 @@ module Sourced
     def initialize(partition_values = {})
       self.class.validate!
       @partition_values = partition_values
-      @runtime = Runtime.new(self.class.tree.root)
+      @runtime = Runtime.new(self.class.tree)
       @uncommitted_events = nil
+      @handler = nil
     end
 
     # Read-only view of the runtime state: the current configuration, the
-    # events that entered it, and whether it's final.
+    # transitions that entered it, and whether it's final.
     # @return [View]
     def machine = View.new(@runtime)
 
@@ -1071,12 +1179,11 @@ module Sourced
     # @return [Hash]
     def to_h = Chart.new(self.class, runtime: @runtime).to_h
 
-    # Evolve messages in log order: checkpoints move the machine, then any
+    # Evolve messages in log order: transitions move the machine, then any
     # +evolve+ handler updates the domain context.
     def evolve(messages)
       Array(messages).each do |msg|
-        node = self.class.tree.checkpoints[msg.class]
-        @runtime.enter(msg, node) if node
+        @runtime.apply(msg) if self.class.__transition_classes.include?(msg.class)
         track_child(msg)
         super([msg])
         __region_projections.each { |region_projection| region_projection.evolve([msg]) }
@@ -1106,20 +1213,20 @@ module Sourced
     # checkpoint's handler runs only when none of its active regions accepts the
     # command. Handlers in sibling regions run in definition order, each seeing
     # the events of the ones before it; one whose checkpoint an earlier handler
-    # left doesn't run. Each handler emits exactly one of its declared
-    # checkpoints (or none, when +nil+ is declared); a single declared one is
-    # appended when the handler doesn't emit it. Joins the decision completes
-    # are appended after it.
+    # left doesn't run. Each handler moves the machine to one of its declared
+    # checkpoints (or nowhere, when +nil+ is declared): the one it chooses with
+    # {#to}, or its only one. Joins the decision completes follow it.
     #
     # @param command [Sourced::Message]
     # @return [Array<Sourced::Message>] the events produced
-    # @raise [CheckpointError] if a handler emitted other checkpoints
+    # @raise [TransitionError] if a handler chose a checkpoint it didn't declare
     def decide(command)
       if stop_command?(command)
         return [] unless stoppable?
 
         return deciding do
-          event(self.class.stop_event)
+          root = self.class.tree.root
+          transition(@runtime.current_node(root), root.nodes.fetch(self.class.stop_checkpoint), trigger: 'stop')
           append_eventless
         end
       end
@@ -1129,21 +1236,21 @@ module Sourced
 
       deciding do
         handlers.each do |node|
-          run_handler(node.commands.fetch(command.class), command) if @runtime.active_node?(node)
+          run_handler(node, node.commands.fetch(command.class), command) if @runtime.active_node?(node)
         end
         append_eventless
       end
     end
 
     # What the current configuration decides without a command, until nothing
-    # is left: +done+ joins, +children_done+ joins, invoking children for the
-    # checkpoints that invoke them, and mapping invoked children's results.
+    # is left: +done+ joins, mounted machines' +on_done+, +children_done+
+    # joins, invoking children, and mapping invoked children's results.
     # @api private
     # @return [Array<Sourced::Message>]
     def __decide_eventless = deciding { append_eventless }
 
-    # Produce an event from within a command handler and apply it immediately.
-    # Partition keys the event declares are filled in.
+    # Produce a data event from within a command handler and apply it
+    # immediately. Partition keys the event declares are filled in.
     #
     # @param event_class [Class, Symbol]
     # @param payload [Hash]
@@ -1151,36 +1258,40 @@ module Sourced
     # @raise [InvalidEventError] if the event isn't valid
     def event(event_class, payload = {})
       raise Error, "#{self.class}: events are produced by command handlers only" unless @uncommitted_events
+      event_class = case event_class
+                    in Checkpoint
+                      raise Error, "#{self.class}: #{event_class} is a checkpoint; move to it with to(#{event_class.name.inspect})"
+                    in Targets
+                      raise Error, "#{self.class}: #{event_class.members.compact.join(' | ')} are checkpoints; move to one of them with to"
+                    in Symbol then self.class[event_class]
+                    else event_class
+                    end
 
-      event_class = self.class[event_class] if event_class.is_a?(Symbol)
-      evt = event_class.new(payload: with_partition_keys(event_class, payload))
-      raise InvalidEventError, "#{self.class}: invalid #{event_class}: #{evt.errors.inspect}" unless evt.valid?
-
-      @uncommitted_events << evt
-      evolve([evt])
-      evt
+      __append(event_class.new(payload: with_partition_keys(event_class, payload)))
     end
 
-    # Run the exit actions of the checkpoints +msg+ made the machine leave
-    # (innermost first, stopping the children they invoked), the entry actions
-    # and timers of +msg+'s checkpoint (stopping the children whose +stop_on+
-    # it is), then any +reaction+ to it. A checkpoint of an inactive region runs
-    # nothing.
+    # Run the exit actions of the checkpoints +msg+ left (innermost first,
+    # stopping the children they invoked), the entry actions and timers of the
+    # ones it entered (stopping the children whose +stop_on+ they are), then
+    # any +reaction+ to it.
     # @api private
     # @return [Array<Sourced::Message>] dispatched messages
     def __react(msg)
       __handling_reactions([msg]) do |message|
-        if self.class.checkpoint?(message.class) && !@runtime.ignored?(message)
-          @runtime.exited_by(message).each do |left|
+        if self.class.__transition_classes.include?(message.class)
+          tree = self.class.tree
+          message.payload.exited.each do |path|
+            left = tree.node_at(path)
             left.exits.each { |blk| instance_exec(context, message, &blk) }
             left.invokes.each { |spec| stop_children(spec) }
           end
-          __entered_nodes(self.class.tree.checkpoints.fetch(message.class)).each do |entered|
-            entered.entries.each { |blk| instance_exec(context, message, &blk) }
-            start_timers(entered, message)
+          entered = message.payload.entered.map { |path| tree.node_at(path) }
+          entered.each do |node|
+            node.entries.each { |blk| instance_exec(context, message, &blk) }
+            start_timers(node, message)
           end
-          self.class.tree.children_specs.each_value do |spec|
-            stop_children(spec) if spec.stop_on.include?(message.class)
+          tree.children_specs.each_value do |spec|
+            stop_children(spec) if entered.any? { |node| spec.stop_on.include?(node.key) }
           end
         end
 
@@ -1191,11 +1302,14 @@ module Sourced
 
     private
 
-    # The checkpoints a checkpoint event enters, outermost first: its own, and
-    # for a compound checkpoint its machine's start, entered by the same event.
-    def __entered_nodes(node)
-      starts = node.regions.select(&:compound?).map { |region| region.nodes.fetch(region.start) }
-      [node, *starts.flat_map { |start| __entered_nodes(start) }]
+    # Choose where the running handler moves the machine: one of the
+    # checkpoints its command declared.
+    # @param target [Checkpoint, Symbol]
+    def to(target)
+      raise Error, "#{self.class}: to is for command handlers and children_done blocks" unless @handler
+      raise TransitionError, "#{self.class}: #{@handler[:what]} moved the machine twice" if @handler.key?(:target)
+
+      @handler[:target] = @handler[:node].machine.send(:__target, target, declare: false)
     end
 
     def deciding
@@ -1204,6 +1318,29 @@ module Sourced
       @uncommitted_events
     ensure
       @uncommitted_events = nil
+    end
+
+    def __append(evt)
+      raise InvalidEventError, "#{self.class}: invalid #{evt.class}: #{evt.errors.inspect}" unless evt.valid?
+
+      @uncommitted_events << evt
+      evolve([evt])
+      evt
+    end
+
+    # Move from +source+ to +target+: append a +Transitioned+, and a +Finished+
+    # when it reaches one of a child machine's root finals.
+    def transition(source, target, trigger:)
+      exited, entered = @runtime.transition_sets(source, target)
+      klass = self.class::Transitioned
+      __append(klass.new(payload: with_partition_keys(klass, {
+        trigger:, source: source.path, target: target.path,
+        exited: exited.map(&:path), entered: entered.map(&:path)
+      })))
+      final = entered.find { |node| node.final? && node.region.root? }
+      return unless final && (finished = self.class.__finished_class)
+
+      __append(finished.new(payload: with_partition_keys(finished, final: final.key.name.to_s)))
     end
 
     # The deepest active checkpoints accepting +command+, in definition order.
@@ -1219,8 +1356,8 @@ module Sourced
       raise Error, "#{self.class}: more than #{MAX_JOINS} joins in one decision"
     end
 
-    # A mounted machine at one of its root finals that +on_done+ maps: decide
-    # into the mapped checkpoint. Before +done+ joins, so a region's escalation
+    # A mounted machine at one of its root finals that +on_done+ maps: move to
+    # the mapped checkpoint. Before +done+ joins, so a region's escalation
     # (ex. a payment expiring) wins over completing its checkpoint.
     def mount_done_step
       @runtime.active_nodes.each do |node|
@@ -1228,7 +1365,7 @@ module Sourced
           current = @runtime.current_node(region)
           next unless current.final? && (target = region.on_done[current.key])
 
-          event(target)
+          transition(current, self.class.tree.resolve(node, target), trigger: 'on_done')
           return true
         end
       end
@@ -1250,7 +1387,7 @@ module Sourced
       end
       return false unless node
 
-      event(node.done)
+      transition(node, self.class.tree.resolve(node, node.done), trigger: 'done')
       true
     end
 
@@ -1260,7 +1397,7 @@ module Sourced
           refs = @runtime.children(join.as)
           next if refs.empty? || !refs.all?(&:final?)
 
-          run_handler(join.definition, nil)
+          run_handler(node, join.definition, nil)
           return true
         end
       end
@@ -1268,18 +1405,18 @@ module Sourced
     end
 
     # An active checkpoint that invokes a child, with no child for its current
-    # entry, spawns one; one whose child reached a mapped final checkpoint
-    # decides into the mapped checkpoint.
+    # entry, starts one; one whose child finished at a mapped final checkpoint
+    # moves to the mapped checkpoint.
     def invoke_step
       @runtime.active_nodes.each do |node|
         node.invokes.each do |spec|
           entry_id = @runtime.entered_by(node.region)&.id
           ref = @runtime.children(spec.as).find { |child| child.entry_id == entry_id }
           if ref.nil?
-            event(spec.machine.start_event, spec.keys.call(context).to_h)
+            start_child(spec, spec.keys.call(context).to_h)
             return true
           elsif ref.final? && (target = spec.on_done[ref.state])
-            event(target)
+            transition(node, self.class.tree.resolve(node, target), trigger: spec.machine::Finished.type)
             return true
           end
         end
@@ -1287,47 +1424,79 @@ module Sourced
       false
     end
 
-    # Run one handler: its block, its auto-appended checkpoint, and the
-    # one-checkpoint check.
-    def run_handler(definition, command)
-      started = @uncommitted_events.size
+    # Run one handler: its block, then its transition, to the checkpoint the
+    # block chose with {#to}, or else its only declared one.
+    def run_handler(node, definition, command)
+      what = command ? command.class.to_s : definition.command_class
+      @handler = { node:, what: }
       instance_exec(context, command, &definition.block) if definition.block
-      emitted = @uncommitted_events.drop(started).select { |evt| self.class.checkpoint?(evt.class) }
-      emitted << event(definition.targets.first, command&.payload&.to_h || {}) if emitted.empty? && definition.auto?
-      check_checkpoints!(definition, emitted)
+      target = @handler.fetch(:target) { definition.auto? ? definition.targets.first : nil }
+      @handler = nil
+
+      if target.nil?
+        return if definition.optional?
+
+        raise TransitionError, "#{self.class}: #{what} must move to one of #{declared(definition)}"
+      end
+      unless definition.checkpoint_targets.include?(target)
+        raise TransitionError, "#{self.class}: #{what} moved to #{target}, not one of #{declared(definition)}"
+      end
+
+      transition(node, self.class.tree.resolve(node, target), trigger: command ? command.type : definition.command_class)
+    ensure
+      @handler = nil
     end
 
-    # Spawn a child declared with {.spawns}: append its start checkpoint, with
-    # our partition keys filled in. Data, as far as the one-checkpoint rule goes.
+    def declared(definition) = definition.targets.map { |t| t || 'nil' }.join(' | ')
+
+    # Spawn a child declared with {.spawns}: append its +Started+, with our
+    # partition keys filled in.
     #
     # @param as [Symbol]
-    # @param payload [Hash] the child's own keys, and anything else its start needs
-    # @return [Sourced::Message] the start event
+    # @param payload [Hash] the child's own keys, and anything else, as its +Started+'s +input+
+    # @return [Sourced::Message] the +Started+
     def spawn(as, payload = {})
       spec = self.class.tree.children_specs.fetch(as) { raise Error, "#{self.class} doesn't spawn #{as.inspect}" }
       raise Error, "#{self.class}: #{as.inspect} is invoked, not spawned" if spec.invoke?
 
-      event(spec.machine.start_event, payload)
+      start_child(spec, payload)
+    end
+
+    def start_child(spec, payload)
+      child = spec.machine
+      klass = child::Started
+      own = payload.to_h.slice(*child.partition_keys)
+      paths = child.__start_paths
+      __append(klass.new(payload: with_partition_keys(klass, {
+        **own, input: payload.to_h.except(*child.partition_keys),
+        trigger: 'start', source: INITIAL.to_s, target: paths.first, exited: [], entered: paths
+      })))
     end
 
     def track_child(msg)
-      self.class.tree.child_events.fetch(msg.class, NONE).each do |spec, role|
-        keys = msg.payload.to_h.slice(*(spec.machine.partition_keys - self.class.partition_keys))
-        entry_id = spec.invoke? && role == :start ? invoking_entry(spec) : nil
-        @runtime.track_child(spec, keys, state: msg.class, final: role == :final, entry_id:)
+      self.class.tree.child_events.fetch(msg.class, NONE).each do |spec|
+        child = spec.machine
+        keys = msg.payload.to_h.slice(*(child.partition_keys - self.class.partition_keys))
+        if msg.instance_of?(child::Started)
+          entry_id = spec.invoke? ? invoking_entry(spec) : nil
+          @runtime.track_child(spec, keys, state: child.start_checkpoint, final: false, entry_id:)
+        else
+          handle = child.declared_checkpoints.fetch(msg.payload.final.to_sym)
+          @runtime.track_child(spec, keys, state: handle, final: true, entry_id: nil)
+        end
       end
     end
 
     def invoking_entry(spec)
-      node = self.class.tree.placed(spec.node)
-      @runtime.active_node?(node) ? @runtime.entered_by(node.region)&.id : nil
+      node = self.class.tree.placed(spec.node).find { |placed| @runtime.active_node?(placed) }
+      node && @runtime.entered_by(node.region)&.id
     end
 
     def stop_children(spec)
       @runtime.children(spec.as).reject(&:final?).each { |child| dispatch(spec.machine::Stop, child.keys) }
     end
 
-    def stop_command?(command) = self.class.stop_event && command.instance_of?(self.class::Stop)
+    def stop_command?(command) = self.class.stop_checkpoint && command.instance_of?(self.class::Stop)
 
     # +Stop+ applies once the machine has started, until it's final.
     def stoppable?
@@ -1337,19 +1506,19 @@ module Sourced
 
     # Timers for a checkpoint entry the machine has already left would only be
     # stale when delivered, so they aren't started.
-    def start_timers(node, checkpoint)
-      return unless @runtime.active_entry?(checkpoint.id)
+    def start_timers(node, transition)
+      return unless @runtime.active_entry_of?(node, transition.id)
 
       node.afters.each do |timer|
         started = @__reaction_dispatchers.size
-        instance_exec(context, checkpoint, &timer.block)
+        instance_exec(context, transition, &timer.block)
         @__reaction_dispatchers.drop(started).each do |dispatcher|
-          dispatcher.at(timer.from(checkpoint.created_at)).with_metadata(ENTERED_BY => checkpoint.id)
+          dispatcher.at(timer.from(transition.created_at)).with_metadata(ENTERED_BY => transition.id, ENTERED_AT => node.path)
         end
       end
     end
 
-    # A timer command was caused by the checkpoint event it names: dispatched in
+    # A timer command was caused by the transition it names: dispatched in
     # reaction to it. Metadata is copied along correlation chains, so a command
     # that merely inherited the key names an event other than its cause, and
     # isn't a timer.
@@ -1357,7 +1526,13 @@ module Sourced
       started_by = command.metadata[ENTERED_BY] || command.metadata[ENTERED_BY.to_s]
       return false unless started_by && started_by == command.causation_id
 
-      !@runtime.active_entry?(started_by)
+      path = command.metadata[ENTERED_AT] || command.metadata[ENTERED_AT.to_s]
+      return !@runtime.active_entry?(started_by) unless path
+
+      node = self.class.tree.node_at(path)
+      !@runtime.active_entry_of?(node, started_by)
+    rescue Error
+      true
     end
 
     # Partition keys are filled in on dispatched messages too.
@@ -1370,20 +1545,6 @@ module Sourced
       names = message_class.respond_to?(:payload_attribute_names) ? message_class.payload_attribute_names : []
       keys = self.class.partition_keys.select { |k| names.include?(k) }.to_h { |k| [k, partition_values[k]] }
       keys.merge(payload.to_h)
-    end
-
-    def check_checkpoints!(definition, emitted)
-      declared = definition.targets.map { |t| t || 'nil' }.join(' | ')
-      if emitted.size > 1
-        raise CheckpointError, "#{self.class}: #{definition.command_class} emitted #{emitted.map(&:class).join(', ')}; " \
-                               "a decision emits one checkpoint (#{declared})"
-      elsif emitted.empty?
-        return if definition.optional?
-
-        raise CheckpointError, "#{self.class}: #{definition.command_class} must emit one of #{declared}"
-      elsif !definition.checkpoint_targets.include?(emitted.first.class)
-        raise CheckpointError, "#{self.class}: #{definition.command_class} emitted #{emitted.first.class}, not one of #{declared}"
-      end
     end
   end
 end
