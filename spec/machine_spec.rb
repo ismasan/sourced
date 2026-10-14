@@ -446,6 +446,16 @@ RSpec.describe Sourced::Machine do
         end
     end
 
+    it 'takes the delay as a duration string' do
+      timed = machine do
+        checkpoint(CartOpened) { after('1h30m') { |_cart, _evt| dispatch Expire } }
+      end
+      expire, = timed.new(cart_id: 'c1').tap { |m| m.evolve([opened]) }.__react(opened)
+
+      expect(expire.created_at).to be_within(0.001).of(opened.created_at + 5400)
+      expect(expire.metadata[:entered_by]).to eq(opened.id)
+    end
+
     it 'accepts a timer command while its checkpoint entry is current' do
       instance = TimerMachine.new(cart_id: 'c1')
       instance.evolve([opened])
@@ -495,7 +505,8 @@ RSpec.describe Sourced::Machine do
 
     it 'rejects timers on the initial position, and without a delay or block' do
       expect { machine { initial { after(60) { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /no timers/)
-      expect { machine { checkpoint(CartOpened) { after('1h') { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /delay in seconds/)
+      expect { machine { checkpoint(CartOpened) { after('soon') { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
+      expect { machine { checkpoint(CartOpened) { after(:soon) { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
       expect { machine { checkpoint(CartOpened) { after(60) } } }.to raise_error(Sourced::Machine::DefinitionError, /needs a block/)
     end
 

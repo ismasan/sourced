@@ -619,7 +619,7 @@ class OrderMachine < Sourced::Machine
 
       checkpoint PaymentStarted do
         entry { |order, _evt| dispatch ChargeCard, card: order.card }  # order_id filled in
-        after(3600) { |_order, _evt| dispatch ExpirePayment }
+        after('1h') { |_order, _evt| dispatch ExpirePayment }
         command ExpirePayment => OrderCancelled  # an ancestor region's checkpoint: exits both regions
       end
 
@@ -668,7 +668,7 @@ How it runs:
 - **One reactor, one consumer group.** Every message for a partition is decided one at a time, under one consistency guard, so regions never run concurrently and share the domain context.
 - **Commands go to the deepest active checkpoints that accept them**: a checkpoint's handler runs only when none of its active regions accepts the command. Handlers in sibling regions run in definition order. A command no active checkpoint accepts makes `Sourced.handle!` raise `Sourced::CommandNotHandledError`; workers ack it with no events.
 - **Entry and exit actions are reactions**, run when the machine claims the checkpoint event, and see the state after the whole decision that entered it. Leaving a checkpoint exits its active regions first. They're skipped while replaying.
-- **`after(seconds)`** blocks dispatch commands delivered that long after the checkpoint was entered. A timer command delivered after the machine has left that checkpoint entry is refused, even where the command is accepted, so timers never need cancelling.
+- **`after(delay)`** blocks dispatch commands delivered that long after the checkpoint was entered. The delay is seconds (`after(3600)`) or a duration string, as `Message#at` takes it (`after('1h')`, `after('1h30m')`, `after('P1D')`). A timer command delivered after the machine has left that checkpoint entry is refused, even where the command is accepted, so timers never need cancelling.
 - **Regions** start at `initial` each time their checkpoint is entered; checkpoints of an inactive region are ignored. A command can target its own region's checkpoints or an ancestor's, never a sibling's.
 - **`done Evt`** is appended in the decision that makes the last region final, or, when the last region goes final through a checkpoint appended by another reactor, when the machine claims it.
 - `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.in?(PaymentStarted)`, `machine.in?(:payment, PaymentStarted)`, `machine.entered_by`, `machine.children(:lines)`.
