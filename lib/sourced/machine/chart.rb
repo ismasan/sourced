@@ -21,7 +21,9 @@ module Sourced
     #   on the checkpoint that takes them, targets in any region.
     # * Joins and children use Sourced's names: +on_done+ (the +done+ join),
     #   +children_done+, +invoke+ (+on_done+ by child final), and the machine's
-    #   +children+, +start+ and +stop+.
+    #   +children+, +start+ and +stop+. +mounts+ lists the machines a checkpoint
+    #   mounts (as regions, or as a compound checkpoint's), with +on_done+ by
+    #   their root final.
     # * +entry+ and +exit+ count the checkpoint's actions; +after+ lists its
     #   timers' delays in seconds.
     #
@@ -110,7 +112,10 @@ module Sourced
             { as: join.as.to_s, targets: targets(join.definition.checkpoint_targets) }
           end,
           invoke: node.invokes.map do |spec|
-            { id: spec.as.to_s, src: spec.machine.name, on_done: spec.on_done.to_h { |final, target| [final.type, target_id(target)] } }
+            { id: spec.as.to_s, src: spec.machine.name, on_done: on_done(spec.on_done) }
+          end,
+          mounts: node.regions.select(&:mount).map do |region|
+            { region: region.name.to_s, src: region.machine.name, on_done: on_done(region.on_done) }
           end,
           states: compound ? region(compound)[:states] : node.regions.to_h { |child| [child.name.to_s, region(child)] },
           status: @runtime && node_status(node)
@@ -183,6 +188,7 @@ module Sourced
       # A child machine that hasn't started has no node for its position.
       def position_id(node) = node.initial? && !initial_node?(node.region) ? nil : id(node)
 
+      def on_done(map) = map.to_h { |final, target| [final.type, target_id(target)] }
       def targets(classes) = classes.map { |klass| target_id(klass) }
       def target_id(klass) = id(@machine.tree.checkpoints.fetch(klass))
       def id(node)

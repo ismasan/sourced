@@ -231,6 +231,12 @@ module Sourced
         end
       end
 
+      machine.tree.regions.each_value do |region|
+        region.on_done.each do |final, target|
+          automation.call("#{final.type}-on-done-#{region.name}", "on_done(#{final.name})", [final.type], [target.type])
+        end
+      end
+
       machine.tree.children_specs.each_value do |spec|
         next if spec.invoke? || spec.stop_on.empty?
 
