@@ -184,6 +184,9 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
       expect(compound[:states].keys).to include('ThingProgressed', 'ThingFinished')
       expect(compound[:initial]).to eq(compound[:states].values.find { |s| s[:class] == M::ThingStarted.name }[:id])
       expect(compound[:initial]).not_to eq(compound[:id])
+      expect(compound[:mounts]).to eq([{
+        region: 'thing_machine', src: M::ThingMachine.name, on_done: { M::ThingFinished.type => M::OrderReady.type }
+      }])
     end
 
     it "gives an instance's value with ids" do
@@ -196,6 +199,7 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
       expect(mermaid).to include('state "ThingStarted" as MachineCompoundTest_ThingStarted {')
       expect(mermaid).to include('[*] --> MachineCompoundTest_ThingStarted__start')
       expect(mermaid).to include('MachineCompoundTest_ThingStarted__start --> MachineCompoundTest_ThingProgressed : Progress')
+      expect(mermaid).to include('MachineCompoundTest_ThingFinished --> MachineCompoundTest_OrderReady : on_done')
     end
 
     it 'builds a topology' do
@@ -203,6 +207,8 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
       ids = nodes.map(&:id)
       expect(ids.uniq.size).to eq(ids.size)
       expect(nodes.select { |n| n.type == 'command' }.map(&:name)).to include(M::Progress.name, M::Cancel.name)
+      on_done = nodes.find { |n| n.name == "on_done(#{M::ThingFinished.name})" }
+      expect([on_done.consumes, on_done.produces]).to eq([[M::ThingFinished.type], [M::OrderReady.type]])
     end
   end
 

@@ -313,6 +313,20 @@ RSpec.describe 'Sourced::Machine region mounts' do
       expect(machine.to_mermaid).to include('MachineMountsTest_PaymentStarted --> MachineMountsTest_PaymentCaptured : Capture')
     end
 
+    it 'includes the on_done mappings in to_h, to_mermaid and the topology' do
+      order_placed = machine.to_h[:states].values.find { |s| s[:class] == MachineMountsTest::OrderPlaced.name }
+      expect(order_placed[:mounts]).to eq([{
+        region: 'payment', src: MachineMountsTest::PaymentMachine.name,
+        on_done: { MachineMountsTest::PaymentExpired.type => MachineMountsTest::OrderCancelled.type }
+      }])
+
+      expect(machine.to_mermaid).to include('MachineMountsTest_PaymentExpired --> MachineMountsTest_OrderCancelled : on_done')
+
+      on_done = Sourced::Topology.build([machine]).find { |n| n.name == "on_done(#{MachineMountsTest::PaymentExpired.name})" }
+      expect(on_done.consumes).to eq([MachineMountsTest::PaymentExpired.type])
+      expect(on_done.produces).to eq([MachineMountsTest::OrderCancelled.type])
+    end
+
     it "includes the mounted machine's commands and actions in the topology" do
       nodes = Sourced::Topology.build([machine])
       commands = nodes.select { |n| n.type == 'command' }.map(&:name)
