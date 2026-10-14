@@ -7,17 +7,17 @@ module Sourced
     # +on+, +entry+ / +exit+, +after+, +invoke+) and keeps Sourced's meaning
     # where the two differ:
     #
+    # * A checkpoint's id is its path (+pending.submission.check.submitting+),
+    #   its key in +states+ its name.
     # * A region's initial position is a node of its own (+type: 'initial'+,
-    #   id +"<region>/initial"+), since it accepts commands. A machine with a
-    #   +start+ checkpoint and no +initial+ block has none: it starts at +start+.
-    # * A checkpoint's id is its message type. Its key in +states+ is the class
-    #   name without modules (the full name, with +::+ as +_+, if that's taken).
+    #   id +"<region path>.initial"+), since it accepts commands. A machine with
+    #   a +start+ checkpoint and no +initial+ block has none: it starts at +start+.
     # * A checkpoint with regions is +type: 'parallel'+, its +states+ the regions.
     # * A compound checkpoint (a machine's, see {Machine.checkpoint}) is
     #   +type: 'compound'+, its +states+ the machine's checkpoints, its +initial+
-    #   the machine's start, which has id +"<message type>/start"+.
-    # * Each command is one transition, listing every checkpoint it may decide
-    #   into as +targets+ (empty for a data-only command). Transitions are listed
+    #   the machine's start.
+    # * Each command is one transition, listing every checkpoint it may move
+    #   to as +targets+ (empty for a data-only command). Transitions are listed
     #   on the checkpoint that takes them, targets in any region.
     # * Joins and children use Sourced's names: +on_done+ (the +done+ join),
     #   +children_done+, +invoke+ (+on_done+ by child final), and the machine's
@@ -37,7 +37,7 @@ module Sourced
     #   machine's (its root region's) also has +value+, as in {View#value}, with ids;
     # * a node: +{ active:, visited:, entered_by: }+. Visited means entered
     #   since its region was last entered, the current checkpoint included;
-    #   +entered_by+ is the event that entered it, while it's active;
+    #   +entered_by+ is the transition that entered it, while it's active;
     # * a child: +{ instances: [{ keys:, state:, final: }] }+.
     #
     # The domain +state+ isn't included.
@@ -47,104 +47,95 @@ module Sourced
       def initialize(machine, runtime: nil)
         @machine = machine
         @runtime = runtime
+        @tree = machine.tree
       end
 
       # @return [Hash]
       def to_h
-        region(@machine.tree.root).merge(
+        region(@tree.root).merge(
           machine: @machine.name,
           partition_by: @machine.partition_keys.map(&:to_s),
-          start: @machine.start_event&.type,
+          start: @machine.start_checkpoint && root_id(@machine.start_checkpoint),
           stop: stop,
-          children: @machine.tree.children_specs.values.map { |spec| child(spec) },
-          status: @runtime && region_status(@machine.tree.root).merge(value: value(@machine.tree.root))
+          children: @tree.children_specs.values.map { |spec| child(spec) },
+          status: @runtime && region_status(@tree.root).merge(value: value(@tree.root))
         )
       end
 
       private
 
       def region(region)
-        nodes = region.nodes.values.reject(&:initial?)
         states = {}
-        states['initial'] = node(region.initial_node, 'initial') if initial_node?(region)
-        names = nodes.map { |n| short_name(n.key) }
-        nodes.each do |n|
-          key = names.count(short_name(n.key)) > 1 ? n.key.name.gsub('::', '_') : short_name(n.key)
-          states[key] = node(n, key)
-        end
+        states['initial'] = node(region.initial_node) if initial_node?(region)
+        region.nodes.each_value { |n| states[n.key.name.to_s] = node(n) unless n.initial? }
 
         {
-          id: region.name.to_s,
+          id: region.path || 'root',
           key: region.name.to_s,
           type: 'compound',
-          initial: id(initial_node?(region) ? region.initial_node : start_node(region)),
+          initial: (initial_node?(region) ? region.initial_node : start_node(region)).path,
           states:,
           status: @runtime && region_status(region)
         }
       end
 
       def initial_node?(region)
-        !region.compound? && !(region.root? && @machine.start_event && !region.nodes.key?(INITIAL))
+        !region.compound? && !(region.root? && @machine.start_checkpoint && !region.nodes.key?(INITIAL))
       end
 
       # Where a region without an initial position starts: a compound
       # checkpoint's machine's start, or the machine's own +start+.
-      def start_node(region)
-        region.compound? ? region.nodes.fetch(region.start) : @machine.tree.checkpoints.fetch(@machine.start_event)
-      end
+      def start_node(region) = region.compound? ? region.start_node : region.nodes.fetch(@machine.start_checkpoint)
 
-      def compound_region(node) = node.regions.find(&:compound?)
-
-      def node(node, key)
-        compound = compound_region(node)
+      def node(node)
+        compound = node.compound_region
         {
-          id: id(node),
-          key:,
+          id: node.path,
+          key: node.initial? ? 'initial' : node.key.name.to_s,
           type: node_type(node),
-          message_type: node.initial? ? nil : node.key.type,
-          class: node.initial? ? nil : node.key.name,
+          machine: node.machine.name,
           entry: node.entries.size,
           exit: node.exits.size,
           after: node.afters.map { |timer| { delay: timer.delay } },
-          on: node.commands.values.to_h { |definition| [definition.command_class.type, transition(definition)] },
-          on_done: node.done && @machine.tree.checkpoints.fetch(node.done).then { |target| id(target) },
+          on: node.commands.values.to_h { |definition| [definition.command_class.type, transition(node, definition)] },
+          on_done: node.done && @tree.resolve(node, node.done).path,
           children_done: node.children_joins.map do |join|
-            { as: join.as.to_s, targets: targets(join.definition.checkpoint_targets) }
+            { as: join.as.to_s, targets: targets(node, join.definition.checkpoint_targets) }
           end,
           invoke: node.invokes.map do |spec|
-            { id: spec.as.to_s, src: spec.machine.name, on_done: on_done(spec.on_done) }
+            { id: spec.as.to_s, src: spec.machine.name, on_done: on_done(node, spec.machine, spec.on_done) }
           end,
           mounts: node.regions.select(&:mount).map do |region|
-            { region: region.name.to_s, src: region.machine.name, on_done: on_done(region.on_done) }
+            { region: region.name.to_s, src: region.machine.name, on_done: on_done(node, region.machine, region.on_done, region) }
           end,
           states: compound ? region(compound)[:states] : node.regions.to_h { |child| [child.name.to_s, region(child)] },
           status: @runtime && node_status(node)
-        }.tap { |hash| hash[:initial] = id(start_node(compound)) if compound }
+        }.tap { |hash| hash[:initial] = compound.start_node.path if compound }
       end
 
       def node_type(node)
         if node.initial? then 'initial'
         elsif node.final? then 'final'
-        elsif compound_region(node) then 'compound'
+        elsif node.compound_region then 'compound'
         elsif node.regions.any? then 'parallel'
         else 'atomic'
         end
       end
 
-      def transition(definition)
+      def transition(node, definition)
         {
           event: definition.command_class.type,
-          label: short_name(definition.command_class),
-          targets: targets(definition.checkpoint_targets),
+          label: definition.command_class.name.split('::').last,
+          targets: targets(node, definition.checkpoint_targets),
           optional: definition.optional?,
           auto: definition.auto?
         }
       end
 
       def stop
-        return unless @machine.stop_event
+        return unless @machine.stop_checkpoint
 
-        { event: @machine::Stop.type, label: 'Stop', targets: targets([@machine.stop_event]) }
+        { event: @machine::Stop.type, label: 'Stop', targets: [root_id(@machine.stop_checkpoint)] }
       end
 
       def child(spec)
@@ -152,14 +143,14 @@ module Sourced
           as: spec.as.to_s,
           machine: spec.machine.name,
           kind: spec.kind.to_s,
-          checkpoint: spec.node && id(@machine.tree.placed(spec.node)),
-          stop_on: Array(spec.stop_on).map(&:type),
+          checkpoint: spec.node && @tree.placed(spec.node).first.path,
+          stop_on: spec.stop_on.map { |handle| @tree.placements(handle).first.path },
           status: @runtime && { instances: @runtime.children(spec.as).map { |ref| child_ref(ref) } }
         }
       end
 
       def child_ref(ref)
-        { keys: ref.keys.to_h { |k, v| [k.to_s, v] }, state: ref.state.type, final: ref.final? }
+        { keys: ref.keys.to_h { |k, v| [k.to_s, v] }, state: ref.state.name.to_s, final: ref.final? }
       end
 
       def region_status(region)
@@ -180,24 +171,24 @@ module Sourced
       def value(region)
         current = @runtime.current_node(region)
         return position_id(current) if current.regions.empty?
-        return { id(current) => value(compound_region(current)) } if compound_region(current)
+        return { current.path => value(current.compound_region) } if current.compound_region
 
-        { id(current) => current.regions.to_h { |child| [child.name.to_s, value(child)] } }
+        { current.path => current.regions.to_h { |child| [child.name.to_s, value(child)] } }
       end
 
       # A child machine that hasn't started has no node for its position.
-      def position_id(node) = node.initial? && !initial_node?(node.region) ? nil : id(node)
+      def position_id(node) = node.initial? && !initial_node?(node.region) ? nil : node.path
 
-      def on_done(map) = map.to_h { |final, target| [final.type, target_id(target)] }
-      def targets(classes) = classes.map { |klass| target_id(klass) }
-      def target_id(klass) = id(@machine.tree.checkpoints.fetch(klass))
-      def id(node)
-        if node.initial? then "#{node.region.name}/initial"
-        elsif node.compound_start? then "#{node.key.type}/start"
-        else node.key.type
+      # A mounted machine's or child's finals, by name, => the paths they map to.
+      def on_done(node, machine, map, region = nil)
+        map.to_h do |final, target|
+          from = region ? region.nodes.fetch(final).path : final.name.to_s
+          [from, @tree.resolve(node, target).path]
         end
       end
-      def short_name(klass) = klass.name.split('::').last
+
+      def targets(node, handles) = handles.map { |handle| @tree.resolve(node, handle).path }
+      def root_id(handle) = @tree.root.nodes.fetch(handle).path
     end
   end
 end

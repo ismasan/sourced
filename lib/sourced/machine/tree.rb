@@ -3,56 +3,130 @@
 module Sourced
   class Machine
     # A machine's definition placed into one tree: its regions and checkpoints,
-    # and those of the machines it mounts as regions, each knowing where it
-    # sits. A {Region} or {Node} is a definition, owned by the machine that
-    # declares it; a {PlacedRegion} or {PlacedNode} is that definition at a
-    # position in the tree, with its own parent links. The runtime, routing,
-    # validation and rendering work on the placed tree.
+    # and those of the machines it mounts, each knowing where it sits. A
+    # {Region} or {Node} is a definition, owned by the machine that declares
+    # it; a {PlacedRegion} or {PlacedNode} is that definition at a position in
+    # the tree, with its own parent links and path. A machine mounted twice is
+    # placed twice: its checkpoints are one set of handles at two sets of paths.
+    # The runtime, routing, validation and rendering work on the placed tree.
     #
     # Placed objects are built once per tree and compared by identity: the
     # runtime keys positions by placed region, and compares placed nodes.
     class Tree
-      attr_reader :root, :checkpoints, :regions, :all_nodes, :children_specs, :child_events
+      attr_reader :root, :all_nodes, :all_regions, :children_specs, :child_events
 
       # @param machine [Class<Machine>]
-      # @raise [DefinitionError] if checkpoints, regions or children clash across machines
+      # @raise [DefinitionError] if regions or children clash across machines
       def initialize(machine)
         @top = machine
         @placed = {}
-        @checkpoints = {}
-        @regions = {}
+        @placements = {}
+        @paths = {}
+        @region_paths = {}
         @all_nodes = []
+        @all_regions = []
         @children_specs = {}
         @child_events = {}
         @owners = {}
         @machines = []
+        @resolved = {}
         @root = place_machine(machine, :root, nil, nil)
       end
 
-      # The placed node for a definition node, ex. an invoked child's checkpoint.
+      # The placed nodes for a definition node: more than one when its machine is
+      # mounted more than once.
       # @param node [Node]
-      # @return [PlacedNode]
+      # @return [Array<PlacedNode>]
       def placed(node) = @placed.fetch(node)
 
-      # @param klass [Class]
-      def checkpoint?(klass) = @checkpoints.key?(klass)
+      # @param handle [Checkpoint]
+      # @return [Array<PlacedNode>] where the checkpoint is placed
+      def placements(handle) = @placements.fetch(handle, NONE)
+
+      # @param handle [Checkpoint]
+      def checkpoint?(handle) = @placements.key?(handle)
+
+      # @return [Array<Checkpoint>] every placed checkpoint
+      def checkpoints = @placements.keys
+
+      # @param path [String] a checkpoint's path, or a region's initial position's (+<region path>.initial+)
+      # @return [PlacedNode]
+      # @raise [Error] if nothing is at +path+
+      def node_at(path)
+        @paths.fetch(path) do
+          region_path, _, last = path.rpartition('.')
+          region = last == INITIAL.to_s && @region_paths[region_path.empty? ? nil : region_path]
+          raise Error, "#{@top}: no checkpoint at #{path.inspect}" unless region
+
+          region.initial_node
+        end
+      end
 
       # @param klass [Class]
       def child_event?(klass) = @child_events.key?(klass)
 
-      # @return [Array<Class<Machine>>] the machines mounted as regions, in tree order
-      def mounted_machines = @machines.drop(1)
+      # @return [Array<Class<Machine>>] the machines mounted, in tree order, once each
+      def mounted_machines = @machines.drop(1).uniq
 
       # The machine that declares a child.
       # @param spec [ChildSpec]
       # @return [Class<Machine>]
       def owner(spec) = @owners.fetch(spec)
 
+      # Where a transition declared on +node+ to +handle+ goes: the placement of
+      # +handle+ in +node+'s region or the nearest ancestor region that has one,
+      # or else the one below +node+. Never a sibling region's.
+      #
+      # @param node [PlacedNode] the node that declares the transition
+      # @param handle [Checkpoint]
+      # @return [PlacedNode]
+      # @raise [DefinitionError] if +handle+ isn't reachable from +node+, or is
+      #   below it more than once
+      def resolve(node, handle)
+        @resolved.fetch([node, handle]) do
+          @resolved[[node, handle]] = resolve!(node, handle)
+        end
+      end
+
+      # What entering +node+ from outside enters: +node+, then its default
+      # configuration, each compound checkpoint's machine's start all the way
+      # down (any other region starts at its initial position, which isn't entered).
+      # @param node [PlacedNode]
+      # @return [Array<PlacedNode>] outermost first
+      def default_entry(node)
+        [node, *node.regions.flat_map { |region| region.compound? ? default_entry(region.start_node) : NONE }]
+      end
+
+      # @param handle [Checkpoint] a checkpoint of the root region
+      # @return [Array<String>] the paths starting at +handle+ enters
+      def default_entry_paths(handle) = default_entry(root.nodes.fetch(handle)).map(&:path)
+
       private
 
+      def resolve!(node, handle)
+        placements = placements(handle)
+        raise DefinitionError, "#{@top}: #{node.label} targets #{handle.inspect}, which isn't a checkpoint" if placements.empty?
+
+        lineage = node.region.lineage
+        around = placements.select { |placed| lineage.include?(placed.region) }
+        return around.max_by { |placed| placed.region.depth } if around.any?
+
+        below = placements.select { |placed| placed.descendant_of?(node) }
+        if below.size > 1
+          raise DefinitionError,
+                "#{@top}: #{node.label} targets #{handle.inspect}, which is below it #{below.size} times " \
+                "(#{below.map(&:path).join(', ')})"
+        end
+        return below.first if below.any?
+
+        raise DefinitionError,
+              "#{@top}: #{node.label} targets #{handle.inspect} (at #{placements.map(&:path).join(', ')}); " \
+              "#{node.label} can only reach #{node.region.label}, its ancestors, or its own regions"
+      end
+
       def place_machine(machine, name, parent, mount)
-        if @machines.include?(machine)
-          raise DefinitionError, "#{@top}: #{machine} is mounted twice; its checkpoints would be ambiguous"
+        if @machines.include?(machine) && machine.children_specs.any?
+          raise DefinitionError, "#{@top}: #{machine} is mounted twice, and declares children, which would be shared"
         end
 
         @machines << machine
@@ -62,39 +136,36 @@ module Sourced
 
       def place_region(region, name, parent, machine, mount)
         placed = PlacedRegion.new(region, name, parent, machine, mount)
-        unless parent.nil?
-          raise DefinitionError, "#{@top}: region #{name.inspect} is declared twice" if @regions.key?(name)
-
-          @regions[name] = placed
-        end
+        @all_regions << placed
+        @region_paths[placed.path] = placed unless placed.compound?
         region.nodes.each_value do |node|
           # A compound checkpoint's machine starts at its start checkpoint: its
           # initial position is never reached, so it isn't part of the tree.
-          next if node.initial? && placed.start != INITIAL
+          next if node.initial? && placed.compound?
 
-          place_node(node, placed, machine)
+          place_node(node, placed)
         end
         placed
       end
 
-      def place_node(node, region, machine)
+      def place_node(node, region)
         placed = PlacedNode.new(node, region)
-        @placed[node] = placed
+        (@placed[node] ||= []) << placed
         @all_nodes << placed
-        # A compound checkpoint's start is the parent's checkpoint, already indexed.
-        unless node.initial? || placed.compound_start?
-          if @checkpoints.key?(node.key)
-            raise DefinitionError, "#{@top}: checkpoint #{node.key} is declared twice (#{@checkpoints[node.key].label}, #{placed.label})"
+        unless node.initial?
+          (@placements[node.key] ||= []) << placed
+          if @paths.key?(placed.path)
+            raise DefinitionError, "#{@top}: two checkpoints at #{placed.path} (#{@paths[placed.path].node.key.inspect}, #{node.key.inspect})"
           end
 
-          @checkpoints[node.key] = placed
+          @paths[placed.path] = placed
         end
         region.nodes[node.key] = placed
         node.regions.each do |child|
           placed.regions <<
             case child
             in RegionMount => mount then place_machine(mount.machine, mount.name, placed, mount)
-            else place_region(child, child.name, placed, machine, nil)
+            else place_region(child, child.name, placed, region.machine, nil)
             end
         end
       end
@@ -109,15 +180,15 @@ module Sourced
 
         @children_specs[spec.as] = spec
         @owners[spec] = machine
-        machine.child_events.each do |klass, entries|
-          entries.each { |entry| (@child_events[klass] ||= []) << entry if entry.first == spec }
+        [spec.machine::Started, spec.machine::Finished].each do |klass|
+          (@child_events[klass] ||= []) << spec
         end
       end
     end
 
     # A {Region} at its position in a {Tree}.
     class PlacedRegion
-      attr_reader :region, :name, :parent, :machine, :mount, :nodes, :start
+      attr_reader :region, :name, :parent, :machine, :mount, :nodes
 
       # @param region [Region] the definition
       # @param name [Symbol]
@@ -130,26 +201,43 @@ module Sourced
         @parent = parent
         @machine = machine
         @mount = mount
-        @start = mount&.start || INITIAL
         @nodes = {}
       end
 
       def root? = parent.nil?
 
-      # A compound checkpoint's region: it starts at its machine's start
-      # checkpoint, entered by the event that enters the checkpoint.
-      def compound? = start != INITIAL
+      # A compound checkpoint's region: entered at its machine's start
+      # checkpoint, with the checkpoint that mounts it.
+      def compound? = mount&.compound? || false
 
-      # @return [Hash{Class => Class}] a mounted machine's root finals => the parent's checkpoints
+      # @return [PlacedNode, nil] where a compound region starts
+      def start_node = compound? ? nodes.fetch(machine.start_checkpoint) : nil
+
+      # @return [Hash{Checkpoint => Checkpoint}] a mounted machine's root finals => the parent's checkpoints
       def on_done = mount ? mount.on_done : NONE_MAP
 
       # The region's position before its first checkpoint, declared or not.
       def initial_node = nodes[INITIAL] || (@blank_initial ||= PlacedNode.new(region.initial_node, self))
 
       # @return [Array<PlacedRegion>] this region and its ancestors, innermost first
-      def lineage = root? ? [self] : [self, *parent.region.lineage]
+      def lineage = @lineage ||= root? ? [self] : [self, *parent.region.lineage]
 
-      def label = root? ? 'the root region' : "region #{name.inspect}"
+      def depth = lineage.size
+
+      # The region's part of its checkpoints' paths: a compound region's
+      # checkpoints follow its checkpoint directly, a parallel region's go
+      # through the region's name.
+      # @return [String, nil] nil for the root
+      def path
+        return @path if defined?(@path)
+
+        @path = if root? then nil
+                elsif compound? then parent.path
+                else "#{parent.path}.#{name}"
+                end
+      end
+
+      def label = root? ? 'the root region' : "region #{path}"
 
       NONE_MAP = {}.freeze
     end
@@ -180,16 +268,20 @@ module Sourced
       def invokes = node.invokes
       def children_joins = node.children_joins
       def done = node.done
-      def label = initial? ? "#{region.label}'s initial position" : key.to_s
 
-      # Whether this is a compound checkpoint's machine's start: the same
-      # event as the compound checkpoint, one level down.
-      def compound_start? = region.compound? && key == region.start
+      # Dot-separated names from the root: +pending.submission.check.submitting+.
+      # A region's initial position is +<region path>.initial+.
+      def path = @path ||= [region.path, initial? ? INITIAL : key.name].compact.join('.')
+
+      def label = initial? ? "#{region.label}'s initial position" : path
+
+      # @return [PlacedRegion, nil] the region of a compound checkpoint
+      def compound_region = regions.find(&:compound?)
 
       # Whether this checkpoint is inside +other+'s regions, at any depth.
       def descendant_of?(other)
         parent = region.parent
-        !parent.nil? && (parent == other || parent.descendant_of?(other))
+        !parent.nil? && (parent.equal?(other) || parent.descendant_of?(other))
       end
     end
   end
