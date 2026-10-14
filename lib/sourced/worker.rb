@@ -57,7 +57,10 @@ module Sourced
     # Main run loop. Blocks on the {WorkQueue} waiting for reactor signals.
     # @return [void]
     def run
+      # Set before checking @stopped: a #stop that saw @started false didn't
+      # wait for this worker, so it must touch nothing (ex. the logger) here.
       @started = true
+      return if @stopped
 
       until @stopped
         reactor = @work_queue.pop
