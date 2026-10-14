@@ -180,9 +180,9 @@
   and `on_stop Evt` (generating its `Stop` command); a parent `spawns Child, as:,
   stop_on:` and `spawn`s it from a command, joins with `children_done`, or `invoke`s one
   for the duration of a checkpoint, mapping its final checkpoint with `on_done`. Entry and exit
-  actions run as reactions; `after(seconds) { dispatch Cmd }` blocks dispatch commands
-  delivered that long after the checkpoint was entered, refused once the machine has
-  moved to a newer checkpoint. Commands the current checkpoint doesn't accept raise
+  actions run as reactions; `after(delay) { dispatch Cmd }` blocks (seconds, or a duration
+  string such as `'1h30m'`) dispatch commands delivered that long after the checkpoint was
+  entered, refused once the machine has moved to a newer checkpoint. Commands the current checkpoint doesn't accept raise
   `CommandNotHandledError` in `Sourced.handle!` and are acked by workers. Definitions are
   checked when the machine is registered. `Sourced.topology` describes machines (commands
   with their declared checkpoints, actions, joins and children as automations), and

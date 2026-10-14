@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'fugit'
+
 module Sourced
   # Reactor base class for state machines: Sourced's take on statecharts.
   #
@@ -107,8 +109,13 @@ module Sourced
     end
 
     # A delayed action: runs when its checkpoint is entered, and future-dates
-    # what it dispatches by +delay+ seconds from the entering event.
-    After = Data.define(:delay, :block)
+    # what it dispatches by +delay+ from the entering event. +delay+ is as
+    # declared: seconds, or a duration string; +duration+ is the parsed string.
+    After = Data.define(:delay, :duration, :block) do
+      # @param time [Time] the entering event's +created_at+
+      # @return [Time] when what the block dispatches is delivered
+      def from(time) = duration ? duration.add_to_time(time).to_local_time : time + delay
+    end
 
     # A child machine the parent tracks, declared with {.spawns} or {NodeBuilder#invoke}.
     # +node+, +keys+ and +on_done+ are for invoked children; +stop_on+ for spawned ones.
@@ -255,14 +262,21 @@ module Sourced
       #     command ExpirePayment => PaymentExpired
       #   end
       #
-      # @param delay [Numeric] seconds
+      # The delay is seconds, or a duration string as {Sourced::Message#at}
+      # takes it (+'30m'+, +'1h30m'+, +'P1D'+).
+      #
+      # @param delay [Numeric, String]
       # @yield [context, checkpoint_event]
       def after(delay, &block)
         raise DefinitionError, "#{@machine}: the initial position has no event, so no timers" if @node.initial?
-        raise DefinitionError, "#{@machine}: after needs a delay in seconds, got #{delay.inspect}" unless delay.is_a?(Numeric)
-        raise DefinitionError, "#{@machine}: after(#{delay}) needs a block" unless block
 
-        @node.afters << After.new(delay:, block:)
+        duration = Fugit.parse_duration(delay) if delay.is_a?(String)
+        unless delay.is_a?(Numeric) || duration
+          raise DefinitionError, "#{@machine}: after needs seconds or a duration string (ex. '30m', 'PT1H'), got #{delay.inspect}"
+        end
+        raise DefinitionError, "#{@machine}: after(#{delay.inspect}) needs a block" unless block
+
+        @node.afters << After.new(delay:, duration:, block:)
       end
 
       # Declare a region, active while this checkpoint is. A checkpoint with
@@ -1330,7 +1344,7 @@ module Sourced
         started = @__reaction_dispatchers.size
         instance_exec(context, checkpoint, &timer.block)
         @__reaction_dispatchers.drop(started).each do |dispatcher|
-          dispatcher.at(checkpoint.created_at + timer.delay).with_metadata(ENTERED_BY => checkpoint.id)
+          dispatcher.at(timer.from(checkpoint.created_at)).with_metadata(ENTERED_BY => checkpoint.id)
         end
       end
     end
