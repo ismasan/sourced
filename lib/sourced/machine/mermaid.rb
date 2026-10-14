@@ -13,7 +13,8 @@ module Sourced
     # composite state that contains the region. A child's +start+ checkpoint
     # is entered from the diagram's start. A compound checkpoint (a machine's)
     # is a composite state entered at its machine's start, drawn as
-    # +<id>__start+ since it's the same event.
+    # +<id>__start+ since it's the same event. A mounted machine's +on_done+
+    # mappings are drawn from its finals, labelled +on_done+.
     #
     #   Sourced::Machine::Mermaid.new(OrderMachine).to_s
     class Mermaid
@@ -45,6 +46,10 @@ module Sourced
           node.invokes.each do |spec|
             spec.on_done.each { |child_final, target| edge(node, target, "#{spec.as} #{short_name(child_final)}") }
           end
+        end
+        # A mounted machine's root final escalates from the final itself.
+        @machine.tree.regions.each_value do |region|
+          region.on_done.each { |final, target| edge(region.nodes.fetch(final), target, 'on_done') }
         end
         return unless @machine.stop_event
 

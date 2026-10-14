@@ -152,7 +152,7 @@ module MachineChartTest
         opened = chart[:states]['Opened']
         expect(opened).to include(
           id: t(:opened), key: 'Opened', type: 'atomic', message_type: t(:opened), class: 'MachineChartTest::Opened',
-          entry: 1, exit: 0, after: [{ delay: 60 }], on_done: nil, invoke: [], states: {}, status: nil,
+          entry: 1, exit: 0, after: [{ delay: 60 }], on_done: nil, invoke: [], mounts: [], states: {}, status: nil,
           children_done: [{ as: 'legs', targets: [t(:legs_done)] }]
         )
         expect(opened[:on][t(:note)]).to include(targets: [], optional: true, auto: false)
