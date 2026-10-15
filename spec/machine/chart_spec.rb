@@ -219,7 +219,7 @@ module MachineChartTest
       it 'describes checkpoints and their transitions' do
         expect(chart[:states]['initial']).to include(id: 'initial', key: 'initial', type: 'initial')
         expect(chart[:states]['initial'][:on]).to eq(
-          t(:open) => { event: t(:open), label: 'Open', targets: ['opened'], optional: false, auto: true }
+          t(:open) => { kind: 'command', event: t(:open), label: 'Open', targets: ['opened'], optional: false, auto: true }
         )
 
         opened = chart[:states]['opened']

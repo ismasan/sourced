@@ -82,7 +82,7 @@ module Sourced
 
         tree = self.tree
         mounted = tree.mounted_machines.flat_map { |machine| machine.projection_class.handled_messages }
-        (super + __transition_classes + tree.child_events.keys + mounted).uniq
+        (super + __transition_classes + tree.child_events.keys + mounted + handled_events).uniq
       end
     end
     singleton_class.prepend EvolveTypes
@@ -111,6 +111,9 @@ module Sourced
     # Joins chain (a join's checkpoint can complete an outer join), but a
     # definition can't make them chain forever. A safety net only.
     MAX_JOINS = 100
+
+    # The base of the events {.on_stop} generates (+Started+, +Finished+).
+    ChildEvent = Class.new(Sourced::Event)
 
     # The constants {.on_stop} generates.
     CHILD_MESSAGES = %i[Stop Started Finished].freeze
@@ -287,7 +290,7 @@ module Sourced
 
     # A checkpoint (or a region's initial position) and what it accepts.
     class Node
-      attr_reader :key, :region, :commands, :entries, :exits, :afters, :regions, :invokes, :children_joins, :always, :dones
+      attr_reader :key, :region, :commands, :ons, :entries, :exits, :afters, :regions, :invokes, :children_joins, :always, :dones
 
       # @param key [Checkpoint, Symbol] the checkpoint, or {INITIAL}
       # @param final [Boolean]
@@ -297,6 +300,7 @@ module Sourced
         @final = final
         @region = region
         @commands = {}
+        @ons = {}
         @entries = []
         @exits = []
         @afters = []
@@ -354,6 +358,31 @@ module Sourced
         end
 
         @node.commands[definition.command_class] = definition
+      end
+
+      # Move when the machine claims +event_class+, appended by another reactor,
+      # while this checkpoint is active. Decided like a command: the same
+      # targets, +to+ and +nil+; the block gets +(state, event)+. Skipped when
+      # replaying.
+      #
+      # @overload on(event_class => target, &block)
+      # @overload on(event_class, &block) data only
+      def on(declaration, &block)
+        definition = @machine.send(:__command_definition, declaration, block, what: 'on')
+        event_class = definition.command_class
+        case event_class
+        in Class if event_class < Checkpoint
+          raise DefinitionError, "#{@machine}: on #{event_class}: a checkpoint class; on takes another reactor's event"
+        in Class if event_class < ChildEvent
+          raise DefinitionError, "#{@machine}: on #{event_class}: a child machine's event; use on_done or children_done"
+        in Class if event_class < Sourced::Event
+          nil
+        else
+          raise DefinitionError, "#{@machine}: on takes an event, got #{event_class}"
+        end
+        raise DefinitionError, "#{@machine}: #{@node.label} takes #{event_class} twice" if @node.ons.key?(event_class)
+
+        @node.ons[event_class] = definition
       end
 
       # Runs when the machine enters this checkpoint, as a reaction.
@@ -910,10 +939,20 @@ module Sourced
         commands.uniq
       end
 
-      # Claimed: commands to decide, transitions to run entry and exit actions
-      # for, children's starts and finishes (which joins decide on), and any
-      # events with a +reaction+.
-      def handled_messages = (handled_commands + __transition_classes + tree.child_events.keys + handled_messages_for_react).uniq
+      # Fixed by {.validate!}; computed on each call before it.
+      # @return [Array<Class>] every event an +on+ declares
+      def handled_events
+        return @__handled_events if @__handled_events
+
+        all_nodes.flat_map { |node| node.ons.keys }.uniq
+      end
+
+      # Claimed: commands and +on+ events to decide, transitions to run entry
+      # and exit actions for, children's starts and finishes (which joins
+      # decide on), and any events with a +reaction+.
+      def handled_messages
+        (handled_commands + handled_events + __transition_classes + tree.child_events.keys + handled_messages_for_react).uniq
+      end
 
       # Check the definition. Memoised; runs before the first instance is built,
       # and when the machine is registered with a Router.
@@ -935,6 +974,7 @@ module Sourced
         @tree = tree
         # What the runtime reads per message, fixed now that the definition is.
         @__handled_commands = handled_commands.freeze
+        @__handled_events = handled_events.freeze
         @__evolve_types = handled_messages_for_evolve.freeze
         @__start_paths = __start_paths.freeze if start_checkpoint
         __transition_classes.freeze
@@ -1041,13 +1081,13 @@ module Sourced
 
       def __define_child_messages
         keys = partition_keys
-        const_set(:Started, Sourced::Event.define("#{type_prefix}.runtime.child.started") do
+        const_set(:Started, ChildEvent.define("#{type_prefix}.runtime.child.started") do
           keys.each { |k| attribute k, String }
           Machine.__transition_attributes(self)
           attribute :input, Sourced::Types::Hash.default { {} }
         end)
         __transition_classes << (@__started_class = self::Started)
-        @__finished_class = const_set(:Finished, Sourced::Event.define("#{type_prefix}.runtime.child.finished") do
+        @__finished_class = const_set(:Finished, ChildEvent.define("#{type_prefix}.runtime.child.finished") do
           keys.each { |k| attribute k, String }
           attribute :final, String
         end)
@@ -1179,7 +1219,8 @@ module Sourced
         handle
       end
 
-      def __command_definition(declaration, block)
+      # @param what [String] the macro declaring it, for errors: +command+ or +on+
+      def __command_definition(declaration, block, what: 'command')
         command_class, targets =
           case declaration
           in Hash if declaration.size == 1
@@ -1187,11 +1228,11 @@ module Sourced
           in Class
             [declaration, [nil]]
           else
-            raise DefinitionError, "#{self}: invalid command declaration #{declaration.inspect}"
+            raise DefinitionError, "#{self}: invalid #{what} declaration #{declaration.inspect}"
           end
 
-        unless command_class.is_a?(Class) && command_class < Sourced::Message
-          raise DefinitionError, "#{self}: commands are message classes, got #{command_class.inspect}"
+        unless command_class in Class and command_class < Sourced::Message
+          raise DefinitionError, "#{self}: #{what} takes a message class, got #{command_class.inspect}"
         end
         if block.nil? && (targets.size > 1 || targets == [nil])
           raise DefinitionError,
@@ -1238,9 +1279,14 @@ module Sourced
 
         tree.all_nodes.each do |node|
           raise DefinitionError, "#{self}: final checkpoint #{node.label} can't accept commands" if node.final? && node.commands.any?
+          raise DefinitionError, "#{self}: final checkpoint #{node.label} can't take events" if node.final? && node.ons.any?
 
           node.commands.each_value do |definition|
             __check_partition_keys!(definition.command_class, 'command')
+            definition.checkpoint_targets.each { |target| __check_target!(tree, node, target) }
+          end
+          node.ons.each_value do |definition|
+            __check_partition_keys!(definition.command_class, 'on event')
             definition.checkpoint_targets.each { |target| __check_target!(tree, node, target) }
           end
           __check_transient!(node) if node.transient?
@@ -1312,6 +1358,7 @@ module Sourced
         always = node.always.find { |eventless| !eventless.guarded? }.target
         prefix = "#{self}: #{node.label} is transient (always #{always}), so it can't"
         raise DefinitionError, "#{prefix} accept commands" if node.commands.any?
+        raise DefinitionError, "#{prefix} take events" if node.ons.any?
         raise DefinitionError, "#{prefix} have timers" if node.afters.any?
         raise DefinitionError, "#{prefix} invoke children" if node.invokes.any?
         raise DefinitionError, "#{prefix} have regions" if node.regions.any?
@@ -1344,6 +1391,15 @@ module Sourced
             # bound then, so the hooks see the events as stored.
             actions += instance.collect_actions(state: instance.state, messages: [msg]) do |appended|
               { events: appended }
+            end
+            [actions, msg]
+          elsif handled_events.include?(msg.class) && instance.should_react?(instance.state, msg, replaying:)
+            # Decided once, when claimed: replaying evolves what it decided.
+            decided = instance.__decide_on(msg)
+            actions = Actions.build_for(decided, guard:, source: msg)
+            actions += Actions.build_for(instance.__react(msg), source: msg)
+            actions += instance.collect_actions(state: instance.state, messages: [msg]) do |appended|
+              { events: appended.first(decided.size) }
             end
             [actions, msg]
           elsif (__transition_classes.include?(msg.class) || child_event?(msg.class) || instance.reacts_to?(msg)) &&
@@ -1472,6 +1528,23 @@ module Sourced
     # @return [Array<Sourced::Message>]
     def __decide_eventless = deciding { append_eventless }
 
+    # Decide +event+, claimed, for the deepest active checkpoints that declare
+    # it with +on+ (see {#decide}), then what that leaves to decide without one.
+    # Nothing when no active checkpoint declares it.
+    # @api private
+    # @return [Array<Sourced::Message>]
+    def __decide_on(event)
+      handlers = handlers_for(event, :ons)
+      return NONE if handlers.empty?
+
+      deciding do
+        handlers.each do |node|
+          run_handler(node, node.ons.fetch(event.class), event) if @runtime.active_node?(node)
+        end
+        append_eventless
+      end
+    end
+
     # Produce a data event from within a command handler and apply it
     # immediately. Partition keys the event declares are filled in.
     #
@@ -1530,7 +1603,7 @@ module Sourced
     # checkpoints its command declared.
     # @param target [Checkpoint, Symbol]
     def to(target)
-      raise Error, "#{self.class}: to is for command handlers and children_done blocks" unless @handler
+      raise Error, "#{self.class}: to is for command, on and children_done handlers" unless @handler
       raise TransitionError, "#{self.class}: #{@handler[:what]} moved the machine twice" if @handler.key?(:target)
 
       @handler[:target] = @handler[:node].machine.send(:__target, target, declare: false)
@@ -1568,9 +1641,10 @@ module Sourced
       __append(finished.new(payload: with_partition_keys(finished, final: final.key.checkpoint_name.to_s)))
     end
 
-    # The deepest active checkpoints accepting +command+, in definition order.
-    def handlers_for(command)
-      accepting = @runtime.active_nodes.select { |node| node.commands.key?(command.class) }
+    # The deepest active checkpoints accepting +message+, in definition order.
+    # @param kind [Symbol] +:commands+ or +:ons+
+    def handlers_for(message, kind = :commands)
+      accepting = @runtime.active_nodes.select { |node| node.public_send(kind).key?(message.class) }
       accepting.reject { |node| accepting.any? { |other| other.descendant_of?(node) } }
     end
 
@@ -1670,10 +1744,10 @@ module Sourced
 
     # Run one handler: its block, then its transition, to the checkpoint the
     # block chose with {#to}, or else its only declared one.
-    def run_handler(node, definition, command)
-      what = command ? command.class.to_s : definition.command_class
+    def run_handler(node, definition, message)
+      what = message ? message.class.to_s : definition.command_class
       @handler = { node:, what: }
-      instance_exec(state, command, &definition.block) if definition.block
+      instance_exec(state, message, &definition.block) if definition.block
       target = @handler.fetch(:target) { definition.auto? ? definition.targets.first : nil }
       @handler = nil
 
@@ -1686,7 +1760,7 @@ module Sourced
         raise TransitionError, "#{self.class}: #{what} moved to #{target}, not one of #{declared(definition)}"
       end
 
-      transition(node, self.class.tree.resolve(node, target), trigger: command ? command.type : definition.command_class)
+      transition(node, self.class.tree.resolve(node, target), trigger: message ? message.type : definition.command_class)
     ensure
       @handler = nil
     end

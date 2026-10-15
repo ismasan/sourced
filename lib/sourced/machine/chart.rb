@@ -97,7 +97,7 @@ module Sourced
           entry: node.entries.size,
           exit: node.exits.size,
           after: node.afters.map { |timer| { delay: timer.delay } },
-          on: node.commands.values.to_h { |definition| [definition.command_class.type, transition(node, definition)] },
+          on: transitions(node, node.commands, 'command').merge(transitions(node, node.ons, 'event')),
           on_done: on_done_joins(node),
           always: eventless(node, node.always),
           children_done: node.children_joins.map do |join|
@@ -140,8 +140,14 @@ module Sourced
         end
       end
 
-      def transition(node, definition)
+      # Commands and +on+ events, by type: +kind+ tells them apart.
+      def transitions(node, definitions, kind)
+        definitions.values.to_h { |definition| [definition.command_class.type, transition(node, definition, kind)] }
+      end
+
+      def transition(node, definition, kind)
         {
+          kind:,
           event: definition.command_class.type,
           label: definition.command_class.name.split('::').last,
           targets: targets(node, definition.checkpoint_targets),
