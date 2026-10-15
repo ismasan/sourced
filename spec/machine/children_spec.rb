@@ -234,13 +234,13 @@ module MachineChildrenTest
       let(:keys) { { order_id: 'o1', line_id: 'l1' } }
 
       it 'are generated per machine, keyed by its partition keys' do
-        expect(LineItemMachine::Stop.type).to eq('machine_children_test.line_item_machine.stop')
+        expect(LineItemMachine::Stop.type).to eq('machine_children_test.line_item_machine.runtime.child.stop')
         expect(LineItemMachine::Stop.payload_attribute_names).to eq(%i[order_id line_id])
         expect(LineItemMachine.handled_commands).to include(LineItemMachine::Stop)
 
-        expect(LineItemMachine::Started.type).to eq('machine_children_test.line_item_machine.started')
+        expect(LineItemMachine::Started.type).to eq('machine_children_test.line_item_machine.runtime.child.started')
         expect(LineItemMachine::Started.payload_attribute_names).to include(:order_id, :line_id, :input, :entered)
-        expect(LineItemMachine::Finished.type).to eq('machine_children_test.line_item_machine.finished')
+        expect(LineItemMachine::Finished.type).to eq('machine_children_test.line_item_machine.runtime.child.finished')
         expect(LineItemMachine::Finished.payload_attribute_names).to eq(%i[order_id line_id final])
       end
 
@@ -479,6 +479,28 @@ module MachineChildrenTest
         klass.partition_by(*(keys.empty? ? %i[order_id] : keys))
         klass.class_eval(&block)
         klass
+      end
+
+      it 'keeps Started, Finished and Stop apart from checkpoints of the same name' do
+        child = machine(:order_id, :line_id) do
+          start :started
+          checkpoint :finished
+          on_stop :stop
+        end
+
+        checkpoints = child.declared_checkpoints.values_at(:started, :finished, :stop)
+        expect(checkpoints.map(&:type)).to eq(%w[started finished stop].map { |n| "#{child.type_prefix}.runtime.#{n}" })
+        expect([child::Started, child::Finished, child::Stop]).to all(satisfy { |klass| !(klass < Sourced::Machine::Checkpoint) })
+      end
+
+      it 'rejects on_stop when its constants are taken' do
+        expect do
+          machine(:order_id, :line_id) do
+            const_set(:Started, Checkpoint(:started))
+            start self::Started
+            on_stop :cancelled
+          end
+        end.to raise_error(Sourced::Machine::DefinitionError, /on_stop generates Started, which is already defined/)
       end
 
       it 'requires children to partition by the parent keys too' do

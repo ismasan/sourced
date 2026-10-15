@@ -112,6 +112,9 @@ module Sourced
     # definition can't make them chain forever. A safety net only.
     MAX_JOINS = 100
 
+    # The constants {.on_stop} generates.
+    CHILD_MESSAGES = %i[Stop Started Finished].freeze
+
     NONE = [].freeze
 
     # A checkpoint: a position in a machine's chart, and the event recording
@@ -741,6 +744,9 @@ module Sourced
         raise DefinitionError, "#{self}: on_stop is declared twice" if @stop_checkpoint
         raise DefinitionError, 'a machine with on_stop needs a name' unless name
         raise DefinitionError, "#{self}: declare partition_by before on_stop" if partition_keys.empty?
+        if (taken = CHILD_MESSAGES.find { |constant| const_defined?(constant, false) })
+          raise DefinitionError, "#{self}: on_stop generates #{taken}, which is already defined; name that constant differently"
+        end
 
         @stop_checkpoint = __handle(handle)
         node = nodes[@stop_checkpoint] || final(@stop_checkpoint)
@@ -749,7 +755,7 @@ module Sourced
         end
 
         keys = partition_keys
-        const_set(:Stop, Sourced::Command.define("#{type_prefix}.stop") { keys.each { |k| attribute k, String } })
+        const_set(:Stop, Sourced::Command.define("#{type_prefix}.runtime.child.stop") { keys.each { |k| attribute k, String } })
         __define_child_messages
       end
 
@@ -973,13 +979,13 @@ module Sourced
 
       def __define_child_messages
         keys = partition_keys
-        const_set(:Started, Sourced::Event.define("#{type_prefix}.started") do
+        const_set(:Started, Sourced::Event.define("#{type_prefix}.runtime.child.started") do
           keys.each { |k| attribute k, String }
           Machine.__transition_attributes(self)
           attribute :input, Sourced::Types::Hash.default { {} }
         end)
         __transition_classes << (@__started_class = self::Started)
-        @__finished_class = const_set(:Finished, Sourced::Event.define("#{type_prefix}.finished") do
+        @__finished_class = const_set(:Finished, Sourced::Event.define("#{type_prefix}.runtime.child.finished") do
           keys.each { |k| attribute k, String }
           attribute :final, String
         end)
@@ -1089,7 +1095,10 @@ module Sourced
       def __name_declared(handle)
         return handle if handle.name
 
-        constant = handle.checkpoint_name.to_s.split('_').map(&:capitalize).join
+        constant = handle.checkpoint_name.to_s.split('_').map(&:capitalize).join.to_sym
+        # Left for on_stop's messages: such a handle stays anonymous.
+        return handle if CHILD_MESSAGES.include?(constant)
+
         const_set(constant, handle) unless const_defined?(constant, false)
         handle
       end
