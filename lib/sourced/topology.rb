@@ -311,8 +311,9 @@ module Sourced
       types.uniq
     end
 
-    # +handles+, and every checkpoint their +always+ can move on to, through
-    # the checkpoints entering them enters (compound starts), each once.
+    # +handles+, and every checkpoint their +always+ or a mounted machine's
+    # +on_done+ can move on to, through the checkpoints entering them enters
+    # (compound starts), each once.
     # @api private
     def self.eventless_closure(machine, handles)
       tree = machine.tree
@@ -325,6 +326,9 @@ module Sourced
         reached << handle
         tree.placements(handle).flat_map { |placed| tree.default_entry(placed) }.each do |entered|
           pending.concat(entered.always.map { |eventless| tree.resolve(entered, eventless.target).key })
+          # A mounted machine's mapped final escalates in the same decision.
+          mapped = entered.region.on_done[entered.key]
+          pending << tree.resolve(entered.region.parent, mapped).key if mapped
         end
       end
       reached
