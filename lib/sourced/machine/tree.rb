@@ -262,6 +262,7 @@ module Sourced
       def final? = node.final?
       def initial? = node.initial?
       def commands = node.commands
+      def ons = node.ons
       def entries = node.entries
       def exits = node.exits
       def afters = node.afters
