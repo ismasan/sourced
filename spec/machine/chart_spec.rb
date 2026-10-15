@@ -260,7 +260,7 @@ module MachineChartTest
       it 'starts a child machine at its start checkpoint, with its Stop' do
         chart = LegMachine.to_h
         expect(chart).to include(initial: 'added', start: 'added',
-                                 stop: { event: 'machine_chart_test.leg_machine.stop', label: 'Stop', targets: ['dropped'] })
+                                 stop: { event: 'machine_chart_test.leg_machine.runtime.child.stop', label: 'Stop', targets: ['dropped'] })
         expect(chart[:states].keys).to eq(%w[added confirmed dropped])
       end
 
