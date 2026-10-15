@@ -110,64 +110,64 @@ module MachineCompoundTest
   end
 
   # Three levels: a compound checkpoint whose machine starts at a compound checkpoint.
-  StartWork = command(:start_work)
-  Approve = command(:approve)
-  Withdraw = command(:withdraw)
-  Accept = command(:accept)
-  Review = command(:review)
-  RemindOpen = command(:remind_open)
-  RemindDraft = command(:remind_draft)
-  NotifyWork = command(:notify_work)
-  NotifyOpen = command(:notify_open)
-  NotifyDraft = command(:notify_draft)
-  LeftOpen = command(:left_open)
-  LeftWork = command(:left_work)
+  StartPlanning = command(:start_planning)
+  Propose = command(:propose)
+  Revise = command(:revise)
+  Agree = command(:agree)
+  FastTrack = command(:fast_track)
+  RemindItinerary = command(:remind_itinerary)
+  RemindOutline = command(:remind_outline)
+  NotifyPlanning = command(:notify_planning)
+  NotifyItinerary = command(:notify_itinerary)
+  NotifyOutline = command(:notify_outline)
+  LeftItinerary = command(:left_itinerary)
+  LeftPlanning = command(:left_planning)
 
-  class DraftMachine < Sourced::Machine
-    Draft = Checkpoint(:draft)
-    Pending = Checkpoint(:pending)
-    Accepted = Checkpoint(:accepted)
+  class OutlineMachine < Sourced::Machine
+    Outline = Checkpoint(:outline)
+    Proposed = Checkpoint(:proposed)
+    Agreed = Checkpoint(:agreed)
 
-    start Draft do
-      entry { |_context, _evt| dispatch NotifyDraft }
-      after(30) { |_context, _evt| dispatch RemindDraft }
-      command(RemindDraft) { |_context, _cmd| nil }
-      command Approve => Pending
+    start Outline do
+      entry { |_context, _evt| dispatch NotifyOutline }
+      after(30) { |_context, _evt| dispatch RemindOutline }
+      command(RemindOutline) { |_context, _cmd| nil }
+      command Propose => Proposed
     end
 
-    checkpoint Pending do
-      command Withdraw => Draft
-      command Accept => Accepted
+    checkpoint Proposed do
+      command Revise => Outline
+      command Agree => Agreed
     end
 
-    final Accepted
+    final Agreed
   end
 
-  class OpenMachine < Sourced::Machine
-    Open = Checkpoint(:open)
-    Sent = Checkpoint(:sent)
+  class ItineraryMachine < Sourced::Machine
+    Itinerary = Checkpoint(:itinerary)
+    Finalised = Checkpoint(:finalised)
 
-    start Open, DraftMachine, on_done: { DraftMachine::Accepted => Sent } do
-      entry { |_context, _evt| dispatch NotifyOpen }
-      exit { |_context, _evt| dispatch LeftOpen }
-      after(60) { |_context, _evt| dispatch RemindOpen }
-      command(RemindOpen) { |_context, _cmd| nil }
+    start Itinerary, OutlineMachine, on_done: { OutlineMachine::Agreed => Finalised } do
+      entry { |_context, _evt| dispatch NotifyItinerary }
+      exit { |_context, _evt| dispatch LeftItinerary }
+      after(60) { |_context, _evt| dispatch RemindItinerary }
+      command(RemindItinerary) { |_context, _cmd| nil }
     end
 
-    final Sent
+    final Finalised
   end
 
-  class WorkMachine < Sourced::Machine
+  class TripPlanMachine < Sourced::Machine
     partition_by :order_id
 
-    Work = Checkpoint(:work)
+    Planning = Checkpoint(:planning)
     Done = Checkpoint(:done)
 
-    initial { command StartWork => Work }
+    initial { command StartPlanning => Planning }
 
-    checkpoint Work, OpenMachine, on_done: { OpenMachine::Sent => Done } do
-      entry { |_context, _evt| dispatch NotifyWork }
-      exit { |_context, _evt| dispatch LeftWork }
+    checkpoint Planning, ItineraryMachine, on_done: { ItineraryMachine::Finalised => Done } do
+      entry { |_context, _evt| dispatch NotifyPlanning }
+      exit { |_context, _evt| dispatch LeftPlanning }
     end
 
     final Done
@@ -301,89 +301,89 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
   end
 
   describe 'a compound start that is itself compound' do
-    def work(*commands) = decided(msg(M::StartWork), *commands, machine: M::WorkMachine)
+    def planning(*commands) = decided(msg(M::StartPlanning), *commands, machine: M::TripPlanMachine)
 
     it 'enters every level, and runs entry actions outermost first' do
-      instance = M::WorkMachine.new(order_id: 'o1')
-      events = instance.decide(msg(M::StartWork))
+      instance = M::TripPlanMachine.new(order_id: 'o1')
+      events = instance.decide(msg(M::StartPlanning))
 
       expect(summary(events)).to eq(moves(
-        M::WorkMachine,
-        ['machine_compound_test.start_work', { from: 'initial', to: 'work', entered: %w[work work.open work.open.draft] }]
+        M::TripPlanMachine,
+        ['machine_compound_test.start_planning', { from: 'initial', to: 'planning', entered: %w[planning planning.itinerary planning.itinerary.outline] }]
       ))
-      expect(instance.machine.value).to eq(M::WorkMachine::Work => { M::OpenMachine::Open => M::DraftMachine::Draft })
+      expect(instance.machine.value).to eq(M::TripPlanMachine::Planning => { M::ItineraryMachine::Itinerary => M::OutlineMachine::Outline })
       expect(instance.__react(events.last).map(&:class))
-        .to eq([M::NotifyWork, M::NotifyOpen, M::RemindOpen, M::NotifyDraft, M::RemindDraft])
+        .to eq([M::NotifyPlanning, M::NotifyItinerary, M::RemindItinerary, M::NotifyOutline, M::RemindOutline])
     end
 
     it "re-enters only below the compound when a command inside it targets the compound's start" do
-      instance = M::WorkMachine.new(order_id: 'o1')
-      entered = instance.decide(msg(M::StartWork)).last
-      remind_open = instance.__react(entered).find { |cmd| M::RemindOpen === cmd }
-      instance.decide(msg(M::Approve))
-      events = instance.decide(msg(M::Withdraw))
+      instance = M::TripPlanMachine.new(order_id: 'o1')
+      entered = instance.decide(msg(M::StartPlanning)).last
+      remind_itinerary = instance.__react(entered).find { |cmd| M::RemindItinerary === cmd }
+      instance.decide(msg(M::Propose))
+      events = instance.decide(msg(M::Revise))
 
       expect(summary(events)).to eq(moves(
-        M::WorkMachine,
-        ['machine_compound_test.withdraw', { from: 'work.open.pending', to: 'work.open.draft', exited: %w[work.open.pending] }]
+        M::TripPlanMachine,
+        ['machine_compound_test.revise', { from: 'planning.itinerary.proposed', to: 'planning.itinerary.outline', exited: %w[planning.itinerary.proposed] }]
       ))
-      expect(instance.__react(events.last).map(&:class)).to eq([M::NotifyDraft, M::RemindDraft])
-      expect(instance.machine.entered_by(:work)).to equal(entered)
-      expect(instance.handles_command?(remind_open)).to be(true)
+      expect(instance.__react(events.last).map(&:class)).to eq([M::NotifyOutline, M::RemindOutline])
+      expect(instance.machine.entered_by(:planning)).to equal(entered)
+      expect(instance.handles_command?(remind_itinerary)).to be(true)
     end
 
     it "refuses the start's timer from an entry the inner region has since left" do
-      instance = M::WorkMachine.new(order_id: 'o1')
-      transitioned = instance.decide(msg(M::StartWork)).last
-      remind_draft = instance.__react(transitioned).last
-      expect(remind_draft).to be_a(M::RemindDraft)
+      instance = M::TripPlanMachine.new(order_id: 'o1')
+      transitioned = instance.decide(msg(M::StartPlanning)).last
+      remind_outline = instance.__react(transitioned).last
+      expect(remind_outline).to be_a(M::RemindOutline)
 
-      instance.decide(msg(M::Approve))
-      instance.decide(msg(M::Withdraw))
+      instance.decide(msg(M::Propose))
+      instance.decide(msg(M::Revise))
 
-      expect(instance.handles_command?(remind_draft)).to be(false)
+      expect(instance.handles_command?(remind_outline)).to be(false)
     end
 
     it 'escalates through on_done at each level, in the deciding decision' do
-      events = work(msg(M::Approve)).decide(msg(M::Accept))
+      events = planning(msg(M::Propose)).decide(msg(M::Agree))
 
       expect(summary(events)).to eq(moves(
-        M::WorkMachine,
-        ['machine_compound_test.accept', { from: 'work.open.pending', to: 'work.open.accepted', exited: %w[work.open.pending] }],
-        ['on_done', { from: 'work.open.accepted', to: 'work.sent', exited: %w[work.open.accepted work.open] }],
-        ['on_done', { from: 'work.sent', to: 'done', exited: %w[work.sent work] }]
+        M::TripPlanMachine,
+        ['machine_compound_test.agree', { from: 'planning.itinerary.proposed', to: 'planning.itinerary.agreed', exited: %w[planning.itinerary.proposed] }],
+        ['on_done', { from: 'planning.itinerary.agreed', to: 'planning.finalised', exited: %w[planning.itinerary.agreed planning.itinerary] }],
+        ['on_done', { from: 'planning.finalised', to: 'done', exited: %w[planning.finalised planning] }]
       ))
     end
 
     it 'exits every level innermost first' do
-      instance = work(msg(M::Approve))
-      events = instance.decide(msg(M::Accept))
+      instance = planning(msg(M::Propose))
+      events = instance.decide(msg(M::Agree))
 
-      expect(events.flat_map { |e| instance.__react(e) }.map(&:class)).to eq([M::LeftOpen, M::LeftWork])
+      expect(events.flat_map { |e| instance.__react(e) }.map(&:class)).to eq([M::LeftItinerary, M::LeftPlanning])
     end
   end
 
   describe "a compound checkpoint's own command targeting its sub-state" do
     it 'enters the sub-state without leaving the compound checkpoint' do
-      open_machine = stub_const('MachineCompoundTest::ReviewOpenMachine', Class.new(Sourced::Machine) do
-        consumer_group 'machine_compound_test.review_open_machine'
-        start :open, M::DraftMachine do
-          command M::Review => M::DraftMachine::Pending
+      itinerary_machine = stub_const('MachineCompoundTest::FastTrackItineraryMachine', Class.new(Sourced::Machine) do
+        consumer_group 'machine_compound_test.fast_track_itinerary_machine'
+        start :itinerary, M::OutlineMachine do
+          command M::FastTrack => M::OutlineMachine::Proposed
         end
       end)
-      machine = stub_const('MachineCompoundTest::ReviewMachine', Class.new(Sourced::Machine) do
+      machine = stub_const('MachineCompoundTest::FastTrackMachine', Class.new(Sourced::Machine) do
         partition_by :order_id
-        consumer_group 'machine_compound_test.review_machine'
-        initial { command M::StartWork => :work }
-        checkpoint :work, open_machine
+        consumer_group 'machine_compound_test.fast_track_machine'
+        initial { command M::StartPlanning => :planning }
+        checkpoint :planning, itinerary_machine
       end)
 
-      instance = decided(msg(M::StartWork), machine:)
-      events = instance.decide(msg(M::Review))
+      instance = decided(msg(M::StartPlanning), machine:)
+      events = instance.decide(msg(M::FastTrack))
 
       expect(summary(events)).to eq(moves(
         machine,
-        ['machine_compound_test.review', { from: 'work.open', to: 'work.open.pending', exited: %w[work.open.draft] }]
+        ['machine_compound_test.fast_track', { from: 'planning.itinerary', to: 'planning.itinerary.proposed', exited: %w[planning.itinerary.outline] }]
       ))
     end
   end
@@ -426,11 +426,11 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
     end
 
     it 'nests a compound start in to_h' do
-      work = M::WorkMachine.to_h[:states]['work']
+      planning = M::TripPlanMachine.to_h[:states]['planning']
 
-      expect(work[:initial]).to eq('work.open')
-      expect(work[:states]['open'][:type]).to eq('compound')
-      expect(work[:states]['open'][:initial]).to eq('work.open.draft')
+      expect(planning[:initial]).to eq('planning.itinerary')
+      expect(planning[:states]['itinerary'][:type]).to eq('compound')
+      expect(planning[:states]['itinerary'][:initial]).to eq('planning.itinerary.outline')
     end
 
     it "gives an instance's value with ids" do
