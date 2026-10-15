@@ -45,7 +45,9 @@ module Sourced
             join.definition.checkpoint_targets.each { |target| edge(node, @tree.resolve(node, target), "children_done #{join.as}") }
           end
           node.invokes.each do |spec|
-            spec.on_done.each { |child_final, target| edge(node, @tree.resolve(node, target), "#{spec.as} #{child_final.name}") }
+            spec.on_done.each do |child_final, target|
+              edge(node, @tree.resolve(node, target), "#{spec.as} #{child_final.checkpoint_name}")
+            end
           end
         end
         # A mounted machine's root final escalates from the final itself.
@@ -73,7 +75,7 @@ module Sourced
         region.nodes.each_value do |node|
           next if node.initial?
 
-          label = node.key.name
+          label = node.key.checkpoint_name
           if node.regions.empty?
             lines << %(#{indent}state "#{label}" as #{id(node)})
           else
