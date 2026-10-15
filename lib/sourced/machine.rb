@@ -142,9 +142,15 @@ module Sourced
       # @return [Symbol] unique within {.machine}
       def self.checkpoint_name = @checkpoint_name
 
-      # @param other [Class<Checkpoint>, Targets, nil]
+      # @param other [Class<Checkpoint>, History, Targets, nil]
       # @return [Targets]
       def self.|(other) = Targets.new(members: [self]) | other
+
+      # A target re-entering this checkpoint where its regions were when it
+      # was last left: each region's checkpoint (+deep+: the whole
+      # configuration below it), or its default entry where it has none.
+      # @return [History]
+      def self.history(deep: false) = History.new(checkpoint:, deep:)
 
       def self.to_s = name || (checkpoint ? "#{machine}:#{checkpoint_name}" : super)
       def self.inspect = to_s
@@ -177,15 +183,23 @@ module Sourced
 
     # The checkpoints a transition may go to; +nil+ means it may stay.
     Targets = Data.define(:members) do
-      # @param other [Checkpoint, Targets, nil]
+      # @param other [Checkpoint, History, Targets, nil]
       # @return [Targets]
       def |(other)
         case other
         in Targets then with(members: members | other.members)
-        in nil then with(members: members | [nil])
+        in nil | History then with(members: members | [other])
         in Class if Machine.handle?(other) then with(members: members | [other])
         end
       end
+    end
+
+    # A history pseudo-target ({Checkpoint.history}): +checkpoint+, entered
+    # where its regions were when it was last left.
+    History = Data.define(:checkpoint, :deep) do
+      def |(other) = Targets.new(members: [self]) | other
+      def to_s = deep ? "#{checkpoint}.history(deep: true)" : "#{checkpoint}.history"
+      def inspect = to_s
     end
 
     # A command a checkpoint accepts, and the checkpoints it may move to.
@@ -607,6 +621,7 @@ module Sourced
         @tree = tree
         @root = tree.root
         @positions = {}
+        @history = {}
         @children = {}
       end
 
@@ -666,16 +681,20 @@ module Sourced
       # down to +target+ is entered, outermost first, then +target+'s default
       # configuration: each compound checkpoint's start, all the way down.
       #
+      # With +history+, +target+'s regions are entered where they were when
+      # it was last left (counting what this transition leaves), instead.
+      #
       # @param source [PlacedNode] the active checkpoint (or initial position) taking the transition
       # @param target [PlacedNode]
+      # @param history [History, nil]
       # @return [Array(Array<PlacedNode>, Array<PlacedNode>)] exited and entered
-      def transition_sets(source, target)
+      def transition_sets(source, target, history: nil)
         lineage = target.region.lineage
         domain = source.regions.find { |r| lineage.include?(r) } || source.region.lineage.find { |r| lineage.include?(r) }
         raise Error, "no region holds both #{source.label} and #{target.label}" unless domain
 
         exited = exits_from(current_node(domain)).reject(&:initial?)
-        [exited, entry_path(target, domain)]
+        [exited, entry_path(target, domain, history:, last: history && remembered(exited))]
       end
 
       # Apply a transition, decided now or replayed: each entered checkpoint
@@ -685,6 +704,8 @@ module Sourced
       # @param event [Checkpoint] a checkpoint event (or a child's +Started+)
       # @raise [Error] if a path doesn't resolve, or enters an inactive region
       def apply(event)
+        # A region's history is where it was when its checkpoint was last left.
+        event.payload.exited.each { |path| @tree.node_at(path).regions.each { |region| remember(region) } }
         event.payload.entered.each do |path|
           node = @tree.node_at(path)
           raise Error, "#{event.type} #{event.id} enters #{path}, in an inactive region" unless active?(node.region)
@@ -711,15 +732,41 @@ module Sourced
         node.regions.flat_map { |region| exits_from(current_node(region)) } + [node]
       end
 
-      def entry_path(target, domain)
+      # @param last [Hash{PlacedRegion => Symbol}, nil] each region's history, for +history+
+      def entry_path(target, domain, history:, last:)
         chain = [target]
         chain.unshift(chain.first.region.parent) until chain.first.region.equal?(domain)
         chain.each_with_index.flat_map do |node, i|
           below = chain[i + 1]
           next [node] if below
 
-          @tree.default_entry(node)
+          history ? restore(node, deep: history.deep, last:) : @tree.default_entry(node)
         end
+      end
+
+      def remember(region)
+        key = position(region).current
+        key == INITIAL ? @history.delete(region) : @history[region] = key
+      end
+
+      # Regions' history once +exited+ is left: what it leaves counts as last.
+      def remembered(exited)
+        leaving = exited.flat_map { |node| node.regions.map { |region| [region, position(region).current] } }
+        @history.merge(leaving.to_h).reject { |_, key| key == INITIAL }
+      end
+
+      # +node+, then each region at its last checkpoint (deep: restored all the
+      # way down), or its default entry where it has none.
+      def restore(node, deep:, last:)
+        [node, *node.regions.flat_map do |region|
+          key = last[region]
+          if key.nil?
+            region.compound? ? @tree.default_entry(region.start_node) : NONE
+          else
+            child = region.nodes.fetch(key)
+            deep ? restore(child, deep:, last:) : @tree.default_entry(child)
+          end
+        end]
       end
 
       def value_of(region)
@@ -801,6 +848,7 @@ module Sourced
       # @param handle [Class<Checkpoint>]
       # @return [Class<Checkpoint>]
       def checkpoint_class(handle)
+        handle = handle.checkpoint
         return handle if handle.machine.equal?(self)
 
         __mounted_classes.fetch(handle) do
@@ -1158,7 +1206,7 @@ module Sourced
                 "which it can't run as a region; declare them on #{self}"
         end
 
-        on_done = on_done.to_h { |final, target| [machine.send(:__handle, final, declare: false), __handle(target)] }
+        on_done = on_done.to_h { |final, target| [machine.send(:__handle, final, declare: false), __own_target(target)] }
         mounts[name] = RegionMount.new(name:, machine:, on_done:, compound:).tap { __generate_mounted(machine) }
       end
 
@@ -1170,7 +1218,7 @@ module Sourced
         raise DefinitionError, "#{self}: #{child} has no on_stop" unless child.stop_checkpoint
         raise DefinitionError, "#{self}: invoke #{child} needs keys: ->(context) { … }" if kind == :invoke && !keys.respond_to?(:call)
 
-        on_done = on_done.to_h { |final, target| [child.send(:__handle, final, declare: false), __handle(target)] }
+        on_done = on_done.to_h { |final, target| [child.send(:__handle, final, declare: false), __own_target(target)] }
         spec = ChildSpec.new(as:, machine: child, kind:, stop_on:, node:, keys:, on_done:)
         children_specs[as] = spec
         node.invokes << spec if node
@@ -1183,7 +1231,7 @@ module Sourced
           raise DefinitionError, "#{self}: #{node.label}'s #{kind}: if: takes a Symbol or a #call(context), got #{guard.inspect}"
         end
 
-        eventless = Eventless.build(kind == 'done' ? __handle(target) : __target(target), guard)
+        eventless = Eventless.build(kind == 'done' ? __own_target(target) : __target(target), guard)
         if declared.any? { |other| !other.guarded? }
           raise DefinitionError, "#{self}: #{node.label}'s #{kind} #{eventless.target} is unreachable, after an unguarded #{kind}"
         end
@@ -1254,12 +1302,23 @@ module Sourced
       end
 
       # Where a transition may go: one of our checkpoints, or one of a mounted
-      # machine's, below the checkpoint that declares it (checked on validation).
-      def __target(target, declare: true) = Machine.handle?(target) ? target : __handle(target, declare:)
+      # machine's, below the checkpoint that declares it (checked on validation),
+      # or a {History} of one.
+      def __target(target, declare: true)
+        case target
+        in History then target
+        in Class if Machine.handle?(target) then target
+        else __handle(target, declare:)
+        end
+      end
+
+      # One of our checkpoints, or a {History} of one.
+      def __own_target(target) = (target in History) ? target : __handle(target)
 
       # @param node [PlacedNode]
-      def __check_target!(tree, node, handle)
-        placed = tree.resolve(node, handle)
+      def __check_target!(tree, node, target)
+        handle = target.checkpoint
+        placed = tree.resolve(node, target)
         return if handle.machine == node.machine || placed.descendant_of?(node)
 
         raise DefinitionError,
@@ -1350,6 +1409,10 @@ module Sourced
         node.dones.each do |eventless|
           target = tree.resolve(node, eventless.target)
           raise DefinitionError, "#{self}: #{node.label}'s done targets #{target.label}, inside its own regions" if target.descendant_of?(node)
+          # Restoring itself (or an ancestor) would bring back the final regions that completed it.
+          if History === eventless.target && (target.equal?(node) || node.descendant_of?(target))
+            raise DefinitionError, "#{self}: #{node.label}'s done targets #{eventless.target}, which would restore its final regions and join again"
+          end
         end
       end
 
@@ -1625,11 +1688,18 @@ module Sourced
       evt
     end
 
+    # Take a declared transition from +source+: to a checkpoint, or a {History}
+    # of one, resolved from +from+ (the node that declares it).
+    def move(source, target, trigger:, from: source)
+      history = (target in History) ? target : nil
+      transition(source, self.class.tree.resolve(from, target), trigger:, history:)
+    end
+
     # Move from +source+ to +target+: append our class for +target+'s
     # checkpoint, and a +Finished+ when it reaches one of a child machine's
     # root finals.
-    def transition(source, target, trigger:)
-      exited, entered = @runtime.transition_sets(source, target)
+    def transition(source, target, trigger:, history: nil)
+      exited, entered = @runtime.transition_sets(source, target, history:)
       klass = self.class.checkpoint_class(target.key)
       __append(klass.new(payload: with_partition_keys(klass, {
         trigger:, source: source.path, target: target.path,
@@ -1666,7 +1736,7 @@ module Sourced
           current = @runtime.current_node(region)
           next unless current.final? && (target = region.on_done[current.key])
 
-          transition(current, self.class.tree.resolve(node, target), trigger: 'on_done')
+          move(current, target, trigger: 'on_done', from: node)
           return true
         end
       end
@@ -1688,7 +1758,7 @@ module Sourced
         eventless = node.always.find { |candidate| candidate.pass?(context) }
         next unless eventless
 
-        transition(node, self.class.tree.resolve(node, eventless.target), trigger: 'always')
+        move(node, eventless.target, trigger: 'always')
         return true
       end
       false
@@ -1703,7 +1773,7 @@ module Sourced
         eventless = node.dones.find { |candidate| candidate.pass?(context) }
         next unless eventless
 
-        transition(node, self.class.tree.resolve(node, eventless.target), trigger: 'done')
+        move(node, eventless.target, trigger: 'done')
         return true
       end
       false
@@ -1734,7 +1804,7 @@ module Sourced
             start_child(spec, spec.keys.call(context).to_h)
             return true
           elsif ref.final? && (target = spec.on_done[ref.state])
-            transition(node, self.class.tree.resolve(node, target), trigger: spec.machine::Finished.type)
+            move(node, target, trigger: spec.machine::Finished.type)
             return true
           end
         end
@@ -1760,7 +1830,7 @@ module Sourced
         raise TransitionError, "#{self.class}: #{what} moved to #{target}, not one of #{declared(definition)}"
       end
 
-      transition(node, self.class.tree.resolve(node, target), trigger: message ? message.type : definition.command_class)
+      move(node, target, trigger: message ? message.type : definition.command_class)
     ensure
       @handler = nil
     end
