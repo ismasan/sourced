@@ -14,7 +14,8 @@ module Sourced
     # region. A child's +start+ checkpoint is entered from the diagram's
     # start. A compound checkpoint (a machine's) is a composite state entered
     # at its machine's start. A mounted machine's +on_done+ mappings are drawn
-    # from its finals, labelled +on_done+.
+    # from its finals, labelled +on_done+. A transition to a checkpoint's
+    # history goes to the checkpoint, its label suffixed +(H)+ (+(H*)+ for deep).
     #
     #   Sourced::Machine::Mermaid.new(OrderMachine).to_s
     class Mermaid
@@ -38,42 +39,45 @@ module Sourced
         @tree.all_nodes.each do |node|
           node.commands.each_value do |definition|
             label = definition.command_class.name.split('::').last
-            definition.checkpoint_targets.each { |target| edge(node, @tree.resolve(node, target), label) }
+            definition.checkpoint_targets.each { |target| edge(node, target, label) }
           end
           node.ons.each_value do |definition|
             label = "on #{definition.command_class.name.split('::').last}"
-            definition.checkpoint_targets.each { |target| edge(node, @tree.resolve(node, target), label) }
+            definition.checkpoint_targets.each { |target| edge(node, target, label) }
           end
           { 'always' => node.always, 'done' => node.dones }.each do |kind, list|
             list.each do |eventless|
               label = eventless.guarded? ? "#{kind} [#{eventless.guard_label}]" : kind
-              edge(node, @tree.resolve(node, eventless.target), label)
+              edge(node, eventless.target, label)
             end
           end
           node.children_joins.each do |join|
-            join.definition.checkpoint_targets.each { |target| edge(node, @tree.resolve(node, target), "children_done #{join.as}") }
+            join.definition.checkpoint_targets.each { |target| edge(node, target, "children_done #{join.as}") }
           end
           node.invokes.each do |spec|
             spec.on_done.each do |child_final, target|
-              edge(node, @tree.resolve(node, target), "#{spec.as} #{child_final.checkpoint_name}")
+              edge(node, target, "#{spec.as} #{child_final.checkpoint_name}")
             end
           end
         end
         # A mounted machine's root final escalates from the final itself.
         @tree.all_regions.each do |region|
-          region.on_done.each { |final, target| edge(region.nodes.fetch(final), @tree.resolve(region.parent, target), 'on_done') }
+          region.on_done.each { |final, target| edge(region.nodes.fetch(final), target, 'on_done', from: region.parent) }
         end
         return unless @machine.stop_checkpoint
 
         stop = @tree.root.nodes.fetch(@machine.stop_checkpoint)
         @tree.root.nodes.each_value do |node|
-          edge(node, stop, 'Stop') unless node.final? || node.initial?
+          edge(node, stop.key, 'Stop', from: stop) unless node.final? || node.initial?
         end
       end
 
       # Record a transition in the region it's drawn in: the target's, from the
       # state that takes it, or the state containing a region's initial position.
-      def edge(node, target, label)
+      # +target+ is resolved from +from+, the node declaring it.
+      def edge(node, target, label, from: node)
+        label = "#{label} #{target.deep ? '(H*)' : '(H)'}" if target in History
+        target = @tree.resolve(from, target)
         source = node
         source = source.region.parent while source.initial? && !source.region.equal?(target.region)
         @edges[target.region] << [source, target, label]
