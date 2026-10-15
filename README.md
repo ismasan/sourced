@@ -754,16 +754,23 @@ class LineItemMachine < Sourced::Machine
   Picked   = Checkpoint(:picked)
 
   context { LineState.new }
-  evolve(OrderPlaced) { |line, evt| line.currency = evt.payload.currency }  # the parent's fact
+  
+  evolve(OrderPlaced) do |line, evt| # the parent's fact
+    line.currency = evt.payload.currency
+  end
 
-  start Added do                             # where the parent starts it
+  start Added do # where the parent starts it
     entry { |line, _evt| dispatch ReserveStock }
     command StockReserved => Reserved
   end
-  checkpoint(Reserved) { command PickLine => Picked }
+  
+  checkpoint(Reserved) do
+    command PickLine => Picked
+  end
+  
   final Picked
 
-  on_stop :dropped                           # generates Stop, Started and Finished
+  on_stop :dropped # generates Stop, Started and Finished
 end
 
 class OrderMachine < Sourced::Machine
@@ -772,9 +779,13 @@ class OrderMachine < Sourced::Machine
   spawns LineItemMachine, as: :lines, stop_on: Cancelled
 
   checkpoint Placed do
-    command(AddLine) { |_order, cmd| spawn :lines, line_id: cmd.payload.line_id, sku: cmd.payload.sku }
-    children_done :lines => LinesDone         # once every spawned line is final
-    command CancelOrder => Cancelled          # live lines are sent Stop
+    command(AddLine) do |_order, cmd| 
+      spawn :lines, line_id: cmd.payload.line_id, sku: cmd.payload.sku
+    end
+    
+    children_done :lines => LinesDone # once every spawned line is final	
+    
+    command CancelOrder => Cancelled  # live lines are sent Stop
   end
 
   checkpoint AwaitingPayment do
@@ -801,9 +812,14 @@ class PaymentMachine < Sourced::Machine     # no partition_by: it runs in the mo
   Captured = Checkpoint(:captured)
   Expired  = Checkpoint(:expired)
 
-  evolve(PaymentInfoAdded) { |order, evt| order.card = evt.payload.card }  # updates the parent's context
+  evolve PaymentInfoAdded do |order, evt| # updates the parent's context
+    order.card = evt.payload.card
+  end
 
-  initial { command Capture => Captured }
+  initial do
+    command Capture => Captured
+  end
+  
   final Captured
   final Expired
 end
@@ -813,7 +829,7 @@ class OrderMachine < Sourced::Machine
   # ...
   checkpoint Placed do
     region :payment, PaymentMachine, on_done: { PaymentMachine::Expired => Cancelled }
-    region :shipping do                       # inline and composed regions mix
+    region :shipping do # inline and composed regions mix
       # ...
     end
     done Completed
@@ -837,7 +853,7 @@ end
 class OrderMachine < Sourced::Machine
   # ...
   checkpoint Working, ThingMachine, on_done: { ThingMachine::Done => Ready } do
-    command Cancel => Cancelled               # the compound checkpoint's own commands
+    command Cancel => Cancelled # the compound checkpoint's own commands
   end
 end
 ```
