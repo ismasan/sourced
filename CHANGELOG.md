@@ -2,6 +2,11 @@
 
 ### Changed
 
+- **Evolve and reaction dispatch use handler maps.** `Projection.evolve_handlers` and
+  `React.reaction_handlers` map each message class to its handler, filled when the handler
+  is declared, instead of building and checking method names per message. Like
+  `handled_messages`, they're copied when a class is subclassed: a handler declared on a
+  parent after a subclass exists isn't seen by the subclass.
 - **Reactor state lives in a `Sourced::Projection`.** A reactor's `state` /
   `evolve` declarations now define a projection subclass the reactor owns, and
   `#state` / `#evolve` delegate to it. Evolve blocks run in the projection's
@@ -168,37 +173,47 @@
 
 ### Added
 
-- `Sourced::Machine`, Sourced's statecharts: a reactor whose position is its latest
-  *checkpoint* event. Checkpoints (`checkpoint`, `final`, and the `initial` position) list
-  the commands they accept and the checkpoints each may decide into
-  (`command PlaceOrder => OrderPlaced`, `=> A | B`, `=> A | nil`, or data-only without an
-  arrow); other events are data, evolved into the machine's domain `state`. Checkpoints
-  can have `region`s, all active while the checkpoint is: commands go to the deepest
-  active checkpoints that accept them, can move the machine to an ancestor region's
-  checkpoint, and `done Evt` appends a join once every region is final. Child machines
-  run in their own partitions (keys including the parent's): a child declares `start Evt`
-  and `on_stop Evt` (generating its `Stop` command); a parent `spawns Child, as:,
-  stop_on:` and `spawn`s it from a command, joins with `children_done`, or `invoke`s one
-  for the duration of a checkpoint, mapping its final checkpoint with `on_done`. Entry and exit
-  actions run as reactions; `after(delay) { dispatch Cmd }` blocks (seconds, or a duration
-  string such as `'1h30m'`) dispatch commands delivered that long after the checkpoint was
-  entered, refused once the machine has moved to a newer checkpoint. Commands the current checkpoint doesn't accept raise
-  `CommandNotHandledError` in `Sourced.handle!` and are acked by workers. Definitions are
-  checked when the machine is registered. `Sourced.topology` describes machines (commands
-  with their declared checkpoints, actions, joins and children as automations), and
-  `Machine.to_mermaid` draws one as a Mermaid state diagram. `Machine.to_h` returns the
-  definition as a JSON-serializable Hash for rendering, and `Machine#to_h` the same Hash
-  with the instance's status (active, visited and current checkpoints, children). Design in
-  `plans/statecharts.md`.
-- Composing machines: `region :payment, PaymentMachine, on_done: { PaymentExpired =>
-  OrderCancelled }` runs another machine as a region, and `checkpoint ThingStarted,
-  ThingMachine, on_done: { … }` (or `checkpoint ThingMachine`) as a compound checkpoint
-  whose sub-states start at its `start`. A composed machine runs in the parent's
-  partition and instance, its projection built from the parent's state; it escalates
-  through its root finals, which `on_done` maps onto the parent's checkpoints. Machines
-  work on `Machine.tree`, their definitions placed into one tree, which validation,
-  routing, `to_h`, `to_mermaid` and the topology read. Design in
-  `plans/statecharts-region-machines.md`.
+- `Sourced::Machine`, Sourced's statecharts. A machine's position is made of
+  *checkpoints*, declared with `Checkpoint(:name)`: each generates an event class (type
+  `<prefix>.runtime.<name>`, prefix from `group_id`) that is both the handle the chart
+  places (`initial`, `checkpoint`, `final`, `start`) and the event appended when the
+  machine moves there, recording `trigger`, `source`, `target` and the `exited` /
+  `entered` paths, which replay applies. Checkpoints list the commands they accept and
+  the checkpoints each may move to (`command PlaceOrder => Placed`, `=> A | B` or
+  `=> A | nil` with `to(A)` in the block, or data-only without an arrow); `event` appends
+  data events, evolved into the machine's domain `state`. Checkpoints can have `region`s,
+  all active while the checkpoint is: commands go to the deepest active checkpoints that
+  accept them, can target an ancestor region's checkpoint or one below their own, and
+  `done Target` joins once every region is final. Eventless transitions: `always Target,
+  if: guard` (transient checkpoints with an unguarded one) and guarded `done`, guards
+  being a Symbol sent to the state or any `#call(state)`. `on Event => Target` moves the
+  machine when it claims another reactor's event. `Checkpoint.history` /
+  `history(deep: true)` re-enter a checkpoint's regions where they were. Entry and exit
+  actions run as reactions when the transition is claimed; `after(delay) { dispatch Cmd }`
+  blocks (seconds, or a duration string such as `'1h30m'`) dispatch commands delivered that
+  long after the checkpoint was entered, refused once that entry has been left. Child
+  machines run in their own partitions (keys including the parent's): a child declares
+  `start` and `on_stop`, generating `Started`, `Finished` and `Stop`
+  (`<prefix>.runtime.child.*`); a parent `spawns Child, as:, stop_on:` and `spawn`s it
+  from a command, joins with `children_done`, or `invoke`s one for the duration of a
+  checkpoint, mapping its finals with `on_done`. Commands the current checkpoint doesn't
+  accept raise `CommandNotHandledError` in `Sourced.handle!` and are acked by workers.
+  Definitions are checked when the machine is registered, after which its DSL is locked;
+  stored paths that no longer resolve raise `UnresolvablePathError`. `Sourced.topology`
+  describes machines, `Machine.to_mermaid` draws one as a Mermaid state diagram,
+  `Machine.to_h` returns the definition as a JSON-serializable, XState-shaped Hash, and
+  `Machine#to_h` the same Hash with the instance's status. Design in
+  `plans/statecharts-transitions.md`.
+- Composing machines: `region :payment, PaymentMachine, on_done: { PaymentMachine::Expired
+  => Cancelled }` runs another machine as a region, and `checkpoint Working, ThingMachine,
+  on_done: { … }` as a compound checkpoint whose sub-states start at its `start` (which can
+  itself be compound). A composed machine runs in the parent's partition and instance, its
+  projection built from the parent's state; it escalates through its root finals, which
+  `on_done` maps onto the parent's checkpoints. The mounting machine appends its own
+  generated classes for the composed machine's checkpoints
+  (`OrderMachine::Mounted::PaymentMachine::Captured`, type
+  `order_machine.runtime.mounted.payment_machine.captured`, see `checkpoint_class`), so a
+  machine can be composed several times, and never reads another context's events.
 - `Decider#handles_command?(command)`: whether the decider handles a command in its
   current state. Defaults to whether a handler is registered for the command's class;
   override it to refuse commands based on state without raising, the command-side

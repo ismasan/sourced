@@ -586,92 +586,160 @@ This reads the partition's whole history on every call, so it suits small partit
 
 ### Machines
 
-`Sourced::Machine` is Sourced's take on statecharts. A machine's position is defined by **checkpoints**: event classes declared with `checkpoint` or `final`. The machine is at its latest checkpoint; every other event it evolves is data, and only changes its domain `state`. Each checkpoint lists the commands it accepts, and the checkpoints each command may decide into.
+`Sourced::Machine` is Sourced's take on [statecharts](https://statecharts.dev. A machine's position is made of **checkpoints**: named states, declared with `Checkpoint(:name)` and placed in the chart with `initial`, `checkpoint`, `final` and `start`. Each checkpoint lists the commands it accepts and the checkpoints each command may move to. Every move is recorded as an event of the target checkpoint's class; every other event the machine evolves is data, which only changes its domain `state`.
+
+```mermaid
+stateDiagram-v2
+  state "placed" as placed {
+    state "paying" as placed_payment_paying
+    state "rejected" as placed_payment_rejected
+    state "paid" as placed_payment_paid
+    [*] --> placed_payment_paying : StartPayment
+    [*] --> placed_payment_rejected : StartPayment
+    placed_payment_paying --> placed_payment_paid : on PaymentCaptured
+    placed_payment_paid --> [*]
+    --
+    state "packed" as placed_shipping_packed
+    state "shipped" as placed_shipping_shipped
+    [*] --> placed_shipping_packed : PackItem
+    placed_shipping_packed --> placed_shipping_shipped : DispatchShipment
+    placed_shipping_shipped --> [*]
+  }
+  state "completed" as completed
+  state "cancelled" as cancelled
+  [*] --> placed : PlaceOrder
+  placed --> cancelled : CancelOrder
+  placed --> completed : done
+  placed_payment_paying --> cancelled : ExpirePayment
+  completed --> [*]
+  cancelled --> [*]
+```
+
+This diagram was generated from the code below:
 
 ```ruby
 class OrderMachine < Sourced::Machine
-  partition_by :order_id
+  partition_by :order_id                    # before any checkpoint: their classes take the keys
+
+  Placed    = Checkpoint(:placed)           # OrderMachine::Placed, type 'order_machine.runtime.placed'
+  Paying    = Checkpoint(:paying)
+  Rejected  = Checkpoint(:rejected)
+  Paid      = Checkpoint(:paid)
+  Packed    = Checkpoint(:packed)
+  Shipped   = Checkpoint(:shipped)
+  Completed = Checkpoint(:completed)
+  Cancelled = Checkpoint(:cancelled)
 
   # Domain state, as in a Decider: any object, mutated by evolve handlers.
   # Like any projection's, the state block takes no arguments.
   state { OrderState.new }
   evolve(OrderPlaced) { |order, evt| order.total = evt.payload.total }
   evolve(PaymentInfoAdded) { |order, evt| order.card = evt.payload.card }
+  evolve(ItemPacked) { |order, evt| order.packed << evt.payload.sku }
 
   initial do
-    command PlaceOrder => OrderPlaced             # no block: OrderPlaced is built from the command's payload
+    command PlaceOrder => Placed do |_order, cmd|
+      event OrderPlaced, total: cmd.payload.total   # data, appended before the transition
+    end
   end
 
-  checkpoint OrderPlaced do                       # has regions: they're all active while OrderPlaced is
-    command CancelOrder => OrderCancelled
+  checkpoint Placed do                      # has regions: they're all active while Placed is
+    command CancelOrder => Cancelled
 
     region :payment do
       initial do
-        command StartPayment => PaymentStarted | PaymentRejected do |order, cmd|
+        command StartPayment => Paying | Rejected do |order, cmd|
           if order.total.positive?
-            event PaymentStarted                  # the checkpoint: exactly one per decision
-            event PaymentInfoAdded, card: cmd.payload.card  # data
+            event PaymentInfoAdded, card: cmd.payload.card
+            to Paying
           else
-            event PaymentRejected, reason: 'zero total'
+            to Rejected
           end
         end
       end
 
-      checkpoint PaymentStarted do
+      checkpoint Paying do
         entry { |order, _evt| dispatch ChargeCard, card: order.card }  # order_id filled in
         after('1h') { |_order, _evt| dispatch ExpirePayment }
-        command ExpirePayment => OrderCancelled  # an ancestor region's checkpoint: exits both regions
+        on PaymentCaptured => Paid          # appended by a payments reactor
+        command ExpirePayment => Cancelled  # an ancestor region's checkpoint: exits both regions
       end
 
-      checkpoint PaymentRejected
-      final PaymentCaptured                       # appended by a payments reactor
+      checkpoint Rejected
+      final Paid
     end
 
     region :shipping do
       initial do
-        command PackItem => ItemsPacked | nil do |order, cmd|   # | nil: may stay put
+        command PackItem => Packed | nil do |order, cmd|   # | nil: may stay put
           event ItemPacked, sku: cmd.payload.sku
-          event ItemsPacked if order.all_packed?
+          to Packed if order.all_packed?
         end
       end
-      checkpoint ItemsPacked do
-        command DispatchShipment => ShipmentDispatched
-      end
-      final ShipmentDispatched
+      checkpoint(Packed) { command DispatchShipment => Shipped }
+      final Shipped
     end
 
-    done OrderCompleted                           # appended once every region is final
+    done Completed                          # once every region is final
   end
 
-  final OrderCompleted
-  final OrderCancelled
+  final Completed
+  final Cancelled
 end
 
-OrderMachine.load(order_id: 'o1').value
-# => { OrderPlaced => { payment: PaymentStarted, shipping: :initial } }
+order = OrderMachine.new(order_id: 'o1')
+order.decide(PlaceOrder.new(payload: { order_id: 'o1', total: 10 }))
+order.decide(StartPayment.new(payload: { order_id: 'o1', card: '4242' }))
+order.machine.value
+# => { OrderMachine::Placed => { payment: OrderMachine::Paying, shipping: :initial } }
 ```
+
+**Checkpoints are event classes.** `Checkpoint(:paying)` generates a `Sourced::Machine::Checkpoint` subclass and returns it: it's the handle the chart places and transitions target, and the event appended whenever the machine moves there. Its type is `<prefix>.runtime.<name>`, where the prefix comes from the machine's `group_id` (its class name, unless `consumer_group 'orders'` fixes it), so declare `partition_by` and `consumer_group` before any checkpoint. The constant is yours to name and rename; the checkpoint's name is what's stored. Placing a Symbol (`checkpoint :outline`, `final :done`) declares the checkpoint and sets its constant (`Outline`). A checkpoint event carries the partition keys and where the machine went:
+
+```ruby
+# order_machine.runtime.paying
+{ order_id: 'o1', trigger: 'orders.start_payment', source: 'placed.payment.initial',
+  target: 'placed.payment.paying', exited: [], entered: ['placed.payment.paying'] }
+```
+
+`trigger` is the command or event type that moved the machine, or `'always'`, `'done'`, `'on_done'`, `'start'`, `'stop'`. `source` and `target` are paths: checkpoint and region names joined with dots from the root, a compound checkpoint's sub-states directly under it (`working.progressed`). `exited` (innermost first) and `entered` (outermost first) are every checkpoint the move left and entered. Loading a machine replays these paths; transition rules aren't re-run.
 
 Command forms:
 
-| Form | Block | Checkpoint |
+| Form | Block | Transition |
 |---|---|---|
-| `command Cmd => Evt` | none | `Evt` is appended, built from the command attributes it declares |
-| `command Cmd => Evt do … end` | data events, guards (raise to reject) | `Evt` is appended after the block, unless the block emits it |
-| `command Cmd => A \| B do … end` | required | the block emits exactly one of `A`, `B` |
-| `command Cmd => A \| nil do … end` | required | the block emits `A`, or nothing |
+| `command Cmd => A` | optional: data events, raise to reject | to `A` (unless the block calls `to`) |
+| `command Cmd => A \| B do … end` | required | to whichever the block passes to `to` |
+| `command Cmd => A \| nil do … end` | required | to `A` if the block calls `to(A)`, else stays put |
 | `command Cmd do … end` | required | data only: same as `=> nil` |
 
-A decision that emits other checkpoints raises `Sourced::Machine::CheckpointError`. Partition keys are filled in on every event a machine emits and every message it dispatches. Definitions (targets, partition keys, blockless checkpoints buildable from their command, …) are checked when the machine is registered, raising `Sourced::Machine::DefinitionError`.
+Targets can be unions (`A | B | nil`, `nil` last) or Arrays (`[:a, :b, nil]`). `to` picks the target; `event` only appends data events, and raises for a checkpoint class. A handler moves the machine at most once, to a declared target, or raises `Sourced::Machine::TransitionError`. Partition keys are filled in on every event a machine emits and every message it dispatches.
 
 How it runs:
 
 - **One reactor, one consumer group.** Every message for a partition is decided one at a time, under one consistency guard, so regions never run concurrently and share the domain state.
 - **Commands go to the deepest active checkpoints that accept them**: a checkpoint's handler runs only when none of its active regions accepts the command. Handlers in sibling regions run in definition order. A command no active checkpoint accepts makes `Sourced.handle!` raise `Sourced::CommandNotHandledError`; workers ack it with no events.
-- **Entry and exit actions are reactions**, run when the machine claims the checkpoint event, and see the state after the whole decision that entered it. Leaving a checkpoint exits its active regions first. They're skipped while replaying.
+- **Targets** are checkpoints of the handler's region or an ancestor's, or below the handler's own checkpoint; never a sibling region's. A transition exits what's active below the innermost region holding both ends, innermost first, and enters the path down to the target, outermost first, then each compound checkpoint's start and each region's initial position.
+- **Regions** start at `initial` each time their checkpoint is entered; checkpoints of an inactive region are ignored.
+- **`done Completed`** joins: once every region of the checkpoint is final, the machine moves on in the same decision. Several guarded `done`s are tried in order (`done Delivered, if: :all_confirmed?` then `done Partial`); with none passing, the machine stays.
+- **`always Target, if: guard`** moves the machine as soon as its checkpoint is entered, and after every later decision while it's active: the first passing `always` wins. A checkpoint with an unguarded `always` is *transient*: it's left in the decision that enters it, so it can't accept commands or events, have timers, regions, joins or invoked children.
+
+  ```ruby
+  checkpoint Reviewing do
+    always Cancelled, if: ->(trip) { trip.any?('cancelled') }
+    always Refused, if: :any_refused?        # a Symbol is sent to the domain state
+    always Confirmed, if: AllConfirmed       # anything with #call(state)
+    always AwaitingSuppliers
+  end
+  ```
+- **`on Event => Target`** moves the machine when it claims an event another reactor appended, while the checkpoint is active. It's decided like a command (same targets, `to`, `nil`; the block gets `(state, event)`), under the claim's guard, and never while replaying. The event must carry the machine's partition keys.
+- **Eventless steps** (`always`, mounted machines' `on_done`, `done`, `children_done`, invoking children) run after every decision until none applies, each appending its own checkpoint event, all in the decision's transaction. Guards see the state with the decision's events applied.
+- **Entry and exit actions are reactions**, run when the machine claims the checkpoint event, after the deciding transaction committed, and see the latest state. Leaving a checkpoint exits its active regions first. A transient checkpoint's entry actions run after the machine has already left it. They're skipped while replaying.
 - **`after(delay)`** blocks dispatch commands delivered that long after the checkpoint was entered. The delay is seconds (`after(3600)`) or a duration string, as `Message#at` takes it (`after('1h')`, `after('1h30m')`, `after('P1D')`). A timer command delivered after the machine has left that checkpoint entry is refused, even where the command is accepted, so timers never need cancelling.
-- **Regions** start at `initial` each time their checkpoint is entered; checkpoints of an inactive region are ignored. A command can target its own region's checkpoints or an ancestor's, never a sibling's.
-- **`done Evt`** is appended in the decision that makes the last region final, or, when the last region goes final through a checkpoint appended by another reactor, when the machine claims it.
-- `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.in?(PaymentStarted)`, `machine.in?(:payment, PaymentStarted)`, `machine.entered_by`, `machine.children(:lines)`.
+- **History**: `Working.history` targets a checkpoint with regions at the checkpoints its regions were last in (`Working.history(deep: true)` restores everything below it); regions with no history take their default entry. History is rebuilt from `exited` on replay.
+- `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.in?(OrderMachine::Paying)`, `machine.in?(:payment, OrderMachine::Paying)`, `machine.in?('placed.payment.paying')`, `machine.current(:payment)`, `machine.entered_by`, `machine.children(:lines)`.
+
+Definitions are checked when the machine is registered (or first instantiated), raising `Sourced::Machine::DefinitionError`: targets, partition keys, unplaced checkpoints, transient checkpoints, unreachable guards. After that, the machine's `state`, `evolve`, `before_evolve`, `reaction` and `Checkpoint` raise too: what it reads is fixed. A stored path that no longer names a checkpoint raises `Sourced::Machine::UnresolvablePathError` with the event's type and id, so a checkpoint or region name that stored events use can't change (rename the constant instead).
 
 #### Child machines
 
@@ -681,113 +749,112 @@ Regions are for modelling. For work that runs in parallel, a machine spawns or i
 class LineItemMachine < Sourced::Machine
   partition_by :order_id, :line_id
 
+  Added    = Checkpoint(:added)
+  Reserved = Checkpoint(:reserved)
+  Picked   = Checkpoint(:picked)
+
   state { LineState.new }
-  evolve(LineAdded) { |line, evt| line.sku = evt.payload.sku }
   evolve(OrderPlaced) { |line, evt| line.currency = evt.payload.currency }  # the parent's fact
 
-  start LineAdded do                              # appended by the parent: spawning is that append
-    entry { |line, _evt| dispatch ReserveStock, sku: line.sku }
-    command StockReserved => LineReserved
+  start Added do                             # where the parent starts it
+    entry { |line, _evt| dispatch ReserveStock }
+    command StockReserved => Reserved
   end
-  checkpoint(LineReserved) { command PickLine => LinePicked }
-  final LinePicked
+  checkpoint(Reserved) { command PickLine => Picked }
+  final Picked
 
-  on_stop LineCancelled                           # generates LineItemMachine::Stop
+  on_stop :dropped                           # generates Stop, Started and Finished
 end
 
 class OrderMachine < Sourced::Machine
   partition_by :order_id
+  # ...
+  spawns LineItemMachine, as: :lines, stop_on: Cancelled
 
-  spawns LineItemMachine, as: :lines, stop_on: OrderCancelled
-
-  checkpoint OrderPlaced do
+  checkpoint Placed do
     command(AddLine) { |_order, cmd| spawn :lines, line_id: cmd.payload.line_id, sku: cmd.payload.sku }
-    children_done :lines => LinesDone              # once every spawned line is final
-    command CancelOrder => OrderCancelled          # live lines are sent Stop
+    children_done :lines => LinesDone         # once every spawned line is final
+    command CancelOrder => Cancelled          # live lines are sent Stop
   end
 
   checkpoint AwaitingPayment do
     # One child per entry of AwaitingPayment, stopped when it's left
     invoke PaymentMachine, as: :payment,
            keys: ->(_order) { { payment_id: SecureRandom.uuid } },
-           on_done: { PaymentCaptured => OrderPaid, PaymentDeclined => PaymentFailed }
+           on_done: { PaymentMachine::Captured => Paid, PaymentMachine::Declined => PaymentFailed }
   end
-  # ...
 end
 ```
 
-A child is only woken by messages carrying all of its partition keys: its own events, the parent's `spawn`, and the `Stop` the parent sends. Parent facts with fewer keys (`OrderPlaced`, `OrderCancelled`) are in the child's partition reads, so it can evolve them, but they never wake it. The parent tracks each child's start and final checkpoints (`machine.children(:lines)`), which drive `children_done` and `on_done`.
+`on_stop` generates three messages, under `<prefix>.runtime.child`: `Started` (appended by the parent's `spawn` or `invoke`, entering the child's `start`; `spawn`'s attributes beyond the child's keys are its `input`), `Finished` (appended when the child reaches a root final), and the `Stop` command. The constants `Started`, `Finished` and `Stop` are reserved for them. The parent evolves only its children's `Started` and `Finished` (`machine.children(:lines)`), which drive `children_done` and `on_done`; an invoked child's `on_done` move has the child's `Finished` type as its `trigger`.
+
+A child is only woken by messages carrying all of its partition keys: its own events, the parent's `Started`, and `Stop`. Parent facts with fewer keys (`OrderPlaced`) are in the child's partition reads, so it can evolve them, but they never wake it.
 
 #### Composing machines
 
 A machine's definition can be split into other machines, which run as part of it: in its partition, decided with it under one guard, on its domain state. Unlike a child machine, a composed one isn't a separate reactor.
 
-**A region** can be another machine. Its checkpoints become the region's, starting at its `initial` position each time the checkpoint is entered:
+**A region** can be another machine, starting at its `initial` position each time the checkpoint is entered:
 
 ```ruby
-class PaymentMachine < Sourced::Machine
+class PaymentMachine < Sourced::Machine     # no partition_by: it runs in the mounting machine's
+  Captured = Checkpoint(:captured)
+  Expired  = Checkpoint(:expired)
+
   evolve(PaymentInfoAdded) { |order, evt| order.card = evt.payload.card }  # updates the parent's state
 
-  initial { command StartPayment => PaymentStarted }
-  checkpoint PaymentStarted do
-    command Capture => PaymentCaptured
-    command ExpirePayment => PaymentExpired
-  end
-  final PaymentCaptured
-  final PaymentExpired
+  initial { command Capture => Captured }
+  final Captured
+  final Expired
 end
 
 class OrderMachine < Sourced::Machine
   partition_by :order_id
-  state { OrderState.new }
-
-  checkpoint OrderPlaced do
-    region :payment, PaymentMachine, on_done: { PaymentExpired => OrderCancelled }
-    region :shipping do                            # inline and composed regions mix
+  # ...
+  checkpoint Placed do
+    region :payment, PaymentMachine, on_done: { PaymentMachine::Expired => Cancelled }
+    region :shipping do                       # inline and composed regions mix
       # ...
     end
-    done OrderCompleted
+    done Completed
   end
-  # ...
 end
 ```
 
-**A checkpoint** can be another machine: a compound checkpoint, whose sub-states are that machine's checkpoints, starting at its `start`, which is the checkpoint's own event. The event can be left out:
+**A checkpoint** can be another machine: a compound checkpoint, whose sub-states are that machine's checkpoints, entered at its `start`:
 
 ```ruby
 class ThingMachine < Sourced::Machine
-  start ThingStarted do
-    command Progress => ThingProgressed
-  end
-  checkpoint(ThingProgressed) { command Finish => ThingFinished }
-  final ThingFinished
+  Started    = Checkpoint(:started)
+  Progressed = Checkpoint(:progressed)
+  Done       = Checkpoint(:done)
+
+  start(Started) { command Progress => Progressed }
+  checkpoint(Progressed) { command Finish => Done }
+  final Done
 end
 
 class OrderMachine < Sourced::Machine
-  checkpoint OrderPlaced do
-    command StartThing => ThingStarted
+  # ...
+  checkpoint Working, ThingMachine, on_done: { ThingMachine::Done => Ready } do
+    command Cancel => Cancelled               # the compound checkpoint's own commands
   end
-
-  checkpoint ThingStarted, ThingMachine, on_done: { ThingFinished => OrderReady } do
-    command Cancel => OrderCancelled               # the compound checkpoint's own commands
-  end
-  # or, without on_done or commands of its own: checkpoint ThingMachine
 end
 ```
 
-Entering `ThingStarted` puts `ThingMachine` at its start, and runs both checkpoints' entry actions, outermost first. Commands go to the deepest checkpoint that accepts them (`Progress` to the sub-machine, `Cancel` to `ThingStarted`), leaving `ThingStarted` exits the sub-machine first, and re-entering it starts the sub-machine over. `machine.value` is `{ ThingStarted => ThingProgressed }`.
+Entering `Working` enters `ThingMachine` at its start too (one `Working` event, `entered: ['working', 'working.started']`), and runs both checkpoints' entry actions, outermost first. Commands go to the deepest checkpoint that accepts them (`Progress` to the sub-machine, `Cancel` to `Working`); leaving `Working` exits the sub-machine first. `machine.value` is `{ OrderMachine::Working => ThingMachine::Progressed }`. A machine's start can itself be compound (`start Open, OpenMachine`), to any depth.
 
-So a machine with `start` can be used three ways: standalone, as a child (its own partition, started by the parent's append of its start event), or as a compound checkpoint (the parent's partition, started by the parent entering its start event).
+So a machine with `start` can be used three ways: standalone, as a child (its own partition, started by the parent's `Started`), or composed (the parent's partition).
 
 Rules for composed machines:
 
+- **Events**: the mounting machine generates its own class for each of the composed machine's checkpoints, with its partition keys: `OrderMachine::Mounted::PaymentMachine::Captured`, type `order_machine.runtime.mounted.payment_machine.captured`. That's what it appends while `PaymentMachine` runs inside it, so a machine never reads another context's events: `PaymentMachine` standalone, as a child, or inside another machine appends its own types. `OrderMachine.checkpoint_class(PaymentMachine::Captured)` returns the class; handlers, `to`, `value` and `in?` use the composed machine's own handles. A machine can be composed several times (two regions of the same machine share these classes; paths tell them apart).
 - **State**: the composed machine's projection is built from the parent's state, so its `evolve` blocks update the same object, and its handlers receive it. The parent's state must respond to what they call.
-- **Escalation**: a composed machine's commands can only target its own checkpoints. It reaches the parent through its root final checkpoints, which `on_done` maps onto the parent's, appended in the deciding command's decision (as `done` joins). When a decision both makes a region reach a mapped final and completes the parent's `done` join, `on_done` wins.
-- **A compound checkpoint's machine shares its start event with the checkpoint.** A sub-machine command that targets its own `start` re-enters the whole compound checkpoint: the parent checkpoint's exit and entry actions run too, and the sub-machine starts over.
-- **Handlers run on the parent's instance**: `event`, `dispatch` and `machine` are the parent's, and partition keys are the parent's, so its events and commands must declare them. It may `spawn` and `invoke` children of its own.
-- **Not allowed**: reactions and sync blocks of its own (they can't run on the parent's instance; declare them on the parent), and mounting the same machine twice (its checkpoints would be ambiguous). Checkpoints, region names and children must not clash across the composed machines.
+- **Escalation**: a composed machine's targets are its own checkpoints. It reaches the parent through its root finals, which `on_done` maps onto the parent's, in the deciding decision. When a decision both makes a region reach a mapped final and completes the parent's `done` join, `on_done` wins.
+- **Handlers run on the parent's instance**: `event`, `dispatch` and `machine` are the parent's, and partition keys are the parent's, so its events and commands must declare them. It may `spawn` and `invoke` children of its own (a machine with children can only be composed once).
+- **Not allowed**: reactions and sync blocks of its own (they can't run on the parent's instance; declare them on the parent).
 
-`Sourced.topology` describes machines' commands, checkpoints and actions, and `OrderMachine.to_mermaid` draws the machine as a Mermaid state diagram.
+`Sourced.topology` describes machines' commands, checkpoints and actions, and `OrderMachine.to_mermaid` draws the machine as a Mermaid state diagram. The design behind all this is in `plans/statecharts-transitions.md`.
 
 ### Reactions
 
@@ -1320,28 +1387,30 @@ Sourced.topology
   .map(&:name)
 ```
 
-`produces` / `consumes` are resolved statically by parsing reactor source with Prism, so they are only populated when the `prism` gem is available. A machine's declared checkpoints are known without parsing: a command node always lists them, and adds the events its block emits when Prism is available. Machine entry, exit and `after` actions, joins, and invoking or stopping children appear as automations.
+`produces` / `consumes` are resolved statically by parsing reactor source with Prism, so they are only populated when the `prism` gem is available. A machine's declared targets are known without parsing: a command node always lists its target checkpoints' types (and those its `always` steps lead to), and adds the events its block emits when Prism is available. Machine entry and `after` actions (`actions(<path>)`), exit actions (`exit(<path>)`, consuming the transitions that can leave the checkpoint), `on` transitions, joins, and invoking or stopping children appear as automations.
 
-For a machine's own shape, `MyMachine.to_mermaid` returns a Mermaid `stateDiagram-v2`: checkpoints, regions as concurrent sections, and transitions labelled with the commands or joins that take them.
+For a machine's own shape, `MyMachine.to_mermaid` returns a Mermaid `stateDiagram-v2`: checkpoints, regions as concurrent sections, compound checkpoints as nested states, and transitions labelled with the commands, events (`on PaymentCaptured`), joins (`done`, `always [guard]`) that take them, and `(H)` / `(H*)` for history targets.
 
-To render a machine yourself, `MyMachine.to_h` returns its definition as a JSON-serializable Hash. It borrows XState's vocabulary and nesting (`states`, `initial`, `type: 'parallel' | 'final'`, `on`, `entry` / `exit`, `after`, `invoke`). Checkpoints are keyed by class name and identified by message type, each command is one transition listing every checkpoint it may decide into, and a region's initial position is a node of its own. An instance's `#to_h` returns the same Hash with every `status` key filled in, which is `nil` in the definition:
+To render a machine yourself, `MyMachine.to_h` returns its definition as a JSON-serializable Hash. It borrows XState's vocabulary and nesting (`states`, `initial`, `type: 'parallel' | 'compound' | 'final' | 'history'`, `on`, `always`, `entry` / `exit`, `after`, `invoke`). Checkpoints are keyed by name and identified by path, each command or `on` event is one transition (with `kind: 'command' | 'event'`) listing every checkpoint it may move to, and a region's initial position is a node of its own. An instance's `#to_h` returns the same Hash with every `status` key filled in, which is `nil` in the definition:
 
 ```ruby
 OrderMachine.to_h                    # the definition: every status is nil
 
 order, = Sourced.load(OrderMachine, order_id: 'o1')
 order.to_h                           # the same keys, with the instance's status
-order.to_h[:status]                  # => { active: true, current: 'orders.placed', done: false,
-                                     #      value: { 'orders.placed' => { 'payment' => 'payment/initial', 'shipping' => 'shipping/initial' } } }
+order.to_h[:status]                  # => { active: true, current: 'placed', done: false,
+                                     #      value: { 'placed' => { 'payment' => 'placed.payment.paying', 'shipping' => 'placed.shipping.initial' } } }
 
-result = Sourced.handle!(OrderMachine, PlaceOrder.new(payload: { order_id: 'o1' }))
+result = Sourced.handle!(OrderMachine, PlaceOrder.new(payload: { order_id: 'o1', total: 10 }))
 result.reactor.to_h                  # status after the command, including the events it decided
 ```
 
-- A region's status is `{ active:, current:, done: }`. The machine's (its root region's) adds `value`, the current configuration, with checkpoints as message types (`'orders.placed'` stands in for `OrderPlaced.type`).
+- A region's status is `{ active:, current:, done: }`. The machine's (its root region's) adds `value`, the current configuration, by path.
 - A checkpoint's is `{ active:, visited:, entered_by: }`. Visited means entered since its region was last entered, and `entered_by` is the event that entered an active checkpoint (`id`, `type`, `at`).
 - A child's is `{ instances: [{ keys:, state:, final: }] }`.
 - The domain `state` isn't included.
+
+`OrderMachine.load(order_id: 'o1')` returns a `Snapshot` (`value`, `state`, `children`) without building a reactor instance yourself.
 
 ## Testing
 
