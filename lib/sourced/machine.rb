@@ -99,6 +99,10 @@ module Sourced
     # Raised when a machine builds an event that isn't valid.
     InvalidEventError = Class.new(Error)
 
+    # Raised when a stored path names no checkpoint in the machine's definition,
+    # ex. after a checkpoint or region was renamed or removed.
+    UnresolvablePathError = Class.new(Error)
+
     INITIAL = :initial
 
     # Metadata keys on messages dispatched by an +after+ block: the id of the
@@ -702,12 +706,13 @@ module Sourced
       # start afresh.
       #
       # @param event [Checkpoint] a checkpoint event (or a child's +Started+)
-      # @raise [Error] if a path doesn't resolve, or enters an inactive region
+      # @raise [UnresolvablePathError] if a path doesn't resolve
+      # @raise [Error] if a path enters an inactive region
       def apply(event)
         # A region's history is where it was when its checkpoint was last left.
-        event.payload.exited.each { |path| @tree.node_at(path).regions.each { |region| remember(region) } }
+        event.payload.exited.each { |path| @tree.node_at(path, event).regions.each { |region| remember(region) } }
         event.payload.entered.each do |path|
-          node = @tree.node_at(path)
+          node = @tree.node_at(path, event)
           raise Error, "#{event.type} #{event.id} enters #{path}, in an inactive region" unless active?(node.region)
 
           pos = position(node.region)
@@ -1641,11 +1646,11 @@ module Sourced
         if self.class.__transition_classes.include?(message.class)
           tree = self.class.tree
           message.payload.exited.each do |path|
-            left = tree.node_at(path)
+            left = tree.node_at(path, message)
             left.exits.each { |blk| instance_exec(state, message, &blk) }
             left.invokes.each { |spec| stop_children(spec) }
           end
-          entered = message.payload.entered.map { |path| tree.node_at(path) }
+          entered = message.payload.entered.map { |path| tree.node_at(path, message) }
           entered.each do |node|
             node.entries.each { |blk| instance_exec(state, message, &blk) }
             start_timers(node, message)
@@ -1917,10 +1922,8 @@ module Sourced
       path = command.metadata[ENTERED_AT] || command.metadata[ENTERED_AT.to_s]
       return !@runtime.active_entry?(started_by) unless path
 
-      node = self.class.tree.node_at(path)
+      node = self.class.tree.node_at(path, command)
       !@runtime.active_entry_of?(node, started_by)
-    rescue Error
-      true
     end
 
     # Partition keys are filled in on dispatched messages too.
