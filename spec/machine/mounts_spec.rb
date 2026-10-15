@@ -302,7 +302,8 @@ RSpec.describe 'Sourced::Machine region mounts' do
       expect(region.parent.key).to eq(MM::MountedOrder::Placed)
       expect(region.nodes.keys).to eq([:initial, MM::PaymentMachine::Authorizing, MM::PaymentMachine::Captured, MM::PaymentMachine::Expired])
       expect(machine.handled_commands).to include(MM::StartPayment, MM::Capture)
-      expect(machine.handled_messages_for_evolve).to include(MM::PaymentInfoAdded, MM::MountedOrder::Transitioned)
+      expect(machine.handled_messages_for_evolve).to include(MM::PaymentInfoAdded, machine.checkpoint_class(authorizing))
+      expect(machine.handled_messages_for_evolve).not_to include(authorizing)
     end
   end
 
@@ -334,7 +335,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
       )
 
       events = instance.decide(msg(MM::StartPayment, card: 'bal'))
-      expect(events.map(&:class)).to eq([MM::PaymentInfoAdded, MM::TwicePaidOrder::Transitioned])
+      expect(events.map(&:class)).to eq([MM::PaymentInfoAdded, machine.checkpoint_class(authorizing)])
       expect(events.last.payload.target).to eq('placed.balance.shipped.payment.authorizing')
       expect(instance.machine.in?('placed.deposit.authorizing')).to be(true)
       expect(instance.machine.in?(:payment, authorizing)).to be(true)
@@ -377,7 +378,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
     it 'invokes the child when its checkpoint is entered, and maps its final' do
       instance = decided(MM::OrderWithChecks, msg(MM::PlaceOrder))
       events = instance.decide(msg(MM::StartCheck))
-      expect(events.map(&:class)).to eq([MM::OrderWithChecks::Transitioned, MM::CheckMachine::Started])
+      expect(events.map(&:class)).to eq([MM::OrderWithChecks.checkpoint_class(MM::ChecksRegion::Checking), MM::CheckMachine::Started])
       expect(events.last.payload.check_id).to eq('c1')
 
       child = MM::CheckMachine.new(order_id: 'o1', check_id: 'c1').tap { |m| m.evolve([events.last]) }
@@ -421,7 +422,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
 
       expect(commands.map(&:name)).to include(MM::StartPayment.name, MM::Capture.name)
       expect(commands.find { |n| n.name == MM::StartPayment.name }.produces)
-        .to contain_exactly(MM::MountedOrder::Transitioned.type, MM::PaymentInfoAdded.type)
+        .to contain_exactly(machine.checkpoint_class(MM::PaymentMachine::Authorizing).type, MM::PaymentInfoAdded.type)
       expect(automations).to include('actions(placed.payment.authorizing)')
     end
   end
@@ -430,6 +431,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
     def machine(&block)
       stub_const('MachineMountsSpecParent', Class.new(Sourced::Machine) do
         partition_by :order_id
+        consumer_group 'machine_mounts_spec_parent'
         Checkpoint(:placed)
         initial { command MachineMountsTest::PlaceOrder => :placed }
         instance_eval(&block)
@@ -498,7 +500,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
         end
         final :cancelled
       end
-      expect { not_final.validate! }.to raise_error(Sourced::Machine::DefinitionError, /authorizing isn't a final checkpoint/)
+      expect { not_final.validate! }.to raise_error(Sourced::Machine::DefinitionError, /Authorizing isn't a final checkpoint/)
 
       elsewhere = machine do
         checkpoint(:placed) do
@@ -513,7 +515,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
           region :payment, MachineMountsTest::PaymentMachine, on_done: { MachineMountsTest::PaymentMachine::Expired => :cancelled }
         end
       end
-      expect { unplaced.validate! }.to raise_error(Sourced::Machine::DefinitionError, /cancelled declared but never placed/)
+      expect { unplaced.validate! }.to raise_error(Sourced::Machine::DefinitionError, /Cancelled declared but never placed/)
     end
 
     it 'rejects a block with a machine, and on_done without one' do
