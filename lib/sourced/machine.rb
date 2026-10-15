@@ -194,6 +194,39 @@ module Sourced
       def checkpoint_targets = targets.compact
     end
 
+    # What a guard is called with: the domain context.
+    GuardInterface = Types::Interface[:call]
+
+    # The guard of an unguarded +always+ or +done+.
+    UNGUARDED = ->(_context) { true }
+
+    # A transition taken without a command (+always+, +done+), when its guard
+    # passes. +guard+ is a +#call(context)+ (+UNGUARDED+ when declared without
+    # one); +guard_label+ names it for rendering.
+    Eventless = Data.define(:target, :guard, :guard_label) do
+      # @param guard [Symbol, #call(context), nil] a Symbol is sent to the domain context
+      # @return [Eventless]
+      def self.build(target, guard)
+        case guard
+        in nil then new(target:, guard: UNGUARDED, guard_label: nil)
+        in Symbol then new(target:, guard: ->(context) { context.public_send(guard) }, guard_label: guard.to_s)
+        in GuardInterface then new(target:, guard:, guard_label: label_for(guard))
+        end
+      end
+
+      # A callable's class or module name, or +'guard'+ for a lambda or an anonymous one.
+      def self.label_for(guard)
+        case guard
+        in Proc then 'guard'
+        in Module then guard.name || 'guard'
+        else guard.class.name || 'guard'
+        end
+      end
+
+      def guarded? = !guard.equal?(UNGUARDED)
+      def pass?(context) = guard.call(context)
+    end
+
     # A delayed action: runs when its checkpoint is entered, and future-dates
     # what it dispatches by +delay+ from the entering transition. +delay+ is as
     # declared: seconds, or a duration string; +duration+ is the parsed string.
@@ -254,8 +287,7 @@ module Sourced
 
     # A checkpoint (or a region's initial position) and what it accepts.
     class Node
-      attr_reader :key, :region, :commands, :entries, :exits, :afters, :regions, :invokes, :children_joins
-      attr_accessor :done
+      attr_reader :key, :region, :commands, :entries, :exits, :afters, :regions, :invokes, :children_joins, :always, :dones
 
       # @param key [Checkpoint, Symbol] the checkpoint, or {INITIAL}
       # @param final [Boolean]
@@ -271,11 +303,14 @@ module Sourced
         @regions = []
         @invokes = []
         @children_joins = []
-        @done = nil
+        @always = []
+        @dones = []
       end
 
       def final? = @final
       def initial? = key == INITIAL
+      # Left as soon as it's entered: it has an unguarded +always+.
+      def transient? = always.any? { |eventless| !eventless.guarded? }
       def label = initial? ? "#{region.label}'s initial position" : key.to_s
     end
 
@@ -394,12 +429,39 @@ module Sourced
       end
 
       # Join: once every region of this checkpoint is at a final checkpoint,
-      # the machine moves to +target+, in the same decision.
+      # the machine moves to +target+, in the same decision. Several guarded
+      # joins are tried in order, the first passing one taken; with none
+      # passing (and no unguarded one), the machine stays until a later
+      # decision passes one.
+      #
+      #   done Delivered, if: :all_paid?
+      #   done Partial
+      #
       # @param target [Checkpoint, Symbol] a checkpoint of this region or an ancestor's
-      def done(target)
-        raise DefinitionError, "#{@machine}: #{@node.label} declares done twice" if @node.done
+      # @param guard [Symbol, #call, nil] +if:+, of the domain context
+      def done(target, if: nil)
+        @node.dones << @machine.send(:__eventless, @node, 'done', target, binding.local_variable_get(:if), @node.dones)
+      end
 
-        @node.done = @machine.send(:__handle, target)
+      # An eventless transition: as soon as this checkpoint is entered, and
+      # after every decision while it's active, the first +always+ whose guard
+      # passes moves the machine, in the same decision. A checkpoint with an
+      # unguarded +always+ is transient: it can't accept commands or have
+      # timers.
+      #
+      #   checkpoint RollingUp do
+      #     always Voided, if: ->(run) { run.any_item?(:void) }
+      #     always Paid, if: :all_items_paid?
+      #     always Settling
+      #   end
+      #
+      # @param target [Checkpoint, Symbol]
+      # @param guard [Symbol, #call, nil] +if:+, of the domain context
+      def always(target, if: nil)
+        raise DefinitionError, "#{@machine}: the initial position is never entered, so no always" if @node.initial?
+        raise DefinitionError, "#{@machine}: final checkpoint #{@node.label} can't have always" if @node.final?
+
+        @node.always << @machine.send(:__eventless, @node, 'always', target, binding.local_variable_get(:if), @node.always)
       end
 
       # Run a child machine while this checkpoint is active: started in the
@@ -1075,6 +1137,20 @@ module Sourced
         spec
       end
 
+      # An +always+ or +done+ of +node+, after +declared+ (its siblings so far).
+      def __eventless(node, kind, target, guard, declared)
+        unless guard in nil | Symbol | GuardInterface
+          raise DefinitionError, "#{self}: #{node.label}'s #{kind}: if: takes a Symbol or a #call(context), got #{guard.inspect}"
+        end
+
+        eventless = Eventless.build(kind == 'done' ? __handle(target) : __target(target), guard)
+        if declared.any? { |other| !other.guarded? }
+          raise DefinitionError, "#{self}: #{node.label}'s #{kind} #{eventless.target} is unreachable, after an unguarded #{kind}"
+        end
+
+        eventless
+      end
+
       # One of this machine's checkpoints. A Symbol names one, declaring it
       # unless +declare+ is false.
       def __handle(target, declare: true)
@@ -1167,7 +1243,9 @@ module Sourced
             __check_partition_keys!(definition.command_class, 'command')
             definition.checkpoint_targets.each { |target| __check_target!(tree, node, target) }
           end
-          __check_join!(tree, node) if node.done || node.regions.any?
+          __check_transient!(node) if node.transient?
+          node.always.each { |eventless| __check_target!(tree, node, eventless.target) }
+          __check_join!(tree, node) if node.dones.any? || node.regions.any?
           node.children_joins.each { |join| __check_children_join!(tree, node, join) }
           node.invokes.each { |spec| __check_invoke!(tree, node, spec) }
         end
@@ -1223,10 +1301,21 @@ module Sourced
       def __check_join!(tree, node)
         raise DefinitionError, "#{self}: #{node.label} declares done but has no regions" if node.regions.empty?
 
-        return unless node.done
+        node.dones.each do |eventless|
+          target = tree.resolve(node, eventless.target)
+          raise DefinitionError, "#{self}: #{node.label}'s done targets #{target.label}, inside its own regions" if target.descendant_of?(node)
+        end
+      end
 
-        target = tree.resolve(node, node.done)
-        raise DefinitionError, "#{self}: #{node.label}'s done targets #{target.label}, inside its own regions" if target.descendant_of?(node)
+      # A transient checkpoint is left as soon as it's entered.
+      def __check_transient!(node)
+        always = node.always.find { |eventless| !eventless.guarded? }.target
+        prefix = "#{self}: #{node.label} is transient (always #{always}), so it can't"
+        raise DefinitionError, "#{prefix} accept commands" if node.commands.any?
+        raise DefinitionError, "#{prefix} have timers" if node.afters.any?
+        raise DefinitionError, "#{prefix} invoke children" if node.invokes.any?
+        raise DefinitionError, "#{prefix} have regions" if node.regions.any?
+        raise DefinitionError, "#{prefix} join with done or children_done" if node.dones.any? || node.children_joins.any?
       end
 
       def __check_partition_keys!(klass, role)
@@ -1376,8 +1465,9 @@ module Sourced
     end
 
     # What the current configuration decides without a command, until nothing
-    # is left: +done+ joins, mounted machines' +on_done+, +children_done+
-    # joins, invoking children, and mapping invoked children's results.
+    # is left: +always+, mounted machines' +on_done+, +done+ joins,
+    # +children_done+ joins, invoking children, and mapping invoked children's
+    # results.
     # @api private
     # @return [Array<Sourced::Message>]
     def __decide_eventless = deciding { append_eventless }
@@ -1484,9 +1574,11 @@ module Sourced
       accepting.reject { |node| accepting.any? { |other| other.descendant_of?(node) } }
     end
 
+    # +always+ first: a transient checkpoint resolves before anything that
+    # depends on where its region ends up (a mounted machine's escalation, a join).
     def append_eventless
       MAX_JOINS.times do
-        return unless mount_done_step || join_step || children_join_step || invoke_step
+        return unless always_step || mount_done_step || join_step || children_join_step || invoke_step
       end
       raise Error, "#{self.class}: more than #{MAX_JOINS} joins in one decision"
     end
@@ -1516,14 +1608,31 @@ module Sourced
                                     .map { |klass| klass.new(projection.context) }
     end
 
-    def join_step
-      node = @runtime.active_nodes.find do |n|
-        n.done && n.regions.all? { |region| @runtime.current_node(region).final? }
-      end
-      return false unless node
+    # The first active checkpoint with a passing +always+ moves on.
+    def always_step
+      @runtime.active_nodes.each do |node|
+        eventless = node.always.find { |candidate| candidate.pass?(context) }
+        next unless eventless
 
-      transition(node, self.class.tree.resolve(node, node.done), trigger: 'done')
-      true
+        transition(node, self.class.tree.resolve(node, eventless.target), trigger: 'always')
+        return true
+      end
+      false
+    end
+
+    # An active checkpoint whose regions are all final takes its first
+    # passing +done+, if any.
+    def join_step
+      @runtime.active_nodes.each do |node|
+        next if node.dones.empty? || !node.regions.all? { |region| @runtime.current_node(region).final? }
+
+        eventless = node.dones.find { |candidate| candidate.pass?(context) }
+        next unless eventless
+
+        transition(node, self.class.tree.resolve(node, eventless.target), trigger: 'done')
+        return true
+      end
+      false
     end
 
     def children_join_step

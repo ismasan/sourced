@@ -219,9 +219,10 @@ module Sourced
         exit_dispatched = dispatched_by.call(node.exits)
         automation.call("#{node.path}-exit", "exit(#{node.path})", leaving, exit_dispatched) if exit_dispatched.any?
 
-        if node.done
+        if node.dones.any?
           finals = node.regions.flat_map { |region| region.nodes.each_value.select(&:final?).map { type_of.call(it.key) } }
-          automation.call("#{node.path}-done", "done(#{node.path})", finals.uniq, [type_of.call(node.done)])
+          joined = eventless_closure(machine, node.dones.map(&:target))
+          automation.call("#{node.path}-done", "done(#{node.path})", finals.uniq, joined.map(&type_of))
         end
 
         node.children_joins.each do |join|
@@ -237,7 +238,7 @@ module Sourced
                           leaving, [spec.machine::Stop.type])
           if spec.on_done.any?
             automation.call("#{node.path}-on-done-#{spec.as}", "on_done(#{spec.as})", [spec.machine::Finished.type],
-                            spec.on_done.values.map(&type_of).uniq)
+                            eventless_closure(machine, spec.on_done.values.uniq).map(&type_of))
           end
         end
       end
@@ -251,15 +252,15 @@ module Sourced
     end
 
     # Every transition the definition declares, as +[source, target]+ placed
-    # nodes: commands, +children_done+, +done+, invoked and mounted machines'
-    # +on_done+, and +on_stop+ (from each top-level checkpoint).
+    # nodes: commands, +children_done+, +always+, +done+, invoked and mounted
+    # machines' +on_done+, and +on_stop+ (from each top-level checkpoint).
     # @api private
     def self.machine_transitions(machine)
       tree = machine.tree
       pairs = tree.all_nodes.flat_map do |node|
         definitions = node.commands.values + node.children_joins.map(&:definition)
         targets = definitions.flat_map(&:checkpoint_targets)
-        targets << node.done if node.done
+        targets += (node.always + node.dones).map(&:target)
         targets += node.invokes.flat_map { |spec| spec.on_done.values }
         own = targets.map { |handle| [node, tree.resolve(node, handle)] }
         mounted = node.regions.flat_map do |region|
@@ -297,9 +298,10 @@ module Sourced
 
     # @api private
     def self.machine_block_produces(machine, analyzer, definition)
-      types = definition.checkpoint_targets.map { |handle| machine.checkpoint_class(handle).type }
+      reached = eventless_closure(machine, definition.checkpoint_targets)
+      types = reached.map { |handle| machine.checkpoint_class(handle).type }
       # Reaching a root final finishes a child machine.
-      if machine.__finished_class && definition.checkpoint_targets.any? { |handle| machine.root.nodes[handle]&.final? }
+      if machine.__finished_class && reached.any? { |handle| machine.root.nodes[handle]&.final? }
         types << machine.__finished_class.type
       end
       types += resolve_refs(analyzer.calls_in_block(definition.block, :event), machine)
@@ -307,6 +309,25 @@ module Sourced
         machine.tree.children_specs[value.to_sym]&.machine&.const_get(:Started)&.type if kind == :symbol
       end
       types.uniq
+    end
+
+    # +handles+, and every checkpoint their +always+ can move on to, through
+    # the checkpoints entering them enters (compound starts), each once.
+    # @api private
+    def self.eventless_closure(machine, handles)
+      tree = machine.tree
+      reached = []
+      pending = handles.dup
+      until pending.empty?
+        handle = pending.shift
+        next if reached.include?(handle)
+
+        reached << handle
+        tree.placements(handle).flat_map { |placed| tree.default_entry(placed) }.each do |entered|
+          pending.concat(entered.always.map { |eventless| tree.resolve(entered, eventless.target).key })
+        end
+      end
+      reached
     end
 
     # @api private
@@ -416,7 +437,7 @@ module Sourced
       {}
     end
 
-    private_class_method :add_machine, :machine_block_produces, :machine_transitions, :exits?, :branch, :add_event_node,
+    private_class_method :add_machine, :machine_block_produces, :machine_transitions, :exits?, :branch, :eventless_closure, :add_event_node,
                          :resolve_refs, :resolve_ref, :resolve_symbol_ref,
                          :resolve_const_ref, :resolve_const_path_ref,
                          :resolve_const_index_ref,

@@ -40,7 +40,12 @@ module Sourced
             label = definition.command_class.name.split('::').last
             definition.checkpoint_targets.each { |target| edge(node, @tree.resolve(node, target), label) }
           end
-          edge(node, @tree.resolve(node, node.done), 'done') if node.done
+          { 'always' => node.always, 'done' => node.dones }.each do |kind, list|
+            list.each do |eventless|
+              label = eventless.guarded? ? "#{kind} [#{eventless.guard_label}]" : kind
+              edge(node, @tree.resolve(node, eventless.target), label)
+            end
+          end
           node.children_joins.each do |join|
             join.definition.checkpoint_targets.each { |target| edge(node, @tree.resolve(node, target), "children_done #{join.as}") }
           end
