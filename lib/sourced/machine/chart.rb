@@ -7,7 +7,7 @@ module Sourced
     # +on+, +entry+ / +exit+, +after+, +invoke+) and keeps Sourced's meaning
     # where the two differ:
     #
-    # * A checkpoint's id is its path (+pending.submission.check.submitting+),
+    # * A checkpoint's id is its path (+reserving.suppliers.hotel.holding+),
     #   its key in +states+ its name.
     # * A region's initial position is a node of its own (+type: 'initial'+,
     #   id +"<region path>.initial"+), since it accepts commands. A machine with

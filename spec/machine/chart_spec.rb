@@ -20,11 +20,11 @@ module MachineChartTest
   AddLeg = command(:add_leg, :trip_id, :leg_id)
   Confirm = command(:confirm, :trip_id, :leg_id)
   Capture = command(:capture, :trip_id, :charge_id)
-  Submit = command(:submit, :trip_id)
-  Accept = command(:accept, :trip_id)
-  Approve = command(:approve, :trip_id)
-  Unapprove = command(:unapprove, :trip_id)
-  Send = command(:send, :trip_id)
+  RequestHold = command(:request_hold, :trip_id)
+  ConfirmHold = command(:confirm_hold, :trip_id)
+  Agree = command(:agree, :trip_id)
+  Revise = command(:revise, :trip_id)
+  Finalise = command(:finalise, :trip_id)
 
   class LegMachine < Sourced::Machine
     partition_by :trip_id, :leg_id
@@ -119,54 +119,54 @@ module MachineChartTest
   end
 
   # Mounted twice, as two regions: one handle per checkpoint, at two paths.
-  class ProviderMachine < Sourced::Machine
-    Submitting = Checkpoint(:submitting)
-    Accepted = Checkpoint(:accepted)
+  class SupplierMachine < Sourced::Machine
+    Holding = Checkpoint(:holding)
+    Held = Checkpoint(:held)
 
-    initial { command Submit => Submitting }
-    checkpoint Submitting do
-      command Accept => Accepted
+    initial { command RequestHold => Holding }
+    checkpoint Holding do
+      command ConfirmHold => Held
     end
-    final Accepted
+    final Held
   end
 
-  class DraftMachine < Sourced::Machine
-    Draft = Checkpoint(:draft)
-    Approved = Checkpoint(:approved)
+  class OutlineMachine < Sourced::Machine
+    Outline = Checkpoint(:outline)
+    Agreed = Checkpoint(:agreed)
 
-    start Draft do
-      command Approve => Approved
+    start Outline do
+      command Agree => Agreed
     end
-    checkpoint Approved do
-      command Unapprove => Draft
+    checkpoint Agreed do
+      command Revise => Outline
     end
   end
 
   # Starts at a compound checkpoint of its own.
-  class UnsettledMachine < Sourced::Machine
-    Open = Checkpoint(:open)
-    Sent = Checkpoint(:sent)
+  class PlanningMachine < Sourced::Machine
+    Itinerary = Checkpoint(:itinerary)
+    Finalised = Checkpoint(:finalised)
 
-    start Open, DraftMachine do
-      command Send => Sent
+    start Itinerary, OutlineMachine do
+      command Finalise => Finalised
     end
-    final Sent
+    final Finalised
   end
 
-  class PayrunMachine < Sourced::Machine
+  class TourMachine < Sourced::Machine
     partition_by :trip_id
 
-    Unsettled = Checkpoint(:unsettled)
-    Checking = Checkpoint(:checking)
-    Settled = Checkpoint(:settled)
+    Planning = Checkpoint(:planning)
+    Reserving = Checkpoint(:reserving)
+    Confirmed = Checkpoint(:confirmed)
 
-    initial { command Open => Unsettled }
-    checkpoint Unsettled, UnsettledMachine, on_done: { UnsettledMachine::Sent => Checking }
-    checkpoint Checking do
-      region :check, ProviderMachine
-      region :atlas, ProviderMachine, on_done: { ProviderMachine::Accepted => Settled }
+    initial { command Open => Planning }
+    checkpoint Planning, PlanningMachine, on_done: { PlanningMachine::Finalised => Reserving }
+    checkpoint Reserving do
+      region :hotel, SupplierMachine
+      region :flights, SupplierMachine, on_done: { SupplierMachine::Held => Confirmed }
     end
-    final Settled
+    final Confirmed
   end
 
   RSpec.describe 'Sourced::Machine charts' do
@@ -265,40 +265,40 @@ module MachineChartTest
       end
 
       it 'places a machine mounted twice at two paths' do
-        checking = PayrunMachine.to_h[:states]['checking']
-        expect(checking).to include(type: 'parallel', mounts: [
-          { region: 'check', src: 'MachineChartTest::ProviderMachine', on_done: {} },
-          { region: 'atlas', src: 'MachineChartTest::ProviderMachine', on_done: { 'checking.atlas.accepted' => 'settled' } }
+        reserving = TourMachine.to_h[:states]['reserving']
+        expect(reserving).to include(type: 'parallel', mounts: [
+          { region: 'hotel', src: 'MachineChartTest::SupplierMachine', on_done: {} },
+          { region: 'flights', src: 'MachineChartTest::SupplierMachine', on_done: { 'reserving.flights.held' => 'confirmed' } }
         ])
-        check, atlas = checking[:states].values_at('check', 'atlas')
-        expect(check).to include(id: 'checking.check', initial: 'checking.check.initial')
-        expect(atlas).to include(id: 'checking.atlas', initial: 'checking.atlas.initial')
-        expect(check[:states].keys).to eq(%w[initial submitting accepted])
-        expect(atlas[:states].keys).to eq(%w[initial submitting accepted])
-        expect(check[:states]['submitting']).to include(id: 'checking.check.submitting', machine: 'MachineChartTest::ProviderMachine')
-        expect(check[:states]['submitting'][:on][t(:accept)][:targets]).to eq(['checking.check.accepted'])
-        expect(atlas[:states]['submitting'][:on][t(:accept)][:targets]).to eq(['checking.atlas.accepted'])
+        hotel, flights = reserving[:states].values_at('hotel', 'flights')
+        expect(hotel).to include(id: 'reserving.hotel', initial: 'reserving.hotel.initial')
+        expect(flights).to include(id: 'reserving.flights', initial: 'reserving.flights.initial')
+        expect(hotel[:states].keys).to eq(%w[initial holding held])
+        expect(flights[:states].keys).to eq(%w[initial holding held])
+        expect(hotel[:states]['holding']).to include(id: 'reserving.hotel.holding', machine: 'MachineChartTest::SupplierMachine')
+        expect(hotel[:states]['holding'][:on][t(:confirm_hold)][:targets]).to eq(['reserving.hotel.held'])
+        expect(flights[:states]['holding'][:on][t(:confirm_hold)][:targets]).to eq(['reserving.flights.held'])
       end
 
       it 'nests a compound start in a compound checkpoint' do
-        unsettled = PayrunMachine.to_h[:states]['unsettled']
-        expect(unsettled).to include(id: 'unsettled', type: 'compound', initial: 'unsettled.open',
-                                     mounts: [{ region: 'unsettled', src: 'MachineChartTest::UnsettledMachine',
-                                                on_done: { 'unsettled.sent' => 'checking' } }])
-        expect(unsettled[:states].keys).to eq(%w[open sent])
+        planning = TourMachine.to_h[:states]['planning']
+        expect(planning).to include(id: 'planning', type: 'compound', initial: 'planning.itinerary',
+                                    mounts: [{ region: 'planning', src: 'MachineChartTest::PlanningMachine',
+                                               on_done: { 'planning.finalised' => 'reserving' } }])
+        expect(planning[:states].keys).to eq(%w[itinerary finalised])
 
-        open = unsettled[:states]['open']
-        expect(open).to include(id: 'unsettled.open', type: 'compound', initial: 'unsettled.open.draft',
-                                machine: 'MachineChartTest::UnsettledMachine')
-        expect(open[:on][t(:send)][:targets]).to eq(['unsettled.sent'])
-        expect(open[:states].keys).to eq(%w[draft approved])
-        expect(open[:states]['approved']).to include(id: 'unsettled.open.approved', machine: 'MachineChartTest::DraftMachine')
-        expect(open[:states]['approved'][:on][t(:unapprove)][:targets]).to eq(['unsettled.open.draft'])
+        itinerary = planning[:states]['itinerary']
+        expect(itinerary).to include(id: 'planning.itinerary', type: 'compound', initial: 'planning.itinerary.outline',
+                                     machine: 'MachineChartTest::PlanningMachine')
+        expect(itinerary[:on][t(:finalise)][:targets]).to eq(['planning.finalised'])
+        expect(itinerary[:states].keys).to eq(%w[outline agreed])
+        expect(itinerary[:states]['agreed']).to include(id: 'planning.itinerary.agreed', machine: 'MachineChartTest::OutlineMachine')
+        expect(itinerary[:states]['agreed'][:on][t(:revise)][:targets]).to eq(['planning.itinerary.outline'])
       end
 
       it 'is JSON-serializable' do
         expect(JSON.parse(JSON.generate(chart))).to eq(stringify(chart))
-        expect(JSON.parse(JSON.generate(PayrunMachine.to_h))).to eq(stringify(PayrunMachine.to_h))
+        expect(JSON.parse(JSON.generate(TourMachine.to_h))).to eq(stringify(TourMachine.to_h))
       end
     end
 
@@ -377,34 +377,34 @@ module MachineChartTest
       end
 
       it "fills in a nested compound start's status" do
-        payrun = PayrunMachine.new(trip_id: 't1')
-        payrun.decide(message(Open))
-        chart = payrun.to_h
-        expect(chart[:status]).to include(current: 'unsettled', value: { 'unsettled' => { 'unsettled.open' => 'unsettled.open.draft' } })
+        tour = TourMachine.new(trip_id: 't1')
+        tour.decide(message(Open))
+        chart = tour.to_h
+        expect(chart[:status]).to include(current: 'planning', value: { 'planning' => { 'planning.itinerary' => 'planning.itinerary.outline' } })
 
-        open = chart[:states]['unsettled'][:states]['open']
-        expect(open[:status]).to include(active: true, visited: true)
-        expect(open[:states]['draft'][:status]).to include(active: true, visited: true)
-        expect(open[:states]['approved'][:status]).to include(active: false, visited: false)
+        itinerary = chart[:states]['planning'][:states]['itinerary']
+        expect(itinerary[:status]).to include(active: true, visited: true)
+        expect(itinerary[:states]['outline'][:status]).to include(active: true, visited: true)
+        expect(itinerary[:states]['agreed'][:status]).to include(active: false, visited: false)
 
-        payrun.decide(message(Approve))
-        open = payrun.to_h[:states]['unsettled'][:states]['open']
-        expect(open[:states]['approved'][:status]).to include(active: true)
-        expect(payrun.to_h[:status][:value]).to eq('unsettled' => { 'unsettled.open' => 'unsettled.open.approved' })
+        tour.decide(message(Agree))
+        itinerary = tour.to_h[:states]['planning'][:states]['itinerary']
+        expect(itinerary[:states]['agreed'][:status]).to include(active: true)
+        expect(tour.to_h[:status][:value]).to eq('planning' => { 'planning.itinerary' => 'planning.itinerary.agreed' })
       end
 
       it 'fills in each placement of a machine mounted twice' do
-        payrun = PayrunMachine.new(trip_id: 't1')
-        [Open, Send, Submit].each { |klass| payrun.decide(message(klass)) }
-        expect(payrun.to_h[:status][:value]).to eq(
-          'checking' => { 'check' => 'checking.check.submitting', 'atlas' => 'checking.atlas.submitting' }
+        tour = TourMachine.new(trip_id: 't1')
+        [Open, Finalise, RequestHold].each { |klass| tour.decide(message(klass)) }
+        expect(tour.to_h[:status][:value]).to eq(
+          'reserving' => { 'hotel' => 'reserving.hotel.holding', 'flights' => 'reserving.flights.holding' }
         )
 
-        payrun.decide(message(Accept))
-        expect(payrun.to_h[:status]).to include(current: 'settled', done: true)
-        checking = payrun.to_h[:states]['checking']
-        expect(checking[:states]['check'][:status]).to eq(active: false, current: 'checking.check.accepted', done: true)
-        expect(checking[:states]['atlas'][:status]).to eq(active: false, current: 'checking.atlas.accepted', done: true)
+        tour.decide(message(ConfirmHold))
+        expect(tour.to_h[:status]).to include(current: 'confirmed', done: true)
+        reserving = tour.to_h[:states]['reserving']
+        expect(reserving[:states]['hotel'][:status]).to eq(active: false, current: 'reserving.hotel.held', done: true)
+        expect(reserving[:states]['flights'][:status]).to eq(active: false, current: 'reserving.flights.held', done: true)
       end
 
       it 'is JSON-serializable' do
@@ -415,39 +415,39 @@ module MachineChartTest
 
     describe '.to_mermaid' do
       it 'draws a machine mounted twice once per region, and a nested compound start' do
-        expect(PayrunMachine.to_mermaid).to eq(<<~MERMAID.chomp)
+        expect(TourMachine.to_mermaid).to eq(<<~MERMAID.chomp)
           stateDiagram-v2
-            state "unsettled" as unsettled {
-              state "open" as unsettled_open {
-                state "draft" as unsettled_open_draft
-                state "approved" as unsettled_open_approved
-                [*] --> unsettled_open_draft
-                unsettled_open_draft --> unsettled_open_approved : Approve
-                unsettled_open_approved --> unsettled_open_draft : Unapprove
+            state "planning" as planning {
+              state "itinerary" as planning_itinerary {
+                state "outline" as planning_itinerary_outline
+                state "agreed" as planning_itinerary_agreed
+                [*] --> planning_itinerary_outline
+                planning_itinerary_outline --> planning_itinerary_agreed : Agree
+                planning_itinerary_agreed --> planning_itinerary_outline : Revise
               }
-              state "sent" as unsettled_sent
-              [*] --> unsettled_open
-              unsettled_open --> unsettled_sent : Send
-              unsettled_sent --> [*]
+              state "finalised" as planning_finalised
+              [*] --> planning_itinerary
+              planning_itinerary --> planning_finalised : Finalise
+              planning_finalised --> [*]
             }
-            state "checking" as checking {
-              state "submitting" as checking_check_submitting
-              state "accepted" as checking_check_accepted
-              [*] --> checking_check_submitting : Submit
-              checking_check_submitting --> checking_check_accepted : Accept
-              checking_check_accepted --> [*]
+            state "reserving" as reserving {
+              state "holding" as reserving_hotel_holding
+              state "held" as reserving_hotel_held
+              [*] --> reserving_hotel_holding : RequestHold
+              reserving_hotel_holding --> reserving_hotel_held : ConfirmHold
+              reserving_hotel_held --> [*]
               --
-              state "submitting" as checking_atlas_submitting
-              state "accepted" as checking_atlas_accepted
-              [*] --> checking_atlas_submitting : Submit
-              checking_atlas_submitting --> checking_atlas_accepted : Accept
-              checking_atlas_accepted --> [*]
+              state "holding" as reserving_flights_holding
+              state "held" as reserving_flights_held
+              [*] --> reserving_flights_holding : RequestHold
+              reserving_flights_holding --> reserving_flights_held : ConfirmHold
+              reserving_flights_held --> [*]
             }
-            state "settled" as settled
-            [*] --> unsettled : Open
-            unsettled_sent --> checking : on_done
-            checking_atlas_accepted --> settled : on_done
-            settled --> [*]
+            state "confirmed" as confirmed
+            [*] --> planning : Open
+            planning_finalised --> reserving : on_done
+            reserving_flights_held --> confirmed : on_done
+            confirmed --> [*]
         MERMAID
       end
     end
