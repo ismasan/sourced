@@ -168,10 +168,13 @@ module Sourced
     # A machine's commands produce the classes of the checkpoints they move
     # to (see {Machine.checkpoint_class}), plus what their blocks emit
     # (+event+) and spawn (+spawn+, a child's +Started+). Entry, exit and
-    # +after+ actions, joins, invoked and stopped children are automations,
-    # consuming the classes of the checkpoints whose entry runs them.
+    # +after+ actions, joins, invoked and stopped children are automations.
+    # What runs on entering a checkpoint consumes its class; what runs on
+    # leaving it (exit actions, stopping its invoked children) consumes the
+    # classes of the transitions that can leave it.
     # @api private
     def self.add_machine(machine, analyzer, nodes, command_ids, event_nodes)
+      machine.validate!
       group_id = machine.group_id
       type_of = ->(handle) { machine.checkpoint_class(handle).type }
       produced = Hash.new { |h, k| h[k] = [] }
@@ -201,13 +204,20 @@ module Sourced
         nodes << AutomationNode.new(type: 'automation', id: "#{id}-#{group_id}-aut", name:, group_id:, consumes:, produces:)
       end
 
+      dispatched_by = lambda do |blocks|
+        blocks.flat_map { |blk| resolve_refs(analyzer.calls_in_block(blk, :dispatch), machine) }.uniq
+      end
+      transitions = machine_transitions(machine)
+
       machine.all_nodes.each do |node|
         next if node.initial?
 
         entering = [type_of.call(node.key)]
-        actions = node.entries + node.exits + node.afters.map(&:block)
-        dispatched = actions.flat_map { |blk| resolve_refs(analyzer.calls_in_block(blk, :dispatch), machine) }.uniq
-        automation.call(node.path, "actions(#{node.path})", entering, dispatched) if dispatched.any?
+        leaving = transitions.select { |source, target| exits?(source, target, node) }.map { |_, target| type_of.call(target.key) }.uniq
+        entry_dispatched = dispatched_by.call(node.entries + node.afters.map(&:block))
+        automation.call(node.path, "actions(#{node.path})", entering, entry_dispatched) if entry_dispatched.any?
+        exit_dispatched = dispatched_by.call(node.exits)
+        automation.call("#{node.path}-exit", "exit(#{node.path})", leaving, exit_dispatched) if exit_dispatched.any?
 
         if node.done
           finals = node.regions.flat_map { |region| region.nodes.each_value.select(&:final?).map { type_of.call(it.key) } }
@@ -224,7 +234,7 @@ module Sourced
           automation.call("#{node.path}-invoke-#{spec.as}", "invoke(#{spec.machine.name})",
                           entering, [spec.machine::Started.type])
           automation.call("#{node.path}-stop-#{spec.as}", "stop(#{spec.machine.name})",
-                          entering, [spec.machine::Stop.type])
+                          leaving, [spec.machine::Stop.type])
           if spec.on_done.any?
             automation.call("#{node.path}-on-done-#{spec.as}", "on_done(#{spec.as})", [spec.machine::Finished.type],
                             spec.on_done.values.map(&type_of).uniq)
@@ -238,6 +248,51 @@ module Sourced
         automation.call("stop-#{spec.as}", "stop(#{spec.machine.name})",
                         spec.stop_on.map(&type_of), [spec.machine::Stop.type])
       end
+    end
+
+    # Every transition the definition declares, as +[source, target]+ placed
+    # nodes: commands, +children_done+, +done+, invoked and mounted machines'
+    # +on_done+, and +on_stop+ (from each top-level checkpoint).
+    # @api private
+    def self.machine_transitions(machine)
+      tree = machine.tree
+      pairs = tree.all_nodes.flat_map do |node|
+        definitions = node.commands.values + node.children_joins.map(&:definition)
+        targets = definitions.flat_map(&:checkpoint_targets)
+        targets << node.done if node.done
+        targets += node.invokes.flat_map { |spec| spec.on_done.values }
+        own = targets.map { |handle| [node, tree.resolve(node, handle)] }
+        mounted = node.regions.flat_map do |region|
+          region.on_done.map { |final, handle| [region.nodes.fetch(final), tree.resolve(node, handle)] }
+        end
+        own + mounted
+      end
+      if machine.stop_checkpoint
+        stop = tree.root.nodes.fetch(machine.stop_checkpoint)
+        pairs += tree.root.nodes.each_value.reject { |node| node.equal?(stop) }.map { |node| [node, stop] }
+      end
+      pairs
+    end
+
+    # Whether a transition from +source+ to +target+ can leave +node+, by the
+    # runtime's rule ({Machine::Runtime#transition_sets}): it leaves what is
+    # active below the innermost region holding both, on +source+'s side.
+    # @api private
+    def self.exits?(source, target, node)
+      lineage = target.region.lineage
+      domain = source.regions.find { |r| lineage.include?(r) } || source.region.lineage.find { |r| lineage.include?(r) }
+      return false unless domain && node.region.lineage.include?(domain)
+
+      # Active together with +source+: the same branch where their regions meet.
+      meet = node.region.lineage.find { |r| source.region.lineage.include?(r) }
+      branch(node, meet).equal?(branch(source, meet))
+    end
+
+    # +node+, or its ancestor, placed in +region+.
+    # @api private
+    def self.branch(node, region)
+      node = node.region.parent until node.region.equal?(region)
+      node
     end
 
     # @api private
@@ -361,7 +416,7 @@ module Sourced
       {}
     end
 
-    private_class_method :add_machine, :machine_block_produces, :add_event_node,
+    private_class_method :add_machine, :machine_block_produces, :machine_transitions, :exits?, :branch, :add_event_node,
                          :resolve_refs, :resolve_ref, :resolve_symbol_ref,
                          :resolve_const_ref, :resolve_const_path_ref,
                          :resolve_const_index_ref,
