@@ -125,6 +125,27 @@ module MachineTopologyTest
         expect(stop.consumes).to contain_exactly(invoking.call(:booked), invoking.call(:cancelled))
       end
 
+      it "follows a mounted machine's on_done from the command that reaches its final" do
+        inner = Class.new(Sourced::Machine) do
+          def self.name = 'MachineTopologyTest::Inner'
+          start :working do
+            command Confirm => :finished
+          end
+          final :finished
+        end
+        outer = Class.new(Sourced::Machine) do
+          def self.name = 'MachineTopologyTest::Outer'
+          partition_by :trip_id
+          initial { command Open => :busy }
+          checkpoint :busy, inner, on_done: { inner.declared_checkpoints.fetch(:finished) => :done }
+          final :done
+        end
+        nodes = Sourced::Topology.build([outer])
+        confirm = nodes.find { |n| n.type == 'command' && n.id == t(:confirm) }
+
+        expect(confirm.produces).to eq([t('outer.runtime.mounted.machine_topology_test.inner.finished'), t('outer.runtime.done')])
+      end
+
       it 'includes checkpoint classes, child events and data events' do
         events = nodes.select { |n| n.type == 'event' }.map(&:id)
         expect(events).to include(trip(:opened), t(:noted), t('leg_machine.runtime.child.started'), leg(:confirmed))
