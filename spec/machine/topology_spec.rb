@@ -81,24 +81,24 @@ module MachineTopologyTest
       it "has commands produce their targets' checkpoint classes, data events and spawned children" do
         expect(command(:open).produces).to eq([trip(:opened)])
         expect(command(:note).produces).to eq([t(:noted)])
-        expect(command(:add_leg).produces).to eq([t('leg_machine.started')])
+        expect(command(:add_leg).produces).to eq([t('leg_machine.runtime.child.started')])
         expect(command(:cancel).produces).to eq([trip(:cancelled)])
         # Reaching a root final finishes the child, which its parent's joins consume.
-        expect(command(:confirm).produces).to eq([leg(:confirmed), t('leg_machine.finished')])
-        expect(command('leg_machine.stop').produces).to eq([leg(:dropped), t('leg_machine.finished')])
+        expect(command(:confirm).produces).to eq([leg(:confirmed), t('leg_machine.runtime.child.finished')])
+        expect(command('leg_machine.runtime.child.stop').produces).to eq([leg(:dropped), t('leg_machine.runtime.child.finished')])
       end
 
       it 'describes actions, joins and stopping children as automations, consuming the checkpoints that run them' do
         expect(automation('actions(opened)')).to have_attributes(consumes: [trip(:opened)], produces: [t(:remind)])
         expect(automation('done(booked)')).to have_attributes(consumes: [trip(:paid), trip(:shipped)], produces: [trip(:done)])
         expect(automation('stop(MachineTopologyTest::LegMachine)')).to have_attributes(
-          consumes: [trip(:cancelled)], produces: [t('leg_machine.stop')]
+          consumes: [trip(:cancelled)], produces: [t('leg_machine.runtime.child.stop')]
         )
       end
 
       it 'includes checkpoint classes, child events and data events' do
         events = nodes.select { |n| n.type == 'event' }.map(&:id)
-        expect(events).to include(trip(:opened), t(:noted), t('leg_machine.started'), leg(:confirmed))
+        expect(events).to include(trip(:opened), t(:noted), t('leg_machine.runtime.child.started'), leg(:confirmed))
       end
     end
 
