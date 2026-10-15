@@ -87,6 +87,20 @@ module Sourced
     end
     singleton_class.prepend EvolveTypes
 
+    # What the machine evolves and reacts to is fixed by {Machine.validate!}
+    # (see {EvolveTypes}): declaring more afterwards would go unread. A mounted
+    # machine is locked by the machine that mounts it, which reads its types.
+    module DefinitionLock
+      %i[context evolve before_evolve reaction].each do |dsl|
+        define_method(dsl) do |*args, &block|
+          raise DefinitionError, "#{self}: #{dsl} declared after the machine was validated" if @validated || @__locked
+
+          super(*args, &block)
+        end
+      end
+    end
+    singleton_class.prepend DefinitionLock
+
     Error = Class.new(Sourced::Error)
 
     # Raised when a machine's definition is invalid. Checked when the machine is
@@ -1025,12 +1039,18 @@ module Sourced
         # Children are started from here, so they must be valid too.
         children_specs.each_value { |spec| spec.machine.validate! }
         @tree = tree
+        tree.mounted_machines.each(&:__lock!)
         # What the runtime reads per message, fixed now that the definition is.
         @__handled_commands = handled_commands.freeze
         @__handled_events = handled_events.freeze
         @__evolve_types = handled_messages_for_evolve.freeze
         @__start_paths = __start_paths.freeze if start_checkpoint
         __transition_classes.freeze
+        @__transition_set = __transition_classes.to_set.freeze
+        @__command_set = @__handled_commands.to_set.freeze
+        @__event_set = @__handled_events.to_set.freeze
+        @__region_projection_classes = __region_projection_classes.freeze
+        @__eventless_steps = __eventless_steps.freeze
         @validated = true
       ensure
         @validating = false
@@ -1081,9 +1101,45 @@ module Sourced
       # @api private
       def __transition_classes = @__transition_classes ||= []
 
+      # Membership for the runtime, by message class: Sets fixed by {.validate!}.
+      # @api private
+      def __transition_class?(klass) = (@__transition_set || __transition_classes).include?(klass)
+      # @api private
+      def __handled_command?(klass) = (@__command_set || handled_commands).include?(klass)
+      # @api private
+      def __handled_event?(klass) = (@__event_set || handled_events).include?(klass)
+
+      # The eventless steps the definition can take, in the order they're tried:
+      # see {Machine#append_eventless}.
+      # @api private
+      # @return [Array<Symbol>]
+      def __eventless_steps
+        return @__eventless_steps if @__eventless_steps
+
+        nodes = tree.all_nodes
+        {
+          always_step: nodes.any? { |node| node.always.any? },
+          mount_done_step: tree.all_regions.any? { |region| region.on_done.any? },
+          join_step: nodes.any? { |node| node.dones.any? },
+          children_join_step: nodes.any? { |node| node.children_joins.any? },
+          invoke_step: nodes.any? { |node| node.invokes.any? }
+        }.select { |_, present| present }.keys
+      end
+
+      # The projections of the machines mounted as regions that evolve anything.
+      # @api private
+      def __region_projection_classes
+        @__region_projection_classes ||
+          tree.mounted_machines.map(&:projection_class).reject { |klass| klass.handled_messages.empty? }
+      end
+
       # @api private
       # @return [Hash{Class<Checkpoint> => Class<Checkpoint>}] mounted machines' handles => our classes for them
       def __mounted_classes = @__mounted_classes ||= {}
+
+      # Lock the definition DSL ({DefinitionLock}) once a mounting machine has read it.
+      # @api private
+      def __lock! = @__locked = true
 
       # What a parent's +Started+ enters: this machine's start, and its default configuration.
       # @api private
@@ -1450,7 +1506,7 @@ module Sourced
         instance.evolve(full_history)
 
         each_with_partial_ack(messages) do |msg|
-          if handled_commands.include?(msg.class)
+          if __handled_command?(msg.class)
             next [Actions::OK, msg] unless instance.handles_command?(msg)
 
             events = instance.decide(msg)
@@ -1461,7 +1517,7 @@ module Sourced
               { events: appended }
             end
             [actions, msg]
-          elsif handled_events.include?(msg.class) && instance.should_react?(instance.context, msg, replaying:)
+          elsif __handled_event?(msg.class) && instance.should_react?(instance.context, msg, replaying:)
             # Decided once, when claimed: replaying evolves what it decided.
             decided = instance.__decide_on(msg)
             actions = Actions.build_for(decided, guard:, source: msg)
@@ -1470,7 +1526,7 @@ module Sourced
               { events: appended.first(decided.size) }
             end
             [actions, msg]
-          elsif (__transition_classes.include?(msg.class) || child_event?(msg.class) || instance.reacts_to?(msg)) &&
+          elsif (__transition_class?(msg.class) || child_event?(msg.class) || instance.reacts_to?(msg)) &&
                 instance.should_react?(instance.context, msg, replaying:)
             # A child finishing can complete a join or map onto one of our
             # checkpoints, and being started can invoke a child of our own:
@@ -1529,7 +1585,7 @@ module Sourced
     # +evolve+ handler updates the domain context.
     def evolve(messages)
       Array(messages).each do |msg|
-        @runtime.apply(msg) if self.class.__transition_classes.include?(msg.class)
+        @runtime.apply(msg) if self.class.__transition_class?(msg.class)
         track_child(msg)
         super([msg])
         __region_projections.each { |region_projection| region_projection.evolve([msg]) }
@@ -1643,7 +1699,7 @@ module Sourced
     # @return [Array<Sourced::Message>] dispatched messages
     def __react(msg)
       __handling_reactions([msg]) do |message|
-        if self.class.__transition_classes.include?(message.class)
+        if self.class.__transition_class?(message.class)
           tree = self.class.tree
           message.payload.exited.each do |path|
             left = tree.node_at(path, message)
@@ -1660,8 +1716,8 @@ module Sourced
           end
         end
 
-        method_name = Sourced.message_method_name(React::PREFIX, message.class.to_s)
-        respond_to?(method_name) ? Array(send(method_name, context, message)).compact : EMPTY_ARRAY
+        method_name = self.class.reaction_handlers[message.class]
+        method_name ? Array(send(method_name, context, message)).compact : EMPTY_ARRAY
       end
     end
 
@@ -1725,9 +1781,15 @@ module Sourced
 
     # +always+ first: a transient checkpoint resolves before anything that
     # depends on where its region ends up (a mounted machine's escalation, a join).
+    # Only the steps the definition can take ({.__eventless_steps}), over the
+    # active checkpoints of each pass.
     def append_eventless
+      steps = self.class.__eventless_steps
+      return if steps.empty?
+
       MAX_JOINS.times do
-        return unless always_step || mount_done_step || join_step || children_join_step || invoke_step
+        active = @runtime.active_nodes
+        return unless steps.any? { |step| send(step, active) }
       end
       raise Error, "#{self.class}: more than #{MAX_JOINS} joins in one decision"
     end
@@ -1735,9 +1797,11 @@ module Sourced
     # A mounted machine at one of its root finals that +on_done+ maps: move to
     # the mapped checkpoint. Before +done+ joins, so a region's escalation
     # (ex. a payment expiring) wins over completing its checkpoint.
-    def mount_done_step
-      @runtime.active_nodes.each do |node|
+    def mount_done_step(active)
+      active.each do |node|
         node.regions.each do |region|
+          next if region.on_done.empty?
+
           current = @runtime.current_node(region)
           next unless current.final? && (target = region.on_done[current.key])
 
@@ -1751,15 +1815,12 @@ module Sourced
     # The projections of the machines mounted as regions, built from our
     # context: their +evolve+ blocks apply to the same object as ours.
     def __region_projections
-      @__region_projections ||= self.class.tree.mounted_machines
-                                    .map(&:projection_class)
-                                    .reject { |klass| klass.handled_messages.empty? }
-                                    .map { |klass| klass.new(projection.context) }
+      @__region_projections ||= self.class.__region_projection_classes.map { |klass| klass.new(projection.context) }
     end
 
     # The first active checkpoint with a passing +always+ moves on.
-    def always_step
-      @runtime.active_nodes.each do |node|
+    def always_step(active)
+      active.each do |node|
         eventless = node.always.find { |candidate| candidate.pass?(context) }
         next unless eventless
 
@@ -1771,8 +1832,8 @@ module Sourced
 
     # An active checkpoint whose regions are all final takes its first
     # passing +done+, if any.
-    def join_step
-      @runtime.active_nodes.each do |node|
+    def join_step(active)
+      active.each do |node|
         next if node.dones.empty? || !node.regions.all? { |region| @runtime.current_node(region).final? }
 
         eventless = node.dones.find { |candidate| candidate.pass?(context) }
@@ -1784,8 +1845,8 @@ module Sourced
       false
     end
 
-    def children_join_step
-      @runtime.active_nodes.each do |node|
+    def children_join_step(active)
+      active.each do |node|
         node.children_joins.each do |join|
           refs = @runtime.children(join.as)
           next if refs.empty? || !refs.all?(&:final?)
@@ -1800,8 +1861,8 @@ module Sourced
     # An active checkpoint that invokes a child, with no child for its current
     # entry, starts one; one whose child finished at a mapped final checkpoint
     # moves to the mapped checkpoint.
-    def invoke_step
-      @runtime.active_nodes.each do |node|
+    def invoke_step(active)
+      active.each do |node|
         node.invokes.each do |spec|
           entry_id = @runtime.entered_by(node.region)&.id
           ref = @runtime.children(spec.as).find { |child| child.entry_id == entry_id }
