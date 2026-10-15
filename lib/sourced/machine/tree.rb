@@ -78,13 +78,18 @@ module Sourced
       # or else the one below +node+. Never a sibling region's.
       #
       # @param node [PlacedNode] the node that declares the transition
-      # @param handle [Checkpoint]
+      # @param target [Checkpoint, History] a {History} resolves to its checkpoint
       # @return [PlacedNode]
-      # @raise [DefinitionError] if +handle+ isn't reachable from +node+, or is
-      #   below it more than once
-      def resolve(node, handle)
-        @resolved.fetch([node, handle]) do
-          @resolved[[node, handle]] = resolve!(node, handle)
+      # @raise [DefinitionError] if +target+ isn't reachable from +node+, is
+      #   below it more than once, or is the history of a checkpoint without regions
+      def resolve(node, target)
+        @resolved.fetch([node, target]) do
+          placed = resolve!(node, target.checkpoint)
+          if (target in History) && placed.regions.empty?
+            raise DefinitionError, "#{@top}: #{node.label} targets #{target}, but #{placed.label} has no regions to remember"
+          end
+
+          @resolved[[node, target]] = placed
         end
       end
 

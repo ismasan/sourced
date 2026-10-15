@@ -26,6 +26,10 @@ module Sourced
     #   their root final.
     # * +entry+ and +exit+ count the checkpoint's actions; +after+ lists its
     #   timers' delays in seconds.
+    # * A transition to a checkpoint's history ({Checkpoint.history}) targets a
+    #   history node in its +states+, as XState's: +type: 'history'+,
+    #   +history: 'shallow' | 'deep'+, key +$history+ / +$deep_history+. It's
+    #   only there when something targets it.
     #
     # Every node, region and child has a +status+ key: +nil+ for a definition,
     # filled in for an instance (see {Machine#to_h}), so both render with the
@@ -48,6 +52,7 @@ module Sourced
         @machine = machine
         @runtime = runtime
         @tree = machine.tree
+        @histories = history_targets
       end
 
       # @return [Hash]
@@ -109,7 +114,8 @@ module Sourced
           mounts: node.regions.select(&:mount).map do |region|
             { region: region.name.to_s, src: region.machine.name, on_done: on_done(node, region.machine, region.on_done, region) }
           end,
-          states: compound ? region(compound)[:states] : node.regions.to_h { |child| [child.name.to_s, region(child)] },
+          states: (compound ? region(compound)[:states] : node.regions.to_h { |child| [child.name.to_s, region(child)] })
+            .merge(history_nodes(node)),
           status: @runtime && node_status(node)
         }.tap { |hash| hash[:initial] = compound.start_node.path if compound }
       end
@@ -117,7 +123,7 @@ module Sourced
       # +{ target:, guard: }+ each, +guard+ only when there is one.
       def eventless(node, list)
         list.map do |eventless|
-          { target: @tree.resolve(node, eventless.target).path, guard: eventless.guard_label }.compact
+          { target: target_id(node, eventless.target), guard: eventless.guard_label }.compact
         end
       end
 
@@ -126,7 +132,7 @@ module Sourced
       def on_done_joins(node)
         case node.dones
         in [] then nil
-        in [eventless] unless eventless.guarded? then @tree.resolve(node, eventless.target).path
+        in [eventless] unless eventless.guarded? then target_id(node, eventless.target)
         else eventless(node, node.dones)
         end
       end
@@ -207,12 +213,40 @@ module Sourced
       def on_done(node, machine, map, region = nil)
         map.to_h do |final, target|
           from = region ? region.nodes.fetch(final).path : final.checkpoint_name.to_s
-          [from, @tree.resolve(node, target).path]
+          [from, target_id(node, target)]
         end
       end
 
-      def targets(node, handles) = handles.map { |handle| @tree.resolve(node, handle).path }
+      def targets(node, handles) = handles.map { |handle| target_id(node, handle) }
       def root_id(handle) = @tree.root.nodes.fetch(handle).path
+
+      # A checkpoint's id, or its history node's.
+      def target_id(node, target)
+        path = @tree.resolve(node, target).path
+        (target in History) ? "#{path}.#{history_key(target)}" : path
+      end
+
+      def history_key(history) = history.deep ? '$deep_history' : '$history'
+
+      def history_nodes(node)
+        @histories.fetch(node.path, NONE).to_h do |history|
+          key = history_key(history)
+          [key, { id: "#{node.path}.#{key}", key:, type: 'history', history: history.deep ? 'deep' : 'shallow' }]
+        end
+      end
+
+      # The histories something targets, by their checkpoint's path.
+      def history_targets
+        @tree.all_nodes.each_with_object(Hash.new { |h, k| h[k] = [] }) do |node, found|
+          definitions = node.commands.values + node.ons.values + node.children_joins.map(&:definition)
+          targets = definitions.flat_map(&:checkpoint_targets) + (node.always + node.dones).map(&:target) +
+                    node.invokes.flat_map { |spec| spec.on_done.values } + node.regions.flat_map { |region| region.on_done.values }
+          targets.grep(History).each do |history|
+            list = found[@tree.resolve(node, history).path]
+            list << history unless list.include?(history)
+          end
+        end
+      end
     end
   end
 end

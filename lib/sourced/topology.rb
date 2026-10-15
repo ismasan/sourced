@@ -317,7 +317,7 @@ module Sourced
     def self.eventless_closure(machine, handles)
       tree = machine.tree
       reached = []
-      pending = handles.dup
+      pending = handles.map(&:checkpoint)
       until pending.empty?
         handle = pending.shift
         next if reached.include?(handle)
