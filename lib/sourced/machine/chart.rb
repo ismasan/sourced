@@ -98,7 +98,8 @@ module Sourced
           exit: node.exits.size,
           after: node.afters.map { |timer| { delay: timer.delay } },
           on: node.commands.values.to_h { |definition| [definition.command_class.type, transition(node, definition)] },
-          on_done: node.done && @tree.resolve(node, node.done).path,
+          on_done: on_done_joins(node),
+          always: eventless(node, node.always),
           children_done: node.children_joins.map do |join|
             { as: join.as.to_s, targets: targets(node, join.definition.checkpoint_targets) }
           end,
@@ -111,6 +112,23 @@ module Sourced
           states: compound ? region(compound)[:states] : node.regions.to_h { |child| [child.name.to_s, region(child)] },
           status: @runtime && node_status(node)
         }.tap { |hash| hash[:initial] = compound.start_node.path if compound }
+      end
+
+      # +{ target:, guard: }+ each, +guard+ only when there is one.
+      def eventless(node, list)
+        list.map do |eventless|
+          { target: @tree.resolve(node, eventless.target).path, guard: eventless.guard_label }.compact
+        end
+      end
+
+      # A single unguarded +done+ is its target's id, as XState's +onDone+;
+      # guarded ones a list, as {#eventless}.
+      def on_done_joins(node)
+        case node.dones
+        in [] then nil
+        in [eventless] unless eventless.guarded? then @tree.resolve(node, eventless.target).path
+        else eventless(node, node.dones)
+        end
       end
 
       def node_type(node)

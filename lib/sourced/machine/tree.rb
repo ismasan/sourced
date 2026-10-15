@@ -267,7 +267,9 @@ module Sourced
       def afters = node.afters
       def invokes = node.invokes
       def children_joins = node.children_joins
-      def done = node.done
+      def always = node.always
+      def dones = node.dones
+      def transient? = node.transient?
 
       # Dot-separated names from the root: +pending.submission.check.submitting+.
       # A region's initial position is +<region path>.initial+.
