@@ -280,6 +280,42 @@ RSpec.describe Sourced::Machine do
       expect { m.Checkpoint(:late) }.to raise_error(Sourced::Machine::DefinitionError, /declared after the machine was validated/)
     end
 
+    it "rejects state, evolve, before_evolve and reaction once the machine is validated, which it wouldn't read" do
+      m = machine do
+        initial { command Ping => :pinged }
+        checkpoint :pinged
+      end
+      m.validate!
+
+      late = Sourced::Event.define('machine_test.late') { attribute :cart_id, String }
+      [
+        -> { m.state { {} } },
+        -> { m.evolve(late) { |_s, _e| nil } },
+        -> { m.evolve(Class.new(Sourced::Projection)) },
+        -> { m.before_evolve { |_s, _e| nil } },
+        -> { m.reaction(late) { |_s, _e| nil } }
+      ].each do |declare|
+        expect(&declare).to raise_error(Sourced::Machine::DefinitionError, /declared after the machine was validated/)
+      end
+      expect(m.handled_messages_for_evolve).not_to include(late)
+    end
+
+    it 'locks a mounted machine once the machine that mounts it is validated' do
+      mounted = Class.new(Sourced::Machine) do
+        def self.name = 'MachineTest::LockedRegion'
+        start :waiting
+      end
+      parent = machine do
+        initial { command Ping => :pinged }
+        checkpoint(:pinged) { region :sub, mounted }
+      end
+      parent.validate!
+
+      late = Sourced::Event.define('machine_test.late_mounted') { attribute :cart_id, String }
+      expect { mounted.evolve(late) { |_s, _e| nil } }
+        .to raise_error(Sourced::Machine::DefinitionError, /declared after the machine was validated/)
+    end
+
     it 'reject names with dots' do
       expect { machine { Checkpoint(:'a.b') } }.to raise_error(Sourced::Machine::DefinitionError, /can't contain dots/)
     end
