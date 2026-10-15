@@ -50,13 +50,17 @@ module Sourced
       def checkpoints = @placements.keys
 
       # @param path [String] a checkpoint's path, or a region's initial position's (+<region path>.initial+)
+      # @param message [Sourced::Message, nil] the stored message +path+ comes from, named in the error
       # @return [PlacedNode]
-      # @raise [Error] if nothing is at +path+
-      def node_at(path)
+      # @raise [UnresolvablePathError] if nothing is at +path+
+      def node_at(path, message = nil)
         @paths.fetch(path) do
           region_path, _, last = path.rpartition('.')
           region = last == INITIAL.to_s && @region_paths[region_path.empty? ? nil : region_path]
-          raise Error, "#{@top}: no checkpoint at #{path.inspect}" unless region
+          unless region
+            from = message && " (#{message.type} #{message.id})"
+            raise UnresolvablePathError, "#{@top}: no checkpoint at #{path.inspect}#{from}"
+          end
 
           region.initial_node
         end
