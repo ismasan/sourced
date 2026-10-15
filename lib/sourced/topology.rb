@@ -203,6 +203,13 @@ module Sourced
       transitions = machine_transitions(machine)
 
       machine.all_nodes.each do |node|
+        # Initial positions take events too.
+        node.ons.each_value do |definition|
+          event_class = definition.command_class
+          automation.call("#{node.path}-on-#{event_class.type}", "on(#{node.path}, #{event_class.name.split('::').last})",
+                          [event_class.type], machine_block_produces(machine, analyzer, definition))
+        end
+
         next if node.initial?
 
         entering = [type_of.call(node.key)]
@@ -251,7 +258,7 @@ module Sourced
     def self.machine_transitions(machine)
       tree = machine.tree
       pairs = tree.all_nodes.flat_map do |node|
-        definitions = node.commands.values + node.children_joins.map(&:definition)
+        definitions = node.commands.values + node.ons.values + node.children_joins.map(&:definition)
         targets = definitions.flat_map(&:checkpoint_targets)
         targets += (node.always + node.dones).map(&:target)
         targets += node.invokes.flat_map { |spec| spec.on_done.values }

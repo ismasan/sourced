@@ -40,6 +40,10 @@ module Sourced
             label = definition.command_class.name.split('::').last
             definition.checkpoint_targets.each { |target| edge(node, @tree.resolve(node, target), label) }
           end
+          node.ons.each_value do |definition|
+            label = "on #{definition.command_class.name.split('::').last}"
+            definition.checkpoint_targets.each { |target| edge(node, @tree.resolve(node, target), label) }
+          end
           { 'always' => node.always, 'done' => node.dones }.each do |kind, list|
             list.each do |eventless|
               label = eventless.guarded? ? "#{kind} [#{eventless.guard_label}]" : kind
