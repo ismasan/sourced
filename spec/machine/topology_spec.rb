@@ -16,6 +16,7 @@ module MachineTopologyTest
   Remind = command(:remind, :trip_id)
   Pay = command(:pay, :trip_id)
   Ship = command(:ship, :trip_id)
+  Archive = command(:archive, :trip_id)
 
   class LegMachine < Sourced::Machine
     partition_by :trip_id, :leg_id
@@ -58,6 +59,7 @@ module MachineTopologyTest
         initial { command Ship => :shipped }
         final :shipped
       end
+      exit { |_s, _evt| dispatch Archive }
       command Cancel => Cancelled
       done Done
     end
@@ -90,10 +92,37 @@ module MachineTopologyTest
 
       it 'describes actions, joins and stopping children as automations, consuming the checkpoints that run them' do
         expect(automation('actions(opened)')).to have_attributes(consumes: [trip(:opened)], produces: [t(:remind)])
+        # Exit actions run on the transitions that leave the checkpoint, not on entering it.
+        expect(automation('exit(booked)')).to have_attributes(consumes: [trip(:cancelled), trip(:done)], produces: [t(:archive)])
         expect(automation('done(booked)')).to have_attributes(consumes: [trip(:paid), trip(:shipped)], produces: [trip(:done)])
         expect(automation('stop(MachineTopologyTest::LegMachine)')).to have_attributes(
           consumes: [trip(:cancelled)], produces: [t('leg_machine.runtime.child.stop')]
         )
+      end
+
+      it "stops an invoked child on the transitions that leave its checkpoint" do
+        machine = Class.new(Sourced::Machine) do
+          def self.name = 'MachineTopologyTest::Invoking'
+          partition_by :trip_id
+
+          initial { command Open => :waiting }
+          checkpoint :waiting do
+            invoke LegMachine, as: :leg, keys: ->(_s) { { leg_id: 'l1' } }, on_done: { LegMachine.declared_checkpoints.fetch(:confirmed) => :booked }
+            region :notes do
+              initial { command Note => :noted }
+              checkpoint :noted
+            end
+            command Cancel => :cancelled
+          end
+          final :booked
+          final :cancelled
+        end
+        nodes = Sourced::Topology.build([machine])
+        stop = nodes.find { |n| n.type == 'automation' && n.name == 'stop(MachineTopologyTest::LegMachine)' }
+        invoking = ->(name) { t("invoking.runtime.#{name}") }
+
+        # Not :noted, which moves within :waiting's region without leaving it.
+        expect(stop.consumes).to contain_exactly(invoking.call(:booked), invoking.call(:cancelled))
       end
 
       it 'includes checkpoint classes, child events and data events' do
