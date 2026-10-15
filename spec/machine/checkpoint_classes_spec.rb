@@ -242,7 +242,7 @@ RSpec.describe 'Sourced::Machine checkpoint classes of mounted machines' do
       expect(shop.value).to eq(mod::ShopMachine::Charging => mod::ChargeMachine::Charged)
       expect(shop.children[:charges].map(&:state)).to eq([mod::ChargeMachine::Charged])
       expect(types.last).to eq('shop_machine.runtime.mounted.machine_checkpoint_classes_test.charge_machine.charged')
-      expect(types.count('charge_machine.finished')).to eq(1)
+      expect(types.count('charge_machine.runtime.child.finished')).to eq(1)
       claims.each { |reactor, claimed| expect(foreign(claimed, reactor)).to be_empty }
     end
   end
