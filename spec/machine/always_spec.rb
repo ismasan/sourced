@@ -4,90 +4,90 @@ require 'spec_helper'
 require_relative '../support/machine_helpers'
 
 module MachineAlwaysTest
-  def self.command(name, *attrs) = Sourced::Command.define("machine_always_test.#{name}") { ([:run_id] + attrs).each { |a| attribute a, String } }
-  def self.event(name, *attrs) = Sourced::Event.define("machine_always_test.#{name}") { ([:run_id] + attrs).each { |a| attribute a, String } }
+  def self.command(name, *attrs) = Sourced::Command.define("machine_always_test.#{name}") { ([:trip_id] + attrs).each { |a| attribute a, String } }
+  def self.event(name, *attrs) = Sourced::Event.define("machine_always_test.#{name}") { ([:trip_id] + attrs).each { |a| attribute a, String } }
 
-  OpenRun = command(:open_run)
-  AddItem = command(:add_item, :status)
-  ItemAdded = event(:item_added, :status)
-  RollUp = command(:roll_up)
-  Settle = command(:settle)
-  NotifyRollingUp = command(:notify_rolling_up)
+  OpenTrip = command(:open_trip)
+  AddBooking = command(:add_booking, :status)
+  BookingAdded = event(:booking_added, :status)
+  Review = command(:review)
+  ConfirmTrip = command(:confirm_trip)
+  NotifyOrganiser = command(:notify_organiser)
   ShipA = command(:ship_a)
   ShipB = command(:ship_b)
 
-  class RunState
-    attr_reader :items
+  class GroupState
+    attr_reader :bookings
 
-    def initialize = @items = []
-    def any?(status) = items.include?(status)
-    def any_failed? = any?('failed')
-    def all_paid? = items.any? && items.all?('paid')
-    def enough? = items.size >= 2
+    def initialize = @bookings = []
+    def any?(status) = bookings.include?(status)
+    def any_refused? = any?('refused')
+    def all_confirmed? = bookings.any? && bookings.all?('confirmed')
+    def enough? = bookings.size >= 2
   end
 
   # Guards as callables: a module and an instance.
-  module AnyVoid
-    def self.call(run) = run.any?('void')
+  module AnyCancelled
+    def self.call(trip) = trip.any?('cancelled')
   end
 
   class AtLeast
     def initialize(count) = @count = count
-    def call(run) = run.items.size >= @count
+    def call(trip) = trip.bookings.size >= @count
   end
 
-  class RunMachine < Sourced::Machine
-    partition_by :run_id
+  class GroupTripMachine < Sourced::Machine
+    partition_by :trip_id
 
     Open = Checkpoint(:open)
-    RollingUp = Checkpoint(:rolling_up)
-    Voided = Checkpoint(:voided)
-    Failed = Checkpoint(:failed)
-    Paid = Checkpoint(:paid)
-    Settling = Checkpoint(:settling)
+    Reviewing = Checkpoint(:reviewing)
+    Cancelled = Checkpoint(:cancelled)
+    Refused = Checkpoint(:refused)
+    Confirmed = Checkpoint(:confirmed)
+    AwaitingSuppliers = Checkpoint(:awaiting_suppliers)
 
-    state { RunState.new }
-    evolve(ItemAdded) { |run, evt| run.items << evt.payload.status }
+    state { GroupState.new }
+    evolve(BookingAdded) { |trip, evt| trip.bookings << evt.payload.status }
 
-    initial { command OpenRun => Open }
+    initial { command OpenTrip => Open }
 
     checkpoint Open do
-      command(AddItem) { |_run, cmd| event ItemAdded, status: cmd.payload.status }
-      command RollUp => RollingUp
+      command(AddBooking) { |_trip, cmd| event BookingAdded, status: cmd.payload.status }
+      command Review => Reviewing
     end
 
-    checkpoint RollingUp do
-      entry { |_run, _evt| dispatch NotifyRollingUp }
-      always Voided, if: ->(run) { run.any?('void') }
-      always Failed, if: :any_failed?
-      always Paid, if: :all_paid?
-      always Settling
+    checkpoint Reviewing do
+      entry { |_trip, _evt| dispatch NotifyOrganiser }
+      always Cancelled, if: ->(trip) { trip.any?('cancelled') }
+      always Refused, if: :any_refused?
+      always Confirmed, if: :all_confirmed?
+      always AwaitingSuppliers
     end
 
-    checkpoint Settling do
-      command Settle => Paid
+    checkpoint AwaitingSuppliers do
+      command ConfirmTrip => Confirmed
     end
 
-    final Voided
-    final Failed
-    final Paid
+    final Cancelled
+    final Refused
+    final Confirmed
   end
 
   # A guarded always on a checkpoint that accepts commands: taken once the guard passes.
   class CollectingMachine < Sourced::Machine
-    partition_by :run_id
+    partition_by :trip_id
 
     Collecting = Checkpoint(:collecting)
     Ready = Checkpoint(:ready)
 
-    state { RunState.new }
-    evolve(ItemAdded) { |run, evt| run.items << evt.payload.status }
+    state { GroupState.new }
+    evolve(BookingAdded) { |trip, evt| trip.bookings << evt.payload.status }
 
-    initial { command OpenRun => Collecting }
+    initial { command OpenTrip => Collecting }
 
     checkpoint Collecting do
       always Ready, if: :enough?
-      command(AddItem) { |_run, cmd| event ItemAdded, status: cmd.payload.status }
+      command(AddBooking) { |_trip, cmd| event BookingAdded, status: cmd.payload.status }
     end
 
     final Ready
@@ -95,22 +95,22 @@ module MachineAlwaysTest
 
   # Guarded joins, and a transient checkpoint completing a region before its join.
   class ShipmentMachine < Sourced::Machine
-    partition_by :run_id
+    partition_by :trip_id
 
     Shipping = Checkpoint(:shipping)
     Delivered = Checkpoint(:delivered)
     Partial = Checkpoint(:partial)
 
-    state { RunState.new }
-    evolve(ItemAdded) { |run, evt| run.items << evt.payload.status }
+    state { GroupState.new }
+    evolve(BookingAdded) { |trip, evt| trip.bookings << evt.payload.status }
 
     initial do
-      command OpenRun => Shipping
-      command(AddItem) { |_run, cmd| event ItemAdded, status: cmd.payload.status }
+      command OpenTrip => Shipping
+      command(AddBooking) { |_trip, cmd| event BookingAdded, status: cmd.payload.status }
     end
 
     checkpoint Shipping do
-      command(AddItem) { |_run, cmd| event ItemAdded, status: cmd.payload.status }
+      command(AddBooking) { |_trip, cmd| event BookingAdded, status: cmd.payload.status }
 
       region :a do
         initial { command ShipA => :a_checking }
@@ -122,7 +122,7 @@ module MachineAlwaysTest
         final :b_shipped
       end
 
-      done Delivered, if: :all_paid?
+      done Delivered, if: :all_confirmed?
       done Partial
     end
 
@@ -136,92 +136,92 @@ RSpec.describe 'Sourced::Machine always' do
 
   MA = MachineAlwaysTest
 
-  def msg(klass, **attrs) = klass.new(payload: { run_id: 'r1', **attrs })
-  def decided(machine, *commands) = machine.new(run_id: 'r1').tap { |m| commands.each { |cmd| m.decide(cmd) } }
+  def msg(klass, **attrs) = klass.new(payload: { trip_id: 't1', **attrs })
+  def decided(machine, *commands) = machine.new(trip_id: 't1').tap { |m| commands.each { |cmd| m.decide(cmd) } }
   def summary(events) = events.map { |e| [e.class, e.payload.to_h] }
-  def moves(machine, *transitions) = summary(transitions.map { |trigger, opts| moved(machine, trigger, **opts, run_id: 'r1') })
-  def items(*statuses) = statuses.map { |status| msg(MA::AddItem, status:) }
+  def moves(machine, *transitions) = summary(transitions.map { |trigger, opts| moved(machine, trigger, **opts, trip_id: 't1') })
+  def bookings(*statuses) = statuses.map { |status| msg(MA::AddBooking, status:) }
 
   describe 'always' do
     it 'moves on in the deciding decision, with the first passing guard' do
-      instance = decided(MA::RunMachine, msg(MA::OpenRun), *items('paid', 'paid'))
-      events = instance.decide(msg(MA::RollUp))
+      instance = decided(MA::GroupTripMachine, msg(MA::OpenTrip), *bookings('confirmed', 'confirmed'))
+      events = instance.decide(msg(MA::Review))
 
       expect(summary(events)).to eq(moves(
-        MA::RunMachine,
-        ['machine_always_test.roll_up', { from: 'open', to: 'rolling_up', exited: %w[open] }],
-        ['always', { from: 'rolling_up', to: 'paid', exited: %w[rolling_up] }]
+        MA::GroupTripMachine,
+        ['machine_always_test.review', { from: 'open', to: 'reviewing', exited: %w[open] }],
+        ['always', { from: 'reviewing', to: 'confirmed', exited: %w[reviewing] }]
       ))
-      expect(instance.machine.value).to eq(MA::RunMachine::Paid)
+      expect(instance.machine.value).to eq(MA::GroupTripMachine::Confirmed)
     end
 
     it 'evaluates guards in order: lambdas, Symbols, then the unguarded fallback' do
-      expect(decided(MA::RunMachine, msg(MA::OpenRun), *items('failed', 'void'), msg(MA::RollUp)).machine.value).to eq(MA::RunMachine::Voided)
-      expect(decided(MA::RunMachine, msg(MA::OpenRun), *items('paid', 'failed'), msg(MA::RollUp)).machine.value).to eq(MA::RunMachine::Failed)
-      expect(decided(MA::RunMachine, msg(MA::OpenRun), *items('paid', 'pending'), msg(MA::RollUp)).machine.value).to eq(MA::RunMachine::Settling)
+      expect(decided(MA::GroupTripMachine, msg(MA::OpenTrip), *bookings('refused', 'cancelled'), msg(MA::Review)).machine.value).to eq(MA::GroupTripMachine::Cancelled)
+      expect(decided(MA::GroupTripMachine, msg(MA::OpenTrip), *bookings('confirmed', 'refused'), msg(MA::Review)).machine.value).to eq(MA::GroupTripMachine::Refused)
+      expect(decided(MA::GroupTripMachine, msg(MA::OpenTrip), *bookings('confirmed', 'requested'), msg(MA::Review)).machine.value).to eq(MA::GroupTripMachine::AwaitingSuppliers)
     end
 
     it 'takes any #call(state) as a guard, and renders its name' do
       machine = Class.new(Sourced::Machine) do
         def self.name = 'MachineAlwaysTest::Callables'
-        partition_by :run_id
-        state { MA::RunState.new }
-        evolve(MA::ItemAdded) { |run, evt| run.items << evt.payload.status }
-        initial { command MA::OpenRun => :open }
+        partition_by :trip_id
+        state { MA::GroupState.new }
+        evolve(MA::BookingAdded) { |trip, evt| trip.bookings << evt.payload.status }
+        initial { command MA::OpenTrip => :open }
         checkpoint(:open) do
-          command(MA::AddItem) { |_run, cmd| event MA::ItemAdded, status: cmd.payload.status }
-          command MA::RollUp => :rolling_up
+          command(MA::AddBooking) { |_trip, cmd| event MA::BookingAdded, status: cmd.payload.status }
+          command MA::Review => :reviewing
         end
-        checkpoint(:rolling_up) do
-          always :voided, if: MA::AnyVoid
+        checkpoint(:reviewing) do
+          always :cancelled, if: MA::AnyCancelled
           always :plenty, if: MA::AtLeast.new(2)
-          always :settling
+          always :awaiting_suppliers
         end
-        final :voided
+        final :cancelled
         final :plenty
-        final :settling
+        final :awaiting_suppliers
       end
 
       checkpoints = machine.declared_checkpoints
-      expect(decided(machine, msg(MA::OpenRun), *items('void'), msg(MA::RollUp)).machine.value).to eq(checkpoints.fetch(:voided))
-      expect(decided(machine, msg(MA::OpenRun), *items('paid', 'paid'), msg(MA::RollUp)).machine.value).to eq(checkpoints.fetch(:plenty))
-      expect(machine.to_h[:states]['rolling_up'][:always]).to eq([
-        { target: 'voided', guard: 'MachineAlwaysTest::AnyVoid' },
+      expect(decided(machine, msg(MA::OpenTrip), *bookings('cancelled'), msg(MA::Review)).machine.value).to eq(checkpoints.fetch(:cancelled))
+      expect(decided(machine, msg(MA::OpenTrip), *bookings('confirmed', 'confirmed'), msg(MA::Review)).machine.value).to eq(checkpoints.fetch(:plenty))
+      expect(machine.to_h[:states]['reviewing'][:always]).to eq([
+        { target: 'cancelled', guard: 'MachineAlwaysTest::AnyCancelled' },
         { target: 'plenty', guard: 'MachineAlwaysTest::AtLeast' },
-        { target: 'settling' }
+        { target: 'awaiting_suppliers' }
       ])
     end
 
     it "runs a transient checkpoint's entry actions when it's claimed" do
-      instance = decided(MA::RunMachine, msg(MA::OpenRun))
-      rolling_up = instance.decide(msg(MA::RollUp)).first
+      instance = decided(MA::GroupTripMachine, msg(MA::OpenTrip))
+      reviewing = instance.decide(msg(MA::Review)).first
 
-      expect(instance.__react(rolling_up).map(&:class)).to eq([MA::NotifyRollingUp])
+      expect(instance.__react(reviewing).map(&:class)).to eq([MA::NotifyOrganiser])
     end
 
     it 'is re-evaluated after every decision while its checkpoint is active' do
-      instance = decided(MA::CollectingMachine, msg(MA::OpenRun))
-      expect(summary(instance.decide(items('paid').first))).to eq(summary([msg(MA::ItemAdded, status: 'paid')]))
+      instance = decided(MA::CollectingMachine, msg(MA::OpenTrip))
+      expect(summary(instance.decide(bookings('confirmed').first))).to eq(summary([msg(MA::BookingAdded, status: 'confirmed')]))
 
-      events = instance.decide(items('paid').first)
+      events = instance.decide(bookings('confirmed').first)
       expect(summary(events)).to eq(
-        summary([msg(MA::ItemAdded, status: 'paid')]) +
+        summary([msg(MA::BookingAdded, status: 'confirmed')]) +
         moves(MA::CollectingMachine, ['always', { from: 'collecting', to: 'ready', exited: %w[collecting] }])
       )
     end
 
     it 'is never decided on replay' do
-      instance = MA::RunMachine.new(run_id: 'r1')
+      instance = MA::GroupTripMachine.new(trip_id: 't1')
       instance.evolve([
-        moved(MA::RunMachine, 'machine_always_test.open_run', from: 'initial', to: 'open', run_id: 'r1'),
-        moved(MA::RunMachine, 'machine_always_test.roll_up', from: 'open', to: 'rolling_up', exited: %w[open], run_id: 'r1')
+        moved(MA::GroupTripMachine, 'machine_always_test.open_trip', from: 'initial', to: 'open', trip_id: 't1'),
+        moved(MA::GroupTripMachine, 'machine_always_test.review', from: 'open', to: 'reviewing', exited: %w[open], trip_id: 't1')
       ])
 
-      expect(instance.machine.value).to eq(MA::RunMachine::RollingUp)
+      expect(instance.machine.value).to eq(MA::GroupTripMachine::Reviewing)
     end
 
     it 'resolves a transient checkpoint before its parent checkpoint joins' do
-      instance = decided(MA::ShipmentMachine, msg(MA::OpenRun), *items('paid'), msg(MA::ShipB))
+      instance = decided(MA::ShipmentMachine, msg(MA::OpenTrip), *bookings('confirmed'), msg(MA::ShipB))
       events = instance.decide(msg(MA::ShipA))
 
       expect(events.map { |e| e.payload.trigger }).to eq(['machine_always_test.ship_a', 'always', 'done'])
@@ -231,43 +231,43 @@ RSpec.describe 'Sourced::Machine always' do
     it 'raises when always checkpoints loop' do
       looping = Class.new(Sourced::Machine) do
         def self.name = 'MachineAlwaysTest::Looping'
-        partition_by :run_id
+        partition_by :trip_id
 
-        initial { command MA::OpenRun => :ping }
+        initial { command MA::OpenTrip => :ping }
         checkpoint(:ping) { always :pong }
         checkpoint(:pong) { always :ping }
       end
 
-      expect { looping.new(run_id: 'r1').decide(msg(MA::OpenRun)) }.to raise_error(Sourced::Machine::Error, /more than 100 joins/)
+      expect { looping.new(trip_id: 't1').decide(msg(MA::OpenTrip)) }.to raise_error(Sourced::Machine::Error, /more than 100 joins/)
     end
   end
 
   describe 'guarded done' do
     it 'takes the first passing guard' do
-      instance = decided(MA::ShipmentMachine, msg(MA::OpenRun), *items('paid'), msg(MA::ShipB), msg(MA::ShipA))
+      instance = decided(MA::ShipmentMachine, msg(MA::OpenTrip), *bookings('confirmed'), msg(MA::ShipB), msg(MA::ShipA))
       expect(instance.machine.value).to eq(MA::ShipmentMachine::Delivered)
     end
 
     it 'falls back to the unguarded done' do
-      instance = decided(MA::ShipmentMachine, msg(MA::OpenRun), *items('pending'), msg(MA::ShipB), msg(MA::ShipA))
+      instance = decided(MA::ShipmentMachine, msg(MA::OpenTrip), *bookings('requested'), msg(MA::ShipB), msg(MA::ShipA))
       expect(instance.machine.value).to eq(MA::ShipmentMachine::Partial)
     end
 
     it 'stays when no guard passes' do
       guarded = Class.new(Sourced::Machine) do
         def self.name = 'MachineAlwaysTest::GuardedDone'
-        partition_by :run_id
-        state { MA::RunState.new }
+        partition_by :trip_id
+        state { MA::GroupState.new }
 
-        initial { command MA::OpenRun => :shipping }
+        initial { command MA::OpenTrip => :shipping }
         checkpoint :shipping do
           region(:a) { initial { command MA::ShipA => :shipped }; final :shipped }
-          done :delivered, if: :all_paid?
+          done :delivered, if: :all_confirmed?
         end
         final :delivered
       end
 
-      instance = decided(guarded, msg(MA::OpenRun), msg(MA::ShipA))
+      instance = decided(guarded, msg(MA::OpenTrip), msg(MA::ShipA))
       expect(instance.machine.value).to eq(guarded.declared_checkpoints.fetch(:shipping) => { a: guarded.declared_checkpoints.fetch(:shipped) })
     end
   end
@@ -276,18 +276,18 @@ RSpec.describe 'Sourced::Machine always' do
     def machine(&block)
       Class.new(Sourced::Machine) do
         def self.name = 'MachineAlwaysTest::Checks'
-        partition_by :run_id
+        partition_by :trip_id
         instance_eval(&block)
       end
     end
 
     it "rejects commands and timers on a transient checkpoint" do
       with_command = machine do
-        checkpoint(:a) { always :b; command MA::Settle => :b }
+        checkpoint(:a) { always :b; command MA::ConfirmTrip => :b }
         final :b
       end
       with_timer = machine do
-        checkpoint(:a) { always :b; after(60) { dispatch MA::Settle } }
+        checkpoint(:a) { always :b; after(60) { dispatch MA::ConfirmTrip } }
         final :b
       end
 
@@ -336,7 +336,7 @@ RSpec.describe 'Sourced::Machine always' do
 
     it 'checks always targets as command targets' do
       out_of_reach = machine do
-        initial { command MA::OpenRun => :a }
+        initial { command MA::OpenTrip => :a }
         checkpoint :a do
           region(:left) { initial { command MA::ShipA => :l }; checkpoint(:l) { always :r } }
           region(:right) { initial { command MA::ShipB => :r }; checkpoint :r }
@@ -349,34 +349,34 @@ RSpec.describe 'Sourced::Machine always' do
 
   describe 'rendering' do
     it 'describes always and guarded done in to_h' do
-      rolling_up = MA::RunMachine.to_h[:states]['rolling_up']
-      expect(rolling_up[:always]).to eq([
-        { target: 'voided', guard: 'guard' },
-        { target: 'failed', guard: 'any_failed?' },
-        { target: 'paid', guard: 'all_paid?' },
-        { target: 'settling' }
+      reviewing = MA::GroupTripMachine.to_h[:states]['reviewing']
+      expect(reviewing[:always]).to eq([
+        { target: 'cancelled', guard: 'guard' },
+        { target: 'refused', guard: 'any_refused?' },
+        { target: 'confirmed', guard: 'all_confirmed?' },
+        { target: 'awaiting_suppliers' }
       ])
 
       shipping = MA::ShipmentMachine.to_h[:states]['shipping']
-      expect(shipping[:on_done]).to eq([{ target: 'delivered', guard: 'all_paid?' }, { target: 'partial' }])
+      expect(shipping[:on_done]).to eq([{ target: 'delivered', guard: 'all_confirmed?' }, { target: 'partial' }])
       expect(shipping[:states]['a'][:states]['a_checking'][:always]).to eq([{ target: 'shipping.a.a_shipped' }])
-      expect(MA::RunMachine.to_h[:states]['open'][:always]).to eq([])
+      expect(MA::GroupTripMachine.to_h[:states]['open'][:always]).to eq([])
     end
 
     it 'draws always edges, labelled with their guards' do
-      diagram = MA::RunMachine.to_mermaid
-      expect(diagram).to include('rolling_up --> voided : always [guard]')
-      expect(diagram).to include('rolling_up --> failed : always [any_failed?]')
-      expect(diagram).to include('rolling_up --> settling : always')
-      expect(MA::ShipmentMachine.to_mermaid).to include('shipping --> delivered : done [all_paid?]', 'shipping --> partial : done')
+      diagram = MA::GroupTripMachine.to_mermaid
+      expect(diagram).to include('reviewing --> cancelled : always [guard]')
+      expect(diagram).to include('reviewing --> refused : always [any_refused?]')
+      expect(diagram).to include('reviewing --> awaiting_suppliers : always')
+      expect(MA::ShipmentMachine.to_mermaid).to include('shipping --> delivered : done [all_confirmed?]', 'shipping --> partial : done')
     end
 
     it "has commands produce the checkpoints their targets' always can reach" do
-      nodes = Sourced::Topology.build([MA::RunMachine])
-      roll_up = nodes.find { |n| n.type == 'command' && n.id == MA::RollUp.type }
-      types = %i[rolling_up voided failed paid settling].map { |name| "machine_always_test.run_machine.runtime.#{name}" }
+      nodes = Sourced::Topology.build([MA::GroupTripMachine])
+      review = nodes.find { |n| n.type == 'command' && n.id == MA::Review.type }
+      types = %i[reviewing cancelled refused confirmed awaiting_suppliers].map { |name| "machine_always_test.group_trip_machine.runtime.#{name}" }
 
-      expect(roll_up.produces).to contain_exactly(*types)
+      expect(review.produces).to contain_exactly(*types)
     end
 
     it 'has a guarded join produce each of its targets' do

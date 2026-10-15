@@ -281,7 +281,7 @@ module Sourced
       def dones = node.dones
       def transient? = node.transient?
 
-      # Dot-separated names from the root: +pending.submission.check.submitting+.
+      # Dot-separated names from the root: +reserving.suppliers.hotel.holding+.
       # A region's initial position is +<region path>.initial+.
       def path = @path ||= [region.path, initial? ? INITIAL : key.checkpoint_name].compact.join('.')
 

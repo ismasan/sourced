@@ -7,35 +7,35 @@ module MachineTreeTest
 
   PlaceOrder = command(:place_order)
   StartPayment = command(:start_payment)
-  Check = command(:check)
-  Settle = command(:settle)
-  Approve = command(:approve)
+  Hold = command(:hold)
+  StartPlanning = command(:start_planning)
+  Agree = command(:agree)
 
   # Mounted twice, as two regions.
-  class CheckMachine < Sourced::Machine
-    Submitting = Checkpoint(:submitting)
-    Submitted = Checkpoint(:submitted)
+  class HoldMachine < Sourced::Machine
+    Holding = Checkpoint(:holding)
+    Held = Checkpoint(:held)
 
-    initial { command Check => Submitting }
-    checkpoint(Submitting) { command Check => Submitted }
-    final Submitted
+    initial { command Hold => Holding }
+    checkpoint(Holding) { command Hold => Held }
+    final Held
   end
 
-  class DraftMachine < Sourced::Machine
-    Draft = Checkpoint(:draft)
-    Approved = Checkpoint(:approved)
+  class OutlineMachine < Sourced::Machine
+    Outline = Checkpoint(:outline)
+    Agreed = Checkpoint(:agreed)
 
-    start(Draft) { command Approve => Approved }
-    final Approved
+    start(Outline) { command Agree => Agreed }
+    final Agreed
   end
 
   # Starts in a compound checkpoint.
-  class UnsettledMachine < Sourced::Machine
-    Open = Checkpoint(:open)
-    Sent = Checkpoint(:sent)
+  class PlanningMachine < Sourced::Machine
+    Itinerary = Checkpoint(:itinerary)
+    Finalised = Checkpoint(:finalised)
 
-    start Open, DraftMachine, on_done: { DraftMachine::Approved => Sent }
-    final Sent
+    start Itinerary, OutlineMachine, on_done: { OutlineMachine::Agreed => Finalised }
+    final Finalised
   end
 
   class OrderMachine < Sourced::Machine
@@ -44,12 +44,12 @@ module MachineTreeTest
     Placed = Checkpoint(:placed)
     PaymentStarted = Checkpoint(:started)
     PaymentCaptured = Checkpoint(:captured)
-    Unsettled = Checkpoint(:unsettled)
+    Planning = Checkpoint(:planning)
     Completed = Checkpoint(:completed)
 
     initial do
       command PlaceOrder => Placed
-      command Settle => Unsettled
+      command StartPlanning => Planning
     end
 
     checkpoint Placed do
@@ -58,12 +58,12 @@ module MachineTreeTest
         checkpoint PaymentStarted
         final PaymentCaptured
       end
-      region :check, CheckMachine
-      region :atlas, CheckMachine
+      region :hotel, HoldMachine
+      region :car, HoldMachine
       done Completed
     end
 
-    checkpoint Unsettled, UnsettledMachine
+    checkpoint Planning, PlanningMachine
 
     final Completed
   end
@@ -97,10 +97,10 @@ RSpec.describe Sourced::Machine::Tree do
     payment = order_placed.regions.first
 
     expect(payment.parent).to equal(order_placed)
-    expect(order_placed.regions.map(&:name)).to eq(%i[payment check atlas])
+    expect(order_placed.regions.map(&:name)).to eq(%i[payment hotel car])
     expect(payment.lineage).to eq([payment, tree.root])
     expect(at('placed.payment.started').descendant_of?(order_placed)).to be(true)
-    expect(at('placed.payment.started').descendant_of?(at('placed.check.submitting'))).to be(false)
+    expect(at('placed.payment.started').descendant_of?(at('placed.hotel.holding'))).to be(false)
   end
 
   it "reuses a region's initial position" do
@@ -113,19 +113,19 @@ RSpec.describe Sourced::Machine::Tree do
   end
 
   describe 'a machine mounted twice' do
-    let(:submitting) { MachineTreeTest::CheckMachine::Submitting }
-    let(:submitted) { MachineTreeTest::CheckMachine::Submitted }
+    let(:holding) { MachineTreeTest::HoldMachine::Holding }
+    let(:held) { MachineTreeTest::HoldMachine::Held }
 
     it 'places each of its checkpoints at two paths' do
-      expect(tree.placements(submitting).map(&:path)).to eq(%w[placed.check.submitting placed.atlas.submitting])
-      expect(tree.placed(MachineTreeTest::CheckMachine.nodes[submitting]).map(&:path))
-        .to eq(%w[placed.check.submitting placed.atlas.submitting])
-      expect(tree.mounted_machines.count(MachineTreeTest::CheckMachine)).to eq(1)
+      expect(tree.placements(holding).map(&:path)).to eq(%w[placed.hotel.holding placed.car.holding])
+      expect(tree.placed(MachineTreeTest::HoldMachine.nodes[holding]).map(&:path))
+        .to eq(%w[placed.hotel.holding placed.car.holding])
+      expect(tree.mounted_machines.count(MachineTreeTest::HoldMachine)).to eq(1)
     end
 
     it 'resolves its targets within the same mount' do
-      expect(tree.resolve(at('placed.atlas.submitting'), submitted).path).to eq('placed.atlas.submitted')
-      expect(tree.resolve(initial_of(:check), submitting).path).to eq('placed.check.submitting')
+      expect(tree.resolve(at('placed.car.holding'), held).path).to eq('placed.car.held')
+      expect(tree.resolve(initial_of(:hotel), holding).path).to eq('placed.hotel.holding')
     end
   end
 
@@ -137,10 +137,10 @@ RSpec.describe Sourced::Machine::Tree do
     end
 
     it "doesn't reach sibling regions, ambiguous descendants, or unplaced handles" do
-      expect { tree.resolve(at('placed.payment.started'), MachineTreeTest::CheckMachine::Submitting) }
+      expect { tree.resolve(at('placed.payment.started'), MachineTreeTest::HoldMachine::Holding) }
         .to raise_error(Sourced::Machine::DefinitionError, /can only reach region placed\.payment/)
-      expect { tree.resolve(at('placed'), MachineTreeTest::CheckMachine::Submitting) }
-        .to raise_error(Sourced::Machine::DefinitionError, /below it 2 times \(placed\.check\.submitting, placed\.atlas\.submitting\)/)
+      expect { tree.resolve(at('placed'), MachineTreeTest::HoldMachine::Holding) }
+        .to raise_error(Sourced::Machine::DefinitionError, /below it 2 times \(placed\.hotel\.holding, placed\.car\.holding\)/)
       unplaced = Class.new(Sourced::Machine) { consumer_group 'machine_tree_test.unplaced' }.Checkpoint(:nope)
       expect { tree.resolve(at('placed'), unplaced) }
         .to raise_error(Sourced::Machine::DefinitionError, /isn't a checkpoint/)
@@ -149,14 +149,14 @@ RSpec.describe Sourced::Machine::Tree do
 
   describe 'compound checkpoints' do
     it "places a compound checkpoint's sub-states right after it, without an initial position" do
-      expect(at('unsettled.open').region.compound?).to be(true)
-      expect(at('unsettled.open.draft').region.parent).to equal(at('unsettled.open'))
-      expect(tree.all_nodes.map(&:path)).not_to include('unsettled.initial', 'unsettled.open.initial')
+      expect(at('planning.itinerary').region.compound?).to be(true)
+      expect(at('planning.itinerary.outline').region.parent).to equal(at('planning.itinerary'))
+      expect(tree.all_nodes.map(&:path)).not_to include('planning.initial', 'planning.itinerary.initial')
     end
 
     it 'enters compound starts all the way down by default' do
-      expect(tree.default_entry(at('unsettled')).map(&:path)).to eq(%w[unsettled unsettled.open unsettled.open.draft])
-      expect(tree.default_entry_paths(machine::Unsettled)).to eq(%w[unsettled unsettled.open unsettled.open.draft])
+      expect(tree.default_entry(at('planning')).map(&:path)).to eq(%w[planning planning.itinerary planning.itinerary.outline])
+      expect(tree.default_entry_paths(machine::Planning)).to eq(%w[planning planning.itinerary planning.itinerary.outline])
       expect(tree.default_entry(at('placed')).map(&:path)).to eq(%w[placed])
     end
   end

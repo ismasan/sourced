@@ -495,7 +495,7 @@ module Sourced
       # passing (and no unguarded one), the machine stays until a later
       # decision passes one.
       #
-      #   done Delivered, if: :all_paid?
+      #   done Delivered, if: :all_confirmed?
       #   done Partial
       #
       # @param target [Checkpoint, Symbol] a checkpoint of this region or an ancestor's
@@ -510,10 +510,10 @@ module Sourced
       # unguarded +always+ is transient: it can't accept commands or have
       # timers.
       #
-      #   checkpoint RollingUp do
-      #     always Voided, if: ->(run) { run.any_item?(:void) }
-      #     always Paid, if: :all_items_paid?
-      #     always Settling
+      #   checkpoint Reviewing do
+      #     always Cancelled, if: ->(trip) { trip.any?('cancelled') }
+      #     always Confirmed, if: :all_confirmed?
+      #     always AwaitingSuppliers
       #   end
       #
       # @param target [Checkpoint, Symbol]
@@ -581,7 +581,7 @@ module Sourced
       # @overload in?(checkpoint)
       #   Whether +checkpoint+ is active, in any region.
       # @overload in?(path)
-      #   Whether the checkpoint at +path+ (+'pending.submission.check.submitting'+) is active.
+      #   Whether the checkpoint at +path+ (+'reserving.suppliers.hotel.holding'+) is active.
       # @overload in?(region_name, checkpoint)
       #   Whether a region named +region_name+ is active and at +checkpoint+ (or +:initial+).
       def in?(*args)
@@ -969,7 +969,7 @@ module Sourced
       # With a machine, the checkpoint is compound: its sub-states are that
       # machine's checkpoints, entered at its +start+:
       #
-      #   checkpoint Unsettled, UnsettledMachine, on_done: { UnsettledMachine::Sent => Submitted }
+      #   checkpoint Planning, PlanningMachine, on_done: { PlanningMachine::Finalised => Reserving }
       #
       # The block declares the compound checkpoint's own commands and actions.
       # The machine runs in this machine's partition and instance, its state
