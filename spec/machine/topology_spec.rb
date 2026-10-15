@@ -69,7 +69,8 @@ module MachineTopologyTest
   RSpec.describe 'Sourced::Machine topology' do
     def t(name) = "machine_topology_test.#{name}"
 
-    let(:transitioned) { t('trip_machine.transitioned') }
+    def trip(name) = t("trip_machine.runtime.#{name}")
+    def leg(name) = t("leg_machine.runtime.#{name}")
 
     describe 'Sourced::Topology.build' do
       let(:nodes) { Sourced::Topology.build([TripMachine, LegMachine]) }
@@ -77,27 +78,27 @@ module MachineTopologyTest
       def command(name) = nodes.find { |n| n.type == 'command' && n.id == t(name) }
       def automation(name) = nodes.find { |n| n.type == 'automation' && n.name == name }
 
-      it 'has commands produce Transitioned, data events and spawned children' do
-        expect(command(:open).produces).to eq([transitioned])
+      it "has commands produce their targets' checkpoint classes, data events and spawned children" do
+        expect(command(:open).produces).to eq([trip(:opened)])
         expect(command(:note).produces).to eq([t(:noted)])
         expect(command(:add_leg).produces).to eq([t('leg_machine.started')])
-        expect(command(:cancel).produces).to eq([transitioned])
+        expect(command(:cancel).produces).to eq([trip(:cancelled)])
         # Reaching a root final finishes the child, which its parent's joins consume.
-        expect(command(:confirm).produces).to eq([t('leg_machine.transitioned'), t('leg_machine.finished')])
-        expect(command('leg_machine.stop').produces).to eq([t('leg_machine.transitioned'), t('leg_machine.finished')])
+        expect(command(:confirm).produces).to eq([leg(:confirmed), t('leg_machine.finished')])
+        expect(command('leg_machine.stop').produces).to eq([leg(:dropped), t('leg_machine.finished')])
       end
 
-      it 'describes actions, joins and stopping children as automations' do
-        expect(automation('actions(opened)')).to have_attributes(consumes: [transitioned], produces: [t(:remind)])
-        expect(automation('done(booked)')).to have_attributes(consumes: [transitioned], produces: [transitioned])
+      it 'describes actions, joins and stopping children as automations, consuming the checkpoints that run them' do
+        expect(automation('actions(opened)')).to have_attributes(consumes: [trip(:opened)], produces: [t(:remind)])
+        expect(automation('done(booked)')).to have_attributes(consumes: [trip(:paid), trip(:shipped)], produces: [trip(:done)])
         expect(automation('stop(MachineTopologyTest::LegMachine)')).to have_attributes(
-          consumes: [transitioned], produces: [t('leg_machine.stop')]
+          consumes: [trip(:cancelled)], produces: [t('leg_machine.stop')]
         )
       end
 
-      it 'includes Transitioned, child events and data events' do
+      it 'includes checkpoint classes, child events and data events' do
         events = nodes.select { |n| n.type == 'event' }.map(&:id)
-        expect(events).to include(transitioned, t(:noted), t('leg_machine.started'), t('leg_machine.transitioned'))
+        expect(events).to include(trip(:opened), t(:noted), t('leg_machine.started'), leg(:confirmed))
       end
     end
 

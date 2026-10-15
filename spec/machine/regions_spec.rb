@@ -458,7 +458,7 @@ RSpec.describe 'Sourced::Machine regions' do
             region(:b) { final :captured }
           end
         end
-      end.to raise_error(Sourced::Machine::DefinitionError, /captured is placed twice/)
+      end.to raise_error(Sourced::Machine::DefinitionError, /Captured is placed twice/)
     end
   end
 
@@ -487,7 +487,7 @@ RSpec.describe 'Sourced::Machine regions' do
       expect(value).to eq(M::Completed)
       # The capture and the join, then Charging's exit, Captured's entry and Placed's exit.
       expect(types.last(6)).to eq(%w[
-                                    capture_payment order_machine.transitioned order_machine.transitioned void_payment send_receipt notify_order_closed
+                                    capture_payment order_machine.runtime.captured order_machine.runtime.completed void_payment send_receipt notify_order_closed
                                   ])
     end
   end

@@ -271,7 +271,7 @@ module Sourced
 
       # Dot-separated names from the root: +pending.submission.check.submitting+.
       # A region's initial position is +<region path>.initial+.
-      def path = @path ||= [region.path, initial? ? INITIAL : key.name].compact.join('.')
+      def path = @path ||= [region.path, initial? ? INITIAL : key.checkpoint_name].compact.join('.')
 
       def label = initial? ? "#{region.label}'s initial position" : path
 

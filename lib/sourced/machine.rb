@@ -8,10 +8,11 @@ module Sourced
   # A machine's position is its *checkpoints*: handles declared with
   # {.Checkpoint} and placed with {.checkpoint}, {.final} or {.start}. Each
   # checkpoint lists the commands it accepts, and the checkpoints each command
-  # may move the machine to. Every move is recorded as one event of the
-  # machine's own, +<Machine>::Transitioned+, whose payload says which
-  # checkpoints it left and entered; the machine's position is replayed from
-  # those. Domain facts are data events, which only change the domain +context+:
+  # may move the machine to. A checkpoint is also an event class: every move
+  # appends one event of the target checkpoint's class
+  # (+<type_prefix>.runtime.<name>+), whose payload says which checkpoints it
+  # left and entered; the machine's position is replayed from those. Domain
+  # facts are data events, which only change the domain +context+:
   #
   #   class OrderMachine < Sourced::Machine
   #     partition_by :order_id
@@ -113,18 +114,60 @@ module Sourced
 
     NONE = [].freeze
 
-    # A checkpoint: a position in a machine's chart. A handle is a value, its
-    # name and the machine that declares it ({Machine.Checkpoint}). The tree
-    # places it, once per placement of its machine: a machine mounted twice has
-    # each of its checkpoints at two paths.
-    Checkpoint = Data.define(:name, :machine) do
-      # @param other [Checkpoint, Targets, nil]
-      # @return [Targets]
-      def |(other) = Targets.new(members: [self]) | other
+    # A checkpoint: a position in a machine's chart, and the event recording
+    # a transition to it. {Machine.Checkpoint} generates one subclass per name,
+    # the checkpoint's *handle*: the tree places it (once per placement of its
+    # machine, so a machine mounted twice has each of its checkpoints at two
+    # paths), transitions target it, and the machine appends it when it runs
+    # as a top machine. A machine that mounts another generates its own class
+    # for each of the mounted machine's handles, with its own partition keys
+    # and type (see {Machine.checkpoint_class}). Positions are the paths in
+    # the payload, never the class.
+    class Checkpoint < Sourced::Event
+      # @return [Class<Checkpoint>] the handle this class records: itself, for a handle
+      def self.checkpoint = @checkpoint
 
-      def to_s = "#{machine.name || machine.inspect}:#{name}"
-      def inspect = "#<checkpoint #{self}>"
+      # @return [Class<Machine>] the machine that appends this class
+      def self.owner = @owner
+
+      # @return [Class<Machine>] the machine that declares the handle
+      def self.machine = checkpoint.owner
+
+      # @return [Symbol] unique within {.machine}
+      def self.checkpoint_name = @checkpoint_name
+
+      # @param other [Class<Checkpoint>, Targets, nil]
+      # @return [Targets]
+      def self.|(other) = Targets.new(members: [self]) | other
+
+      def self.to_s = name || (checkpoint ? "#{machine}:#{checkpoint_name}" : super)
+      def self.inspect = to_s
+
+      # Generate a checkpoint class: +owner+'s partition keys and the transition
+      # attributes. A type can be taken over only by a class for the same
+      # machine (a reloaded or redefined one); any other clash raises, since
+      # the registry would silently replace it.
+      # @api private
+      def self.__generate(type, owner:, checkpoint_name:, checkpoint: nil)
+        existing = Sourced::Message.registry[type]
+        unless existing.nil? || (Class === existing && existing < Checkpoint && existing.owner.group_id == owner.group_id)
+          raise DefinitionError, "#{owner}: message type #{type.inspect} is already #{existing}'s"
+        end
+
+        keys = owner.partition_keys
+        klass = define(type) do
+          keys.each { |k| attribute k, String }
+          Machine.__transition_attributes(self)
+        end
+        klass.instance_variable_set(:@owner, owner)
+        klass.instance_variable_set(:@checkpoint, checkpoint || klass)
+        klass.instance_variable_set(:@checkpoint_name, checkpoint_name)
+        klass
+      end
     end
+
+    # @return [Boolean] whether +value+ is a checkpoint handle (not a class a mounting machine generated for one)
+    def self.handle?(value) = Class === value && value < Checkpoint && value.checkpoint.equal?(value)
 
     # The checkpoints a transition may go to; +nil+ means it may stay.
     Targets = Data.define(:members) do
@@ -133,7 +176,8 @@ module Sourced
       def |(other)
         case other
         in Targets then with(members: members | other.members)
-        in Checkpoint | nil then with(members: members | [other])
+        in nil then with(members: members | [nil])
+        in Class if Machine.handle?(other) then with(members: members | [other])
         end
       end
     end
@@ -416,7 +460,7 @@ module Sourced
       #   Whether a region named +region_name+ is active and at +checkpoint+ (or +:initial+).
       def in?(*args)
         case args
-        in [Checkpoint => checkpoint]
+        in [Class => checkpoint]
           @runtime.active_nodes.any? { |node| node.key == checkpoint }
         in [String => path]
           @runtime.active_nodes.any? { |node| node.path == path }
@@ -544,7 +588,7 @@ module Sourced
       # becomes its region's current one, entered by +event+, and its regions
       # start afresh.
       #
-      # @param event [Sourced::Message] a +Transitioned+ (or a child's +Started+)
+      # @param event [Checkpoint] a checkpoint event (or a child's +Started+)
       # @raise [Error] if a path doesn't resolve, or enters an inactive region
       def apply(event)
         event.payload.entered.each do |path|
@@ -627,18 +671,53 @@ module Sourced
       attr_reader :stop_checkpoint
 
       # Declare a checkpoint: a handle naming a position in this machine's
-      # chart. Place it with {.checkpoint}, {.final} or {.start}.
+      # chart, and the event recording a transition to it, of type
+      # +<type_prefix>.runtime.<name>+. Place it with {.checkpoint}, {.final}
+      # or {.start}.
       #
       #   Placed = Checkpoint(:placed)
       #
+      # Declare +partition_by+ and +consumer_group+ first: the class takes the
+      # partition keys, and its type the prefix.
+      #
       # @param name [Symbol]
-      # @return [Checkpoint] the same handle for the same name
+      # @return [Class<Checkpoint>] the same handle for the same name
       def Checkpoint(name)
         name = name.to_sym
         raise DefinitionError, "#{self}: a checkpoint can't be named #{INITIAL.inspect}" if name == INITIAL
+        if name.to_s.include?('.')
+          raise DefinitionError, "#{self}: checkpoint names can't contain dots, got #{name.inspect}"
+        end
 
-        declared_checkpoints[name] ||= Checkpoint.new(name:, machine: self)
+        declared_checkpoints[name] ||= begin
+          raise DefinitionError, 'a machine needs a name or a consumer_group before its checkpoints' unless group_id
+          if @validated
+            raise DefinitionError, "#{self}: checkpoint #{name.inspect} declared after the machine was validated"
+          end
+
+          Checkpoint.__generate("#{type_prefix}.runtime.#{name}", owner: self, checkpoint_name: name)
+                    .tap { |klass| __transition_classes << klass }
+        end
       end
+
+      # The class this machine appends for +handle+: the handle itself for one
+      # of its own checkpoints, or the class it generated for a mounted
+      # machine's.
+      #
+      # @param handle [Class<Checkpoint>]
+      # @return [Class<Checkpoint>]
+      def checkpoint_class(handle)
+        return handle if handle.machine.equal?(self)
+
+        __mounted_classes.fetch(handle) do
+          raise Error, "#{self} doesn't mount #{handle.machine}, so it has no class for #{handle}"
+        end
+      end
+
+      # Every checkpoint class this machine appends, and its +Started+ for a
+      # child: what a projection subscribes to for every move.
+      # @return [Array<Class>]
+      def transition_classes = __transition_classes
 
       # Declare where a parent starts this machine (with +Started+), without a
       # command. With a machine, the start is a compound checkpoint, entered at
@@ -686,11 +765,16 @@ module Sourced
         __define_child(child, as:, kind: :spawn, stop_on: Array(stop_on).map { |handle| __handle(handle) })
       end
 
-      # Generates +Transitioned+, the event recording this machine's moves, once
-      # the machine has a name.
+      # Before any checkpoint or mount: their classes take the keys.
       def partition_by(*keys)
+        __check_declared_first!(:partition_by)
         super
-        __define_transition_message if name
+      end
+
+      # Before any checkpoint or mount: their types take the prefix.
+      def consumer_group(id)
+        __check_declared_first!(:consumer_group)
+        super
       end
 
       # The machine's definition as a JSON-serializable Hash. See {Chart}.
@@ -709,8 +793,9 @@ module Sourced
         Mermaid.new(self).to_s
       end
 
-      # Message type prefix derived from the class name: +Shop::OrderMachine+ => +shop.order_machine+.
-      def type_prefix = Types::Underscore.parse(name.gsub('::', '.'))
+      # Message type prefix derived from +group_id+ (the class name unless
+      # +consumer_group+ fixes it): +Shop::OrderMachine+ => +shop.order_machine+.
+      def type_prefix = Types::Underscore.parse(group_id.to_s.gsub('::', '.'))
 
       # The machine's position before its first checkpoint.
       def initial(&block) = __define_node(root, INITIAL, final: false, &block)
@@ -773,9 +858,8 @@ module Sourced
 
         @validating = true
         raise DefinitionError, "#{self} needs partition_by" if partition_keys.empty?
-        raise DefinitionError, 'a machine needs a name' unless name
+        raise DefinitionError, 'a machine needs a name or a consumer_group' unless group_id
 
-        __define_transition_message
         tree = Tree.new(self)
         __validate!(tree)
         # Children are started from here, so they must be valid too.
@@ -785,6 +869,7 @@ module Sourced
         @__handled_commands = handled_commands.freeze
         @__evolve_types = handled_messages_for_evolve.freeze
         @__start_paths = __start_paths.freeze if start_checkpoint
+        __transition_classes.freeze
         @validated = true
       ensure
         @validating = false
@@ -831,9 +916,13 @@ module Sourced
         Snapshot.new(value: instance.machine.value, context: instance.context, children: instance.machine.children)
       end
 
-      # The events that move this machine: +Transitioned+, and for a child, +Started+.
+      # The events that move this machine: its checkpoint classes, and for a child, +Started+.
       # @api private
       def __transition_classes = @__transition_classes ||= []
+
+      # @api private
+      # @return [Hash{Class<Checkpoint> => Class<Checkpoint>}] mounted machines' handles => our classes for them
+      def __mounted_classes = @__mounted_classes ||= {}
 
       # What a parent's +Started+ enters: this machine's start, and its default configuration.
       # @api private
@@ -846,15 +935,40 @@ module Sourced
 
       private
 
-      def __define_transition_message
-        return if const_defined?(:Transitioned, false)
+      def __check_declared_first!(what)
+        return if declared_checkpoints.empty? && mounts.empty?
 
-        keys = partition_keys
-        const_set(:Transitioned, Sourced::Event.define("#{type_prefix}.transitioned") do
-          keys.each { |k| attribute k, String }
-          Machine.__transition_attributes(self)
-        end)
-        __transition_classes << self::Transitioned
+        raise DefinitionError, "#{self}: declare #{what} before checkpoints and mounts"
+      end
+
+      # Generate our class for each checkpoint of +machine+, and of the machines
+      # it mounts, all the way down: the events we append while it runs in our
+      # partition. A machine without partition keys is never a top machine, so
+      # it generates none; whichever machine mounts it does.
+      def __generate_mounted(machine)
+        return if partition_keys.empty?
+
+        machine.declared_checkpoints.each_value do |handle|
+          next if __mounted_classes.key?(handle)
+
+          type = "#{type_prefix}.runtime.mounted.#{machine.type_prefix}.#{handle.checkpoint_name}"
+          klass = Checkpoint.__generate(type, owner: self, checkpoint: handle, checkpoint_name: handle.checkpoint_name)
+          __mounted_classes[handle] = klass
+          __transition_classes << klass
+          __name_mounted(klass, handle)
+        end
+        machine.mounts.each_value { |mount| __generate_mounted(mount.machine) }
+      end
+
+      # +Mounted::<mounted machine's name>::<handle's constant>+, under this machine.
+      def __name_mounted(klass, handle)
+        return unless name && handle.machine.name && handle.name
+
+        namespace = ['Mounted', *handle.machine.name.split('::')].reduce(self) do |mod, segment|
+          mod.const_defined?(segment, false) ? mod.const_get(segment, false) : mod.const_set(segment, Module.new)
+        end
+        constant = handle.name.split('::').last
+        namespace.const_set(constant, klass) unless namespace.const_defined?(constant, false)
       end
 
       def __define_child_messages
@@ -884,7 +998,7 @@ module Sourced
         raise DefinitionError, "#{self}: checkpoint #{handle}: #{machine} has no start checkpoint" unless machine.start_checkpoint
 
         # Named after its checkpoint, so one machine can be several compound checkpoints.
-        mount = __mount(handle.name, machine, on_done, compound: true)
+        mount = __mount(handle.checkpoint_name, machine, on_done, compound: true)
         __define_node(region, handle, final: false, mount:, &block)
       end
 
@@ -937,7 +1051,7 @@ module Sourced
         end
 
         on_done = on_done.to_h { |final, target| [machine.send(:__handle, final, declare: false), __handle(target)] }
-        mounts[name] = RegionMount.new(name:, machine:, on_done:, compound:)
+        mounts[name] = RegionMount.new(name:, machine:, on_done:, compound:).tap { __generate_mounted(machine) }
       end
 
       def __define_child(child, as:, kind:, node: nil, keys: nil, on_done: {}, stop_on: [])
@@ -959,15 +1073,25 @@ module Sourced
       # unless +declare+ is false.
       def __handle(target, declare: true)
         case target
-        in Checkpoint if target.machine == self then target
-        in Checkpoint
+        in Class if Machine.handle?(target) && target.machine == self then target
+        in Class if Machine.handle?(target)
           raise DefinitionError, "#{self}: #{target} is #{target.machine}'s checkpoint, not #{self}'s"
-        in Symbol | String if declare then Checkpoint(target)
+        in Symbol | String if declare then __name_declared(Checkpoint(target))
         in Symbol | String
           declared_checkpoints.fetch(target.to_sym) { raise DefinitionError, "#{self} has no checkpoint #{target.inspect}" }
         else
           raise DefinitionError, "#{self}: checkpoints are Checkpoint handles or Symbols, got #{target.inspect}"
         end
+      end
+
+      # A checkpoint declared by Symbol has no constant of its own: set one
+      # (+:awaiting_payment+ => +AwaitingPayment+), unless that name is taken.
+      def __name_declared(handle)
+        return handle if handle.name
+
+        constant = handle.checkpoint_name.to_s.split('_').map(&:capitalize).join
+        const_set(constant, handle) unless const_defined?(constant, false)
+        handle
       end
 
       def __command_definition(declaration, block)
@@ -1005,7 +1129,7 @@ module Sourced
 
       # Where a transition may go: one of our checkpoints, or one of a mounted
       # machine's, below the checkpoint that declares it (checked on validation).
-      def __target(target, declare: true) = target.is_a?(Checkpoint) ? target : __handle(target, declare:)
+      def __target(target, declare: true) = Machine.handle?(target) ? target : __handle(target, declare:)
 
       # @param node [PlacedNode]
       def __check_target!(tree, node, handle)
@@ -1259,8 +1383,9 @@ module Sourced
     def event(event_class, payload = {})
       raise Error, "#{self.class}: events are produced by command handlers only" unless @uncommitted_events
       event_class = case event_class
-                    in Checkpoint
-                      raise Error, "#{self.class}: #{event_class} is a checkpoint; move to it with to(#{event_class.name.inspect})"
+                    in Class if event_class < Checkpoint
+                      raise Error, "#{self.class}: #{event_class} is a checkpoint; " \
+                                   "move to it with to(#{event_class.checkpoint_name.inspect})"
                     in Targets
                       raise Error, "#{self.class}: #{event_class.members.compact.join(' | ')} are checkpoints; move to one of them with to"
                     in Symbol then self.class[event_class]
@@ -1328,11 +1453,12 @@ module Sourced
       evt
     end
 
-    # Move from +source+ to +target+: append a +Transitioned+, and a +Finished+
-    # when it reaches one of a child machine's root finals.
+    # Move from +source+ to +target+: append our class for +target+'s
+    # checkpoint, and a +Finished+ when it reaches one of a child machine's
+    # root finals.
     def transition(source, target, trigger:)
       exited, entered = @runtime.transition_sets(source, target)
-      klass = self.class::Transitioned
+      klass = self.class.checkpoint_class(target.key)
       __append(klass.new(payload: with_partition_keys(klass, {
         trigger:, source: source.path, target: target.path,
         exited: exited.map(&:path), entered: entered.map(&:path)
@@ -1340,7 +1466,7 @@ module Sourced
       final = entered.find { |node| node.final? && node.region.root? }
       return unless final && (finished = self.class.__finished_class)
 
-      __append(finished.new(payload: with_partition_keys(finished, final: final.key.name.to_s)))
+      __append(finished.new(payload: with_partition_keys(finished, final: final.key.checkpoint_name.to_s)))
     end
 
     # The deepest active checkpoints accepting +command+, in definition order.
