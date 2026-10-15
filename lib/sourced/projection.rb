@@ -39,7 +39,13 @@ module Sourced
       def inherited(subclass)
         super
         subclass.handled_messages.concat(handled_messages)
+        subclass.evolve_handlers.merge!(evolve_handlers)
         subclass.before_evolve_blocks.concat(before_evolve_blocks)
+      end
+
+      # @return [Hash{Class => Symbol}] each handled message class's evolve method
+      def evolve_handlers
+        @evolve_handlers ||= {}
       end
 
       # @return [Array<Class>] message classes this projection evolves from
@@ -100,7 +106,7 @@ module Sourced
         end
 
         handled_messages << message_class unless handled_messages.include?(message_class)
-        define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
+        evolve_handlers[message_class] = define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
       end
     end
 
@@ -126,9 +132,10 @@ module Sourced
     # @param messages [Sourced::Message, Array<Sourced::Message>]
     # @return [Object] the evolved context
     def evolve(messages)
+      handlers = self.class.evolve_handlers
       Array(messages).each do |msg|
-        method_name = Sourced.message_method_name(PREFIX, msg.class.to_s)
-        next unless respond_to?(method_name)
+        method_name = handlers[msg.class]
+        next unless method_name
 
         self.class.before_evolve_blocks.each { |blk| instance_exec(context, msg, &blk) }
         send(method_name, context, msg)
