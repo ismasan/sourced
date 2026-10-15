@@ -141,7 +141,8 @@ RSpec.describe Sourced::Machine::Tree do
         .to raise_error(Sourced::Machine::DefinitionError, /can only reach region placed\.payment/)
       expect { tree.resolve(at('placed'), MachineTreeTest::CheckMachine::Submitting) }
         .to raise_error(Sourced::Machine::DefinitionError, /below it 2 times \(placed\.check\.submitting, placed\.atlas\.submitting\)/)
-      expect { tree.resolve(at('placed'), Sourced::Machine::Checkpoint.new(name: :nope, machine:)) }
+      unplaced = Class.new(Sourced::Machine) { consumer_group 'machine_tree_test.unplaced' }.Checkpoint(:nope)
+      expect { tree.resolve(at('placed'), unplaced) }
         .to raise_error(Sourced::Machine::DefinitionError, /isn't a checkpoint/)
     end
   end

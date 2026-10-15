@@ -67,7 +67,7 @@ module Sourced
       def region(region)
         states = {}
         states['initial'] = node(region.initial_node) if initial_node?(region)
-        region.nodes.each_value { |n| states[n.key.name.to_s] = node(n) unless n.initial? }
+        region.nodes.each_value { |n| states[n.key.checkpoint_name.to_s] = node(n) unless n.initial? }
 
         {
           id: region.path || 'root',
@@ -91,7 +91,7 @@ module Sourced
         compound = node.compound_region
         {
           id: node.path,
-          key: node.initial? ? 'initial' : node.key.name.to_s,
+          key: node.initial? ? 'initial' : node.key.checkpoint_name.to_s,
           type: node_type(node),
           machine: node.machine.name,
           entry: node.entries.size,
@@ -150,7 +150,7 @@ module Sourced
       end
 
       def child_ref(ref)
-        { keys: ref.keys.to_h { |k, v| [k.to_s, v] }, state: ref.state.name.to_s, final: ref.final? }
+        { keys: ref.keys.to_h { |k, v| [k.to_s, v] }, state: ref.state.checkpoint_name.to_s, final: ref.final? }
       end
 
       def region_status(region)
@@ -182,7 +182,7 @@ module Sourced
       # A mounted machine's or child's finals, by name, => the paths they map to.
       def on_done(node, machine, map, region = nil)
         map.to_h do |final, target|
-          from = region ? region.nodes.fetch(final).path : final.name.to_s
+          from = region ? region.nodes.fetch(final).path : final.checkpoint_name.to_s
           [from, @tree.resolve(node, target).path]
         end
       end

@@ -366,12 +366,14 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
   describe "a compound checkpoint's own command targeting its sub-state" do
     it 'enters the sub-state without leaving the compound checkpoint' do
       open_machine = stub_const('MachineCompoundTest::ReviewOpenMachine', Class.new(Sourced::Machine) do
+        consumer_group 'machine_compound_test.review_open_machine'
         start :open, M::DraftMachine do
           command M::Review => M::DraftMachine::Pending
         end
       end)
       machine = stub_const('MachineCompoundTest::ReviewMachine', Class.new(Sourced::Machine) do
         partition_by :order_id
+        consumer_group 'machine_compound_test.review_machine'
         initial { command M::StartWork => :work }
         checkpoint :work, open_machine
       end)
@@ -452,7 +454,7 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
       commands = nodes.select { |n| n.type == 'command' }
       expect(commands.map(&:name)).to include(M::Progress.name, M::Cancel.name)
       expect(commands.find { |n| n.name == M::StartThing.name }.produces)
-        .to contain_exactly(M::OrderMachine::Transitioned.type, M::ThingBegun.type)
+        .to contain_exactly(M::OrderMachine::Thing.type, M::ThingBegun.type)
     end
   end
 
@@ -473,12 +475,16 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
     def machine(&block)
       Class.new(Sourced::Machine) do
         partition_by :order_id
+        consumer_group 'machine_compound_test.definition_check'
         instance_eval(&block)
       end
     end
 
     it 'rejects a machine with no start' do
-      no_start = Class.new(Sourced::Machine) { final :done }
+      no_start = Class.new(Sourced::Machine) do
+        consumer_group 'machine_compound_test.no_start'
+        final :done
+      end
       expect { machine { checkpoint :thing, no_start } }.to raise_error(Sourced::Machine::DefinitionError, /has no start checkpoint/)
     end
 

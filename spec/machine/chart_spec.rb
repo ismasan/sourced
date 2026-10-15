@@ -325,7 +325,7 @@ module MachineChartTest
         expect(entered.payload).to have_attributes(trigger: t(:book), target: 'booked')
         expect(booked[:status]).to eq(
           active: true, visited: true,
-          entered_by: { id: entered.id, type: t('trip_machine.transitioned'), at: entered.created_at.utc.iso8601(6) }
+          entered_by: { id: entered.id, type: t('trip_machine.runtime.booked'), at: entered.created_at.utc.iso8601(6) }
         )
         expect(payment[:status]).to eq(active: true, current: 'booked.payment.awaiting_payment', done: false)
         expect(payment[:states]['initial'][:status]).to include(active: false, visited: true)

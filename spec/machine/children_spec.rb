@@ -222,7 +222,7 @@ module MachineChildrenTest
     end
 
     def log = store.read_all(limit: 200).messages
-    def transitions(machine) = log.grep(machine::Transitioned)
+    def transitions(machine) = log.select { |m| Sourced::Machine::Checkpoint === m && m.class.owner.equal?(machine) }
 
     def moves(machine) = transitions(machine).map do |m|
       m.payload.to_h.slice(:trigger, :source, :target, :exited, :entered)
@@ -316,7 +316,7 @@ module MachineChildrenTest
         place_and_add_lines
         run(router, line(StockReserved, 'l1'), line(StockReserved, 'l2'), line(PickLine, 'l1'), line(PickLine, 'l2'))
 
-        expect(SYNCED).to include([LineItemMachine::Finished, [OrderMachine::Transitioned]])
+        expect(SYNCED).to include([LineItemMachine::Finished, [OrderMachine::LinesDone]])
         expect(SYNCED).to include([AddLine, [LineItemMachine::Started]])
       end
 
@@ -348,7 +348,7 @@ module MachineChildrenTest
 
         run(router, CancelOrder.new(payload: { order_id: 'o1' }))
         expect(claims).to eq([LineItemMachine::Stop, LineItemMachine::Stop,
-                              LineItemMachine::Transitioned, LineItemMachine::Transitioned])
+                              LineItemMachine::Cancelled, LineItemMachine::Cancelled])
       end
     end
 
@@ -387,8 +387,8 @@ module MachineChildrenTest
       it 'hands on_done mappings and invoked children to after_sync' do
         run(router, gateway(GatewayCaptured, payment_ids.first))
 
-        expect(SYNCED).to include([RequestPayment, [BillingMachine::Transitioned, PaymentMachine::Started]])
-        expect(SYNCED).to include([PaymentMachine::Finished, [BillingMachine::Transitioned]])
+        expect(SYNCED).to include([RequestPayment, [BillingMachine::AwaitingPayment, PaymentMachine::Started]])
+        expect(SYNCED).to include([PaymentMachine::Finished, [BillingMachine::Paid]])
         expect(SYNCED.select { |source, _| source == PaymentMachine::Started }).to eq([[PaymentMachine::Started, []]])
       end
 
@@ -523,6 +523,7 @@ module MachineChildrenTest
       it 'requires children to declare start and on_stop' do
         no_stop = Class.new(Sourced::Machine) do
           partition_by :order_id, :line_id
+          consumer_group 'machine_children_test.no_stop'
           start :added
         end
 
@@ -545,7 +546,7 @@ module MachineChildrenTest
         end
         expect do
           bad_done.validate!
-        end.to raise_error(Sourced::Machine::DefinitionError, /on_done .*requested isn't a final checkpoint/)
+        end.to raise_error(Sourced::Machine::DefinitionError, /on_done .*::Requested isn't a final checkpoint/)
 
         expect do
           machine do

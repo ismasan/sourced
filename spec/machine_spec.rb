@@ -203,18 +203,104 @@ RSpec.describe Sourced::Machine do
   describe 'routing' do
     it 'claims every accepted command and its transitions' do
       expect(CartMachine.handled_commands).to contain_exactly(OpenCart, AddItem, Checkout, Reopen, Pay)
-      expect(CartMachine.handled_messages).to include(CartMachine::Transitioned)
+      expect(CartMachine.handled_messages).to include(CartMachine::Open, CartMachine::Rejected, CartMachine::Ordered, CartMachine::Paid)
       expect(CartMachine.handled_messages).not_to include(CartOpened, ItemAdded, CheckedOut)
     end
 
     it 'evolves its transitions and evolve types' do
-      expect(CartMachine.handled_messages_for_evolve).to contain_exactly(CartMachine::Transitioned, CartOpened, ItemAdded)
+      expect(CartMachine.handled_messages_for_evolve).to contain_exactly(
+        CartMachine::Open, CartMachine::Rejected, CartMachine::Ordered, CartMachine::Paid, CartOpened, ItemAdded
+      )
+    end
+  end
+
+  describe 'checkpoint classes' do
+    it 'are events typed under the runtime segment, with the partition keys and the transition attributes' do
+      expect(CartMachine::Open).to be < Sourced::Machine::Checkpoint
+      expect(CartMachine::Open.type).to eq('machine_test.cart_machine.runtime.open')
+      expect(CartMachine::Open.payload_attribute_names)
+        .to contain_exactly(:cart_id, :trigger, :source, :target, :exited, :entered)
+      expect(Sourced::Message.registry['machine_test.cart_machine.runtime.open']).to equal(CartMachine::Open)
     end
 
-    it 'generates Transitioned from its type prefix' do
-      expect(CartMachine::Transitioned.type).to eq('machine_test.cart_machine.transitioned')
-      expect(CartMachine::Transitioned.payload_attribute_names)
-        .to contain_exactly(:cart_id, :trigger, :source, :target, :exited, :entered)
+    it 'are their own handles' do
+      expect(CartMachine::Open).to have_attributes(
+        checkpoint: CartMachine::Open, machine: CartMachine, owner: CartMachine, checkpoint_name: :open
+      )
+      expect(CartMachine.checkpoint_class(CartMachine::Open)).to equal(CartMachine::Open)
+      expect(CartMachine.transition_classes)
+        .to eq([CartMachine::Open, CartMachine::Rejected, CartMachine::Ordered, CartMachine::Paid])
+    end
+
+    it 'build unions with |, nil last' do
+      targets = CartMachine::Open | CartMachine::Paid | nil
+      expect(targets.members).to eq([CartMachine::Open, CartMachine::Paid, nil])
+    end
+
+    it 'sets a constant for a checkpoint declared by Symbol' do
+      m = machine do
+        initial { command Ping => :awaiting_payment }
+        checkpoint :awaiting_payment
+      end
+      expect(m::AwaitingPayment).to equal(m.declared_checkpoints[:awaiting_payment])
+      expect(m::AwaitingPayment.type).to eq("#{m.type_prefix}.runtime.awaiting_payment")
+    end
+
+    it 'take the type prefix from consumer_group, so the class can be renamed' do
+      m = Class.new(Sourced::Machine) do
+        partition_by :cart_id
+        consumer_group 'renamed.carts'
+        Checkpoint(:open)
+      end
+      expect(m.declared_checkpoints[:open].type).to eq('renamed.carts.runtime.open')
+    end
+
+    it 'require partition_by and consumer_group before them' do
+      expect do
+        Class.new(Sourced::Machine) do
+          consumer_group 'machine_test.late_keys'
+          Checkpoint(:open)
+          partition_by :cart_id
+        end
+      end.to raise_error(Sourced::Machine::DefinitionError, /declare partition_by before checkpoints and mounts/)
+      expect do
+        machine do
+          Checkpoint(:open)
+          consumer_group 'machine_test.late_group'
+        end
+      end.to raise_error(Sourced::Machine::DefinitionError, /declare consumer_group before checkpoints and mounts/)
+    end
+
+    it "can't be declared once the machine is validated" do
+      m = machine do
+        initial { command Ping => :pinged }
+        checkpoint :pinged
+      end
+      m.validate!
+      expect { m.Checkpoint(:late) }.to raise_error(Sourced::Machine::DefinitionError, /declared after the machine was validated/)
+    end
+
+    it 'reject names with dots' do
+      expect { machine { Checkpoint(:'a.b') } }.to raise_error(Sourced::Machine::DefinitionError, /can't contain dots/)
+    end
+
+    it "reject a type another message already has" do
+      Sourced::Event.define('machine_test.taken.runtime.open') { attribute :cart_id, String }
+      expect do
+        Class.new(Sourced::Machine) do
+          partition_by :cart_id
+          consumer_group 'machine_test.taken'
+          Checkpoint(:open)
+        end
+      end.to raise_error(Sourced::Machine::DefinitionError, /"machine_test.taken.runtime.open" is already/)
+    end
+
+    it 'are redefined by a machine with the same group_id, as when reloading code' do
+      define = -> { Class.new(Sourced::Machine) { partition_by :cart_id; consumer_group 'machine_test.reloaded'; Checkpoint(:open) } }
+      first = define.().declared_checkpoints[:open]
+      second = define.().declared_checkpoints[:open]
+      expect(Sourced::Message.registry['machine_test.reloaded.runtime.open']).to equal(second)
+      expect(second).not_to equal(first)
     end
 
     it 'keeps its transitions out of its projection, so adopting one keeps them' do
@@ -229,7 +315,7 @@ RSpec.describe Sourced::Machine do
       end
 
       expect(m.projection_class.handled_messages).to eq([ItemAdded])
-      expect(m.handled_messages_for_evolve).to contain_exactly(ItemAdded, m::Transitioned)
+      expect(m.handled_messages_for_evolve).to contain_exactly(ItemAdded, m::Open)
     end
   end
 
@@ -325,7 +411,7 @@ RSpec.describe Sourced::Machine do
       end
 
       expect { m.new(cart_id: 'c1').decide(Ping.new(payload: { cart_id: 'c1', note: 'x' })) }
-        .to raise_error(Sourced::Machine::TransitionError, /must move to one of .*:pinged \| .*:paid/)
+        .to raise_error(Sourced::Machine::TransitionError, /must move to one of .*::Pinged \| .*::Paid/)
     end
 
     it 'raises when a handler moves to a checkpoint it did not declare' do
@@ -337,7 +423,7 @@ RSpec.describe Sourced::Machine do
       end
 
       expect { m.new(cart_id: 'c1').decide(Ping.new(payload: { cart_id: 'c1', note: 'x' })) }
-        .to raise_error(Sourced::Machine::TransitionError, /moved to .*:pinged, not one of nil/)
+        .to raise_error(Sourced::Machine::TransitionError, /moved to .*::Pinged, not one of nil/)
     end
 
     it 'raises when a handler moves the machine twice' do
@@ -381,7 +467,7 @@ RSpec.describe Sourced::Machine do
       end
 
       expect { m.new(cart_id: 'c1').decide(Ping.new(payload: { cart_id: 'c1', note: 'x' })) }
-        .to raise_error(Sourced::Machine::Error, /:pinged \| .*:ponged are checkpoints; move to one of them with to/)
+        .to raise_error(Sourced::Machine::Error, /::Pinged \| .*::Ponged are checkpoints; move to one of them with to/)
     end
 
     it 'raises when a data event is invalid' do
@@ -464,7 +550,9 @@ RSpec.describe Sourced::Machine do
 
     it "raises on a transition to a path that isn't in the chart" do
       instance = CartMachine.new(cart_id: 'c1')
-      stray = moved(CartMachine, 'machine_test.open_cart', from: 'initial', to: 'nowhere', cart_id: 'c1')
+      stray = CartMachine::Open.new(payload: {
+        cart_id: 'c1', trigger: 'machine_test.open_cart', source: 'initial', target: 'nowhere', exited: [], entered: %w[nowhere]
+      })
 
       expect { instance.evolve([stray]) }.to raise_error(Sourced::Machine::Error, /no checkpoint at "nowhere"/)
     end
@@ -636,7 +724,7 @@ RSpec.describe Sourced::Machine do
       end
 
       def value = TimerMachine.load(store:, cart_id: 'c1').value
-      def targets = store.read_all(limit: 50).messages.filter_map { |m| m.payload.target if TimerMachine::Transitioned === m }
+      def targets = store.read_all(limit: 50).messages.filter_map { |m| m.payload.target if TimerMachine.transition_classes.include?(m.class) }
 
       before do
         store.append(OpenCart.new(payload: { cart_id: 'c1', currency: 'EUR' }))
@@ -688,24 +776,26 @@ RSpec.describe Sourced::Machine do
 
       m.validate!
       expect(m.handled_commands).to be_frozen.and eq([Ping])
-      expect(m.handled_messages_for_evolve).to be_frozen.and include(m::Transitioned)
+      expect(m.handled_messages_for_evolve).to be_frozen.and include(m::Pinged)
+      expect(m.transition_classes).to be_frozen
     end
 
     it 'requires partition_by' do
       m = Class.new(Sourced::Machine) do
+        consumer_group 'machine_test.unpartitioned'
         initial { command MachineTest::OpenCart => :open }
         checkpoint :open
       end
       expect { m.validate! }.to raise_error(Sourced::Machine::DefinitionError, /needs partition_by/)
     end
 
-    it 'requires a name' do
-      m = Class.new(Sourced::Machine) do
-        partition_by :cart_id
-        initial { command MachineTest::OpenCart => :open }
-        checkpoint :open
-      end
-      expect { m.validate! }.to raise_error(Sourced::Machine::DefinitionError, /a machine needs a name/)
+    it 'requires a name or a consumer_group' do
+      expect do
+        Class.new(Sourced::Machine) do
+          partition_by :cart_id
+          Checkpoint(:open)
+        end
+      end.to raise_error(Sourced::Machine::DefinitionError, /a machine needs a name or a consumer_group/)
     end
 
     it 'requires commands to declare the partition keys' do
@@ -719,12 +809,12 @@ RSpec.describe Sourced::Machine do
 
     it 'requires declared checkpoints to be placed' do
       m = machine { initial { command OpenCart => :open } }
-      expect { m.validate! }.to raise_error(Sourced::Machine::DefinitionError, /:open declared but never placed/)
+      expect { m.validate! }.to raise_error(Sourced::Machine::DefinitionError, /::Open declared but never placed/)
     end
 
     it "rejects another machine's checkpoints" do
       m = machine { initial { command OpenCart => CartMachine::Open } }
-      expect { m.validate! }.to raise_error(Sourced::Machine::DefinitionError, /targets #<checkpoint MachineTest::CartMachine:open>, which isn't a checkpoint/)
+      expect { m.validate! }.to raise_error(Sourced::Machine::DefinitionError, /targets MachineTest::CartMachine::Open, which isn't a checkpoint/)
     end
 
     it 'rejects commands in final checkpoints' do
@@ -780,7 +870,7 @@ RSpec.describe Sourced::Machine do
 
       expect(types).to eq(%w[
         open_cart add_item checkout
-        cart_opened cart_machine.transitioned item_added checked_out cart_machine.transitioned
+        cart_opened cart_machine.runtime.open item_added checked_out cart_machine.runtime.ordered
         release_stock send_receipt
       ])
       snapshot = CartMachine.load(store:, cart_id: 'c1')
@@ -810,7 +900,7 @@ RSpec.describe Sourced::Machine do
       it 'decides a command the current checkpoint accepts' do
         _cmd, reactor, events = Sourced.handle!(CartMachine, OpenCart.new(payload: { cart_id: 'c1', currency: 'EUR' }), store:)
 
-        expect(events.map(&:class)).to eq([CartOpened, CartMachine::Transitioned])
+        expect(events.map(&:class)).to eq([CartOpened, CartMachine::Open])
         expect(events.last.payload.target).to eq('open')
         expect(reactor.machine.value).to eq(CartMachine::Open)
       end

@@ -158,13 +158,15 @@ module Sourced
       nodes + event_nodes.values
     end
 
-    # A machine's commands produce its +Transitioned+, plus what their blocks
-    # emit (+event+) and spawn (+spawn+, a child's +Started+). Entry, exit and
-    # +after+ actions, joins, invoked and stopped children are automations.
+    # A machine's commands produce the classes of the checkpoints they move
+    # to (see {Machine.checkpoint_class}), plus what their blocks emit
+    # (+event+) and spawn (+spawn+, a child's +Started+). Entry, exit and
+    # +after+ actions, joins, invoked and stopped children are automations,
+    # consuming the classes of the checkpoints whose entry runs them.
     # @api private
     def self.add_machine(machine, analyzer, nodes, command_ids, event_nodes)
       group_id = machine.group_id
-      transitioned = machine::Transitioned.type
+      type_of = ->(handle) { machine.checkpoint_class(handle).type }
       produced = Hash.new { |h, k| h[k] = [] }
 
       machine.all_nodes.each do |node|
@@ -172,7 +174,7 @@ module Sourced
           produced[definition.command_class] |= machine_block_produces(machine, analyzer, definition)
         end
       end
-      produced[machine::Stop] |= [transitioned, machine::Finished.type] if machine.stop_checkpoint
+      produced[machine::Stop] |= [type_of.call(machine.stop_checkpoint), machine::Finished.type] if machine.stop_checkpoint
 
       produced.each do |cmd_class, types|
         if (existing = command_ids[cmd_class.type])
@@ -195,11 +197,15 @@ module Sourced
       machine.all_nodes.each do |node|
         next if node.initial?
 
+        entering = [type_of.call(node.key)]
         actions = node.entries + node.exits + node.afters.map(&:block)
         dispatched = actions.flat_map { |blk| resolve_refs(analyzer.calls_in_block(blk, :dispatch), machine) }.uniq
-        automation.call(node.path, "actions(#{node.path})", [transitioned], dispatched) if dispatched.any?
+        automation.call(node.path, "actions(#{node.path})", entering, dispatched) if dispatched.any?
 
-        automation.call("#{node.path}-done", "done(#{node.path})", [transitioned], [transitioned]) if node.done
+        if node.done
+          finals = node.regions.flat_map { |region| region.nodes.each_value.select(&:final?).map { type_of.call(it.key) } }
+          automation.call("#{node.path}-done", "done(#{node.path})", finals.uniq, [type_of.call(node.done)])
+        end
 
         node.children_joins.each do |join|
           child = machine.tree.children_specs.fetch(join.as).machine
@@ -209,11 +215,12 @@ module Sourced
 
         node.invokes.each do |spec|
           automation.call("#{node.path}-invoke-#{spec.as}", "invoke(#{spec.machine.name})",
-                          [transitioned], [spec.machine::Started.type])
+                          entering, [spec.machine::Started.type])
           automation.call("#{node.path}-stop-#{spec.as}", "stop(#{spec.machine.name})",
-                          [transitioned], [spec.machine::Stop.type])
+                          entering, [spec.machine::Stop.type])
           if spec.on_done.any?
-            automation.call("#{node.path}-on-done-#{spec.as}", "on_done(#{spec.as})", [spec.machine::Finished.type], [transitioned])
+            automation.call("#{node.path}-on-done-#{spec.as}", "on_done(#{spec.as})", [spec.machine::Finished.type],
+                            spec.on_done.values.map(&type_of).uniq)
           end
         end
       end
@@ -221,17 +228,17 @@ module Sourced
       machine.tree.children_specs.each_value do |spec|
         next if spec.invoke? || spec.stop_on.empty?
 
-        automation.call("stop-#{spec.as}", "stop(#{spec.machine.name})", [transitioned], [spec.machine::Stop.type])
+        automation.call("stop-#{spec.as}", "stop(#{spec.machine.name})",
+                        spec.stop_on.map(&type_of), [spec.machine::Stop.type])
       end
     end
 
     # @api private
     def self.machine_block_produces(machine, analyzer, definition)
-      types = definition.checkpoint_targets.any? ? [machine::Transitioned.type] : []
+      types = definition.checkpoint_targets.map { |handle| machine.checkpoint_class(handle).type }
       # Reaching a root final finishes a child machine.
-      if machine.const_defined?(:Finished, false) &&
-         definition.checkpoint_targets.any? { |handle| machine.root.nodes[handle]&.final? }
-        types << machine::Finished.type
+      if machine.__finished_class && definition.checkpoint_targets.any? { |handle| machine.root.nodes[handle]&.final? }
+        types << machine.__finished_class.type
       end
       types += resolve_refs(analyzer.calls_in_block(definition.block, :event), machine)
       types += analyzer.calls_in_block(definition.block, :spawn).filter_map do |kind, value|
