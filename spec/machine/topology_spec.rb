@@ -36,8 +36,6 @@ module MachineTopologyTest
     Done = Checkpoint(:done)
     Cancelled = Checkpoint(:cancelled)
 
-    spawns LegMachine, as: :legs, stop_on: Cancelled
-
     initial do
       command Open => Opened
     end
@@ -45,7 +43,7 @@ module MachineTopologyTest
     checkpoint Opened do
       entry { |_s, _evt| dispatch Remind }
       command(Note) { |_s, _cmd| event Noted }
-      command(AddLeg) { |_s, cmd| spawn :legs, leg_id: cmd.payload.leg_id }
+      command AddLeg, starts: LegMachine
       command Book => Booked
       command Cancel => Cancelled
     end
@@ -65,7 +63,7 @@ module MachineTopologyTest
     end
 
     final Done
-    final Cancelled
+    final(Cancelled) { stops LegMachine }
   end
 
   RSpec.describe 'Sourced::Machine topology' do
@@ -107,7 +105,7 @@ module MachineTopologyTest
 
           initial { command Open => :waiting }
           checkpoint :waiting do
-            invoke LegMachine, as: :leg, keys: ->(_s) { { leg_id: 'l1' } }, on_done: { LegMachine.declared_checkpoints.fetch(:confirmed) => :booked }
+            invoke LegMachine, keys: ->(_s) { { leg_id: 'l1' } }, on_done: { LegMachine.declared_checkpoints.fetch(:confirmed) => :booked }
             region :notes do
               initial { command Note => :noted }
               checkpoint :noted

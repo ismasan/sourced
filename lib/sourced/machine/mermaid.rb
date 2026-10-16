@@ -52,11 +52,11 @@ module Sourced
             end
           end
           node.children_joins.each do |join|
-            join.definition.checkpoint_targets.each { |target| edge(node, target, "children_done #{join.as}") }
+            join.definition.checkpoint_targets.each { |target| edge(node, target, "children_done #{join.machine.group_id}") }
           end
           node.invokes.each do |spec|
             spec.on_done.each do |child_final, target|
-              edge(node, target, "#{spec.as} #{child_final.checkpoint_name}")
+              edge(node, target, "#{spec.machine.group_id} #{child_final.checkpoint_name}")
             end
           end
         end

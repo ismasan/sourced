@@ -737,13 +737,13 @@ How it runs:
 - **Entry and exit actions are reactions**, run when the machine claims the checkpoint event, after the deciding transaction committed, and see the latest state. Leaving a checkpoint exits its active regions first. A transient checkpoint's entry actions run after the machine has already left it. They're skipped while replaying.
 - **`after(delay)`** blocks dispatch commands delivered that long after the checkpoint was entered. The delay is seconds (`after(3600)`) or a duration string, as `Message#at` takes it (`after('1h')`, `after('1h30m')`, `after('P1D')`). A timer command delivered after the machine has left that checkpoint entry is refused, even where the command is accepted, so timers never need cancelling.
 - **History**: `Working.history` targets a checkpoint with regions at the checkpoints its regions were last in (`Working.history(deep: true)` restores everything below it); regions with no history take their default entry. History is rebuilt from `exited` on replay.
-- `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.in?(OrderMachine::Paying)`, `machine.in?(:payment, OrderMachine::Paying)`, `machine.in?('placed.payment.paying')`, `machine.current(:payment)`, `machine.entered_by`, `machine.children(:lines)`.
+- `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.in?(OrderMachine::Paying)`, `machine.in?(:payment, OrderMachine::Paying)`, `machine.in?('placed.payment.paying')`, `machine.current(:payment)`, `machine.entered_by`, `machine.children(LineItemMachine)`.
 
 Definitions are checked when the machine is registered (or first instantiated), raising `Sourced::Machine::DefinitionError`: targets, partition keys, unplaced checkpoints, transient checkpoints, unreachable guards. After that, the machine's `context`, `evolve`, `before_evolve`, `reaction` and `Checkpoint` raise too: what it reads is fixed. A stored path that no longer names a checkpoint raises `Sourced::Machine::UnresolvablePathError` with the event's type and id, so a checkpoint or region name that stored events use can't change (rename the constant instead).
 
 #### Child machines
 
-Regions are for modelling. For work that runs in parallel, a machine spawns or invokes **child machines**: separate reactors in their own partitions, keyed by the parent's keys plus their own.
+Regions are for modelling. For work that runs in parallel, a machine starts or invokes **child machines**: separate reactors in their own partitions, keyed by the parent's keys plus their own.
 
 ```ruby
 class LineItemMachine < Sourced::Machine
@@ -776,28 +776,35 @@ end
 class OrderMachine < Sourced::Machine
   partition_by :order_id
   # ...
-  spawns LineItemMachine, as: :lines, stop_on: Cancelled
 
   checkpoint Placed do
-    command(AddLine) do |_order, cmd| 
-      spawn :lines, line_id: cmd.payload.line_id, sku: cmd.payload.sku
+    command AddLine, starts: LineItemMachine # one line, keyed by the payload's line_id
+
+    command Ship, starts: ParcelMachine | nil do |order, _cmd|
+      order.parcels.each { |id| start ParcelMachine, parcel_id: id }
     end
-    
-    children_done :lines => LinesDone # once every spawned line is final	
-    
-    command CancelOrder => Cancelled  # live lines are sent Stop
+
+    children_done LineItemMachine => LinesDone # once every started line is final
+
+    command CancelOrder => Cancelled
+  end
+
+  final Cancelled do
+    stops LineItemMachine # live lines are sent Stop
   end
 
   checkpoint AwaitingPayment do
     # One child per entry of AwaitingPayment, stopped when it's left
-    invoke PaymentMachine, as: :payment,
+    invoke PaymentMachine,
            keys: ->(_order) { { payment_id: SecureRandom.uuid } },
            on_done: { PaymentMachine::Captured => Paid, PaymentMachine::Declined => PaymentFailed }
   end
 end
 ```
 
-`stopped` generates three messages, under `<prefix>.runtime.child`: `Started` (appended by the parent's `spawn` or `invoke`, entering the child's `started` checkpoint; `spawn`'s attributes beyond the child's keys are its `input`), `Finished` (appended when the child reaches a root final), and the `Stop` command. The constants `Started`, `Finished` and `Stop` are reserved for them. `stopped` places a root final, taking a block as `final` does (`stopped Dropped do entry { … } end`), or, without one, marks a root final already placed. The parent evolves only its children's `Started` and `Finished` (`machine.children(:lines)`), which drive `children_done` and `on_done`; an invoked child's `on_done` move has the child's `Finished` type as its `trigger`.
+`stopped` generates three messages, under `<prefix>.runtime.child`: `Started` (appended by the parent's `start` or `invoke`, entering the child's `started` checkpoint; `start`'s attributes beyond the child's keys are its `input`), `Finished` (appended when the child reaches a root final), and the `Stop` command. The constants `Started`, `Finished` and `Stop` are reserved for them. `stopped` places a root final, taking a block as `final` does (`stopped Dropped do entry { … } end`), or, without one, marks a root final already placed. The parent evolves only its children's `Started` and `Finished` (`machine.children(LineItemMachine)`, or `machine.children` for all, by machine), which drive `children_done` and `on_done`; an invoked child's `on_done` move has the child's `Finished` type as its `trigger`.
+
+A handler declares the children it may start with `starts:` (`command`, `on` and `children_done` handlers alike), and starts them with `start Child, **payload` in its block. `starts: A` must start at least one `A`, `starts: A | B` at least one of them, and `starts: A | nil` any number; a handler that starts fewer, or starts a machine it doesn't declare, raises `Sourced::Machine::StartError`. Without a block, `starts: A` starts exactly one `A`: its keys are the message's attributes named by `A`'s partition keys, and its `input` the rest of the payload, without either machine's keys (the message must declare `A`'s keys beyond the parent's). `stops Child` in a checkpoint's block sends `Stop` to every running child of that machine when the checkpoint is entered. A machine is a child in one role: started by handlers, or invoked by one checkpoint.
 
 A child is only woken by messages carrying all of its partition keys: its own events, the parent's `Started`, and `Stop`. Parent facts with fewer keys (`OrderPlaced`) are in the child's partition reads, so it can evolve them, but they never wake it.
 
@@ -867,7 +874,7 @@ Rules for composed machines:
 - **Events**: the mounting machine generates its own class for each of the composed machine's checkpoints, with its partition keys: `OrderMachine::Mounted::PaymentMachine::Captured`, type `order_machine.runtime.mounted.payment_machine.captured`. That's what it appends while `PaymentMachine` runs inside it, so a machine never reads another context's events: `PaymentMachine` standalone, as a child, or inside another machine appends its own types. `OrderMachine.checkpoint_class(PaymentMachine::Captured)` returns the class; handlers, `to`, `value` and `in?` use the composed machine's own handles. A machine can be composed several times (two regions of the same machine share these classes; paths tell them apart).
 - **Context**: the composed machine's projection is built from the parent's context, so its `evolve` blocks update the same object, and its handlers receive it. The parent's context must respond to what they call.
 - **Escalation**: a composed machine's targets are its own checkpoints. It reaches the parent through its root finals, which `on_done` maps onto the parent's, in the deciding decision. When a decision both makes a region reach a mapped final and completes the parent's `done` join, `on_done` wins.
-- **Handlers run on the parent's instance**: `event`, `dispatch` and `machine` are the parent's, and partition keys are the parent's, so its events and commands must declare them. It may `spawn` and `invoke` children of its own (a machine with children can only be composed once).
+- **Handlers run on the parent's instance**: `event`, `dispatch` and `machine` are the parent's, and partition keys are the parent's, so its events and commands must declare them. It may start and `invoke` children of its own (a machine with children can only be composed once).
 - **Not allowed**: reactions and sync blocks of its own (they can't run on the parent's instance; declare them on the parent).
 
 `Sourced.topology` describes machines' commands, checkpoints and actions, and `OrderMachine.to_mermaid` draws the machine as a Mermaid state diagram. The design behind all this is in `plans/statecharts-transitions.md`.
