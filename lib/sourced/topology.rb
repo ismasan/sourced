@@ -239,7 +239,7 @@ module Sourced
         end
 
         node.invokes.each do |spec|
-          automation.call("#{node.path}-invoke-#{spec.machine.group_id}", "invoke(#{spec.machine.name})",
+          automation.call("#{node.path}-invoke-#{spec.machine.group_id}", "start(#{spec.machine.name})",
                           entering, [spec.machine::Started.type])
           automation.call("#{node.path}-stop-#{spec.machine.group_id}", "stop(#{spec.machine.name})",
                           leaving, [spec.machine::Stop.type])

@@ -105,7 +105,10 @@ module MachineTopologyTest
 
           initial { command Open => :waiting }
           checkpoint :waiting do
-            invoke LegMachine, keys: ->(_s) { { leg_id: 'l1' } }, on_done: { LegMachine.declared_checkpoints.fetch(:confirmed) => :booked }
+            start LegMachine do
+              payload { |_s, _checkpoint| { leg_id: 'l1' } }
+              on_done LegMachine.declared_checkpoints.fetch(:confirmed) => :booked
+            end
             region :notes do
               initial { command Note => :noted }
               checkpoint :noted

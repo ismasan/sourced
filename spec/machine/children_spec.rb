@@ -50,6 +50,7 @@ module MachineChildrenTest
 
   # What parents' after_sync hooks saw: [claimed message class, event classes]
   SYNCED = []
+  PAYLOAD_CALLS = []
 
   class LineItemMachine < Sourced::Machine
     partition_by :order_id, :line_id
@@ -146,6 +147,9 @@ module MachineChildrenTest
     PaymentFailed = Checkpoint(:payment_failed)
     TimedOut = Checkpoint(:timed_out)
 
+    context { PaymentState.new }
+    evolve(OrderPlaced) { |order, evt| order.amount = evt.payload.total }
+
     initial do
       command PlaceOrder => Placed do |_order, cmd|
         event OrderPlaced, cmd.payload.to_h
@@ -157,8 +161,14 @@ module MachineChildrenTest
     end
 
     checkpoint AwaitingPayment do
-      invoke PaymentMachine, keys: ->(_order) { { payment_id: SecureRandom.uuid } },
-                             on_done: { PaymentMachine::Captured => Paid, PaymentMachine::Declined => PaymentFailed }
+      start PaymentMachine do
+        payload do |order, checkpoint|
+          PAYLOAD_CALLS << [order.amount, checkpoint]
+          { payment_id: SecureRandom.uuid, amount: order.amount, entered_by: checkpoint.id }
+        end
+        on_done PaymentMachine::Captured => Paid
+        on_done PaymentMachine::Declined => PaymentFailed
+      end
       command TimeOutPayment => TimedOut
     end
 
@@ -359,8 +369,30 @@ module MachineChildrenTest
       def gateway(command, payment_id) = command.new(payload: { order_id: 'o1', payment_id: })
 
       before do
+        PAYLOAD_CALLS.clear
         run(router, PlaceOrder.new(payload: { order_id: 'o1', currency: 'EUR', total: '100' }))
         run(router, RequestPayment.new(payload: { order_id: 'o1' }))
+      end
+
+      it 'builds the payload from the context and the event that entered the checkpoint' do
+        awaiting = transitions(BillingMachine).find { |m| m.payload.target == 'awaiting_payment' }
+        (amount, checkpoint), *others = PAYLOAD_CALLS
+        expect(others).to be_empty
+        expect(amount).to eq('100')
+        expect(checkpoint).to be_instance_of(BillingMachine::AwaitingPayment)
+        expect(checkpoint.id).to eq(awaiting.id)
+
+        started = log.grep(PaymentMachine::Started).first
+        expect(started.payload.input.transform_keys(&:to_sym)).to eq(amount: '100', entered_by: awaiting.id)
+      end
+
+      it 'records a non-deterministic payload once, in Started' do
+        payment_id = log.grep(PaymentMachine::Started).first.payload.payment_id
+        run(router, TimeOutPayment.new(payload: { order_id: 'o1' }))
+
+        expect(PAYLOAD_CALLS.size).to eq(1)
+        expect(payment_ids).to eq([payment_id])
+        expect(log.grep(PaymentMachine::Started).size).to eq(1)
       end
 
       it 'starts the child in the decision that enters the checkpoint' do
@@ -692,10 +724,10 @@ module MachineChildrenTest
         expect do
           machine do
             initial { command RequestPayment => :awaiting }
-            checkpoint(:awaiting) { invoke LineItemMachine, keys: ->(_) { { line_id: 'l1' } } }
+            checkpoint(:awaiting) { start(LineItemMachine) { payload { |_, _| { line_id: 'l1' } } } }
             checkpoint(:other) { command AddLine, starts: LineItemMachine }
           end
-        end.to raise_error(Sourced::Machine::DefinitionError, /LineItemMachine is invoked, so handlers can't start it too/)
+        end.to raise_error(Sourced::Machine::DefinitionError, /LineItemMachine is started by a checkpoint, so handlers can't start it too/)
       end
 
       it 'stops started children where a checkpoint stops them' do
@@ -792,6 +824,32 @@ module MachineChildrenTest
         end.to raise_error(Sourced::Machine::DefinitionError, /has no stopped checkpoint/)
       end
 
+      it 'requires start in a checkpoint to declare its payload once, and each on_done once' do
+        expect { machine { checkpoint(:awaiting) { start PaymentMachine } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /start .*PaymentMachine needs a block/)
+        expect { machine { checkpoint(:awaiting) { start(PaymentMachine) { on_done PaymentMachine::Captured => :paid } }; final :paid } }
+          .to raise_error(Sourced::Machine::DefinitionError, /start .*PaymentMachine needs payload/)
+        expect { machine { checkpoint(:awaiting) { start(PaymentMachine) { payload { {} }; payload { {} } } } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /PaymentMachine declares payload twice/)
+        expect do
+          machine do
+            checkpoint(:awaiting) do
+              start PaymentMachine do
+                payload { {} }
+                on_done PaymentMachine::Captured => :paid
+                on_done PaymentMachine::Captured => :failed
+              end
+            end
+            final :paid
+            final :failed
+          end
+        end.to raise_error(Sourced::Machine::DefinitionError, /PaymentMachine maps on_done .*Captured twice/)
+        expect { machine { initial { start(PaymentMachine) { payload { {} } } } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /can't start children/)
+        expect { machine { checkpoint(:a) { start(PaymentMachine) { payload { {} } } }; checkpoint(:b) { start(PaymentMachine) { payload { {} } } } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /PaymentMachine is started by a checkpoint twice/)
+      end
+
       it 'checks stops, on_done and children_done' do
         expect { machine { initial { command(CancelOrder => :cancelled) }; final(:cancelled) { stops LineItemMachine } }.validate! }
           .to raise_error(Sourced::Machine::DefinitionError, /cancelled stops .*LineItemMachine, but no handler declares starts:/)
@@ -800,7 +858,10 @@ module MachineChildrenTest
 
         bad_done = machine do
           checkpoint(:awaiting_payment) do
-            invoke PaymentMachine, keys: ->(_) { {} }, on_done: { PaymentMachine::Requested => :paid }
+            start PaymentMachine do
+              payload { |_, _| {} }
+              on_done PaymentMachine::Requested => :paid
+            end
           end
           final :paid
         end

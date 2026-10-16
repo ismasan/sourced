@@ -94,8 +94,10 @@ module MachineChartTest
       region :payment do
         initial { command Pay => AwaitingPayment }
         checkpoint AwaitingPayment do
-          invoke ChargeMachine, keys: ->(_s) { { charge_id: 'c1' } },
-                                on_done: { ChargeMachine::Captured => Paid, ChargeMachine::Declined => PaymentFailed }
+          start ChargeMachine do
+            payload { |_s, _checkpoint| { charge_id: 'c1' } }
+            on_done ChargeMachine::Captured => Paid, ChargeMachine::Declined => PaymentFailed
+          end
         end
         checkpoint PaymentFailed do
           command Cancel => Cancelled
