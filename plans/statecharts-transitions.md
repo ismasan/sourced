@@ -484,7 +484,7 @@ end
   end
 
   final Cancelled do … end
-  stopped Cancelled                          # marks an already-placed root final; raises if it isn't one
+  stopped Cancelled                          # marks an already-placed root final (raises if it isn't one), or places a bare one
   ```
 
 - Otherwise as `on_stop`: it generates `Stop` (keyed by the machine's partition keys, accepted from any started, non-final position, moving to the checkpoint, running exit actions), `Started` and `Finished`; it must be a final of the root region; it needs a name and comes after `partition_by`. A machine is a child when it declares `started` and `stopped`.
@@ -501,7 +501,7 @@ end
   | `starts: A \| B` | at least one of them, any number | `DefinitionError` (which one?) |
   | `starts: A \| nil` | zero or more `A` | `DefinitionError` (nothing to decide) |
 
-  The runtime counts a handler's starts after its block runs, as `run_handler` checks the target, and raises when the count doesn't fit (`TransitionError`, or a new `StartError`: decide in C1).
+  The runtime counts a handler's starts after its block runs, as `run_handler` checks the target, and raises `Machine::StartError` when the count doesn't fit.
 - **Without a block,** the child's keys are the command's (or event's) attributes named by the child's partition keys, and its `Started`'s `input` is the rest of the payload, without either machine's partition keys. `validate!` checks the message declares every partition key of the child that the parent doesn't have.
 
 ### `start` in handlers
@@ -523,7 +523,7 @@ end
 ```
 
 - **Same semantics as `invoke`:** one child per entry of the checkpoint (matched by the entering event's id, `entry_id`), started as an eventless step after the decision that enters it, stopped when the checkpoint is left, and a mapped final moving the parent with the child's `Finished` type as `trigger`.
-- **The block is required, and so is `payload`.** There's no default: the entering checkpoint event carries only the parent's keys and the transition's paths, so nothing in it can supply the child's own keys, and deriving them (from the decision's message, or the event's id) would be magic. `validate!` raises for a `start` with no block or no `payload`.
+- **The block is required, and so is `payload`.** There's no default: the entering checkpoint event carries only the parent's keys and the transition's paths, so nothing in it can supply the child's own keys, and deriving them (from the decision's message, or the event's id) would be magic. A `start` with no block or no `payload` raises at declaration.
 - **`payload { |context, checkpoint| … }`** returns the child's `Started` payload: its keys (the parent's are filled in) and anything else as `input`, as for `start` in handlers. `checkpoint` is the event that entered the checkpoint, for its `id` or `created_at`. The block is called once, when the child is started, and its result is recorded in `Started`, so a non-deterministic value (`SecureRandom.uuid`) is safe.
 - **`on_done Final => Target`**, one per line, maps a child's root final to a target of this checkpoint, as `invoke`'s `on_done:` hash does. A child with no `on_done` runs until it finishes or the checkpoint is left.
 - **No guard.** To start a child only sometimes, route through a transient checkpoint (`always AwaitingPayment, if: :payment_due?` then `always Paid`), so the condition is a state the chart shows and `in?` can query, as XState does with `invoke`. A guard on `start` would have to be re-evaluated after every decision, as guarded `always` is, which can start a child partway through its checkpoint.
@@ -534,7 +534,7 @@ end
   - `machine.children(LineItemMachine)`, `machine.children` for all;
   - `children_done LineItemMachine => LinesDone`;
   - `to_h`, Mermaid and Topology use the child's `group_id` where they used `as`.
-- **The machine-level `spawns` goes.** `validate!` builds the `ChildSpec`s from the tree: handlers' `starts:` (each machine once, whatever number of handlers start it), with `stop_on` taken from the `stops` that name it, and checkpoint-level `start`s. Mounted machines' declarations contribute to the top machine's, as `spawns` / `invoke` in a mounted machine do now, and a machine that starts children can still be mounted only once.
+- **The machine-level `spawns` goes.** Each machine records a `ChildSpec` per child as its handlers declare `starts:` (each machine once, whatever number of handlers start it) and its checkpoints `start`; the `Tree` merges them and fills a handler-started child's `stop_on` from the placed checkpoints whose `stops` name it. Mounted machines' declarations contribute to the top machine's, as `spawns` / `invoke` in a mounted machine do now, and a machine that starts children can still be mounted only once.
 - **One machine, one role:** a machine started by handlers can't also be started by a checkpoint, and a checkpoint-level `start` of a machine appears once in the tree. Same constraint as today.
 - If one machine is ever wanted in two roles, `as:` comes back as an option, stored in `Started`'s payload so tracking can tell the groups apart.
 
@@ -546,9 +546,9 @@ end
 
 ### What changes elsewhere
 
-- **Topology:** a handler produces its `starts:` machines' `Started` types from the declaration; the Prism lookup for `spawn` goes. Stop automations come from `stops`; the invoke automations are renamed but unchanged.
-- **`to_h`:** a handler's `on` entry lists the machines it starts; children are listed by `group_id`; a checkpoint lists what it `stops`. Invoked children stay in XState's `invoke` (that's its name there), with `id` the child's `group_id`.
-- **Mermaid:** labels a handler's edge with what it starts, e.g. `AddLine / starts LineItemMachine`.
+- **Topology:** a handler produces its `starts:` machines' `Started` types from the declaration; the Prism lookup for `spawn` goes. Stop automations come from `stops`; the invoke automations are renamed (`start(<Child>)`, ids `<path>-start-<child group_id>`) but otherwise unchanged.
+- **`to_h`:** a handler's entry (`on`'s commands and events, `children_done`) lists the machines it starts as `starts:` (`group_id`s, with `starts_optional:` for `| nil`); children are listed by `group_id`; a checkpoint lists what it `stops` (`stops:`). Invoked children stay in XState's `invoke` (that's its name there), with `id` the child's `group_id`.
+- **Mermaid:** labels a handler's edge with what it starts, e.g. `AddLine / starts LineItemMachine`; data-only handlers that start children, and a checkpoint's `stops`, go in a note on the checkpoint.
 - **README, CLAUDE.md, specs and the holiday booking example** move to the new names.
 
 ### Phases
@@ -628,6 +628,7 @@ C1 comes first so the class-level `start` is free before C3 gives `start` a mean
   - **`to_h`:** every handler entry (`on`'s commands and events, `children_done`) has `starts: [group_id, …]` (empty when none) and `starts_optional:` (true for `| nil`); every node has `stops: [group_id, …]`. Children keep `kind: 'spawn' | 'invoke'` and checkpoints the `invoke` key: XState's `spawnChild` (an independent actor) and `invoke` (bound to its state) are the same split.
   - **Mermaid** suffixes a handler's edges with `/ starts A | B` (`| nil` when optional), by the machines' short names. Data-only handlers still have no edge: those that start children are listed, with what `stops` names, in a `note right of` the checkpoint. A data-only start at an initial position, which has no state, isn't drawn.
   - **Specs:** `to_h` / Mermaid for every handler kind in `spec/machine/chart_spec.rb`; Topology for data-only commands, `on`, `children_done` and a mounted machine's handlers and `stops` in `spec/machine/topology_spec.rb`.
+- **Revision C5: done.** README's child machines section, CLAUDE.md's Machine bullet, the CHANGELOG's unreleased Machine entry and the children API's doc comments describe the new names. The README states the lifetime rule, the `starts:` count table and the transient-checkpoint pattern for a conditional checkpoint `start`.
 - **Open:**
   - A handler in a machine mounted twice can't tell which placement it runs in, so both copies decide alike on the same command and state. Expose the placement (its path) to handlers?
   - Phase 11 (docs, examples).

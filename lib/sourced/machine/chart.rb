@@ -21,10 +21,12 @@ module Sourced
     #   on the checkpoint that takes them, targets in any region.
     # * Joins and children use Sourced's names: +on_done+ (the +done+ join),
     #   +children_done+, +invoke+ (a checkpoint's +start+, +on_done+ by child
-    #   final), and the machine's +children+, +start+ and +stop+. A handler
-    #   (+on+ entries, +children_done+) lists the children its +starts:+
-    #   declares as +starts+ (+group_id+s), +starts_optional+ when it may start
-    #   none; a checkpoint lists the children it +stops+. +mounts+ lists the machines a checkpoint
+    #   final), and the machine's +children+ (+kind+ +'spawn'+ when handlers
+    #   start them, +'invoke'+ for a checkpoint's), +start+ (its +started+
+    #   checkpoint) and +stop+ (its +Stop+). A handler (+on+ entries,
+    #   +children_done+) lists the children its +starts:+ declares as +starts+
+    #   (+group_id+s), +starts_optional+ when it may start none; a checkpoint
+    #   lists the children it +stops+. +mounts+ lists the machines a checkpoint
     #   mounts (as regions, or as a compound checkpoint's), with +on_done+ by
     #   their root final.
     # * +entry+ and +exit+ count the checkpoint's actions; +after+ lists its
