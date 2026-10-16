@@ -166,8 +166,8 @@ module Sourced
     end
 
     # A machine's commands produce the classes of the checkpoints they move
-    # to (see {Machine.checkpoint_class}), plus what their blocks emit
-    # (+event+), and the +Started+ of the children their +starts:+ declare. Entry, exit and
+    # to (see {Machine.checkpoint_class}), the +Started+ of the children their
+    # +starts:+ declare, and what their blocks emit (+event+). Entry, exit and
     # +after+ actions, joins, and starting and stopping children are automations.
     # What runs on entering a checkpoint consumes its class; what runs on
     # leaving it (exit actions, stopping the children it started) consumes the

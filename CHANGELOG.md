@@ -176,7 +176,7 @@
 - `Sourced::Machine`, Sourced's statecharts. A machine's position is made of
   *checkpoints*, declared with `Checkpoint(:name)`: each generates an event class (type
   `<prefix>.runtime.<name>`, prefix from `group_id`) that is both the handle the chart
-  places (`initial`, `checkpoint`, `final`, `start`) and the event appended when the
+  places (`initial`, `checkpoint`, `final`, `started`, `stopped`) and the event appended when the
   machine moves there, recording `trigger`, `source`, `target` and the `exited` /
   `entered` paths, which replay applies. Checkpoints list the commands they accept and
   the checkpoints each may move to (`command PlaceOrder => Placed`, `=> A | B` or
@@ -192,11 +192,15 @@
   actions run as reactions when the transition is claimed; `after(delay) { dispatch Cmd }`
   blocks (seconds, or a duration string such as `'1h30m'`) dispatch commands delivered that
   long after the checkpoint was entered, refused once that entry has been left. Child
-  machines run in their own partitions (keys including the parent's): a child declares
-  `start` and `on_stop`, generating `Started`, `Finished` and `Stop`
-  (`<prefix>.runtime.child.*`); a parent `spawns Child, as:, stop_on:` and `spawn`s it
-  from a command, joins with `children_done`, or `invoke`s one for the duration of a
-  checkpoint, mapping its finals with `on_done`. Commands the current checkpoint doesn't
+  machines run in their own partitions (keys including the parent's), living as long as
+  the scope that started them: a child declares `started` and `stopped`, generating
+  `Started`, `Finished` and `Stop` (`<prefix>.runtime.child.*`); a parent's handlers
+  declare `starts: Child` (`Child | Other`, `Child | nil`) and call `start Child,
+  **payload` (a blockless handler starts one from the message; a count that doesn't fit
+  raises `StartError`), a checkpoint `stops Child`, and `children_done Child => Target`
+  joins over them; or a checkpoint runs one for its duration with `start Child do
+  payload { |context, checkpoint| … }; on_done Final => Target end`. Children are tracked
+  by machine class (`machine.children(Child)`). Commands the current checkpoint doesn't
   accept raise `CommandNotHandledError` in `Sourced.handle!` and are acked by workers.
   Definitions are checked when the machine is registered, after which its DSL is locked;
   stored paths that no longer resolve raise `UnresolvablePathError`. `Sourced.topology`
@@ -206,8 +210,8 @@
   `plans/statecharts-transitions.md`.
 - Composing machines: `region :payment, PaymentMachine, on_done: { PaymentMachine::Expired
   => Cancelled }` runs another machine as a region, and `checkpoint Working, ThingMachine,
-  on_done: { … }` as a compound checkpoint whose sub-states start at its `start` (which can
-  itself be compound). A composed machine runs in the parent's partition and instance, its
+  on_done: { … }` as a compound checkpoint whose sub-states start at its `started`
+  checkpoint (which can itself be compound). A composed machine runs in the parent's partition and instance, its
   projection built from the parent's context; it escalates through its root finals, which
   `on_done` maps onto the parent's checkpoints. The mounting machine appends its own
   generated classes for the composed machine's checkpoints
