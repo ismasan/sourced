@@ -411,7 +411,8 @@ module Sourced
       def Checkpoint(name) = @machine.Checkpoint(name)
     end
 
-    # Evaluates a checkpoint's block: +command+, +entry+, +exit+, +after+, +region+, +done+.
+    # Evaluates a checkpoint's block: +command+, +on+, +entry+, +exit+, +after+,
+    # +region+, +done+, +always+, +start+, +children_done+, +stops+.
     class NodeBuilder
       def initialize(machine, node)
         @machine = machine
