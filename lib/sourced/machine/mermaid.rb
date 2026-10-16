@@ -8,6 +8,9 @@ module Sourced
     # the children a handler's +starts:+ declares. Data-only handlers, which
     # don't move the machine, have no edge: those that start children, and the
     # children a checkpoint +stops+, are listed in a note on the checkpoint.
+    # A note on a region's initial position goes on the composite state that
+    # contains the region; the root's initial position, with no such state,
+    # is drawn as an +initial+ state to carry it.
     #
     # State ids are checkpoint paths, +.+ as +_+. A transition to an ancestor
     # region's checkpoint starts from the state that takes it, and is declared
@@ -43,17 +46,17 @@ module Sourced
         @tree.all_nodes.each do |node|
           node.commands.each_value { |definition| handler(node, definition, short_name(definition.command_class)) }
           node.ons.each_value { |definition| handler(node, definition, "on #{short_name(definition.command_class)}") }
-          @notes[node] << "stops #{node.stops.map { short_name(it) }.join(', ')}" if node.stops.any?
+          @notes[note_node(node)] << "stops #{node.stops.map { short_name(it) }.join(', ')}" if node.stops.any?
           { 'always' => node.always, 'done' => node.dones }.each do |kind, list|
             list.each do |eventless|
               label = eventless.guarded? ? "#{kind} [#{eventless.guard_label}]" : kind
               edge(node, eventless.target, label)
             end
           end
-          node.children_joins.each { |join| handler(node, join.definition, "children_done #{join.machine.group_id}") }
+          node.children_joins.each { |join| handler(node, join.definition, "children_done #{short_name(join.machine)}") }
           node.invokes.each do |spec|
             spec.on_done.each do |child_final, target|
-              edge(node, target, "#{spec.machine.group_id} #{child_final.checkpoint_name}")
+              edge(node, target, "#{short_name(spec.machine)} #{child_final.checkpoint_name}")
             end
           end
         end
@@ -76,8 +79,19 @@ module Sourced
         end
         targets = definition.checkpoint_targets
         targets.each { |target| edge(node, target, label) }
-        @notes[node] << label if targets.empty? && definition.starts.any?
+        @notes[note_node(node)] << label if targets.empty? && definition.starts.any?
       end
+
+      # The state a note on +node+ goes on: a region's initial position has
+      # none, so the state containing the region, up to the root's.
+      def note_node(node)
+        node = node.region.parent while node.initial? && !node.region.root?
+        node
+      end
+
+      # Whether +node+ is drawn as a state: checkpoints, and the root's
+      # initial position when it carries a note.
+      def drawn?(node) = !node.initial? || @notes.key?(node)
 
       def short_name(klass) = klass.name.split('::').last
 
@@ -89,37 +103,54 @@ module Sourced
         target = @tree.resolve(from, target)
         source = node
         source = source.region.parent while source.initial? && !source.region.equal?(target.region)
-        @edges[target.region] << [source, target, label]
+        # Mermaid can't lay out a composite's edge to its own descendant
+        # drawn inside the composite: draw it beside the composite instead.
+        region = descendant?(target, source) ? source.region : target.region
+        @edges[region] << [source, target, label]
+      end
+
+      def descendant?(node, ancestor)
+        region = node.region
+        until region.root?
+          return true if region.parent.equal?(ancestor)
+
+          region = region.parent.region
+        end
+        false
       end
 
       def region_lines(region, indent)
         lines = []
         region.nodes.each_value do |node|
-          next if node.initial?
+          next unless drawn?(node)
 
-          label = node.key.checkpoint_name
-          if node.regions.empty?
+          label = node.initial? ? 'initial' : node.key.checkpoint_name
+          # Mermaid can't render an empty composite state: regions holding
+          # only an initial position draw as a plain state.
+          sections = node.regions.map { region_lines(it, "#{indent}  ") }.reject(&:empty?)
+          if sections.empty?
             lines << %(#{indent}state "#{label}" as #{id(node)})
           else
             lines << %(#{indent}state "#{label}" as #{id(node)} {)
-            node.regions.each_with_index do |child, i|
+            sections.each_with_index do |section, i|
               lines << "#{indent}  --" if i.positive?
-              lines.concat(region_lines(child, "#{indent}  "))
+              lines.concat(section)
             end
             lines << "#{indent}}"
           end
         end
         lines << "#{indent}[*] --> #{id(region.nodes.fetch(@machine.start_checkpoint))}" if region.root? && @machine.start_checkpoint
+        lines << "#{indent}[*] --> #{id(region.initial_node)}" if region.root? && drawn?(region.initial_node)
         lines << "#{indent}[*] --> #{id(region.start_node)}" if region.compound?
         @edges[region].uniq.each do |source, target, label|
-          from = source.initial? ? '[*]' : id(source)
-          lines << "#{indent}#{from} --> #{id(target)} : #{label}"
+          from = drawn?(source) ? id(source) : '[*]'
+          lines << "#{indent}#{from} --> #{id(target)} : #{escape(label)}"
         end
         region.nodes.each_value do |node|
           lines << "#{indent}#{id(node)} --> [*]" if node.final?
         end
         region.nodes.each_value do |node|
-          next if node.initial? || @notes[node].empty?
+          next unless @notes.key?(node)
 
           lines << "#{indent}note right of #{id(node)}"
           @notes[node].uniq.each { |note| lines << "#{indent}  #{note}" }
@@ -129,6 +160,10 @@ module Sourced
       end
 
       def id(node) = node.path.tr('.', '_')
+
+      # Mermaid reads +:+ in a transition label as syntax (+::+ fails to
+      # parse), so as an entity.
+      def escape(label) = label.gsub(':', '#58;')
     end
   end
 end
