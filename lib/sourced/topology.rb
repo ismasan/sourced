@@ -253,7 +253,7 @@ module Sourced
 
     # Every transition the definition declares, as +[source, target]+ placed
     # nodes: commands, +children_done+, +always+, +done+, invoked and mounted
-    # machines' +on_done+, and +on_stop+ (from each top-level checkpoint).
+    # machines' +on_done+, and +stopped+ (from each top-level checkpoint).
     # @api private
     def self.machine_transitions(machine)
       tree = machine.tree

@@ -293,7 +293,7 @@ module MachineAcceptanceHoliday
 
     evolve(StopAdded) { |tour, evt| tour.stops << [evt.payload.city, evt.payload.cost] }
 
-    start Outlining do
+    started Outlining do
       command(AddStop) { |_tour, cmd| event StopAdded, city: cmd.payload.city, cost: cmd.payload.cost }
       command PriceItinerary => Pricing
     end
@@ -325,7 +325,7 @@ module MachineAcceptanceHoliday
     Itinerary = Checkpoint(:itinerary)
     Agreed = Checkpoint(:agreed)
 
-    start Itinerary, ItineraryMachine, on_done: { ItineraryMachine::Accepted => Agreed } do
+    started Itinerary, ItineraryMachine, on_done: { ItineraryMachine::Accepted => Agreed } do
       entry { |_tour, _evt| dispatch ShareItinerary }
     end
 
@@ -355,13 +355,13 @@ module MachineAcceptanceHoliday
     partition_by :booking_id, :traveller_id
 
     Withdrawn = Checkpoint(:withdrawn)
-    on_stop Withdrawn
+    stopped Withdrawn
 
     Applied = Checkpoint(:applied)
     Granted = Checkpoint(:granted)
     Refused = Checkpoint(:refused)
 
-    start Applied do
+    started Applied do
       command GrantVisa => Granted
       command RefuseVisa => Refused
     end
@@ -375,12 +375,12 @@ module MachineAcceptanceHoliday
     partition_by :booking_id, :transfer_id
 
     Dropped = Checkpoint(:dropped)
-    on_stop Dropped
+    stopped Dropped
 
     Requested = Checkpoint(:requested)
     Arranged = Checkpoint(:arranged)
 
-    start(Requested) { command ArrangeTransfer => Arranged }
+    started(Requested) { command ArrangeTransfer => Arranged }
     final Arranged
   end
 

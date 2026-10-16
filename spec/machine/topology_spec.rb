@@ -21,11 +21,11 @@ module MachineTopologyTest
   class LegMachine < Sourced::Machine
     partition_by :trip_id, :leg_id
 
-    start :added do
+    started :added do
       command Confirm => :confirmed
     end
     final :confirmed
-    on_stop :dropped
+    stopped :dropped
   end
 
   class TripMachine < Sourced::Machine
@@ -128,7 +128,7 @@ module MachineTopologyTest
       it "follows a mounted machine's on_done from the command that reaches its final" do
         inner = Class.new(Sourced::Machine) do
           def self.name = 'MachineTopologyTest::Inner'
-          start :working do
+          started :working do
             command Confirm => :finished
           end
           final :finished

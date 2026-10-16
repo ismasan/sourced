@@ -79,9 +79,9 @@ module MachineCheckpointClassesTest
     Requested = Checkpoint(:requested)
     Charged = Checkpoint(:charged)
 
-    start(Requested) { command Charge => Charged }
+    started(Requested) { command Charge => Charged }
     final Charged
-    on_stop :cancelled
+    stopped :cancelled
   end
 
   class ShopMachine < Sourced::Machine

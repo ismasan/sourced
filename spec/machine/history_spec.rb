@@ -75,7 +75,7 @@ module MachineHistoryTest
     Writing = Checkpoint(:writing)
     Reviewing = Checkpoint(:reviewing)
 
-    start(Writing) { command Review => Reviewing }
+    started(Writing) { command Review => Reviewing }
     checkpoint(Reviewing) { command Write => Writing }
   end
 

@@ -25,7 +25,7 @@ module MachineTreeTest
     Outline = Checkpoint(:outline)
     Agreed = Checkpoint(:agreed)
 
-    start(Outline) { command Agree => Agreed }
+    started(Outline) { command Agree => Agreed }
     final Agreed
   end
 
@@ -34,7 +34,7 @@ module MachineTreeTest
     Itinerary = Checkpoint(:itinerary)
     Finalised = Checkpoint(:finalised)
 
-    start Itinerary, OutlineMachine, on_done: { OutlineMachine::Agreed => Finalised }
+    started Itinerary, OutlineMachine, on_done: { OutlineMachine::Agreed => Finalised }
     final Finalised
   end
 
