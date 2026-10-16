@@ -361,6 +361,11 @@ RSpec.describe 'Sourced::Machine region mounts' do
   end
 
   describe 'children of a mounted machine' do
+    it 'are registered with the mounting machine' do
+      expect(MM::OrderWithLines.to_sourced_reactors).to eq([MM::OrderWithLines, MM::LineMachine])
+      expect(MM::OrderWithChecks.to_sourced_reactors).to eq([MM::OrderWithChecks, MM::CheckMachine])
+    end
+
     it 'starts and tracks them as the parent' do
       machine = MM::OrderWithLines
       instance = decided(machine, msg(MM::PlaceOrder))
