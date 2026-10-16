@@ -90,7 +90,10 @@ module MachineCompoundTest
 
     initial { command PlaceOrder => Placed }
     checkpoint Placed do
-      invoke ThingMachine, keys: ->(_context) { { thing_id: 't9' } }, on_done: { ThingMachine::Completed => Ready }
+      start ThingMachine do
+        payload { |_context, _checkpoint| { thing_id: 't9' } }
+        on_done ThingMachine::Completed => Ready
+      end
     end
     final Ready
   end

@@ -309,10 +309,11 @@ module Sourced
     end
 
     # A child machine the parent tracks: started by handlers that declare it in
-    # +starts:+, or invoked by a checkpoint ({NodeBuilder#invoke}). +node+,
-    # +keys+ and +on_done+ are for invoked children; +stop_on+, the placed
-    # checkpoints whose +stops+ name it, for started ones (filled by the {Tree}).
-    ChildSpec = Data.define(:machine, :kind, :stop_on, :node, :keys, :on_done) do
+    # +starts:+ (+kind+ +:spawn+), or by a checkpoint ({NodeBuilder#start},
+    # +kind+ +:invoke+). +node+, +payload+ and +on_done+ are for a checkpoint's
+    # child; +stop_on+, the placed checkpoints whose +stops+ name it, for
+    # handlers' (filled by the {Tree}).
+    ChildSpec = Data.define(:machine, :kind, :stop_on, :node, :payload, :on_done) do
       def invoke? = kind == :invoke
     end
 
@@ -572,21 +573,26 @@ module Sourced
 
       # Run a child machine while this checkpoint is active: started in the
       # decision that enters the checkpoint, sent its +Stop+ when the checkpoint
-      # is left, and its final checkpoint mapped onto one of ours.
+      # is left, and its final checkpoints mapped onto ours.
       #
       #   checkpoint AwaitingPayment do
-      #     invoke PaymentMachine,
-      #            keys: ->(_order) { { payment_id: SecureRandom.uuid } },
-      #            on_done: { PaymentMachine::Captured => Paid, PaymentMachine::Declined => PaymentFailed }
+      #     start PaymentMachine do
+      #       payload { |order, checkpoint| { payment_id: order.payment_id, amount: order.total } }
+      #       on_done PaymentMachine::Captured => Paid
+      #       on_done PaymentMachine::Declined => PaymentFailed
+      #     end
       #   end
       #
       # @param child [Class<Machine>] a machine with +started+ and +stopped+
-      # @param keys [#call(context)] the child's own keys, and any input for its +Started+
-      # @param on_done [Hash{Checkpoint => Checkpoint}] child final checkpoint => our checkpoint
-      def invoke(child, keys:, on_done: {})
-        raise DefinitionError, "#{@machine}: #{@node.label} can't invoke" if @node.initial? || @node.final?
+      # @yield evaluated in a {StartBuilder}: +payload+ (required) and +on_done+
+      def start(child, &block)
+        raise DefinitionError, "#{@machine}: #{@node.label} can't start children" if @node.initial? || @node.final?
+        raise DefinitionError, "#{@machine}: start #{child} needs a block with payload { |context, checkpoint| … }" unless block
 
-        @machine.send(:__define_invoke, child, node: @node, keys:, on_done:)
+        builder = StartBuilder.new(@machine, child).tap { |b| b.instance_eval(&block) }
+        raise DefinitionError, "#{@machine}: start #{child} needs payload { |context, checkpoint| … }" unless builder.payload_block
+
+        @machine.send(:__define_invoke, child, node: @node, payload: builder.payload_block, on_done: builder.on_done_pairs)
       end
 
       # Join over started children: once every child of +Child+ is at a final
@@ -634,6 +640,37 @@ module Sourced
         raise DefinitionError, "#{@machine}: invalid declaration #{declaration.inspect}, #{arrow.inspect}" if arrow.any?
 
         declaration
+      end
+    end
+
+    # Evaluates a checkpoint-level +start+'s block: +payload+ and +on_done+.
+    class StartBuilder
+      attr_reader :payload_block, :on_done_pairs
+
+      def initialize(machine, child)
+        @machine = machine
+        @child = child
+        @payload_block = nil
+        @on_done_pairs = []
+      end
+
+      # The child's +Started+ payload: its own keys (ours are filled in), and
+      # anything else as its +input+. Called once, when the child is started.
+      # @yieldparam context the domain context
+      # @yieldparam checkpoint [Checkpoint] the event that entered this checkpoint
+      def payload(&block)
+        raise DefinitionError, "#{@machine}: start #{@child}'s payload needs a block" unless block
+        raise DefinitionError, "#{@machine}: start #{@child} declares payload twice" if @payload_block
+
+        @payload_block = block
+      end
+
+      # Map the child's root finals onto targets of this checkpoint.
+      # @param mapping [Hash{Checkpoint => Checkpoint}] child final => our target
+      def on_done(mapping)
+        raise DefinitionError, "#{@machine}: start #{@child}'s on_done takes { Final => target }, got #{mapping.inspect}" unless Hash === mapping && mapping.any?
+
+        @on_done_pairs.concat(mapping.to_a)
       end
     end
 
@@ -1337,17 +1374,21 @@ module Sourced
         mounts[name] = RegionMount.new(name:, machine:, on_done:, compound:).tap { __generate_mounted(machine) }
       end
 
-      def __define_invoke(child, node:, keys:, on_done:)
+      def __define_invoke(child, node:, payload:, on_done:)
         __check_child_machine!(child)
         if (known = children_specs[child])
-          raise DefinitionError, "#{self}: #{child} is invoked twice" if known.invoke?
+          raise DefinitionError, "#{self}: #{child} is started by a checkpoint twice" if known.invoke?
 
-          raise DefinitionError, "#{self}: #{child} is started by handlers, so it can't be invoked too"
+          raise DefinitionError, "#{self}: #{child} is started by handlers, so a checkpoint can't start it too"
         end
-        raise DefinitionError, "#{self}: invoke #{child} needs keys: ->(context) { … }" unless keys.respond_to?(:call)
 
-        on_done = on_done.to_h { |final, target| [child.send(:__handle, final, declare: false), __own_target(target)] }
-        spec = ChildSpec.new(machine: child, kind: :invoke, stop_on: NONE, node:, keys:, on_done:)
+        on_done = on_done.each_with_object({}) do |(final, target), mapped|
+          final = child.send(:__handle, final, declare: false)
+          raise DefinitionError, "#{self}: start #{child} maps on_done #{final} twice" if mapped.key?(final)
+
+          mapped[final] = __own_target(target)
+        end
+        spec = ChildSpec.new(machine: child, kind: :invoke, stop_on: NONE, node:, payload:, on_done:)
         children_specs[child] = spec
         node.invokes << spec
         spec
@@ -1358,9 +1399,9 @@ module Sourced
         __check_child_machine!(child)
         case children_specs[child]
         in nil
-          children_specs[child] = ChildSpec.new(machine: child, kind: :spawn, stop_on: NONE, node: nil, keys: nil, on_done: {})
+          children_specs[child] = ChildSpec.new(machine: child, kind: :spawn, stop_on: NONE, node: nil, payload: nil, on_done: {})
         in ChildSpec => spec if spec.invoke?
-          raise DefinitionError, "#{self}: #{child} is invoked, so handlers can't start it too"
+          raise DefinitionError, "#{self}: #{child} is started by a checkpoint, so handlers can't start it too"
         else
           nil
         end
@@ -1549,7 +1590,7 @@ module Sourced
 
       def __check_invoke!(tree, node, spec)
         spec.on_done.each do |child_final, target|
-          __check_root_final!(spec.machine, child_final, "invoke #{spec.machine}'s on_done")
+          __check_root_final!(spec.machine, child_final, "start #{spec.machine}'s on_done")
           tree.resolve(node, target)
         end
       end
@@ -1613,7 +1654,7 @@ module Sourced
         raise DefinitionError, "#{prefix} accept commands" if node.commands.any?
         raise DefinitionError, "#{prefix} take events" if node.ons.any?
         raise DefinitionError, "#{prefix} have timers" if node.afters.any?
-        raise DefinitionError, "#{prefix} invoke children" if node.invokes.any?
+        raise DefinitionError, "#{prefix} start children" if node.invokes.any?
         raise DefinitionError, "#{prefix} have regions" if node.regions.any?
         raise DefinitionError, "#{prefix} join with done or children_done" if node.dones.any? || node.children_joins.any?
       end
@@ -1991,10 +2032,10 @@ module Sourced
     def invoke_step(active)
       active.each do |node|
         node.invokes.each do |spec|
-          entry_id = @runtime.entered_by(node.region)&.id
-          ref = @runtime.children(spec.machine).find { |child| child.entry_id == entry_id }
+          entered_by = @runtime.entered_by(node.region)
+          ref = @runtime.children(spec.machine).find { |child| child.entry_id == entered_by&.id }
           if ref.nil?
-            start_child(spec, spec.keys.call(context).to_h)
+            start_child(spec, spec.payload.call(context, entered_by).to_h)
             return true
           elsif ref.final? && (target = spec.on_done[ref.state])
             move(node, target, trigger: spec.machine::Finished.type)

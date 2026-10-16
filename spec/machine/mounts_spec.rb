@@ -186,7 +186,10 @@ module MachineMountsTest
   class ChecksRegion < Sourced::Machine
     initial { command StartCheck => :checking }
     checkpoint :checking do
-      invoke CheckMachine, keys: ->(_order) { { check_id: 'c1' } }, on_done: { CheckMachine::Passed => :checked }
+      start CheckMachine do
+        payload { |_order, _checkpoint| { check_id: 'c1' } }
+        on_done CheckMachine::Passed => :checked
+      end
     end
     final :checked
   end

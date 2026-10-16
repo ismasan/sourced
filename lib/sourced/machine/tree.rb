@@ -181,14 +181,14 @@ module Sourced
       end
 
       # One spec per child machine: several machines' handlers may start it,
-      # but an invoked child is invoked in one place only.
+      # but a checkpoint's child is started in one place only.
       def add_child(machine, spec)
         if (known = @children_specs[spec.machine])
           return unless known.invoke? || spec.invoke?
 
           raise DefinitionError,
                 "#{@top}: #{spec.machine} is a child of #{@owners[spec.machine]} and #{machine}, " \
-                "and an invoked child can't be started anywhere else"
+                "and a checkpoint's child can't be started anywhere else"
         end
 
         @children_specs[spec.machine] = spec
