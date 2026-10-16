@@ -161,9 +161,9 @@ module Sourced
     # A machine's commands produce the classes of the checkpoints they move
     # to (see {Machine.checkpoint_class}), plus what their blocks emit
     # (+event+), and the +Started+ of the children their +starts:+ declare. Entry, exit and
-    # +after+ actions, joins, invoked and stopped children are automations.
+    # +after+ actions, joins, and starting and stopping children are automations.
     # What runs on entering a checkpoint consumes its class; what runs on
-    # leaving it (exit actions, stopping its invoked children) consumes the
+    # leaving it (exit actions, stopping the children it started) consumes the
     # classes of the transitions that can leave it.
     # @api private
     def self.add_machine(machine, analyzer, nodes, command_ids, event_nodes)
@@ -232,7 +232,7 @@ module Sourced
         end
 
         node.invokes.each do |spec|
-          automation.call("#{node.path}-invoke-#{spec.machine.group_id}", "start(#{spec.machine.name})",
+          automation.call("#{node.path}-start-#{spec.machine.group_id}", "start(#{spec.machine.name})",
                           entering, [spec.machine::Started.type])
           automation.call("#{node.path}-stop-#{spec.machine.group_id}", "stop(#{spec.machine.name})",
                           leaving, [spec.machine::Stop.type])
@@ -252,8 +252,8 @@ module Sourced
     end
 
     # Every transition the definition declares, as +[source, target]+ placed
-    # nodes: commands, +children_done+, +always+, +done+, invoked and mounted
-    # machines' +on_done+, and +stopped+ (from each top-level checkpoint).
+    # nodes: commands, +children_done+, +always+, +done+, checkpoint-started and
+    # mounted machines' +on_done+, and +stopped+ (from each top-level checkpoint).
     # @api private
     def self.machine_transitions(machine)
       tree = machine.tree

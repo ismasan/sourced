@@ -142,7 +142,7 @@ module MachineMountsTest
     end
   end
 
-  # A child machine spawned from a mounted region.
+  # A child machine a mounted region's handler starts.
   class LineMachine < Sourced::Machine
     partition_by :order_id, :line_id
 
@@ -169,7 +169,7 @@ module MachineMountsTest
     end
   end
 
-  # A child machine invoked from a mounted region's checkpoint.
+  # A child machine a mounted region's checkpoint starts.
   class CheckMachine < Sourced::Machine
     partition_by :order_id, :check_id
 
@@ -375,8 +375,8 @@ RSpec.describe 'Sourced::Machine region mounts' do
     end
   end
 
-  describe 'children invoked by a mounted machine' do
-    it 'invokes the child when its checkpoint is entered, and maps its final' do
+  describe "children a mounted machine's checkpoint starts" do
+    it 'starts the child when its checkpoint is entered, and maps its final' do
       instance = decided(MM::OrderWithChecks, msg(MM::PlaceOrder))
       events = instance.decide(msg(MM::StartCheck))
       expect(events.map(&:class)).to eq([MM::OrderWithChecks.checkpoint_class(MM::ChecksRegion::Checking), MM::CheckMachine::Started])

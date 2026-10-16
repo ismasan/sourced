@@ -81,7 +81,7 @@ module MachineCompoundTest
     final Cancelled
   end
 
-  # The same machine, invoked as a child elsewhere.
+  # The same machine, started as a child by a checkpoint elsewhere.
   class InvokingMachine < Sourced::Machine
     partition_by :order_id
 
@@ -462,7 +462,7 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
   end
 
   describe 'the same machine as a child' do
-    it 'is invoked with its own partition, at its start' do
+    it 'is started with its own partition, at its start' do
       events = M::InvokingMachine.new(order_id: 'o1').decide(msg(M::PlaceOrder))
 
       expect(summary(events)).to eq(
