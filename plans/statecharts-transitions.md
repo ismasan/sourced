@@ -401,6 +401,168 @@ end
 
 R1 and R2 replace the event model together; the suite is red between them. R3 and R4 follow R2.
 
+## Revision: declared children
+
+Today a parent declares a child with `spawns Child, as:, stop_on:` and starts it imperatively, with `spawn :as, **payload` inside a handler block. So the definition says what children a machine can have, but not when they're started: Topology finds out by looking for `spawn` calls in the block's source (Prism, `SourceAnalyzer#calls_in_block`). Invoked children are declarative already, but under another verb and with their own `as:` / `keys:` / `on_done:` kwargs.
+
+This revision makes starting and stopping children part of the definition, with one verb pair that matches the messages each one appends (`Started`, `Stop`). The rule: **a child lives as long as the scope that started it.** A handler is a moment, so a child it starts is independent until something stops it; a checkpoint lasts, so a child it starts is stopped when the checkpoint is left.
+
+```ruby
+class LineItemMachine < Sourced::Machine
+  partition_by :order_id, :line_id
+
+  started Reserving do                       # was: start Reserving
+    command Reserve => Reserved | OutOfStock do |_line, cmd|
+      to(cmd.payload.available ? Reserved : OutOfStock)
+    end
+  end
+
+  checkpoint Reserved do
+    command Pick => Picked
+  end
+
+  final Picked
+  final OutOfStock
+
+  stopped Cancelled do                       # was: on_stop :cancelled
+    entry { |line| dispatch ReleaseStock, order_id: line.order_id, line_id: line.line_id }
+  end
+end
+
+class OrderMachine < Sourced::Machine
+  partition_by :order_id
+
+  started Open do
+    command AddLine, starts: LineItemMachine          # one child, keys from the payload
+
+    command Checkout => AwaitingPayment, starts: ParcelMachine | nil do |order, cmd|
+      cmd.payload.parcels.each { |p| start ParcelMachine, parcel_id: p.id }
+    end
+
+    command Abandon => Cancelled
+  end
+
+  checkpoint AwaitingPayment do
+    start PaymentMachine do                           # was: invoke
+      payload { |order, _checkpoint| { payment_id: order.payment_id, amount: order.total } }
+      on_done PaymentMachine::Captured => Paid
+      on_done PaymentMachine::Declined => PaymentFailed
+    end
+  end
+
+  checkpoint Paid do
+    children_done ParcelMachine => Shipped
+  end
+
+  final Cancelled do
+    stops LineItemMachine
+  end
+end
+```
+
+### Renames
+
+| Was | Now | Scope |
+|---|---|---|
+| `start X` / `start X, M, on_done:` | `started X` / `started X, M, on_done:` | class body: the machine's start checkpoint |
+| `on_stop X` | `stopped X` | class body: where `Stop` moves the machine |
+| `invoke Child, as:, keys:, on_done:` | `start Child do payload { … }; on_done … end` | checkpoint block |
+| `spawns Child, as:, stop_on:` | `starts: Child` on handlers, `stops Child` on checkpoints | — |
+| `spawn :as, **payload` | `start Child, **payload` | handler block (instance) |
+| `children(:as)`, `children_done :as => A` | `children(Child)`, `children_done Child => A` | — |
+
+`started` and `stopped` name checkpoints, as `initial` / `final` do, and match the messages that enter them: `Started` enters the `started` checkpoint, `Stop` moves the machine to the `stopped` one. The constants `Started`, `Finished` and `Stop` stay reserved, so `started :started` still leaves the handle anonymous.
+
+### `started` and `stopped`
+
+- **`started`** is today's class-level `start`, renamed: placement, compound starts (`started X, M, on_done:`) and the rules are unchanged.
+- **`stopped`** is `on_stop`, renamed, and it now places the checkpoint and takes its block, as `started` does. `on_stop` takes only a handle and places a bare final, so an entry action meant declaring the final first. Both forms work:
+
+  ```ruby
+  stopped Cancelled do                       # places a root final with this block
+    entry { … }
+  end
+
+  final Cancelled do … end
+  stopped Cancelled                          # marks an already-placed root final; raises if it isn't one
+  ```
+
+- Otherwise as `on_stop`: it generates `Stop` (keyed by the machine's partition keys, accepted from any started, non-final position, moving to the checkpoint, running exit actions), `Started` and `Finished`; it must be a final of the root region; it needs a name and comes after `partition_by`. A machine is a child when it declares `started` and `stopped`.
+
+### `starts:` on handlers
+
+- **`starts:` declares which children a handler may start.** It sits alongside the transition, and is an option on any handler: `command Cmd, starts: X` (data-only), `command Cmd => A, starts: X`, `on Event => A, starts: X`, `children_done X => A, starts: Y`.
+- **`Machine.|` builds a union of machines**, as `Checkpoint.|` builds `Targets`: `starts: A | B`, `starts: A | nil`. It's its own `Data` type (`Machine::Starts`), not `Targets`, so `Shipping | ParcelMachine` raises a `DefinitionError` naming both operands, as does any other non-machine member. As with `Targets`, `nil` goes last: `nil | A` is `NilClass#|` and returns `true`.
+- **What a handler must start mirrors what a transition must do.** `=> X | Y` moves to exactly one of them; `starts: A | B` starts at least one of them; `| nil` makes either optional:
+
+  | Declaration | With a block | Without a block |
+  |---|---|---|
+  | `starts: A` | at least one `A` | exactly one `A`, keys from the payload |
+  | `starts: A \| B` | at least one of them, any number | `DefinitionError` (which one?) |
+  | `starts: A \| nil` | zero or more `A` | `DefinitionError` (nothing to decide) |
+
+  The runtime counts a handler's starts after its block runs, as `run_handler` checks the target, and raises when the count doesn't fit (`TransitionError`, or a new `StartError`: decide in C1).
+- **Without a block,** the child's keys are the command's (or event's) attributes named by the child's partition keys, and its `Started`'s `input` is the rest of the payload, without either machine's partition keys. `validate!` checks the message declares every partition key of the child that the parent doesn't have.
+
+### `start` in handlers
+
+- **The instance-level `start Child, **payload` replaces `spawn`.** Class-level `started` declares where a machine starts; instance-level `start` makes another machine start there.
+- `start` raises unless the running handler declares `Child` in its `starts:`. Like `to`, it's only for handlers.
+- It appends `Child::Started` as `spawn` does now (`start_child`): the child's keys from the payload, the parent's filled in, the rest as `input`.
+
+### `start` in checkpoints (was `invoke`)
+
+```ruby
+checkpoint AwaitingPayment do
+  start PaymentMachine do
+    payload { |order, checkpoint| { payment_id: order.payment_id, amount: order.total } }
+    on_done PaymentMachine::Captured => Paid
+    on_done PaymentMachine::Declined => PaymentFailed
+  end
+end
+```
+
+- **Same semantics as `invoke`:** one child per entry of the checkpoint (matched by the entering event's id, `entry_id`), started as an eventless step after the decision that enters it, stopped when the checkpoint is left, and a mapped final moving the parent with the child's `Finished` type as `trigger`.
+- **The block is required, and so is `payload`.** There's no default: the entering checkpoint event carries only the parent's keys and the transition's paths, so nothing in it can supply the child's own keys, and deriving them (from the decision's message, or the event's id) would be magic. `validate!` raises for a `start` with no block or no `payload`.
+- **`payload { |context, checkpoint| … }`** returns the child's `Started` payload: its keys (the parent's are filled in) and anything else as `input`, as for `start` in handlers. `checkpoint` is the event that entered the checkpoint, for its `id` or `created_at`. The block is called once, when the child is started, and its result is recorded in `Started`, so a non-deterministic value (`SecureRandom.uuid`) is safe.
+- **`on_done Final => Target`**, one per line, maps a child's root final to a target of this checkpoint, as `invoke`'s `on_done:` hash does. A child with no `on_done` runs until it finishes or the checkpoint is left.
+- **No guard.** To start a child only sometimes, route through a transient checkpoint (`always AwaitingPayment, if: :payment_due?` then `always Paid`), so the condition is a state the chart shows and `in?` can query, as XState does with `invoke`. A guard on `start` would have to be re-evaluated after every decision, as guarded `always` is, which can start a child partway through its checkpoint.
+
+### Children keyed by machine class
+
+- **`as:` goes**, from spawned and invoked children alike. It was never stored (a `Started` doesn't carry it): it named the runtime's tracking, `children(:as)`, `children_done :as => …`, and ids in `to_h`, Mermaid and Topology. A machine can be a child only once already (`__define_child`), because a parent tracks children by the child's `Started` / `Finished` classes and couldn't tell two groups apart. An invoked child is matched to its checkpoint by `entry_id`, not by name. So the machine class is the key:
+  - `machine.children(LineItemMachine)`, `machine.children` for all;
+  - `children_done LineItemMachine => LinesDone`;
+  - `to_h`, Mermaid and Topology use the child's `group_id` where they used `as`.
+- **The machine-level `spawns` goes.** `validate!` builds the `ChildSpec`s from the tree: handlers' `starts:` (each machine once, whatever number of handlers start it), with `stop_on` taken from the `stops` that name it, and checkpoint-level `start`s. Mounted machines' declarations contribute to the top machine's, as `spawns` / `invoke` in a mounted machine do now, and a machine that starts children can still be mounted only once.
+- **One machine, one role:** a machine started by handlers can't also be started by a checkpoint, and a checkpoint-level `start` of a machine appears once in the tree. Same constraint as today.
+- If one machine is ever wanted in two roles, `as:` comes back as an option, stored in `Started`'s payload so tracking can tell the groups apart.
+
+### `stops` on checkpoints
+
+- **`stops Child` in a checkpoint's block** stops every running child of that machine when the checkpoint is entered, dispatching `Child::Stop` per child, as `stop_on` does now.
+- It belongs to the checkpoint's node, so in a machine mounted twice it applies only where it's placed.
+- `validate!` raises unless some handler in the top machine's tree declares `starts: Child`. Children started by a checkpoint are stopped by leaving it, not by `stops`.
+
+### What changes elsewhere
+
+- **Topology:** a handler produces its `starts:` machines' `Started` types from the declaration; the Prism lookup for `spawn` goes. Stop automations come from `stops`; the invoke automations are renamed but unchanged.
+- **`to_h`:** a handler's `on` entry lists the machines it starts; children are listed by `group_id`; a checkpoint lists what it `stops`. Invoked children stay in XState's `invoke` (that's its name there), with `id` the child's `group_id`.
+- **Mermaid:** labels a handler's edge with what it starts, e.g. `AddLine / starts LineItemMachine`.
+- **README, CLAUDE.md, specs and the holiday booking example** move to the new names.
+
+### Phases
+
+| # | Contents |
+|---|---|
+| C1 | **Renames.** `start` → `started`, `on_stop` → `stopped` (placing the checkpoint, with a block). Specs ported. |
+| C2 | **Handler children.** `Machine.\|` and `Machine::Starts`; `starts:` on command, `on` and `children_done` handlers; instance `start` with the count check; auto-start for blockless handlers; `stops`; `ChildSpec`s built in `validate!`, keyed by machine class; `children(Child)`, `children_done Child => …`; `spawns`, `spawn` and `as:` removed. Specs ported. |
+| C3 | **Checkpoint children.** Checkpoint-level `start Child do payload { … }; on_done … end` replaces `invoke`. Specs ported. |
+| C4 | **Rendering.** Topology, `to_h` and Mermaid read `starts:` / `stops` / checkpoint `start`; `SourceAnalyzer`'s `spawn` lookup removed. |
+| C5 | **Docs.** README and CLAUDE.md. |
+
+C1 comes first so the class-level `start` is free before C3 gives `start` a meaning in checkpoint blocks.
+
 ## Progress
 
 - **Phases 1–4, 7 and 9: done** (handles and the tree, `Transitioned` and replay, transition semantics, actions and timers, children with `Started` / `Finished`, `to_h` / Mermaid / Topology). All machine specs ported; the suite is green. Differences from the plan:
@@ -452,6 +614,7 @@ R1 and R2 replace the event model together; the suite is red between them. R3 an
   - **Shallow** restores each region's last checkpoint, then that checkpoint's default entry (compound starts; inline regions start at their initial position). **Deep** restores every region below, recursively. A region without history gets its default entry.
   - **Rendering:** `to_h` adds XState history nodes (`type: 'history'`, `history: 'shallow' | 'deep'`, keys `$history` / `$deep_history`, ids `<path>.$history`) to a checkpoint's `states`, only when something targets them; targets point at them. Mermaid draws the edge to the checkpoint, labelled with `(H)` / `(H*)`. Topology produces the checkpoint's class.
 - **Phase 10: done.** A stored path that names no checkpoint raises `Machine::UnresolvablePathError`, naming the path and the stored message's type and id: on replay (`entered`, and `exited` for history), on running a claimed event's entry and exit actions, and for a timer's `entered_at`. A timer whose path no longer resolves used to be treated as stale and refused; it now raises too. Mapping old names stays out (see the footnote).
+- **Revision C1: done.** Class-level `start` is `started`, `on_stop` is `stopped`, which places a root final with its block or marks one already placed (a block on an already-placed handle raises: placed twice). The old names are removed.
 - **Open:**
   - A handler in a machine mounted twice can't tell which placement it runs in, so both copies decide alike on the same command and state. Expose the placement (its path) to handlers?
   - Phase 11 (docs, examples).
