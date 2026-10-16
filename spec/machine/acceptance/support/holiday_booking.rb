@@ -225,7 +225,7 @@ module MachineAcceptanceHoliday
   #   levels, in the deciding command.
   # - External events: a payment gateway's DepositReceived and an airline's
   #   SeatsTicketed move the tour with `on`.
-  # - Children: one VisaApplication per traveller who needs one (spawned, joined
+  # - Children: one VisaApplication per traveller who needs one (started, joined
   #   with children_done), and an invoked AirportTransfer.
   REMINDER_SECONDS = 2 * 24 * 3600
   SEAT_HOLD_SECONDS = 20 * 60
@@ -407,8 +407,6 @@ module MachineAcceptanceHoliday
     VisaRefused = Checkpoint(:visa_refused)
     Cancelled = Checkpoint(:cancelled)
 
-    spawns VisaApplication, as: :visas, stop_on: Cancelled
-
     context { Tour.new }
 
     evolve TourRequested do |tour, evt|
@@ -461,23 +459,25 @@ module MachineAcceptanceHoliday
     end
 
     checkpoint AwaitingVisas do
-      command(RequestVisas) { |tour, _cmd| tour.visas_for.each { |id| spawn :visas, traveller_id: id } }
+      command RequestVisas, starts: VisaApplication | nil do |tour, _cmd|
+        tour.visas_for.each { |id| start VisaApplication, traveller_id: id }
+      end
 
-      children_done visas: Confirmed | VisaRefused do |_tour|
-        to(machine.children(:visas).all? { |visa| visa.state == VisaApplication::Granted } ? Confirmed : VisaRefused)
+      children_done VisaApplication => Confirmed | VisaRefused do |_tour|
+        to(machine.children(VisaApplication).all? { |visa| visa.state == VisaApplication::Granted } ? Confirmed : VisaRefused)
       end
 
       command CancelTour => Cancelled
     end
 
     checkpoint Confirmed do
-      invoke AirportTransfer, as: :transfer, keys: ->(_tour) { { transfer_id: 'airport' } },
+      invoke AirportTransfer, keys: ->(_tour) { { transfer_id: 'airport' } },
                               on_done: { AirportTransfer::Arranged => Completed }
     end
 
     final Completed
     final Unavailable
     final VisaRefused
-    final Cancelled
+    final(Cancelled) { stops VisaApplication }
   end
 end

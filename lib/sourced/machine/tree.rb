@@ -31,6 +31,7 @@ module Sourced
         @machines = []
         @resolved = {}
         @root = place_machine(machine, :root, nil, nil)
+        finish_children
       end
 
       # The placed nodes for a definition node: more than one when its machine is
@@ -72,10 +73,10 @@ module Sourced
       # @return [Array<Class<Machine>>] the machines mounted, in tree order, once each
       def mounted_machines = @machines.drop(1).uniq
 
-      # The machine that declares a child.
+      # The machine that declares a child (the first, for a child several start).
       # @param spec [ChildSpec]
       # @return [Class<Machine>]
-      def owner(spec) = @owners.fetch(spec)
+      def owner(spec) = @owners.fetch(spec.machine)
 
       # Where a transition declared on +node+ to +handle+ goes: the placement of
       # +handle+ in +node+'s region or the nearest ancestor region that has one,
@@ -179,18 +180,28 @@ module Sourced
         end
       end
 
+      # One spec per child machine: several machines' handlers may start it,
+      # but an invoked child is invoked in one place only.
       def add_child(machine, spec)
-        if @children_specs.key?(spec.as)
-          raise DefinitionError, "#{@top}: child #{spec.as.inspect} is declared twice (#{@owners[@children_specs[spec.as]]}, #{machine})"
-        end
-        if @children_specs.each_value.any? { |known| known.machine == spec.machine }
-          raise DefinitionError, "#{@top}: #{spec.machine} is already a child as another name"
+        if (known = @children_specs[spec.machine])
+          return unless known.invoke? || spec.invoke?
+
+          raise DefinitionError,
+                "#{@top}: #{spec.machine} is a child of #{@owners[spec.machine]} and #{machine}, " \
+                "and an invoked child can't be started anywhere else"
         end
 
-        @children_specs[spec.as] = spec
-        @owners[spec] = machine
-        [spec.machine::Started, spec.machine::Finished].each do |klass|
-          (@child_events[klass] ||= []) << spec
+        @children_specs[spec.machine] = spec
+        @owners[spec.machine] = machine
+      end
+
+      # Started children are stopped where a placed checkpoint +stops+ them.
+      def finish_children
+        @children_specs.transform_values! do |spec|
+          spec.invoke? ? spec : spec.with(stop_on: @all_nodes.select { |node| node.stops.include?(spec.machine) })
+        end
+        @children_specs.each_value do |spec|
+          [spec.machine::Started, spec.machine::Finished].each { |klass| (@child_events[klass] ||= []) << spec }
         end
       end
     end
@@ -276,6 +287,7 @@ module Sourced
       def exits = node.exits
       def afters = node.afters
       def invokes = node.invokes
+      def stops = node.stops
       def children_joins = node.children_joins
       def always = node.always
       def dones = node.dones

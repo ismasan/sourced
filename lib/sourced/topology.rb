@@ -167,7 +167,7 @@ module Sourced
 
     # A machine's commands produce the classes of the checkpoints they move
     # to (see {Machine.checkpoint_class}), plus what their blocks emit
-    # (+event+) and spawn (+spawn+, a child's +Started+). Entry, exit and
+    # (+event+), and the +Started+ of the children their +starts:+ declare. Entry, exit and
     # +after+ actions, joins, invoked and stopped children are automations.
     # What runs on entering a checkpoint consumes its class; what runs on
     # leaving it (exit actions, stopping its invoked children) consumes the
@@ -233,18 +233,18 @@ module Sourced
         end
 
         node.children_joins.each do |join|
-          child = machine.tree.children_specs.fetch(join.as).machine
-          automation.call("#{node.path}-children-done-#{join.as}", "children_done(#{join.as})", [child::Finished.type],
+          child = join.machine
+          automation.call("#{node.path}-children-done-#{child.group_id}", "children_done(#{child.group_id})", [child::Finished.type],
                           machine_block_produces(machine, analyzer, join.definition))
         end
 
         node.invokes.each do |spec|
-          automation.call("#{node.path}-invoke-#{spec.as}", "invoke(#{spec.machine.name})",
+          automation.call("#{node.path}-invoke-#{spec.machine.group_id}", "invoke(#{spec.machine.name})",
                           entering, [spec.machine::Started.type])
-          automation.call("#{node.path}-stop-#{spec.as}", "stop(#{spec.machine.name})",
+          automation.call("#{node.path}-stop-#{spec.machine.group_id}", "stop(#{spec.machine.name})",
                           leaving, [spec.machine::Stop.type])
           if spec.on_done.any?
-            automation.call("#{node.path}-on-done-#{spec.as}", "on_done(#{spec.as})", [spec.machine::Finished.type],
+            automation.call("#{node.path}-on-done-#{spec.machine.group_id}", "on_done(#{spec.machine.group_id})", [spec.machine::Finished.type],
                             eventless_closure(machine, spec.on_done.values.uniq).map(&type_of))
           end
         end
@@ -253,8 +253,8 @@ module Sourced
       machine.tree.children_specs.each_value do |spec|
         next if spec.invoke? || spec.stop_on.empty?
 
-        automation.call("stop-#{spec.as}", "stop(#{spec.machine.name})",
-                        spec.stop_on.map(&type_of), [spec.machine::Stop.type])
+        automation.call("stop-#{spec.machine.group_id}", "stop(#{spec.machine.name})",
+                        spec.stop_on.map { |node| type_of.call(node.key) }.uniq, [spec.machine::Stop.type])
       end
     end
 
@@ -312,9 +312,7 @@ module Sourced
         types << machine.__finished_class.type
       end
       types += resolve_refs(analyzer.calls_in_block(definition.block, :event), machine)
-      types += analyzer.calls_in_block(definition.block, :spawn).filter_map do |kind, value|
-        machine.tree.children_specs[value.to_sym]&.machine&.const_get(:Started)&.type if kind == :symbol
-      end
+      types += definition.started_machines.map { |child| child::Started.type }
       types.uniq
     end
 

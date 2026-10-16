@@ -106,10 +106,10 @@ module Sourced
           on_done: on_done_joins(node),
           always: eventless(node, node.always),
           children_done: node.children_joins.map do |join|
-            { as: join.as.to_s, targets: targets(node, join.definition.checkpoint_targets) }
+            { id: join.machine.group_id, targets: targets(node, join.definition.checkpoint_targets) }
           end,
           invoke: node.invokes.map do |spec|
-            { id: spec.as.to_s, src: spec.machine.name, on_done: on_done(node, spec.machine, spec.on_done) }
+            { id: spec.machine.group_id, src: spec.machine.name, on_done: on_done(node, spec.machine, spec.on_done) }
           end,
           mounts: node.regions.select(&:mount).map do |region|
             { region: region.name.to_s, src: region.machine.name, on_done: on_done(node, region.machine, region.on_done, region) }
@@ -170,12 +170,12 @@ module Sourced
 
       def child(spec)
         {
-          as: spec.as.to_s,
+          id: spec.machine.group_id,
           machine: spec.machine.name,
           kind: spec.kind.to_s,
           checkpoint: spec.node && @tree.placed(spec.node).first.path,
-          stop_on: spec.stop_on.map { |handle| @tree.placements(handle).first.path },
-          status: @runtime && { instances: @runtime.children(spec.as).map { |ref| child_ref(ref) } }
+          stop_on: spec.stop_on.map(&:path),
+          status: @runtime && { instances: @runtime.children(spec.machine).map { |ref| child_ref(ref) } }
         }
       end
 
