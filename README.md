@@ -827,7 +827,7 @@ end
 
 A machine is a child in one role: started by handlers (any number of them), or by one checkpoint.
 
-Registering a machine registers the children it starts too (including mounted machines' and children's own children), so `Sourced.register(OrderMachine)` also registers `LineItemMachine`.
+Registering a machine registers the children it starts too (including mounted machines' and children's own children), so `Sourced.register(OrderMachine)` also registers `LineItemMachine`. A `Sourced::Router` built directly raises `Sourced::Router::MissingReactorsError` on `setup!` if a machine's children aren't among its reactors.
 
 A child is only woken by messages carrying all of its partition keys: its own events, the parent's `Started`, and `Stop`. Parent facts with fewer keys (`OrderPlaced`) are in the child's partition reads, so it can evolve them, but they never wake it.
 

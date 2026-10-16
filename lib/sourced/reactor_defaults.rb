@@ -27,6 +27,19 @@ module Sourced
       reactor
     end
 
+    # The reactors +reactor+ stands for: what its optional
+    # +to_sourced_reactors+ returns, recursively (a machine returns itself and
+    # the children it starts), or else itself. Each appears once.
+    #
+    # @param reactor [Class, #to_sourced_reactors]
+    # @return [Array<Class>]
+    def expand(reactor, seen = Set.new)
+      return [] unless seen.add?(reactor)
+      return [reactor] unless reactor.respond_to?(:to_sourced_reactors)
+
+      reactor.to_sourced_reactors.flat_map { |r| r.equal?(reactor) ? [r] : expand(r, seen) }
+    end
+
     # Default class-method implementations. +self+ inside each is the reactor
     # class (they are installed as singleton methods on the reactor).
     module Defaults
