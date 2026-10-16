@@ -50,7 +50,7 @@ module MachineChildrenTest
   class LineItemMachine < Sourced::Machine
     partition_by :order_id, :line_id
     Cancelled = Checkpoint(:cancelled)
-    on_stop Cancelled
+    stopped Cancelled
 
     Added = Checkpoint(:added)
     Reserved = Checkpoint(:reserved)
@@ -62,7 +62,7 @@ module MachineChildrenTest
     # The parent's fact: never wakes a line, but is in its partition reads
     evolve(OrderPlaced) { |line, evt| line.currency = evt.payload.currency }
 
-    start Added do
+    started Added do
       entry { |line, _evt| dispatch ReserveStock, sku: line.sku, currency: line.currency }
       command StockReserved => Reserved
       command StockUnavailable => Failed
@@ -116,7 +116,7 @@ module MachineChildrenTest
   class PaymentMachine < Sourced::Machine
     partition_by :order_id, :payment_id
     Voided = Checkpoint(:voided)
-    on_stop Voided
+    stopped Voided
 
     Requested = Checkpoint(:requested)
     Captured = Checkpoint(:captured)
@@ -125,7 +125,7 @@ module MachineChildrenTest
     context { PaymentState.new }
     evolve(OrderPlaced) { |pay, evt| pay.amount = evt.payload.total }
 
-    start Requested do
+    started Requested do
       entry { |pay, _evt| dispatch ChargeCard, amount: pay.amount }
       command GatewayCaptured => Captured
       command GatewayDeclined => Declined
@@ -176,7 +176,7 @@ module MachineChildrenTest
     Packing = Checkpoint(:packing)
     Packed = Checkpoint(:packed)
 
-    start Packing do
+    started Packing do
       entry { |_parcel, _evt| dispatch PrintLabel }
       command PackParcel => Packed
     end
@@ -186,12 +186,12 @@ module MachineChildrenTest
 
   class ParcelMachine < Sourced::Machine
     partition_by :order_id, :parcel_id
-    on_stop :cancelled
+    stopped :cancelled
 
     Preparing = Checkpoint(:preparing)
     Shipped = Checkpoint(:shipped)
 
-    start Preparing, PackingMachine, on_done: { PackingMachine::Packed => Shipped }
+    started Preparing, PackingMachine, on_done: { PackingMachine::Packed => Shipped }
     final Shipped
   end
 
@@ -483,9 +483,9 @@ module MachineChildrenTest
 
       it 'keeps Started, Finished and Stop apart from checkpoints of the same name' do
         child = machine(:order_id, :line_id) do
-          start :started
+          started :started
           checkpoint :finished
-          on_stop :stop
+          stopped :stop
         end
 
         checkpoints = child.declared_checkpoints.values_at(:started, :finished, :stop)
@@ -493,22 +493,22 @@ module MachineChildrenTest
         expect([child::Started, child::Finished, child::Stop]).to all(satisfy { |klass| !(klass < Sourced::Machine::Checkpoint) })
       end
 
-      it 'rejects on_stop when its constants are taken' do
+      it 'rejects stopped when its constants are taken' do
         expect do
           machine(:order_id, :line_id) do
             const_set(:Started, Checkpoint(:started))
-            start self::Started
-            on_stop :cancelled
+            started self::Started
+            stopped :cancelled
           end
-        end.to raise_error(Sourced::Machine::DefinitionError, /on_stop generates Started, which is already defined/)
+        end.to raise_error(Sourced::Machine::DefinitionError, /stopped generates Started, which is already defined/)
       end
 
       it 'requires children to partition by the parent keys too' do
         other = Class.new(Sourced::Machine) do
           def self.name = 'MachineChildrenTest::Unrelated'
           partition_by :line_id
-          start :added
-          on_stop :cancelled
+          started :added
+          stopped :cancelled
         end
 
         expect { machine { spawns other, as: :others }.validate! }
@@ -517,8 +517,8 @@ module MachineChildrenTest
 
       it 'validates its children' do
         child = machine(:order_id, :line_id) do
-          start :added
-          on_stop :cancelled
+          started :added
+          stopped :cancelled
           Checkpoint(:stray)
         end
         parent = machine { spawns child, as: :lines }
@@ -528,12 +528,12 @@ module MachineChildrenTest
 
       it 'validates a child that spawns its parent back' do
         parent = machine do
-          start :opened
-          on_stop :closed
+          started :opened
+          stopped :closed
         end
         child = machine do
-          start :added
-          on_stop :cancelled
+          started :added
+          stopped :cancelled
         end
         parent.spawns child, as: :children
         child.spawns parent, as: :parents
@@ -542,18 +542,18 @@ module MachineChildrenTest
         expect(child.tree).to equal(child.tree)
       end
 
-      it 'requires children to declare start and on_stop' do
+      it 'requires children to declare started and stopped' do
         no_stop = Class.new(Sourced::Machine) do
           partition_by :order_id, :line_id
           consumer_group 'machine_children_test.no_stop'
-          start :added
+          started :added
         end
 
         expect do
           machine do
             spawns no_stop, as: :x
           end
-        end.to raise_error(Sourced::Machine::DefinitionError, /has no on_stop/)
+        end.to raise_error(Sourced::Machine::DefinitionError, /has no stopped checkpoint/)
       end
 
       it 'checks stop_on, on_done and children_done' do
@@ -579,14 +579,67 @@ module MachineChildrenTest
           .to raise_error(Sourced::Machine::DefinitionError, /children_done :lines doesn't name spawned children/)
       end
 
-      it 'requires on_stop machines to be named, after partition_by' do
+      it 'requires stopped machines to be named, after partition_by' do
         expect do
           Class.new(Sourced::Machine) do
             partition_by :order_id
-            on_stop :cancelled
+            stopped :cancelled
           end
         end
           .to raise_error(Sourced::Machine::DefinitionError, /needs a name/)
+      end
+
+      it 'places a root final with its block' do
+        child = machine(:order_id, :line_id) do
+          started(:added) { command PrintLabel => :cancelled }
+          stopped(:cancelled) { entry { |_line, _evt| nil } }
+        end
+
+        node = child.nodes.fetch(child::Cancelled)
+        expect(node.final?).to be(true)
+        expect(node.region.root?).to be(true)
+        expect(node.entries.size).to eq(1)
+        expect(child.stop_checkpoint).to eq(child::Cancelled)
+      end
+
+      it 'marks an already-placed root final' do
+        child = machine(:order_id, :line_id) do
+          started :added
+          final(:cancelled) { entry { |_line, _evt| nil } }
+          stopped self::Cancelled
+        end
+
+        expect(child.nodes.fetch(child::Cancelled).entries.size).to eq(1)
+        expect(child.stop_checkpoint).to eq(child::Cancelled)
+      end
+
+      it 'rejects a block for a checkpoint already placed' do
+        expect do
+          machine(:order_id, :line_id) do
+            started :added
+            final :cancelled
+            stopped(self::Cancelled) { entry { |_line, _evt| nil } }
+          end
+        end.to raise_error(Sourced::Machine::DefinitionError, /Cancelled is placed twice/)
+      end
+
+      it 'requires stopped to be a final of the root region' do
+        expect do
+          machine(:order_id, :line_id) do
+            started(:added) { command PrintLabel => :cancelled }
+            checkpoint :cancelled
+            stopped self::Cancelled
+          end
+        end.to raise_error(Sourced::Machine::DefinitionError, /stopped .*Cancelled must be a final checkpoint of the root region/)
+
+        expect do
+          machine(:order_id, :line_id) do
+            started :added do
+              region(:sub) { final :cancelled }
+            end
+            stopped self::Cancelled
+          end
+        end.to raise_error(Sourced::Machine::DefinitionError, /must be a final checkpoint of the root region/)
       end
 
       it 'requires reactions to use types with all partition keys' do

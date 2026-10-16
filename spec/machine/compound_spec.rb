@@ -36,7 +36,7 @@ module MachineCompoundTest
 
     initial { command BeginThing => Begun }   # standalone only
 
-    start Begun do
+    started Begun do
       entry { |_context, _evt| dispatch NotifyThingStarted }
       after(60) { |thing, _evt| dispatch Nudge, thing_id: thing.fetch(:thing_id) }
       command Progress => Progressed
@@ -49,7 +49,7 @@ module MachineCompoundTest
     end
 
     final Completed
-    on_stop Aborted
+    stopped Aborted
   end
 
   class OrderMachine < Sourced::Machine
@@ -128,7 +128,7 @@ module MachineCompoundTest
     Proposed = Checkpoint(:proposed)
     Agreed = Checkpoint(:agreed)
 
-    start Outline do
+    started Outline do
       entry { |_context, _evt| dispatch NotifyOutline }
       after(30) { |_context, _evt| dispatch RemindOutline }
       command(RemindOutline) { |_context, _cmd| nil }
@@ -147,7 +147,7 @@ module MachineCompoundTest
     Itinerary = Checkpoint(:itinerary)
     Finalised = Checkpoint(:finalised)
 
-    start Itinerary, OutlineMachine, on_done: { OutlineMachine::Agreed => Finalised } do
+    started Itinerary, OutlineMachine, on_done: { OutlineMachine::Agreed => Finalised } do
       entry { |_context, _evt| dispatch NotifyItinerary }
       exit { |_context, _evt| dispatch LeftItinerary }
       after(60) { |_context, _evt| dispatch RemindItinerary }
@@ -367,7 +367,7 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
     it 'enters the sub-state without leaving the compound checkpoint' do
       itinerary_machine = stub_const('MachineCompoundTest::FastTrackItineraryMachine', Class.new(Sourced::Machine) do
         consumer_group 'machine_compound_test.fast_track_itinerary_machine'
-        start :itinerary, M::OutlineMachine do
+        started :itinerary, M::OutlineMachine do
           command M::FastTrack => M::OutlineMachine::Proposed
         end
       end)

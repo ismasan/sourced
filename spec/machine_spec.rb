@@ -303,7 +303,7 @@ RSpec.describe Sourced::Machine do
     it 'locks a mounted machine once the machine that mounts it is validated' do
       mounted = Class.new(Sourced::Machine) do
         def self.name = 'MachineTest::LockedRegion'
-        start :waiting
+        started :waiting
       end
       parent = machine do
         initial { command Ping => :pinged }

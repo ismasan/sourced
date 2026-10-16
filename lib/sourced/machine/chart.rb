@@ -11,7 +11,7 @@ module Sourced
     #   its key in +states+ its name.
     # * A region's initial position is a node of its own (+type: 'initial'+,
     #   id +"<region path>.initial"+), since it accepts commands. A machine with
-    #   a +start+ checkpoint and no +initial+ block has none: it starts at +start+.
+    #   a +started+ checkpoint and no +initial+ block has none: it starts there.
     # * A checkpoint with regions is +type: 'parallel'+, its +states+ the regions.
     # * A compound checkpoint (a machine's, see {Machine.checkpoint}) is
     #   +type: 'compound'+, its +states+ the machine's checkpoints, its +initial+
@@ -89,7 +89,7 @@ module Sourced
       end
 
       # Where a region without an initial position starts: a compound
-      # checkpoint's machine's start, or the machine's own +start+.
+      # checkpoint's machine's start, or the machine's own +started+ checkpoint.
       def start_node(region) = region.compound? ? region.start_node : region.nodes.fetch(@machine.start_checkpoint)
 
       def node(node)
