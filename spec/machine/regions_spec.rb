@@ -322,6 +322,14 @@ RSpec.describe 'Sourced::Machine regions' do
     end
   end
 
+  describe 'to_mermaid' do
+    it "draws a checkpoint's transition into its own region beside it, which Mermaid can lay out" do
+      lines = M.to_mermaid.lines.map(&:chomp)
+
+      expect(lines).to include('  placed --> placed_shipping_packed : Rush')
+    end
+  end
+
   describe 'entry and exit actions' do
     it 'exits the active checkpoints innermost first' do
       given(*history_placed, *history_charging)

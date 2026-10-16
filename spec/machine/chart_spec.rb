@@ -455,6 +455,37 @@ module MachineChartTest
     end
 
     describe '.to_mermaid' do
+      it "notes data-only starts on an initial position: the root's as an initial state, a region's on its composite" do
+        leg = LegMachine
+        root = Class.new(Sourced::Machine) do
+          def self.name = 'MachineChartTest::InitialNotes'
+          partition_by :trip_id
+          initial do
+            command AddLeg, starts: leg
+            command Open => :opened
+          end
+          checkpoint :opened do
+            region :legs do
+              initial { command AddLeg, starts: leg }
+            end
+          end
+        end
+
+        expect(root.to_mermaid).to eq(<<~MERMAID.chomp)
+          stateDiagram-v2
+            state "initial" as initial
+            state "opened" as opened
+            [*] --> initial
+            initial --> opened : Open
+            note right of initial
+              AddLeg / starts LegMachine
+            end note
+            note right of opened
+              AddLeg / starts LegMachine
+            end note
+        MERMAID
+      end
+
       it "labels handlers' edges with what they start, and notes data-only starts and stops" do
         expect(StartingMachine.to_mermaid).to eq(<<~MERMAID.chomp)
           stateDiagram-v2
@@ -466,7 +497,7 @@ module MachineChartTest
             opened --> quoted : Quote / starts ChargeMachine | nil
             opened --> cancelled : Cancel
             opened --> quoted : on Settled / starts LegMachine
-            quoted --> done : children_done MachineChartTest::LegMachine / starts ChargeMachine
+            quoted --> done : children_done LegMachine / starts ChargeMachine
             done --> [*]
             cancelled --> [*]
             note right of opened
