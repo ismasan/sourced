@@ -415,7 +415,7 @@ module MachineChildrenTest
                  entered: ['paid'])
       end
 
-      it 'hands on_done mappings and invoked children to after_sync' do
+      it "hands on_done mappings and checkpoints' children to after_sync" do
         run(router, gateway(GatewayCaptured, payment_ids.first))
 
         expect(SYNCED).to include([RequestPayment, [BillingMachine::AwaitingPayment, PaymentMachine::Started]])
@@ -435,7 +435,7 @@ module MachineChildrenTest
         expect(billing.value).to eq(BillingMachine::TimedOut)
       end
 
-      it 'invokes a fresh child on re-entry, and only maps the current one' do
+      it 'starts a fresh child on re-entry, and only maps the current one' do
         first = payment_ids.first
         run(router, gateway(GatewayDeclined, first))
         expect(billing.value).to eq(BillingMachine::PaymentFailed)
@@ -794,7 +794,7 @@ module MachineChildrenTest
         expect { parent.validate! }.to raise_error(Sourced::Machine::DefinitionError, /stray.* declared but never placed/)
       end
 
-      it 'validates a child that spawns its parent back' do
+      it 'validates a child that starts its parent back' do
         parent = machine do
           started :opened
           stopped :closed

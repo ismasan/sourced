@@ -318,8 +318,8 @@ module Sourced
     end
 
     # A child as its parent knows it: its own keys (beyond the parent's), the
-    # checkpoint it started at, or the final one it finished at, and for an
-    # invoked child, the parent checkpoint entry it was invoked for.
+    # checkpoint it started at, or the final one it finished at, and for a
+    # child a checkpoint started, the parent checkpoint entry it was started for.
     ChildRef = Data.define(:keys, :state, :final, :entry_id) do
       def final? = final
     end
@@ -704,7 +704,7 @@ module Sourced
       def final? = @runtime.current_node(@runtime.root).final?
 
       # @overload children(child)
-      #   @return [Array<ChildRef>] the children of machine +child+, started or invoked
+      #   @return [Array<ChildRef>] the children of machine +child+, started by a handler or a checkpoint
       # @overload children
       #   @return [Hash{Class<Machine> => Array<ChildRef>}] every child, by machine
       def children(child = nil) = child ? @runtime.children(child) : @runtime.all_children
@@ -748,8 +748,8 @@ module Sourced
         @children = {}
       end
 
-      # Record a child's start or finish. An invoked child keeps the entry it
-      # was first invoked for.
+      # Record a child's start or finish. A checkpoint's child keeps the entry
+      # it was first started for.
       def track_child(spec, keys, state:, final:, entry_id:)
         refs = (@children[spec.machine] ||= {})
         known = refs[keys]
@@ -921,8 +921,8 @@ module Sourced
       # @return [Hash{Symbol => RegionMount}] regions that are other machines
       def mounts = @mounts ||= {}
 
-      # The children this machine's own handlers start or its checkpoints
-      # invoke, as declared (the {Tree} merges mounted machines', and fills
+      # The children this machine's own handlers or checkpoints start, as
+      # declared (the {Tree} merges mounted machines', and fills
       # +stop_on+).
       # @return [Hash{Class<Machine> => ChildSpec}]
       def children_specs = @children_specs ||= {}
@@ -1699,8 +1699,8 @@ module Sourced
           elsif (__transition_class?(msg.class) || child_event?(msg.class) || instance.reacts_to?(msg)) &&
                 instance.should_react?(instance.context, msg, replaying:)
             # A child finishing can complete a join or map onto one of our
-            # checkpoints, and being started can invoke a child of our own:
-            # decided here, under the guard.
+            # checkpoints, and being started can enter a checkpoint that starts
+            # a child of our own: decided here, under the guard.
             joins = child_event?(msg.class) || __started?(msg) ? instance.__decide_eventless : NONE
             actions = Actions.build_for(joins, guard:, source: msg)
             actions += Actions.build_for(instance.__react(msg), source: msg)
@@ -1816,7 +1816,7 @@ module Sourced
 
     # What the current configuration decides without a command, until nothing
     # is left: +always+, mounted machines' +on_done+, +done+ joins,
-    # +children_done+ joins, invoking children, and mapping invoked children's
+    # +children_done+ joins, starting checkpoints' children, and mapping their
     # results.
     # @api private
     # @return [Array<Sourced::Message>]
@@ -1862,7 +1862,7 @@ module Sourced
     end
 
     # Run the exit actions of the checkpoints +msg+ left (innermost first,
-    # stopping the children they invoked), the entry actions and timers of the
+    # stopping the children they started), the entry actions and timers of the
     # ones it entered (stopping the children their +stops+ name), then
     # any +reaction+ to it.
     # @api private
@@ -2026,7 +2026,7 @@ module Sourced
       false
     end
 
-    # An active checkpoint that invokes a child, with no child for its current
+    # An active checkpoint that starts a child, with no child for its current
     # entry, starts one; one whose child finished at a mapped final checkpoint
     # moves to the mapped checkpoint.
     def invoke_step(active)

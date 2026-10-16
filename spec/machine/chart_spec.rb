@@ -10,6 +10,7 @@ module MachineChartTest
   Open = command(:open, :trip_id)
   Note = command(:note, :trip_id)
   Noted = event(:noted, :trip_id)
+  Settled = event(:settled, :trip_id)
   Quote = command(:quote, :trip_id)
   Book = command(:book, :trip_id)
   Reopen = command(:reopen, :trip_id)
@@ -118,6 +119,27 @@ module MachineChartTest
     final(Cancelled) { stops LegMachine }
   end
 
+  # Handlers that start children, and a checkpoint that stops them.
+  class StartingMachine < Sourced::Machine
+    partition_by :trip_id
+
+    initial { command Open => :opened }
+
+    checkpoint :opened do
+      command AddLeg, starts: LegMachine
+      command(Quote => :quoted, starts: ChargeMachine | nil) { |_s, _cmd| nil }
+      on(Settled => :quoted, starts: LegMachine) { |_s, _evt| start LegMachine, leg_id: 'l1' }
+      command Cancel => :cancelled
+    end
+
+    checkpoint :quoted do
+      children_done(LegMachine => :done, starts: ChargeMachine) { |_s| start ChargeMachine, charge_id: 'c1' }
+    end
+
+    final :done
+    final(:cancelled) { stops LegMachine }
+  end
+
   # Mounted twice, as two regions: one handle per checkpoint, at two paths.
   class SupplierMachine < Sourced::Machine
     Holding = Checkpoint(:holding)
@@ -219,14 +241,15 @@ module MachineChartTest
       it 'describes checkpoints and their transitions' do
         expect(chart[:states]['initial']).to include(id: 'initial', key: 'initial', type: 'initial')
         expect(chart[:states]['initial'][:on]).to eq(
-          t(:open) => { kind: 'command', event: t(:open), label: 'Open', targets: ['opened'], optional: false, auto: true }
+          t(:open) => { kind: 'command', event: t(:open), label: 'Open', targets: ['opened'], optional: false, auto: true,
+                        starts: [], starts_optional: false }
         )
 
         opened = chart[:states]['opened']
         expect(opened).to include(
           id: 'opened', key: 'opened', type: 'atomic', machine: 'MachineChartTest::TripMachine',
           entry: 1, exit: 0, after: [{ delay: 60 }], on_done: nil, invoke: [], mounts: [], states: {}, status: nil,
-          children_done: [{ id: 'MachineChartTest::LegMachine', targets: ['legs_done'] }]
+          children_done: [{ id: 'MachineChartTest::LegMachine', targets: ['legs_done'], starts: [], starts_optional: false }]
         )
         expect(opened).not_to include(:message_type, :class)
         expect(opened[:on][t(:note)]).to include(targets: [], optional: true, auto: false)
@@ -234,7 +257,7 @@ module MachineChartTest
         expect(chart[:states]['done'][:type]).to eq('final')
       end
 
-      it 'describes regions, joins and invoked children' do
+      it "describes regions, joins and checkpoints' children" do
         booked = chart[:states]['booked']
         expect(booked).to include(id: 'booked', type: 'parallel', on_done: 'done')
         payment = booked[:states]['payment']
@@ -295,6 +318,23 @@ module MachineChartTest
         expect(itinerary[:states].keys).to eq(%w[outline agreed])
         expect(itinerary[:states]['agreed']).to include(id: 'planning.itinerary.agreed', machine: 'MachineChartTest::OutlineMachine')
         expect(itinerary[:states]['agreed'][:on][t(:revise)][:targets]).to eq(['planning.itinerary.outline'])
+      end
+
+      it "lists the children handlers start, and those a checkpoint stops" do
+        chart = StartingMachine.to_h
+        opened = chart[:states]['opened']
+        leg, charge = 'MachineChartTest::LegMachine', 'MachineChartTest::ChargeMachine'
+
+        expect(opened[:on][t(:add_leg)]).to include(targets: [], starts: [leg], starts_optional: false)
+        expect(opened[:on][t(:quote)]).to include(targets: ['quoted'], starts: [charge], starts_optional: true)
+        expect(opened[:on][t(:settled)]).to include(kind: 'event', targets: ['quoted'], starts: [leg], starts_optional: false)
+        expect(opened[:on][t(:cancel)]).to include(starts: [], starts_optional: false)
+        expect(chart[:states]['quoted'][:children_done]).to eq([{ id: leg, targets: ['done'], starts: [charge], starts_optional: false }])
+        expect(chart[:states]['cancelled'][:stops]).to eq([leg])
+        expect(opened[:stops]).to eq([])
+        expect(chart[:children].map { |c| c.slice(:id, :kind, :stop_on) }).to contain_exactly(
+          { id: leg, kind: 'spawn', stop_on: ['cancelled'] }, { id: charge, kind: 'spawn', stop_on: [] }
+        )
       end
 
       it 'is JSON-serializable' do
@@ -415,6 +455,29 @@ module MachineChartTest
     end
 
     describe '.to_mermaid' do
+      it "labels handlers' edges with what they start, and notes data-only starts and stops" do
+        expect(StartingMachine.to_mermaid).to eq(<<~MERMAID.chomp)
+          stateDiagram-v2
+            state "opened" as opened
+            state "quoted" as quoted
+            state "done" as done
+            state "cancelled" as cancelled
+            [*] --> opened : Open
+            opened --> quoted : Quote / starts ChargeMachine | nil
+            opened --> cancelled : Cancel
+            opened --> quoted : on Settled / starts LegMachine
+            quoted --> done : children_done MachineChartTest::LegMachine / starts ChargeMachine
+            done --> [*]
+            cancelled --> [*]
+            note right of opened
+              AddLeg / starts LegMachine
+            end note
+            note right of cancelled
+              stops LegMachine
+            end note
+        MERMAID
+      end
+
       it 'draws a machine mounted twice once per region, and a nested compound start' do
         expect(TourMachine.to_mermaid).to eq(<<~MERMAID.chomp)
           stateDiagram-v2

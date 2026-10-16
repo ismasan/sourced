@@ -20,8 +20,11 @@ module Sourced
     #   to as +targets+ (empty for a data-only command). Transitions are listed
     #   on the checkpoint that takes them, targets in any region.
     # * Joins and children use Sourced's names: +on_done+ (the +done+ join),
-    #   +children_done+, +invoke+ (+on_done+ by child final), and the machine's
-    #   +children+, +start+ and +stop+. +mounts+ lists the machines a checkpoint
+    #   +children_done+, +invoke+ (a checkpoint's +start+, +on_done+ by child
+    #   final), and the machine's +children+, +start+ and +stop+. A handler
+    #   (+on+ entries, +children_done+) lists the children its +starts:+
+    #   declares as +starts+ (+group_id+s), +starts_optional+ when it may start
+    #   none; a checkpoint lists the children it +stops+. +mounts+ lists the machines a checkpoint
     #   mounts (as regions, or as a compound checkpoint's), with +on_done+ by
     #   their root final.
     # * +entry+ and +exit+ count the checkpoint's actions; +after+ lists its
@@ -106,11 +109,12 @@ module Sourced
           on_done: on_done_joins(node),
           always: eventless(node, node.always),
           children_done: node.children_joins.map do |join|
-            { id: join.machine.group_id, targets: targets(node, join.definition.checkpoint_targets) }
+            { id: join.machine.group_id, targets: targets(node, join.definition.checkpoint_targets), **starts(join.definition) }
           end,
           invoke: node.invokes.map do |spec|
             { id: spec.machine.group_id, src: spec.machine.name, on_done: on_done(node, spec.machine, spec.on_done) }
           end,
+          stops: node.stops.map(&:group_id),
           mounts: node.regions.select(&:mount).map do |region|
             { region: region.name.to_s, src: region.machine.name, on_done: on_done(node, region.machine, region.on_done, region) }
           end,
@@ -158,8 +162,15 @@ module Sourced
           label: definition.command_class.name.split('::').last,
           targets: targets(node, definition.checkpoint_targets),
           optional: definition.optional?,
-          auto: definition.auto?
+          auto: definition.auto?,
+          **starts(definition)
         }
+      end
+
+      # The children a handler may start, by +group_id+; +starts_optional+
+      # when it may start none (+starts: A | nil+).
+      def starts(definition)
+        { starts: definition.started_machines.map(&:group_id), starts_optional: definition.starts.include?(nil) }
       end
 
       def stop

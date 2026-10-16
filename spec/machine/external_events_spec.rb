@@ -282,7 +282,7 @@ RSpec.describe 'Sourced::Machine external events' do
       on = MX::OrderMachine.to_h[:states]['placed'][:on]
       expect(on['machine_external_events_test.payment_captured']).to eq(
         kind: 'event', event: 'machine_external_events_test.payment_captured', label: 'PaymentCaptured',
-        targets: ['paid'], optional: false, auto: true
+        targets: ['paid'], optional: false, auto: true, starts: [], starts_optional: false
       )
       expect(MX::OrderMachine.to_h[:states]['paid'][:on]['machine_external_events_test.ship']).to include(kind: 'command')
     end

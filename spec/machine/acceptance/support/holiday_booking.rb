@@ -370,7 +370,7 @@ module MachineAcceptanceHoliday
     final Refused
   end
 
-  # Invoked once the tour is confirmed.
+  # Started once the tour is confirmed.
   class AirportTransfer < Sourced::Machine
     partition_by :booking_id, :transfer_id
 
