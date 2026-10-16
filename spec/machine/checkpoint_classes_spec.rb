@@ -218,7 +218,7 @@ RSpec.describe 'Sourced::Machine checkpoint classes of mounted machines' do
       claims.each { |reactor, claimed| expect(foreign(claimed, reactor)).to be_empty }
     end
 
-    it 'a parent spawning and mounting one machine' do
+    it 'a parent starting and mounting one machine' do
       router = Sourced::Router.new(store:, reactors: [mod::ShopMachine, mod::ChargeMachine]).setup!
       claims = spy_claims(mod::ShopMachine, mod::ChargeMachine)
 

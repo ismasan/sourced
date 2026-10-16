@@ -4,8 +4,10 @@ module Sourced
   class Machine
     # Draws a machine as a Mermaid state diagram (+stateDiagram-v2+):
     # checkpoints, regions as concurrent sections, and transitions labelled
-    # with the commands (or joins) that take them. Data-only commands, which
-    # don't move the machine, aren't drawn.
+    # with the commands (or joins) that take them, and +/ starts Child+ for
+    # the children a handler's +starts:+ declares. Data-only handlers, which
+    # don't move the machine, have no edge: those that start children, and the
+    # children a checkpoint +stops+, are listed in a note on the checkpoint.
     #
     # State ids are checkpoint paths, +.+ as +_+. A transition to an ancestor
     # region's checkpoint starts from the state that takes it, and is declared
@@ -24,11 +26,13 @@ module Sourced
         @machine = machine
         @tree = machine.tree
         @edges = Hash.new { |h, k| h[k] = [] }
+        @notes = Hash.new { |h, k| h[k] = [] }
       end
 
       # @return [String]
       def to_s
         @edges.clear
+        @notes.clear
         collect_edges
         (['stateDiagram-v2'] + region_lines(@tree.root, '  ')).join("\n")
       end
@@ -37,23 +41,16 @@ module Sourced
 
       def collect_edges
         @tree.all_nodes.each do |node|
-          node.commands.each_value do |definition|
-            label = definition.command_class.name.split('::').last
-            definition.checkpoint_targets.each { |target| edge(node, target, label) }
-          end
-          node.ons.each_value do |definition|
-            label = "on #{definition.command_class.name.split('::').last}"
-            definition.checkpoint_targets.each { |target| edge(node, target, label) }
-          end
+          node.commands.each_value { |definition| handler(node, definition, short_name(definition.command_class)) }
+          node.ons.each_value { |definition| handler(node, definition, "on #{short_name(definition.command_class)}") }
+          @notes[node] << "stops #{node.stops.map { short_name(it) }.join(', ')}" if node.stops.any?
           { 'always' => node.always, 'done' => node.dones }.each do |kind, list|
             list.each do |eventless|
               label = eventless.guarded? ? "#{kind} [#{eventless.guard_label}]" : kind
               edge(node, eventless.target, label)
             end
           end
-          node.children_joins.each do |join|
-            join.definition.checkpoint_targets.each { |target| edge(node, target, "children_done #{join.machine.group_id}") }
-          end
+          node.children_joins.each { |join| handler(node, join.definition, "children_done #{join.machine.group_id}") }
           node.invokes.each do |spec|
             spec.on_done.each do |child_final, target|
               edge(node, target, "#{spec.machine.group_id} #{child_final.checkpoint_name}")
@@ -71,6 +68,18 @@ module Sourced
           edge(node, stop.key, 'Stop', from: stop) unless node.final? || node.initial?
         end
       end
+
+      # A handler's edges, or a note for a data-only one that starts children.
+      def handler(node, definition, label)
+        if definition.starts.any?
+          label = "#{label} / starts #{definition.starts.map { it ? short_name(it) : 'nil' }.join(' | ')}"
+        end
+        targets = definition.checkpoint_targets
+        targets.each { |target| edge(node, target, label) }
+        @notes[node] << label if targets.empty? && definition.starts.any?
+      end
+
+      def short_name(klass) = klass.name.split('::').last
 
       # Record a transition in the region it's drawn in: the target's, from the
       # state that takes it, or the state containing a region's initial position.
@@ -108,6 +117,13 @@ module Sourced
         end
         region.nodes.each_value do |node|
           lines << "#{indent}#{id(node)} --> [*]" if node.final?
+        end
+        region.nodes.each_value do |node|
+          next if node.initial? || @notes[node].empty?
+
+          lines << "#{indent}note right of #{id(node)}"
+          @notes[node].uniq.each { |note| lines << "#{indent}  #{note}" }
+          lines << "#{indent}end note"
         end
         lines
       end

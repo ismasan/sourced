@@ -9,6 +9,7 @@ module MachineTopologyTest
   Open = command(:open, :trip_id)
   Note = command(:note, :trip_id)
   Noted = event(:noted, :trip_id)
+  Settled = event(:settled, :trip_id)
   Book = command(:book, :trip_id)
   Cancel = command(:cancel, :trip_id)
   AddLeg = command(:add_leg, :trip_id, :leg_id)
@@ -78,7 +79,7 @@ module MachineTopologyTest
       def command(name) = nodes.find { |n| n.type == 'command' && n.id == t(name) }
       def automation(name) = nodes.find { |n| n.type == 'automation' && n.name == name }
 
-      it "has commands produce their targets' checkpoint classes, data events and spawned children" do
+      it "has commands produce their targets' checkpoint classes, data events and started children" do
         expect(command(:open).produces).to eq([trip(:opened)])
         expect(command(:note).produces).to eq([t(:noted)])
         expect(command(:add_leg).produces).to eq([t('leg_machine.runtime.child.started')])
@@ -98,7 +99,7 @@ module MachineTopologyTest
         )
       end
 
-      it "stops an invoked child on the transitions that leave its checkpoint" do
+      it "stops a checkpoint's child on the transitions that leave its checkpoint" do
         machine = Class.new(Sourced::Machine) do
           def self.name = 'MachineTopologyTest::Invoking'
           partition_by :trip_id
@@ -124,6 +125,46 @@ module MachineTopologyTest
 
         # Not :noted, which moves within :waiting's region without leaving it.
         expect(stop.consumes).to contain_exactly(invoking.call(:booked), invoking.call(:cancelled))
+        start = nodes.find { |n| n.type == 'automation' && n.name == 'start(MachineTopologyTest::LegMachine)' }
+        expect(start).to have_attributes(id: "waiting-start-#{LegMachine.group_id}-#{machine.group_id}-aut",
+                                         consumes: [invoking.call(:waiting)], produces: [leg('child.started')])
+      end
+
+      it "produces the Started of the children every kind of handler starts, mounted machines' too" do
+        lines = Class.new(Sourced::Machine) do
+          def self.name = 'MachineTopologyTest::Lines'
+          initial { command AddLeg, starts: LegMachine }
+          final(:closed) { stops LegMachine }
+        end
+        machine = Class.new(Sourced::Machine) do
+          def self.name = 'MachineTopologyTest::Starting'
+          partition_by :trip_id
+
+          initial { command Open => :opened }
+          checkpoint :opened do
+            region :lines, lines
+            on(Settled => :settled, starts: LegMachine) { |_s, _evt| start LegMachine, leg_id: 'l1' }
+            command(Book => :settled, starts: LegMachine | nil) { |_s, _cmd| nil }
+          end
+          checkpoint :settled do
+            children_done(LegMachine => :done, starts: LegMachine) { |_s| start LegMachine, leg_id: 'l2' }
+          end
+          final :done
+        end
+        nodes = Sourced::Topology.build([machine])
+        find = ->(type, name) { nodes.find { |n| n.type == type && (n.id == name || n.name == name) } }
+        started = leg('child.started')
+        starting = ->(name) { t("starting.runtime.#{name}") }
+
+        expect(find.call('command', t(:add_leg)).produces).to eq([started])
+        expect(find.call('command', t(:book)).produces).to eq([starting.call(:settled), started])
+        expect(find.call('automation', 'on(opened, Settled)').produces).to eq([starting.call(:settled), started])
+        expect(find.call('automation', "children_done(#{LegMachine.group_id})")).to have_attributes(
+          consumes: [leg('child.finished')], produces: [starting.call(:done), started]
+        )
+        expect(find.call('automation', 'stop(MachineTopologyTest::LegMachine)')).to have_attributes(
+          consumes: [t('starting.runtime.mounted.machine_topology_test.lines.closed')], produces: [leg('child.stop')]
+        )
       end
 
       it "follows a mounted machine's on_done from the command that reaches its final" do
@@ -176,6 +217,12 @@ module MachineTopologyTest
             booked --> done : done
             done --> [*]
             cancelled --> [*]
+            note right of opened
+              AddLeg / starts LegMachine
+            end note
+            note right of cancelled
+              stops LegMachine
+            end note
         MERMAID
       end
 

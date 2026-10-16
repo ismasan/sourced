@@ -10,7 +10,7 @@ require_relative 'support/holiday_booking'
 # restarts its regions, data-only commands, an optional transition (`| nil`)
 # and a checkout timer. Then a guided tour (see the support file's header):
 # nested compound starts, history, `always`, a machine mounted twice, `on`,
-# spawned and invoked children, and timers left behind.
+# children started by handlers and by checkpoints, and timers left behind.
 module MachineAcceptanceHoliday
   Booking = HolidayBooking
 
