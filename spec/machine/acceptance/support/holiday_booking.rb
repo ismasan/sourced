@@ -203,7 +203,7 @@ module MachineAcceptanceHoliday
   # A guided tour, on the same messages helpers: the plan's gaps in travel terms.
   #
   #   initial ─RequestTour─▶ planning ════════════════════════════════════on_done─▶ reserving ─done─▶ confirmed ─on_done─▶ completed
-  #                          └ itinerary (PlanningMachine's start)                  ├ outbound: FlightLeg  │  └ invoke AirportTransfer
+  #                          └ itinerary (PlanningMachine's start)                  ├ outbound: FlightLeg  │  └ start AirportTransfer 
   #                            └ outlining ─Price─▶ pricing ─always─▶ quoted ─Accept─▶ accepted               ├ return:   FlightLeg  └─▶ awaiting_visas ─children_done─▶ confirmed | visa_refused
   #                                                       └─always─▶ awaiting_sign_off  └ deposit:  on DepositReceived
   #                          planning ─PauseTour─▶ on_hold ─ResumeTour─▶ planning.history(deep: true)
@@ -226,7 +226,7 @@ module MachineAcceptanceHoliday
   # - External events: a payment gateway's DepositReceived and an airline's
   #   SeatsTicketed move the tour with `on`.
   # - Children: one VisaApplication per traveller who needs one (started, joined
-  #   with children_done), and an invoked AirportTransfer.
+  #   with children_done), and an AirportTransfer started by Confirmed.
   REMINDER_SECONDS = 2 * 24 * 3600
   SEAT_HOLD_SECONDS = 20 * 60
   PAUSE_SECONDS = 7 * 24 * 3600
@@ -471,8 +471,10 @@ module MachineAcceptanceHoliday
     end
 
     checkpoint Confirmed do
-      invoke AirportTransfer, keys: ->(_tour) { { transfer_id: 'airport' } },
-                              on_done: { AirportTransfer::Arranged => Completed }
+      start AirportTransfer do
+        payload { |_tour, _checkpoint| { transfer_id: 'airport' } }
+        on_done AirportTransfer::Arranged => Completed
+      end
     end
 
     final Completed
