@@ -6,7 +6,7 @@ module Sourced
   # Reactor base class for state machines: Sourced's take on statecharts.
   #
   # A machine's position is its *checkpoints*: handles declared with
-  # {.Checkpoint} and placed with {.checkpoint}, {.final} or {.start}. Each
+  # {.Checkpoint} and placed with {.checkpoint}, {.final} or {.started}. Each
   # checkpoint lists the commands it accepts, and the checkpoints each command
   # may move the machine to. A checkpoint is also an event class: every move
   # appends one event of the target checkpoint's class
@@ -130,10 +130,10 @@ module Sourced
     # definition can't make them chain forever. A safety net only.
     MAX_JOINS = 100
 
-    # The base of the events {.on_stop} generates (+Started+, +Finished+).
+    # The base of the events {.stopped} generates (+Started+, +Finished+).
     ChildEvent = Class.new(Sourced::Event)
 
-    # The constants {.on_stop} generates.
+    # The constants {.stopped} generates.
     CHILD_MESSAGES = %i[Stop Started Finished].freeze
 
     NONE = [].freeze
@@ -292,7 +292,7 @@ module Sourced
     # +checkpoint Handle, SomeMachine+. Its definition isn't copied: the tree
     # places the machine's root region under the checkpoint (see {Tree}).
     # +on_done+ maps the machine's root final checkpoints onto the parent's. A
-    # compound region starts at the machine's +start+ checkpoint; any other at
+    # compound region starts at the machine's +started+ checkpoint; any other at
     # its initial position.
     RegionMount = Data.define(:name, :machine, :on_done, :compound) do
       def compound? = compound
@@ -535,7 +535,7 @@ module Sourced
       #            on_done: { PaymentMachine::Captured => Paid, PaymentMachine::Declined => PaymentFailed }
       #   end
       #
-      # @param child [Class<Machine>] a machine with +start+ and +on_stop+
+      # @param child [Class<Machine>] a machine with +started+ and +stopped+
       # @param as [Symbol] name for {View#children}
       # @param keys [#call(context)] the child's own keys, and any input for its +Started+
       # @param on_done [Hash{Checkpoint => Checkpoint}] child final checkpoint => our checkpoint
@@ -833,7 +833,7 @@ module Sourced
       # Declare a checkpoint: a handle naming a position in this machine's
       # chart, and the event recording a transition to it, of type
       # +<type_prefix>.runtime.<name>+. Place it with {.checkpoint}, {.final}
-      # or {.start}.
+      # or {.started}.
       #
       #   Placed = Checkpoint(:placed)
       #
@@ -884,8 +884,8 @@ module Sourced
       # command. With a machine, the start is a compound checkpoint, entered at
       # that machine's own start.
       # @param handle [Checkpoint, Symbol]
-      def start(handle, machine = nil, on_done: {}, &block)
-        raise DefinitionError, "#{self}: start is declared twice" if @start_checkpoint
+      def started(handle, machine = nil, on_done: {}, &block)
+        raise DefinitionError, "#{self}: started is declared twice" if @start_checkpoint
 
         @start_checkpoint = __handle(handle)
         checkpoint(@start_checkpoint, machine, on_done:, &block)
@@ -894,22 +894,23 @@ module Sourced
       # Declare what this machine becomes when its parent stops it. Generates a
       # +Stop+ command (+self::Stop+, keyed by this machine's partition keys),
       # accepted from any started, non-final position, that moves to +handle+,
-      # a final checkpoint of the root region (placed here when it isn't
-      # already). Also generates +Started+ and +Finished+, the events a parent
+      # a final checkpoint of the root region. With a block, places that final
+      # with it; without one, marks an already-placed final, or places a bare
+      # one. Also generates +Started+ and +Finished+, the events a parent
       # tracks its children by. Leaving that way runs exit actions as usual.
       # @param handle [Checkpoint, Symbol]
-      def on_stop(handle)
-        raise DefinitionError, "#{self}: on_stop is declared twice" if @stop_checkpoint
-        raise DefinitionError, 'a machine with on_stop needs a name' unless name
-        raise DefinitionError, "#{self}: declare partition_by before on_stop" if partition_keys.empty?
+      def stopped(handle, &block)
+        raise DefinitionError, "#{self}: stopped is declared twice" if @stop_checkpoint
+        raise DefinitionError, 'a machine with stopped needs a name' unless name
+        raise DefinitionError, "#{self}: declare partition_by before stopped" if partition_keys.empty?
         if (taken = CHILD_MESSAGES.find { |constant| const_defined?(constant, false) })
-          raise DefinitionError, "#{self}: on_stop generates #{taken}, which is already defined; name that constant differently"
+          raise DefinitionError, "#{self}: stopped generates #{taken}, which is already defined; name that constant differently"
         end
 
         @stop_checkpoint = __handle(handle)
-        node = nodes[@stop_checkpoint] || final(@stop_checkpoint)
+        node = block ? final(@stop_checkpoint, &block) : (nodes[@stop_checkpoint] || final(@stop_checkpoint))
         unless node.final? && node.region.root?
-          raise DefinitionError, "#{self}: on_stop #{@stop_checkpoint} must be a final checkpoint of the root region"
+          raise DefinitionError, "#{self}: stopped #{@stop_checkpoint} must be a final checkpoint of the root region"
         end
 
         keys = partition_keys
@@ -922,7 +923,7 @@ module Sourced
       # Children are stopped, through their +Stop+, when this machine enters
       # one of the +stop_on+ checkpoints.
       #
-      # @param child [Class<Machine>] a machine with +start+ and +on_stop+
+      # @param child [Class<Machine>] a machine with +started+ and +stopped+
       # @param as [Symbol]
       # @param stop_on [Checkpoint, Symbol, Array] checkpoints of this machine
       def spawns(child, as:, stop_on: [])
@@ -967,7 +968,7 @@ module Sourced
       # Place a checkpoint, and declare the commands it accepts.
       #
       # With a machine, the checkpoint is compound: its sub-states are that
-      # machine's checkpoints, entered at its +start+:
+      # machine's checkpoints, entered at its +started+ checkpoint:
       #
       #   checkpoint Planning, PlanningMachine, on_done: { PlanningMachine::Finalised => Reserving }
       #
@@ -977,7 +978,7 @@ module Sourced
       # maps onto our checkpoints.
       #
       # @param handle [Checkpoint, Symbol] one of this machine's checkpoints; a Symbol declares it
-      # @param machine [Class<Machine>, nil] a machine with +start+, for a compound checkpoint
+      # @param machine [Class<Machine>, nil] a machine with +started+, for a compound checkpoint
       # @param on_done [Hash{Checkpoint => Checkpoint}] the machine's root final => our checkpoint
       def checkpoint(handle, machine = nil, on_done: {}, &block)
         __define_checkpoint(root, handle, machine, on_done, &block)
@@ -1147,7 +1148,7 @@ module Sourced
       def __start_paths = @__start_paths || tree.default_entry_paths(start_checkpoint)
 
       # @api private
-      # @return [Class, nil] +Finished+, for a machine with +on_stop+
+      # @return [Class, nil] +Finished+, for a machine with +stopped+
       def __finished_class = @__finished_class
 
       private
@@ -1276,7 +1277,7 @@ module Sourced
         raise DefinitionError, "#{self}: child #{as.inspect} is declared twice" if children_specs.key?(as)
         raise DefinitionError, "#{self}: #{child} is already a child as another name" if children_specs.values.any? { |c| c.machine == child }
         raise DefinitionError, "#{self}: #{child} has no start checkpoint" unless child.start_checkpoint
-        raise DefinitionError, "#{self}: #{child} has no on_stop" unless child.stop_checkpoint
+        raise DefinitionError, "#{self}: #{child} has no stopped checkpoint" unless child.stop_checkpoint
         raise DefinitionError, "#{self}: invoke #{child} needs keys: ->(context) { … }" if kind == :invoke && !keys.respond_to?(:call)
 
         on_done = on_done.to_h { |final, target| [child.send(:__handle, final, declare: false), __own_target(target)] }
@@ -1321,7 +1322,7 @@ module Sourced
         return handle if handle.name
 
         constant = handle.checkpoint_name.to_s.split('_').map(&:capitalize).join.to_sym
-        # Left for on_stop's messages: such a handle stays anonymous.
+        # Left for stopped's messages: such a handle stays anonymous.
         return handle if CHILD_MESSAGES.include?(constant)
 
         const_set(constant, handle) unless const_defined?(constant, false)

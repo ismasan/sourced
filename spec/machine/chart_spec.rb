@@ -33,11 +33,11 @@ module MachineChartTest
     Confirmed = Checkpoint(:confirmed)
     Dropped = Checkpoint(:dropped)
 
-    start Added do
+    started Added do
       command Confirm => Confirmed
     end
     final Confirmed
-    on_stop Dropped
+    stopped Dropped
   end
 
   class ChargeMachine < Sourced::Machine
@@ -48,12 +48,12 @@ module MachineChartTest
     Declined = Checkpoint(:declined)
     Voided = Checkpoint(:voided)
 
-    start Requested do
+    started Requested do
       command Capture => Captured
     end
     final Captured
     final Declined
-    on_stop Voided
+    stopped Voided
   end
 
   class TripMachine < Sourced::Machine
@@ -134,7 +134,7 @@ module MachineChartTest
     Outline = Checkpoint(:outline)
     Agreed = Checkpoint(:agreed)
 
-    start Outline do
+    started Outline do
       command Agree => Agreed
     end
     checkpoint Agreed do
@@ -147,7 +147,7 @@ module MachineChartTest
     Itinerary = Checkpoint(:itinerary)
     Finalised = Checkpoint(:finalised)
 
-    start Itinerary, OutlineMachine do
+    started Itinerary, OutlineMachine do
       command Finalise => Finalised
     end
     final Finalised

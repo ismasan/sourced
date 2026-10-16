@@ -11,7 +11,7 @@ module Sourced
     # region's checkpoint starts from the state that takes it, and is declared
     # in the ancestor region. From a region's initial position, which has no
     # state of its own, it starts from the composite state that contains the
-    # region. A child's +start+ checkpoint is entered from the diagram's
+    # region. A child's +started+ checkpoint is entered from the diagram's
     # start. A compound checkpoint (a machine's) is a composite state entered
     # at its machine's start. A mounted machine's +on_done+ mappings are drawn
     # from its finals, labelled +on_done+. A transition to a checkpoint's

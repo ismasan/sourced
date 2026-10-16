@@ -148,8 +148,8 @@ module MachineMountsTest
 
     Added = Checkpoint(:added)
 
-    start Added
-    on_stop :cancelled
+    started Added
+    stopped :cancelled
   end
 
   class LinesRegion < Sourced::Machine
@@ -178,11 +178,11 @@ module MachineMountsTest
     Running = Checkpoint(:running)
     Passed = Checkpoint(:passed)
 
-    start Running do
+    started Running do
       command PassCheck => Passed
     end
     final Passed
-    on_stop :cancelled
+    stopped :cancelled
   end
 
   class ChecksRegion < Sourced::Machine

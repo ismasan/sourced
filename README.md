@@ -586,7 +586,7 @@ This reads the partition's whole history on every call, so it suits small partit
 
 ### Machines
 
-`Sourced::Machine` is Sourced's take on [statecharts](https://statecharts.dev. A machine's position is made of **checkpoints**: named states, declared with `Checkpoint(:name)` and placed in the chart with `initial`, `checkpoint`, `final` and `start`. Each checkpoint lists the commands it accepts and the checkpoints each command may move to. Every move is recorded as an event of the target checkpoint's class; every other event the machine evolves is data, which only changes its domain `context`.
+`Sourced::Machine` is Sourced's take on [statecharts](https://statecharts.dev. A machine's position is made of **checkpoints**: named states, declared with `Checkpoint(:name)` and placed in the chart with `initial`, `checkpoint`, `final`, `started` and `stopped`. Each checkpoint lists the commands it accepts and the checkpoints each command may move to. Every move is recorded as an event of the target checkpoint's class; every other event the machine evolves is data, which only changes its domain `context`.
 
 ```mermaid
 stateDiagram-v2
@@ -759,7 +759,7 @@ class LineItemMachine < Sourced::Machine
     line.currency = evt.payload.currency
   end
 
-  start Added do # where the parent starts it
+  started Added do # where the parent starts it
     entry { |line, _evt| dispatch ReserveStock }
     command StockReserved => Reserved
   end
@@ -770,7 +770,7 @@ class LineItemMachine < Sourced::Machine
   
   final Picked
 
-  on_stop :dropped # generates Stop, Started and Finished
+  stopped :dropped # generates Stop, Started and Finished
 end
 
 class OrderMachine < Sourced::Machine
@@ -797,7 +797,7 @@ class OrderMachine < Sourced::Machine
 end
 ```
 
-`on_stop` generates three messages, under `<prefix>.runtime.child`: `Started` (appended by the parent's `spawn` or `invoke`, entering the child's `start`; `spawn`'s attributes beyond the child's keys are its `input`), `Finished` (appended when the child reaches a root final), and the `Stop` command. The constants `Started`, `Finished` and `Stop` are reserved for them. The parent evolves only its children's `Started` and `Finished` (`machine.children(:lines)`), which drive `children_done` and `on_done`; an invoked child's `on_done` move has the child's `Finished` type as its `trigger`.
+`stopped` generates three messages, under `<prefix>.runtime.child`: `Started` (appended by the parent's `spawn` or `invoke`, entering the child's `started` checkpoint; `spawn`'s attributes beyond the child's keys are its `input`), `Finished` (appended when the child reaches a root final), and the `Stop` command. The constants `Started`, `Finished` and `Stop` are reserved for them. `stopped` places a root final, taking a block as `final` does (`stopped Dropped do entry { … } end`), or, without one, marks a root final already placed. The parent evolves only its children's `Started` and `Finished` (`machine.children(:lines)`), which drive `children_done` and `on_done`; an invoked child's `on_done` move has the child's `Finished` type as its `trigger`.
 
 A child is only woken by messages carrying all of its partition keys: its own events, the parent's `Started`, and `Stop`. Parent facts with fewer keys (`OrderPlaced`) are in the child's partition reads, so it can evolve them, but they never wake it.
 
@@ -837,7 +837,7 @@ class OrderMachine < Sourced::Machine
 end
 ```
 
-**A checkpoint** can be another machine: a compound checkpoint, whose sub-states are that machine's checkpoints, entered at its `start`:
+**A checkpoint** can be another machine: a compound checkpoint, whose sub-states are that machine's checkpoints, entered at its `started` checkpoint:
 
 ```ruby
 class ThingMachine < Sourced::Machine
@@ -845,7 +845,7 @@ class ThingMachine < Sourced::Machine
   Progressed = Checkpoint(:progressed)
   Done       = Checkpoint(:done)
 
-  start(Started) { command Progress => Progressed }
+  started(Started) { command Progress => Progressed }
   checkpoint(Progressed) { command Finish => Done }
   final Done
 end
@@ -858,9 +858,9 @@ class OrderMachine < Sourced::Machine
 end
 ```
 
-Entering `Working` enters `ThingMachine` at its start too (one `Working` event, `entered: ['working', 'working.started']`), and runs both checkpoints' entry actions, outermost first. Commands go to the deepest checkpoint that accepts them (`Progress` to the sub-machine, `Cancel` to `Working`); leaving `Working` exits the sub-machine first. `machine.value` is `{ OrderMachine::Working => ThingMachine::Progressed }`. A machine's start can itself be compound (`start Open, OpenMachine`), to any depth.
+Entering `Working` enters `ThingMachine` at its start too (one `Working` event, `entered: ['working', 'working.started']`), and runs both checkpoints' entry actions, outermost first. Commands go to the deepest checkpoint that accepts them (`Progress` to the sub-machine, `Cancel` to `Working`); leaving `Working` exits the sub-machine first. `machine.value` is `{ OrderMachine::Working => ThingMachine::Progressed }`. A machine's start can itself be compound (`started Open, OpenMachine`), to any depth.
 
-So a machine with `start` can be used three ways: standalone, as a child (its own partition, started by the parent's `Started`), or composed (the parent's partition).
+So a machine with `started` can be used three ways: standalone, as a child (its own partition, started by the parent's `Started`), or composed (the parent's partition).
 
 Rules for composed machines:
 

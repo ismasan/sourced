@@ -258,8 +258,8 @@ RSpec.describe 'Sourced::Machine external events' do
       child = Class.new(Sourced::Machine) do
         def self.name = 'MachineExternalEventsTest::Child'
         partition_by :order_id, :line_id
-        start :added
-        on_stop :dropped
+        started :added
+        stopped :dropped
       end
       expect { machine { initial { on child::Finished => :done }; final :done } }
         .to raise_error(Sourced::Machine::DefinitionError, /on_done or children_done/)
