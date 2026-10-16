@@ -237,22 +237,51 @@ module Sourced
     # topology depend on, keyed by its group_id (see {.reactor_key}).
     # The router checks that group_ids are unique.
     #
+    # A +reactor+ that responds to +to_sourced_reactors+ registers what that
+    # returns instead, recursively: a machine returns itself and the children
+    # it starts, and anything else (ex. a module) can return a group of reactors.
+    # A reactor already registered under its key is skipped.
+    #
     # @param config [Sourced::Component] a tree built by {.build}
-    # @param reactor [Class] a reactor (see {ReactorInterface})
-    # @return [Sourced::Component] the reactor's node
-    # @raise [ArgumentError] if a reactor is already registered under the same key
+    # @param reactor [Class, #to_sourced_reactors] a reactor (see {ReactorInterface})
+    # @return [Sourced::Component] the node of the first reactor registered (the reactor itself, for a machine)
+    # @raise [ArgumentError] if a different reactor is already registered under the same key
     # @raise [Sourced::Component::LockedComponentError] once the tree is prepared
     def self.register(config, reactor)
+      reactors = expand_reactors(reactor)
+      raise ArgumentError, "#{reactor}.to_sourced_reactors returned no reactors" if reactors.empty?
+
+      reactors.map { |r| register_one(config, r) }.first
+    end
+
+    private_class_method def self.expand_reactors(reactor, seen = Set.new)
+      return [] unless seen.add?(reactor)
+      return [reactor] unless reactor.respond_to?(:to_sourced_reactors)
+
+      reactor.to_sourced_reactors.flat_map { |r| r.equal?(reactor) ? [r] : expand_reactors(r, seen) }
+    end
+
+    private_class_method def self.register_one(config, reactor)
       ReactorDefaults.apply(reactor)
       key = reactor_key(reactor)
+      return config.node(key) if registered?(config, key, reactor)
+
       begin
         config.declare(key, ReactorInterface)
       rescue Sourced::Component::DeclarationOverrideError
         raise ArgumentError, "can't register #{reactor} (group_id #{reactor.group_id.inspect}) as #{key}: " \
-                             "a reactor is already registered under that key. Keys are group_ids with '.' and '*' replaced by '_'"
+                             "a different reactor is already registered under that key. Keys are group_ids with '.' and '*' replaced by '_'"
       end
       config.config!(key) { reactor }
       config.node(key)
+    end
+
+    # Whether +key+ is implemented as +reactor+ by {.register}, not overridden
+    private_class_method def self.registered?(config, key, reactor)
+      return false unless config.declared?(key)
+
+      implementation = config.node(key).implementation
+      !implementation.nil? && implementation.deps.empty? && implementation.build.equal?(reactor)
     end
 
     # The component key of a reactor, ex. 'reactors.CourseDecider'

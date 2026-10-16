@@ -928,6 +928,11 @@ module Sourced
       # @return [Hash{Class<Machine> => ChildSpec}]
       def children_specs = @children_specs ||= {}
 
+      # This machine and the children it starts, including mounted machines',
+      # so {Sourced.register} registers them with it (see {Config.register}).
+      # @return [Array<Class>]
+      def to_sourced_reactors = [self, *tree.children_specs.keys]
+
       # @param klass [Class]
       def child_event?(klass) = tree.child_event?(klass)
 

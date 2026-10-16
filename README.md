@@ -827,6 +827,8 @@ end
 
 A machine is a child in one role: started by handlers (any number of them), or by one checkpoint.
 
+Registering a machine registers the children it starts too (including mounted machines' and children's own children), so `Sourced.register(OrderMachine)` also registers `LineItemMachine`.
+
 A child is only woken by messages carrying all of its partition keys: its own events, the parent's `Started`, and `Stop`. Parent facts with fewer keys (`OrderPlaced`) are in the child's partition reads, so it can evolve them, but they never wake it.
 
 #### Composing machines
@@ -990,7 +992,17 @@ Sourced.register(EnrolmentDecider)
 Sourced.register(CourseCatalogProjector)
 ```
 
-Each reactor becomes a component of Sourced's configuration, under `reactors` and keyed by its `group_id` with dots replaced by underscores (`Shop::CourseDecider` → `reactors.shop_course_decider`); the router and `Sourced.topology` depend on all of them. Register reactors before Sourced boots: registering once it's booted raises, and so does registering two reactors with the same `group_id`. Their consumer groups are registered with the store when Sourced starts.
+Each reactor becomes a component of Sourced's configuration, under `reactors` and keyed by its `group_id` with dots replaced by underscores (`Shop::CourseDecider` → `reactors.shop_course_decider`); the router and `Sourced.topology` depend on all of them. Register reactors before Sourced boots: registering once it's booted raises, and so does registering two different reactors with the same `group_id` (registering the same one again is a no-op). Their consumer groups are registered with the store when Sourced starts.
+
+Anything that responds to `to_sourced_reactors` registers what that returns instead, recursively. A machine returns itself and the child machines it starts; a module can group a bounded context's reactors:
+
+```ruby
+module Booking
+  def self.to_sourced_reactors = [BookingMachine, BookingsProjector]
+end
+
+Sourced.register(Booking)
+```
 
 ## The reactor protocol
 
