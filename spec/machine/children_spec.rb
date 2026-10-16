@@ -740,6 +740,73 @@ module MachineChildrenTest
       end
     end
 
+    describe 'registration' do
+      let(:config) { Sourced::Config.build }
+
+      def machine(*keys, &block)
+        klass = Class.new(Sourced::Machine)
+        stub_const("MachineChildrenTest::Spec#{klass.object_id}", klass)
+        klass.partition_by(*(keys.empty? ? %i[order_id] : keys))
+        klass.class_eval(&block)
+        klass
+      end
+
+      def registered?(reactor) = config.declared?(Sourced::Config.reactor_key(reactor))
+
+      it 'returns the machine and the children its handlers and checkpoints start' do
+        expect(OrderMachine.to_sourced_reactors).to eq([OrderMachine, LineItemMachine])
+        expect(BillingMachine.to_sourced_reactors).to eq([BillingMachine, PaymentMachine])
+        expect(ParcelMachine.to_sourced_reactors).to eq([ParcelMachine])
+      end
+
+      it 'registers a machine with its children, not the machines it mounts' do
+        node = Sourced::Config.register(config, ShippingMachine)
+
+        expect(node.path).to eq(Sourced::Config.reactor_key(ShippingMachine))
+        expect(registered?(ParcelMachine)).to be(true)
+        expect(registered?(PackingMachine)).to be(false)
+      end
+
+      it "registers children's children" do
+        mid = machine(:order_id, :line_id) do
+          started(:added) { command AddLine, starts: LineItemMachine }
+          stopped :cancelled
+        end
+        top = machine { initial { command AddLine, starts: mid } }
+
+        Sourced::Config.register(config, top)
+
+        expect([top, mid, LineItemMachine].map { |m| registered?(m) }).to eq([true, true, true])
+      end
+
+      it 'registers a child that starts its parent back once' do
+        parent = machine do
+          started :opened
+          stopped :closed
+        end
+        child = machine do
+          started :added
+          stopped :cancelled
+        end
+        child.class_eval { checkpoint(:adding) { command PlaceOrder, starts: parent } }
+        parent.class_eval { checkpoint(:adding) { command PlaceOrder, starts: child } }
+
+        Sourced::Config.register(config, parent)
+
+        expect([parent, child].map { |m| registered?(m) }).to eq([true, true])
+      end
+
+      it 'skips a child registered by another parent, or on its own' do
+        other = machine { initial { command AddLine, starts: LineItemMachine } }
+
+        Sourced::Config.register(config, LineItemMachine)
+        Sourced::Config.register(config, OrderMachine)
+        Sourced::Config.register(config, other)
+
+        expect([OrderMachine, other, LineItemMachine].map { |m| registered?(m) }).to eq([true, true, true])
+      end
+    end
+
     describe 'definition checks' do
       def machine(*keys, &block)
         klass = Class.new(Sourced::Machine)

@@ -427,12 +427,53 @@ RSpec.describe Sourced::Config do
       expect(config['topology']).to eq(Sourced::Topology.build([ConfigTestReactor]))
     end
 
-    it 'raises for a reactor already registered under the same key' do
+    it 'skips a reactor already registered under its key' do
+      node = described_class.register(config, ConfigTestReactor)
+
+      expect(described_class.register(config, ConfigTestReactor)).to be(node)
+      config.start!
+      expect(config['router'].reactors).to eq([ConfigTestReactor])
+    end
+
+    it 'raises for a different reactor already registered under the same key' do
       described_class.register(config, ConfigTestReactor)
+      lookalike = Class.new do
+        def self.name = 'ConfigTestLookalike'
+        def self.group_id = 'ConfigTestReactor'
+        def self.handled_messages = []
+        def self.handle_claim(_claim) = []
+      end
+
+      expect {
+        described_class.register(config, lookalike)
+      }.to raise_error(ArgumentError, /\(group_id "ConfigTestReactor"\) as reactors\.ConfigTestReactor: a different reactor/)
+    end
+
+    it 'raises for a reactor whose key was overridden' do
+      described_class.register(config, ConfigTestReactor)
+      config.config!('reactors.ConfigTestReactor') { ConfigTestOtherReactor }
 
       expect {
         described_class.register(config, ConfigTestReactor)
-      }.to raise_error(ArgumentError, /can't register ConfigTestReactor \(group_id "ConfigTestReactor"\) as reactors\.ConfigTestReactor/)
+      }.to raise_error(ArgumentError, /a different reactor/)
+    end
+
+    it 'registers what to_sourced_reactors returns, recursively, returning the first node' do
+      inner = Module.new { def self.to_sourced_reactors = [ConfigTestOtherReactor, ConfigTestReactor] }
+      bundle = Module.new
+      bundle.define_singleton_method(:to_sourced_reactors) { [ConfigTestReactor, inner] }
+
+      node = described_class.register(config, bundle)
+      config.start!
+
+      expect(node.path).to eq('reactors.ConfigTestReactor')
+      expect(config['router'].reactors).to eq([ConfigTestReactor, ConfigTestOtherReactor])
+    end
+
+    it 'raises when to_sourced_reactors returns nothing' do
+      empty = Module.new { def self.to_sourced_reactors = [] }
+
+      expect { described_class.register(config, empty) }.to raise_error(ArgumentError, /returned no reactors/)
     end
 
     it 'names the reactor when distinct group_ids map to the same key' do

@@ -67,11 +67,12 @@ module Sourced
   # @return [Sourced::Component]
   def self.to_component = config
 
-  # Register a reactor, as a component under +reactors+ in {.config}.
+  # Register a reactor, as a component under +reactors+ in {.config}, with
+  # what its +to_sourced_reactors+ returns (a machine's children).
   # Must be called before the configuration is prepared or booted.
-  # @param reactor [Class] a reactor (see {Router#register} for the protocol)
-  # @return [Sourced::Component] the reactor's node
-  # @raise [ArgumentError] if a reactor is already registered under the same key (its group_id, escaped)
+  # @param reactor [Class, #to_sourced_reactors] a reactor (see {Router#register} for the protocol)
+  # @return [Sourced::Component] the reactor's node (see {Config.register})
+  # @raise [ArgumentError] if a different reactor is already registered under the same key (its group_id, escaped)
   # @raise [Sourced::Component::LockedComponentError] once the configuration is prepared
   def self.register(reactor)
     Config.register(config, reactor)
