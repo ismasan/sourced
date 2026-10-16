@@ -248,23 +248,17 @@ module Sourced
     # @raise [ArgumentError] if a different reactor is already registered under the same key
     # @raise [Sourced::Component::LockedComponentError] once the tree is prepared
     def self.register(config, reactor)
-      reactors = expand_reactors(reactor)
+      reactors = ReactorDefaults.expand(reactor)
       raise ArgumentError, "#{reactor}.to_sourced_reactors returned no reactors" if reactors.empty?
 
       reactors.map { |r| register_one(config, r) }.first
     end
 
-    private_class_method def self.expand_reactors(reactor, seen = Set.new)
-      return [] unless seen.add?(reactor)
-      return [reactor] unless reactor.respond_to?(:to_sourced_reactors)
-
-      reactor.to_sourced_reactors.flat_map { |r| r.equal?(reactor) ? [r] : expand_reactors(r, seen) }
-    end
-
     private_class_method def self.register_one(config, reactor)
       ReactorDefaults.apply(reactor)
       key = reactor_key(reactor)
-      return config.node(key) if registered?(config, key, reactor)
+      provider = ReactorProvider.new(reactor)
+      return config.node(key) if config.declared?(key) && config.node(key).implementation&.provider == provider
 
       begin
         config.declare(key, ReactorInterface)
@@ -272,17 +266,16 @@ module Sourced
         raise ArgumentError, "can't register #{reactor} (group_id #{reactor.group_id.inspect}) as #{key}: " \
                              "a different reactor is already registered under that key. Keys are group_ids with '.' and '*' replaced by '_'"
       end
-      config.config!(key) { reactor }
+      config.component!(key, provider)
       config.node(key)
     end
 
-    # Whether +key+ is implemented as +reactor+ by {.register}, not overridden
-    private_class_method def self.registered?(config, key, reactor)
-      return false unless config.declared?(key)
-
-      implementation = config.node(key).implementation
-      !implementation.nil? && implementation.deps.empty? && implementation.build.equal?(reactor)
+    # Builds a reactor's node, and tells {.register} the node is still the
+    # reactor's (not overridden) without building it.
+    ReactorProvider = Data.define(:reactor) do
+      def call = reactor
     end
+    private_constant :ReactorProvider
 
     # The component key of a reactor, ex. 'reactors.CourseDecider'
     # @return [String]

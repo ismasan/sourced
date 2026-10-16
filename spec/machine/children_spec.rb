@@ -796,6 +796,12 @@ module MachineChildrenTest
         expect([parent, child].map { |m| registered?(m) }).to eq([true, true])
       end
 
+      it "makes a router's setup! raise for children it doesn't route to" do
+        expect { Sourced::Router.new(store:, reactors: [OrderMachine]).setup! }
+          .to raise_error(Sourced::Router::MissingReactorsError, /OrderMachine needs .*LineItemMachine registered with this router too/)
+        expect(Sourced::Router.new(store:, reactors: [OrderMachine, LineItemMachine]).setup!).to be_a(Sourced::Router)
+      end
+
       it 'skips a child registered by another parent, or on its own' do
         other = machine { initial { command AddLine, starts: LineItemMachine } }
 
