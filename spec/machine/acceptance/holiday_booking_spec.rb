@@ -292,7 +292,7 @@ module MachineAcceptanceHoliday
 
         run(msg(SeatsTicketed, pnr: 'ABC123'))
         expect(snapshot.value).to eq(TourBooking::Confirmed)
-        expect(snapshot.children[:transfer].map(&:final?)).to eq([false])
+        expect(snapshot.children[MachineAcceptanceHoliday::AirportTransfer].map(&:final?)).to eq([false])
 
         run(ArrangeTransfer.new(payload: { booking_id: 'b1', transfer_id: 'airport' }))
         expect(snapshot.value).to eq(TourBooking::Completed)
@@ -305,7 +305,7 @@ module MachineAcceptanceHoliday
         expect(snapshot.value).to eq(TourBooking::AwaitingVisas)
 
         run(msg(RequestVisas))
-        expect(snapshot.children[:visas].map { |ref| ref.keys[:traveller_id] }).to contain_exactly('t1', 't2')
+        expect(snapshot.children[MachineAcceptanceHoliday::VisaApplication].map { |ref| ref.keys[:traveller_id] }).to contain_exactly('t1', 't2')
 
         run(GrantVisa.new(payload: { booking_id: 'b1', traveller_id: 't1' }))
         expect(snapshot.value).to eq(TourBooking::AwaitingVisas)

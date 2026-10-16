@@ -90,11 +90,9 @@ module MachineCheckpointClassesTest
     Placed = Checkpoint(:placed)
     Charging = Checkpoint(:charging)
 
-    spawns ChargeMachine, as: :charges
-
     initial do
-      command PlaceOrder => Placed do |_context, _cmd|
-        spawn :charges, charge_id: 'ch1'
+      command PlaceOrder => Placed, starts: ChargeMachine do |_context, _cmd|
+        start ChargeMachine, charge_id: 'ch1'
       end
     end
     checkpoint(Placed) { command StartCharge => Charging }
@@ -228,19 +226,19 @@ RSpec.describe 'Sourced::Machine checkpoint classes of mounted machines' do
       run(router, mod::Charge.new(payload: { order_id: 'o1', charge_id: 'ch1' }))
       shop = mod::ShopMachine.load(store:, order_id: 'o1')
       expect(shop.value).to eq(mod::ShopMachine::Placed)
-      expect(shop.children[:charges].map(&:state)).to eq([mod::ChargeMachine::Charged])
+      expect(shop.children[mod::ChargeMachine].map(&:state)).to eq([mod::ChargeMachine::Charged])
 
       run(router, mod::StartCharge.new(payload: { order_id: 'o1' }))
       shop = mod::ShopMachine.load(store:, order_id: 'o1')
       expect(shop.value).to eq(mod::ShopMachine::Charging => mod::ChargeMachine::Requested)
-      expect(shop.children[:charges].map(&:state)).to eq([mod::ChargeMachine::Charged])
+      expect(shop.children[mod::ChargeMachine].map(&:state)).to eq([mod::ChargeMachine::Charged])
       expect(store.read_all(limit: 100).messages.last.payload.entered).to eq(%w[charging charging.requested])
 
       # The same command, now for the mounted copy: the finished child doesn't take it.
       run(router, mod::Charge.new(payload: { order_id: 'o1', charge_id: 'ch1' }))
       shop = mod::ShopMachine.load(store:, order_id: 'o1')
       expect(shop.value).to eq(mod::ShopMachine::Charging => mod::ChargeMachine::Charged)
-      expect(shop.children[:charges].map(&:state)).to eq([mod::ChargeMachine::Charged])
+      expect(shop.children[mod::ChargeMachine].map(&:state)).to eq([mod::ChargeMachine::Charged])
       expect(types.last).to eq('shop_machine.runtime.mounted.machine_checkpoint_classes_test.charge_machine.charged')
       expect(types.count('charge_machine.runtime.child.finished')).to eq(1)
       claims.each { |reactor, claimed| expect(foreign(claimed, reactor)).to be_empty }

@@ -110,6 +110,10 @@ module Sourced
     # Raised when a handler moves the machine somewhere its command didn't declare.
     TransitionError = Class.new(Error)
 
+    # Raised when a handler starts a child its +starts:+ doesn't declare, or
+    # starts fewer children than it declares.
+    StartError = Class.new(Error)
+
     # Raised when a machine builds an event that isn't valid.
     InvalidEventError = Class.new(Error)
 
@@ -208,8 +212,34 @@ module Sourced
         in Targets then with(members: members | other.members)
         in nil | History then with(members: members | [other])
         in Class if Machine.handle?(other) then with(members: members | [other])
+        in Class if other < Machine
+          raise DefinitionError, "#{self} | #{other}: #{other} is a machine, and a union of checkpoints takes checkpoints"
+        else
+          raise DefinitionError, "#{self} | #{other.inspect}: a union of checkpoints takes checkpoints, histories or nil"
         end
       end
+
+      def to_s = members.map { |member| member.nil? ? 'nil' : member.to_s }.join(' | ')
+      def inspect = to_s
+    end
+
+    # The children a handler may start ({Machine.|}): machine classes, and
+    # +nil+ when starting any is optional.
+    Starts = Data.define(:members) do
+      # @param other [Class<Machine>, Starts, nil]
+      # @return [Starts]
+      def |(other)
+        case other
+        in Starts then with(members: members | other.members)
+        in nil then with(members: members | [nil])
+        in Class if other < Machine then with(members: members | [other])
+        else
+          raise DefinitionError, "#{self} | #{other.inspect}: a union of machines takes machines or nil"
+        end
+      end
+
+      def to_s = members.map { |member| member.nil? ? 'nil' : member.to_s }.join(' | ')
+      def inspect = to_s
     end
 
     # A history pseudo-target ({Checkpoint.history}): +checkpoint+, entered
@@ -221,12 +251,19 @@ module Sourced
     end
 
     # A command a checkpoint accepts, and the checkpoints it may move to.
-    # +nil+ among the targets means "may stay".
-    CommandDef = Data.define(:command_class, :targets, :block) do
+    # +nil+ among the targets means "may stay". +starts+ are the children it
+    # may start, +nil+ among them meaning starting any is optional.
+    CommandDef = Data.define(:command_class, :targets, :block, :starts) do
+      def initialize(starts: NONE, **) = super
+
       # Moves to its single target when the handler doesn't choose one.
       def auto? = targets.size == 1 && !targets.first.nil?
       def optional? = targets.include?(nil)
       def checkpoint_targets = targets.compact
+      def started_machines = starts.compact
+      # Without a block, starts its only child from the message's payload.
+      def auto_start? = block.nil? && starts.size == 1 && !starts.first.nil?
+      def must_start? = starts.any? && !starts.include?(nil)
     end
 
     # What a guard is called with: the domain context.
@@ -271,9 +308,11 @@ module Sourced
       def from(time) = duration ? duration.add_to_time(time).to_local_time : time + delay
     end
 
-    # A child machine the parent tracks, declared with {.spawns} or {NodeBuilder#invoke}.
-    # +node+, +keys+ and +on_done+ are for invoked children; +stop_on+ for spawned ones.
-    ChildSpec = Data.define(:as, :machine, :kind, :stop_on, :node, :keys, :on_done) do
+    # A child machine the parent tracks: started by handlers that declare it in
+    # +starts:+, or invoked by a checkpoint ({NodeBuilder#invoke}). +node+,
+    # +keys+ and +on_done+ are for invoked children; +stop_on+, the placed
+    # checkpoints whose +stops+ name it, for started ones (filled by the {Tree}).
+    ChildSpec = Data.define(:machine, :kind, :stop_on, :node, :keys, :on_done) do
       def invoke? = kind == :invoke
     end
 
@@ -284,8 +323,8 @@ module Sourced
       def final? = final
     end
 
-    # A join over children: once every child spawned as +as+ is final.
-    ChildrenJoin = Data.define(:as, :definition)
+    # A join over children: once every child of +machine+ is final.
+    ChildrenJoin = Data.define(:machine, :definition)
 
     # A region whose checkpoints are another machine's, declared with
     # +region :name, SomeMachine+ or, for a compound checkpoint,
@@ -322,7 +361,8 @@ module Sourced
 
     # A checkpoint (or a region's initial position) and what it accepts.
     class Node
-      attr_reader :key, :region, :commands, :ons, :entries, :exits, :afters, :regions, :invokes, :children_joins, :always, :dones
+      attr_reader :key, :region, :commands, :ons, :entries, :exits, :afters, :regions, :invokes, :children_joins, :always, :dones,
+                  :stops
 
       # @param key [Checkpoint, Symbol] the checkpoint, or {INITIAL}
       # @param final [Boolean]
@@ -341,6 +381,7 @@ module Sourced
         @children_joins = []
         @always = []
         @dones = []
+        @stops = []
       end
 
       def final? = @final
@@ -383,8 +424,12 @@ module Sourced
       #   @param target [Checkpoint, Symbol, Targets, Array, nil] a checkpoint, a union of them, or +nil+
       # @overload command(command_class, &block)
       #   Data only: same as +command_class => nil+.
-      def command(declaration, &block)
-        definition = @machine.send(:__command_definition, declaration, block)
+      #
+      # +starts:+ declares the children the handler may start with
+      # {Machine#start}: a machine, or a union of them (+A | B+, +A | nil+).
+      # Without a block, +starts: A+ starts one +A+ from the command's payload.
+      def command(declaration = nil, starts: nil, **arrow, &block)
+        definition = @machine.send(:__command_definition, __declaration(declaration, arrow), block, starts:)
         if @node.commands.key?(definition.command_class)
           raise DefinitionError, "#{@machine}: #{@node.label} accepts #{definition.command_class} twice"
         end
@@ -399,8 +444,8 @@ module Sourced
       #
       # @overload on(event_class => target, &block)
       # @overload on(event_class, &block) data only
-      def on(declaration, &block)
-        definition = @machine.send(:__command_definition, declaration, block, what: 'on')
+      def on(declaration = nil, starts: nil, **arrow, &block)
+        definition = @machine.send(:__command_definition, __declaration(declaration, arrow), block, what: 'on', starts:)
         event_class = definition.command_class
         case event_class
         in Class if event_class < Checkpoint
@@ -530,42 +575,65 @@ module Sourced
       # is left, and its final checkpoint mapped onto one of ours.
       #
       #   checkpoint AwaitingPayment do
-      #     invoke PaymentMachine, as: :payment,
+      #     invoke PaymentMachine,
       #            keys: ->(_order) { { payment_id: SecureRandom.uuid } },
       #            on_done: { PaymentMachine::Captured => Paid, PaymentMachine::Declined => PaymentFailed }
       #   end
       #
       # @param child [Class<Machine>] a machine with +started+ and +stopped+
-      # @param as [Symbol] name for {View#children}
       # @param keys [#call(context)] the child's own keys, and any input for its +Started+
       # @param on_done [Hash{Checkpoint => Checkpoint}] child final checkpoint => our checkpoint
-      def invoke(child, as:, keys:, on_done: {})
+      def invoke(child, keys:, on_done: {})
         raise DefinitionError, "#{@machine}: #{@node.label} can't invoke" if @node.initial? || @node.final?
 
-        @machine.send(:__define_child, child, as:, kind: :invoke, node: @node, keys:, on_done:)
+        @machine.send(:__define_invoke, child, node: @node, keys:, on_done:)
       end
 
-      # Join over spawned children: once every child spawned as +as+ is at a
-      # final checkpoint (and at least one was spawned), the machine moves to
-      # the declared checkpoint, as a command handler would.
+      # Join over started children: once every child of +Child+ is at a final
+      # checkpoint (and at least one was started), the machine moves to the
+      # declared checkpoint, as a command handler would.
       #
-      #   children_done :lines => LinesDone | LinesPartiallyFailed do |order|
-      #     to(machine.children(:lines).all? { |line| line.state == LineMachine::Picked } ? LinesDone : LinesPartiallyFailed)
+      #   children_done LineMachine => LinesDone | LinesPartiallyFailed do |order|
+      #     to(machine.children(LineMachine).all? { |line| line.state == LineMachine::Picked } ? LinesDone : LinesPartiallyFailed)
       #   end
-      def children_done(declaration, &block)
-        unless declaration.is_a?(Hash) && declaration.size == 1
-          raise DefinitionError, "#{@machine}: children_done takes { as => checkpoint }, got #{declaration.inspect}"
+      def children_done(declaration = nil, starts: nil, **arrow, &block)
+        declaration = __declaration(declaration, arrow)
+        unless declaration in Hash and declaration.size == 1
+          raise DefinitionError, "#{@machine}: children_done takes { Child => checkpoint }, got #{declaration.inspect}"
         end
 
-        as, target = declaration.first
+        child, target = declaration.first
+        unless Class === child && child < Machine
+          raise DefinitionError, "#{@machine}: children_done takes a child machine, got #{child.inspect}"
+        end
+
+        what = "children_done #{child.group_id}"
         targets = @machine.send(:__flatten_targets, target)
-        raise DefinitionError, "#{@machine}: children_done #{as.inspect} must move to a checkpoint, not nil" if targets.include?(nil)
-        if block.nil? && targets.size > 1
-          raise DefinitionError, "#{@machine}: children_done #{as.inspect} with several checkpoints needs a block"
-        end
+        raise DefinitionError, "#{@machine}: #{what} must move to a checkpoint, not nil" if targets.include?(nil)
+        raise DefinitionError, "#{@machine}: #{what} with several checkpoints needs a block" if block.nil? && targets.size > 1
 
-        definition = CommandDef.new(command_class: "children_done #{as.inspect}", targets: targets.uniq, block:)
-        @node.children_joins << ChildrenJoin.new(as:, definition:)
+        starts = @machine.send(:__starts, starts, block, what)
+        definition = CommandDef.new(command_class: what, targets: targets.uniq, block:, starts:)
+        @node.children_joins << ChildrenJoin.new(machine: child, definition:)
+      end
+
+      # Stop every running child of +child+ when this checkpoint is entered,
+      # sending each its +Stop+. Some handler must declare +starts: child+.
+      # @param child [Class<Machine>]
+      def stops(child)
+        raise DefinitionError, "#{@machine}: the initial position is never entered, so it stops no children" if @node.initial?
+        raise DefinitionError, "#{@machine}: stops takes a child machine, got #{child.inspect}" unless Class === child && child < Machine
+        raise DefinitionError, "#{@machine}: #{@node.label} stops #{child} twice" if @node.stops.include?(child)
+
+        @node.stops << child
+      end
+
+      # +command Cmd => A, starts: X+ passes the arrow as keywords; +command Cmd, starts: X+ positionally.
+      private def __declaration(declaration, arrow)
+        return arrow if declaration.nil?
+        raise DefinitionError, "#{@machine}: invalid declaration #{declaration.inspect}, #{arrow.inspect}" if arrow.any?
+
+        declaration
       end
     end
 
@@ -598,11 +666,11 @@ module Sourced
       # Whether the root region is at a final checkpoint.
       def final? = @runtime.current_node(@runtime.root).final?
 
-      # @overload children(as)
-      #   @return [Array<ChildRef>] the children spawned or invoked as +as+
+      # @overload children(child)
+      #   @return [Array<ChildRef>] the children of machine +child+, started or invoked
       # @overload children
-      #   @return [Hash{Symbol => Array<ChildRef>}] every child, by +as+
-      def children(as = nil) = as ? @runtime.children(as) : @runtime.all_children
+      #   @return [Hash{Class<Machine> => Array<ChildRef>}] every child, by machine
+      def children(child = nil) = child ? @runtime.children(child) : @runtime.all_children
 
       # The checkpoint the root region, or the active region named
       # +region_name+, is at: a handle, or +:initial+; nil when no region of
@@ -622,7 +690,7 @@ module Sourced
     end
 
     # A loaded machine, as returned by {.load}. +value+ is the current
-    # configuration (see {View#value}), +children+ its children by name, and
+    # configuration (see {View#value}), +children+ its children by machine, and
     # +context+ the domain context.
     Snapshot = Data.define(:value, :context, :children)
 
@@ -646,12 +714,12 @@ module Sourced
       # Record a child's start or finish. An invoked child keeps the entry it
       # was first invoked for.
       def track_child(spec, keys, state:, final:, entry_id:)
-        refs = (@children[spec.as] ||= {})
+        refs = (@children[spec.machine] ||= {})
         known = refs[keys]
         refs[keys] = ChildRef.new(keys:, state:, final:, entry_id: known ? known.entry_id : entry_id)
       end
 
-      def children(as) = (@children[as] || {}).values
+      def children(child) = (@children[child] || {}).values
       def all_children = @children.transform_values(&:values)
 
       def current_node(region)
@@ -816,7 +884,10 @@ module Sourced
       # @return [Hash{Symbol => RegionMount}] regions that are other machines
       def mounts = @mounts ||= {}
 
-      # @return [Hash{Symbol => ChildSpec}] child machines, by +as+
+      # The children this machine's own handlers start or its checkpoints
+      # invoke, as declared (the {Tree} merges mounted machines', and fills
+      # +stop_on+).
+      # @return [Hash{Class<Machine> => ChildSpec}]
       def children_specs = @children_specs ||= {}
 
       # @param klass [Class]
@@ -918,17 +989,11 @@ module Sourced
         __define_child_messages
       end
 
-      # Track a child machine: its +Started+ (appended by {Machine#spawn}) and
-      # +Finished+ are evolved, for {View#children} and +children_done+.
-      # Children are stopped, through their +Stop+, when this machine enters
-      # one of the +stop_on+ checkpoints.
-      #
-      # @param child [Class<Machine>] a machine with +started+ and +stopped+
-      # @param as [Symbol]
-      # @param stop_on [Checkpoint, Symbol, Array] checkpoints of this machine
-      def spawns(child, as:, stop_on: [])
-        __define_child(child, as:, kind: :spawn, stop_on: Array(stop_on).map { |handle| __handle(handle) })
-      end
+      # A union of machines, for a handler's +starts:+: +starts: A | B+,
+      # +starts: A | nil+. +nil+ goes last (+nil | A+ is +NilClass#|+).
+      # @param other [Class<Machine>, Starts, nil]
+      # @return [Starts]
+      def |(other) = Starts.new(members: [self]) | other
 
       # Before any checkpoint or mount: their classes take the keys.
       def partition_by(*keys)
@@ -1028,7 +1093,7 @@ module Sourced
       # @raise [DefinitionError]
       # @return [true]
       def validate!
-        # +@validating+: a child that spawns its parent back.
+        # +@validating+: a child that starts its parent back.
         return true if @validated || @validating
 
         @validating = true
@@ -1038,7 +1103,7 @@ module Sourced
         tree = Tree.new(self)
         __validate!(tree)
         # Children are started from here, so they must be valid too.
-        children_specs.each_value { |spec| spec.machine.validate! }
+        tree.children_specs.each_value { |spec| spec.machine.validate! }
         @tree = tree
         tree.mounted_machines.each(&:__lock!)
         # What the runtime reads per message, fixed now that the definition is.
@@ -1272,19 +1337,60 @@ module Sourced
         mounts[name] = RegionMount.new(name:, machine:, on_done:, compound:).tap { __generate_mounted(machine) }
       end
 
-      def __define_child(child, as:, kind:, node: nil, keys: nil, on_done: {}, stop_on: [])
-        raise DefinitionError, "#{self}: #{child.inspect} isn't a Sourced::Machine" unless child.is_a?(Class) && child < Machine
-        raise DefinitionError, "#{self}: child #{as.inspect} is declared twice" if children_specs.key?(as)
-        raise DefinitionError, "#{self}: #{child} is already a child as another name" if children_specs.values.any? { |c| c.machine == child }
-        raise DefinitionError, "#{self}: #{child} has no start checkpoint" unless child.start_checkpoint
-        raise DefinitionError, "#{self}: #{child} has no stopped checkpoint" unless child.stop_checkpoint
-        raise DefinitionError, "#{self}: invoke #{child} needs keys: ->(context) { … }" if kind == :invoke && !keys.respond_to?(:call)
+      def __define_invoke(child, node:, keys:, on_done:)
+        __check_child_machine!(child)
+        if (known = children_specs[child])
+          raise DefinitionError, "#{self}: #{child} is invoked twice" if known.invoke?
+
+          raise DefinitionError, "#{self}: #{child} is started by handlers, so it can't be invoked too"
+        end
+        raise DefinitionError, "#{self}: invoke #{child} needs keys: ->(context) { … }" unless keys.respond_to?(:call)
 
         on_done = on_done.to_h { |final, target| [child.send(:__handle, final, declare: false), __own_target(target)] }
-        spec = ChildSpec.new(as:, machine: child, kind:, stop_on:, node:, keys:, on_done:)
-        children_specs[as] = spec
-        node.invokes << spec if node
+        spec = ChildSpec.new(machine: child, kind: :invoke, stop_on: NONE, node:, keys:, on_done:)
+        children_specs[child] = spec
+        node.invokes << spec
         spec
+      end
+
+      # A child a handler's +starts:+ names: one spec however many handlers start it.
+      def __define_started(child)
+        __check_child_machine!(child)
+        case children_specs[child]
+        in nil
+          children_specs[child] = ChildSpec.new(machine: child, kind: :spawn, stop_on: NONE, node: nil, keys: nil, on_done: {})
+        in ChildSpec => spec if spec.invoke?
+          raise DefinitionError, "#{self}: #{child} is invoked, so handlers can't start it too"
+        else
+          nil
+        end
+      end
+
+      def __check_child_machine!(child)
+        raise DefinitionError, "#{self}: #{child.inspect} isn't a Sourced::Machine" unless Class === child && child < Machine
+        raise DefinitionError, "#{self}: #{child} has no start checkpoint" unless child.start_checkpoint
+        raise DefinitionError, "#{self}: #{child} has no stopped checkpoint" unless child.stop_checkpoint
+      end
+
+      # A handler's +starts:+, as a list of machines (+nil+ among them: optional).
+      # @param label [String] the handler, for errors
+      # @return [Array<Class<Machine>, nil>]
+      def __starts(starts, block, label)
+        members =
+          case starts
+          in nil then return NONE
+          in Starts then starts.members
+          in Class if starts < Machine then [starts]
+          else
+            raise DefinitionError, "#{self}: #{label}: starts: takes a machine or a union of them (A | B, A | nil), got #{starts.inspect}"
+          end
+        members.compact.each { |child| __define_started(child) }
+        if block.nil? && members.size > 1
+          reason = members.include?(nil) ? 'nothing decides whether to start one' : 'nothing chooses which to start'
+          raise DefinitionError, "#{self}: #{label} starts: #{starts} needs a block: #{reason}"
+        end
+
+        members
       end
 
       # An +always+ or +done+ of +node+, after +declared+ (its siblings so far).
@@ -1330,7 +1436,7 @@ module Sourced
       end
 
       # @param what [String] the macro declaring it, for errors: +command+ or +on+
-      def __command_definition(declaration, block, what: 'command')
+      def __command_definition(declaration, block, what: 'command', starts: nil)
         command_class, targets =
           case declaration
           in Hash if declaration.size == 1
@@ -1344,13 +1450,14 @@ module Sourced
         unless command_class in Class and command_class < Sourced::Message
           raise DefinitionError, "#{self}: #{what} takes a message class, got #{command_class.inspect}"
         end
-        if block.nil? && (targets.size > 1 || targets == [nil])
+        starts = __starts(starts, block, "#{what} #{command_class}")
+        if block.nil? && (targets.size > 1 || (targets == [nil] && starts.empty?))
           raise DefinitionError,
                 "#{self}: #{command_class} => #{targets.map { |t| t || 'nil' }.join(' | ')} " \
                 'needs a block to choose where to go'
         end
 
-        CommandDef.new(command_class:, targets: targets.uniq, block:)
+        CommandDef.new(command_class:, targets: targets.uniq, block:, starts:)
       end
 
       # @return [Array<Checkpoint, nil>]
@@ -1404,10 +1511,12 @@ module Sourced
 
           node.commands.each_value do |definition|
             __check_partition_keys!(definition.command_class, 'command')
+            __check_auto_start!(definition, __attribute_names(definition.command_class), "command #{definition.command_class}")
             definition.checkpoint_targets.each { |target| __check_target!(tree, node, target) }
           end
           node.ons.each_value do |definition|
             __check_partition_keys!(definition.command_class, 'on event')
+            __check_auto_start!(definition, __attribute_names(definition.command_class), "on #{definition.command_class}")
             definition.checkpoint_targets.each { |target| __check_target!(tree, node, target) }
           end
           __check_transient!(node) if node.transient?
@@ -1415,6 +1524,12 @@ module Sourced
           __check_join!(tree, node) if node.dones.any? || node.regions.any?
           node.children_joins.each { |join| __check_children_join!(tree, node, join) }
           node.invokes.each { |spec| __check_invoke!(tree, node, spec) }
+          node.stops.each do |child|
+            spec = tree.children_specs[child]
+            next if spec && !spec.invoke?
+
+            raise DefinitionError, "#{self}: #{node.label} stops #{child}, but no handler declares starts: #{child}"
+          end
         end
 
         handled_messages_for_react.each { |klass| __check_partition_keys!(klass, 'reaction') }
@@ -1452,17 +1567,30 @@ module Sourced
         unless missing.empty?
           raise DefinitionError, "#{self}: child #{child} must partition by our keys too, missing #{missing.join(', ')}"
         end
-
-        spec.stop_on.each do |handle|
-          raise DefinitionError, "#{self}: stop_on #{handle} isn't a checkpoint" unless tree.checkpoint?(handle)
-        end
       end
 
       def __check_children_join!(tree, node, join)
-        spec = tree.children_specs[join.as]
-        raise DefinitionError, "#{self}: children_done #{join.as.inspect} doesn't name spawned children" unless spec && !spec.invoke?
+        spec = tree.children_specs[join.machine]
+        unless spec && !spec.invoke?
+          raise DefinitionError, "#{self}: #{join.definition.command_class}: no handler declares starts: #{join.machine}"
+        end
 
+        # No message to take a started child's keys from: only ours.
+        __check_auto_start!(join.definition, partition_keys, join.definition.command_class)
         join.definition.checkpoint_targets.each { |target| __check_target!(tree, node, target) }
+      end
+
+      # A blockless handler starting a child takes the child's keys from its
+      # message (+names+), beyond ours.
+      def __check_auto_start!(definition, names, label)
+        return unless definition.auto_start?
+
+        child = definition.starts.first
+        missing = child.partition_keys - partition_keys - names
+        return if missing.empty?
+
+        raise DefinitionError,
+              "#{self}: #{label} starts #{child} without a block, so it must declare #{child}'s keys #{missing.join(', ')}"
       end
 
       def __check_join!(tree, node)
@@ -1694,7 +1822,7 @@ module Sourced
 
     # Run the exit actions of the checkpoints +msg+ left (innermost first,
     # stopping the children they invoked), the entry actions and timers of the
-    # ones it entered (stopping the children whose +stop_on+ they are), then
+    # ones it entered (stopping the children their +stops+ name), then
     # any +reaction+ to it.
     # @api private
     # @return [Array<Sourced::Message>] dispatched messages
@@ -1712,9 +1840,7 @@ module Sourced
             node.entries.each { |blk| instance_exec(context, message, &blk) }
             start_timers(node, message)
           end
-          tree.children_specs.each_value do |spec|
-            stop_children(spec) if entered.any? { |node| spec.stop_on.include?(node.key) }
-          end
+          entered.flat_map(&:stops).uniq.each { |child| stop_children(tree.children_specs.fetch(child)) }
         end
 
         method_name = self.class.reaction_handlers[message.class]
@@ -1849,7 +1975,7 @@ module Sourced
     def children_join_step(active)
       active.each do |node|
         node.children_joins.each do |join|
-          refs = @runtime.children(join.as)
+          refs = @runtime.children(join.machine)
           next if refs.empty? || !refs.all?(&:final?)
 
           run_handler(node, join.definition, nil)
@@ -1866,7 +1992,7 @@ module Sourced
       active.each do |node|
         node.invokes.each do |spec|
           entry_id = @runtime.entered_by(node.region)&.id
-          ref = @runtime.children(spec.as).find { |child| child.entry_id == entry_id }
+          ref = @runtime.children(spec.machine).find { |child| child.entry_id == entry_id }
           if ref.nil?
             start_child(spec, spec.keys.call(context).to_h)
             return true
@@ -1879,12 +2005,21 @@ module Sourced
       false
     end
 
-    # Run one handler: its block, then its transition, to the checkpoint the
-    # block chose with {#to}, or else its only declared one.
+    # Run one handler: its block (or, without one, the start of its only
+    # child), then its transition, to the checkpoint the block chose with
+    # {#to}, or else its only declared one.
     def run_handler(node, definition, message)
       what = message ? message.class.to_s : definition.command_class
-      @handler = { node:, what: }
-      instance_exec(context, message, &definition.block) if definition.block
+      @handler = { node:, what:, starts: definition.starts, started: 0 }
+      if definition.block
+        instance_exec(context, message, &definition.block)
+      elsif definition.auto_start?
+        start(definition.starts.first, message ? message.payload.to_h.except(*self.class.partition_keys) : {})
+      end
+      if definition.must_start? && @handler[:started].zero?
+        raise StartError, "#{self.class}: #{what} must start #{definition.starts.size > 1 ? 'one of ' : ''}#{Starts.new(members: definition.starts)}"
+      end
+
       target = @handler.fetch(:target) { definition.auto? ? definition.targets.first : nil }
       @handler = nil
 
@@ -1904,17 +2039,25 @@ module Sourced
 
     def declared(definition) = definition.targets.map { |t| t || 'nil' }.join(' | ')
 
-    # Spawn a child declared with {.spawns}: append its +Started+, with our
-    # partition keys filled in.
+    # Start a child the running handler declares in its +starts:+: append
+    # its +Started+, with our partition keys filled in.
     #
-    # @param as [Symbol]
+    #   command RequestVisas, starts: VisaMachine | nil do |tour, _cmd|
+    #     tour.travellers.each { |id| start VisaMachine, traveller_id: id }
+    #   end
+    #
+    # @param child [Class<Machine>]
     # @param payload [Hash] the child's own keys, and anything else, as its +Started+'s +input+
     # @return [Sourced::Message] the +Started+
-    def spawn(as, payload = {})
-      spec = self.class.tree.children_specs.fetch(as) { raise Error, "#{self.class} doesn't spawn #{as.inspect}" }
-      raise Error, "#{self.class}: #{as.inspect} is invoked, not spawned" if spec.invoke?
+    # @raise [StartError] if the handler's +starts:+ doesn't declare +child+
+    def start(child, payload = {})
+      raise Error, "#{self.class}: start is for command, on and children_done handlers" unless @handler
+      unless Class === child && @handler[:starts].include?(child)
+        raise StartError, "#{self.class}: #{@handler[:what]} starts #{child.inspect}, which its starts: doesn't declare"
+      end
 
-      start_child(spec, payload)
+      @handler[:started] += 1
+      start_child(self.class.tree.children_specs.fetch(child), payload)
     end
 
     def start_child(spec, payload)
@@ -1948,7 +2091,7 @@ module Sourced
     end
 
     def stop_children(spec)
-      @runtime.children(spec.as).reject(&:final?).each { |child| dispatch(spec.machine::Stop, child.keys) }
+      @runtime.children(spec.machine).reject(&:final?).each { |child| dispatch(spec.machine::Stop, child.keys) }
     end
 
     def stop_command?(command) = self.class.stop_checkpoint && command.instance_of?(self.class::Stop)

@@ -71,8 +71,6 @@ module MachineChartTest
     Done = Checkpoint(:done)
     Cancelled = Checkpoint(:cancelled)
 
-    spawns LegMachine, as: :legs, stop_on: Cancelled
-
     initial do
       command Open => Opened
     end
@@ -81,11 +79,11 @@ module MachineChartTest
       entry { |_s, _evt| dispatch Remind }
       after(60) { |_s, _evt| dispatch Remind }
       command(Note) { |_s, _cmd| event Noted }
-      command(AddLeg) { |_s, cmd| spawn :legs, leg_id: cmd.payload.leg_id }
+      command AddLeg, starts: LegMachine
       command Quote => Quoted | Rejected | nil do |_s, _cmd|
         to Quoted
       end
-      children_done :legs => LegsDone
+      children_done LegMachine => LegsDone
     end
 
     checkpoint Quoted do
@@ -96,7 +94,7 @@ module MachineChartTest
       region :payment do
         initial { command Pay => AwaitingPayment }
         checkpoint AwaitingPayment do
-          invoke ChargeMachine, as: :charge, keys: ->(_s) { { charge_id: 'c1' } },
+          invoke ChargeMachine, keys: ->(_s) { { charge_id: 'c1' } },
                                 on_done: { ChargeMachine::Captured => Paid, ChargeMachine::Declined => PaymentFailed }
         end
         checkpoint PaymentFailed do
@@ -115,7 +113,7 @@ module MachineChartTest
     final LegsDone
     final Rejected
     final Done
-    final Cancelled
+    final(Cancelled) { stops LegMachine }
   end
 
   # Mounted twice, as two regions: one handle per checkpoint, at two paths.
@@ -226,7 +224,7 @@ module MachineChartTest
         expect(opened).to include(
           id: 'opened', key: 'opened', type: 'atomic', machine: 'MachineChartTest::TripMachine',
           entry: 1, exit: 0, after: [{ delay: 60 }], on_done: nil, invoke: [], mounts: [], states: {}, status: nil,
-          children_done: [{ as: 'legs', targets: ['legs_done'] }]
+          children_done: [{ id: 'MachineChartTest::LegMachine', targets: ['legs_done'] }]
         )
         expect(opened).not_to include(:message_type, :class)
         expect(opened[:on][t(:note)]).to include(targets: [], optional: true, auto: false)
@@ -242,7 +240,7 @@ module MachineChartTest
         expect(payment[:states].keys).to eq(%w[initial awaiting_payment payment_failed paid])
         expect(payment[:states]['awaiting_payment'][:id]).to eq('booked.payment.awaiting_payment')
         expect(payment[:states]['awaiting_payment'][:invoke]).to eq([
-          { id: 'charge', src: 'MachineChartTest::ChargeMachine',
+          { id: 'MachineChartTest::ChargeMachine', src: 'MachineChartTest::ChargeMachine',
             on_done: { 'captured' => 'booked.payment.paid', 'declined' => 'booked.payment.payment_failed' } }
         ])
         # A transition to an ancestor region's checkpoint is listed where it's taken
@@ -251,8 +249,9 @@ module MachineChartTest
 
       it 'describes children' do
         expect(chart[:children]).to eq([
-          { as: 'legs', machine: 'MachineChartTest::LegMachine', kind: 'spawn', checkpoint: nil, stop_on: ['cancelled'], status: nil },
-          { as: 'charge', machine: 'MachineChartTest::ChargeMachine', kind: 'invoke',
+          { id: 'MachineChartTest::LegMachine', machine: 'MachineChartTest::LegMachine', kind: 'spawn', checkpoint: nil,
+            stop_on: ['cancelled'], status: nil },
+          { id: 'MachineChartTest::ChargeMachine', machine: 'MachineChartTest::ChargeMachine', kind: 'invoke',
             checkpoint: 'booked.payment.awaiting_payment', stop_on: [], status: nil }
         ])
       end
@@ -369,7 +368,7 @@ module MachineChartTest
       it "lists children's instances" do
         trip = trip(message(Open), message(AddLeg, leg_id: 'l1'), message(AddLeg, leg_id: 'l2'))
         trip.evolve([LegMachine::Finished.new(payload: { trip_id: 't1', leg_id: 'l1', final: 'confirmed' })])
-        legs = trip.to_h[:children].find { |c| c[:as] == 'legs' }
+        legs = trip.to_h[:children].find { |c| c[:id] == 'MachineChartTest::LegMachine' }
         expect(legs[:status]).to eq(instances: [
           { keys: { 'leg_id' => 'l1' }, state: 'confirmed', final: true },
           { keys: { 'leg_id' => 'l2' }, state: 'added', final: false }

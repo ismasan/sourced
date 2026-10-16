@@ -42,6 +42,10 @@ module MachineChildrenTest
   PackParcel = command(:pack_parcel, PARCEL)
   PrintLabel = command(:print_label, PARCEL)
 
+  # Declared starts
+  StartLines = command(:start_lines, ORDER, :line_ids)
+  LineRequested = event(:line_requested, LINE, :sku)
+
   LineState = Struct.new(:sku, :currency)
 
   # What parents' after_sync hooks saw: [claimed message class, event classes]
@@ -85,8 +89,6 @@ module MachineChildrenTest
     LinesPartiallyFailed = Checkpoint(:lines_partially_failed)
     Cancelled = Checkpoint(:cancelled)
 
-    spawns LineItemMachine, as: :lines, stop_on: Cancelled
-
     initial do
       command PlaceOrder => Placed do |_order, cmd|
         event OrderPlaced, cmd.payload.to_h
@@ -94,10 +96,10 @@ module MachineChildrenTest
     end
 
     checkpoint Placed do
-      command(AddLine) { |_order, cmd| spawn :lines, line_id: cmd.payload.line_id, sku: cmd.payload.sku }
+      command AddLine, starts: LineItemMachine
 
-      children_done lines: LinesDone | LinesPartiallyFailed do |_order|
-        all_picked = machine.children(:lines).all? { |line| line.state == LineItemMachine::Picked }
+      children_done LineItemMachine => LinesDone | LinesPartiallyFailed do |_order|
+        all_picked = machine.children(LineItemMachine).all? { |line| line.state == LineItemMachine::Picked }
         to(all_picked ? LinesDone : LinesPartiallyFailed)
       end
 
@@ -106,7 +108,7 @@ module MachineChildrenTest
 
     final LinesDone
     final LinesPartiallyFailed
-    final Cancelled
+    final(Cancelled) { stops LineItemMachine }
 
     after_sync { |messages:, events:, **| SYNCED << [messages.first.class, events.map(&:class)] }
   end
@@ -155,8 +157,7 @@ module MachineChildrenTest
     end
 
     checkpoint AwaitingPayment do
-      invoke PaymentMachine, as: :payment,
-                             keys: ->(_order) { { payment_id: SecureRandom.uuid } },
+      invoke PaymentMachine, keys: ->(_order) { { payment_id: SecureRandom.uuid } },
                              on_done: { PaymentMachine::Captured => Paid, PaymentMachine::Declined => PaymentFailed }
       command TimeOutPayment => TimedOut
     end
@@ -200,11 +201,9 @@ module MachineChildrenTest
 
     Shipped = Checkpoint(:shipped)
 
-    spawns ParcelMachine, as: :parcels
-
     initial do
-      command(ShipParcel) { |_order, cmd| spawn :parcels, parcel_id: cmd.payload.parcel_id }
-      children_done parcels: Shipped
+      command ShipParcel, starts: ParcelMachine
+      children_done ParcelMachine => Shipped
     end
 
     final Shipped
@@ -263,7 +262,7 @@ module MachineChildrenTest
       end
     end
 
-    describe 'spawning' do
+    describe 'starting from handlers' do
       let(:router) { Sourced::Router.new(store:, reactors: [OrderMachine, LineItemMachine]).setup! }
 
       def place_and_add_lines
@@ -275,9 +274,9 @@ module MachineChildrenTest
 
       def line(command, line_id) = command.new(payload: { order_id: 'o1', line_id: })
       def order = OrderMachine.load(store:, order_id: 'o1')
-      def lines = order.children[:lines].to_h { |ref| [ref.keys[:line_id], ref.state] }
+      def lines = order.children[LineItemMachine].to_h { |ref| [ref.keys[:line_id], ref.state] }
 
-      it 'spawns children as data, tracked by the parent' do
+      it 'starts children as data, tracked by the parent' do
         with_reactor(OrderMachine, order_id: 'o1')
           .given(moved(OrderMachine, 'machine_children_test.place_order', from: 'initial', to: 'placed',
                                                                           order_id: 'o1'))
@@ -306,7 +305,7 @@ module MachineChildrenTest
         expect(order.value).to eq(OrderMachine::LinesDone)
         expect(lines).to eq('l1' => LineItemMachine::Picked, 'l2' => LineItemMachine::Picked)
         expect(moves(OrderMachine).last)
-          .to eq(trigger: 'children_done :lines', source: 'placed', target: 'lines_done', exited: ['placed'],
+          .to eq(trigger: 'children_done MachineChildrenTest::LineItemMachine', source: 'placed', target: 'lines_done', exited: ['placed'],
                  entered: ['lines_done'])
         expect(log.grep(LineItemMachine::Finished).map { |m| [m.payload.line_id, m.payload.final] })
           .to contain_exactly(%w[l1 picked], %w[l2 picked])
@@ -327,7 +326,7 @@ module MachineChildrenTest
         expect(order.value).to eq(OrderMachine::LinesPartiallyFailed)
       end
 
-      it 'sends Stop to the live children when it reaches stop_on' do
+      it 'sends Stop to the live children when it enters a checkpoint that stops them' do
         place_and_add_lines
         run(router, line(StockReserved, 'l1'), line(StockUnavailable, 'l2'))
         run(router, CancelOrder.new(payload: { order_id: 'o1' }))
@@ -356,7 +355,7 @@ module MachineChildrenTest
       let(:router) { Sourced::Router.new(store:, reactors: [BillingMachine, PaymentMachine]).setup! }
 
       def billing = BillingMachine.load(store:, order_id: 'o1')
-      def payment_ids = billing.children[:payment].map { |ref| ref.keys[:payment_id] }
+      def payment_ids = billing.children[PaymentMachine].map { |ref| ref.keys[:payment_id] }
       def gateway(command, payment_id) = command.new(payload: { order_id: 'o1', payment_id: })
 
       before do
@@ -364,7 +363,7 @@ module MachineChildrenTest
         run(router, RequestPayment.new(payload: { order_id: 'o1' }))
       end
 
-      it 'spawns the child in the decision that enters the checkpoint' do
+      it 'starts the child in the decision that enters the checkpoint' do
         awaiting = transitions(BillingMachine).find { |m| m.payload.target == 'awaiting_payment' }
         started, *others = log.grep(PaymentMachine::Started)
         expect(others).to be_empty
@@ -378,7 +377,7 @@ module MachineChildrenTest
         run(router, gateway(GatewayCaptured, payment_ids.first))
 
         expect(billing.value).to eq(BillingMachine::Paid)
-        expect(billing.children[:payment].map(&:state)).to eq([PaymentMachine::Captured])
+        expect(billing.children[PaymentMachine].map(&:state)).to eq([PaymentMachine::Captured])
         expect(moves(BillingMachine).last)
           .to eq(trigger: PaymentMachine::Finished.type, source: 'awaiting_payment', target: 'paid', exited: ['awaiting_payment'],
                  entered: ['paid'])
@@ -397,7 +396,7 @@ module MachineChildrenTest
         run(router, TimeOutPayment.new(payload: { order_id: 'o1' }))
 
         expect(billing.value).to eq(BillingMachine::TimedOut)
-        expect(billing.children[:payment].map(&:state)).to eq([PaymentMachine::Voided])
+        expect(billing.children[PaymentMachine].map(&:state)).to eq([PaymentMachine::Voided])
 
         run(router, gateway(GatewayCaptured, payment_id))
         expect(moves(PaymentMachine).map { |m| m[:target] }).to eq(['voided'])
@@ -444,7 +443,7 @@ module MachineChildrenTest
 
         expect(parcel.value).to eq(ParcelMachine::Preparing => PackingMachine::Packing)
         expect(log.grep(PrintLabel).map { |m| m.payload.to_h }).to eq([keys])
-        expect(shipping.children[:parcels].map(&:state)).to eq([ParcelMachine::Preparing])
+        expect(shipping.children[ParcelMachine].map(&:state)).to eq([ParcelMachine::Preparing])
 
         run(router, PackParcel.new(payload: keys))
 
@@ -455,7 +454,7 @@ module MachineChildrenTest
                                              { trigger: 'on_done', source: 'preparing.packed', target: 'shipped',
                                                exited: %w[preparing.packed preparing], entered: ['shipped'] }
                                            ])
-        expect(shipping.children[:parcels].map(&:state)).to eq([ParcelMachine::Shipped])
+        expect(shipping.children[ParcelMachine].map(&:state)).to eq([ParcelMachine::Shipped])
         expect(shipping.value).to eq(ShippingMachine::Shipped)
       end
 
@@ -469,6 +468,243 @@ module MachineChildrenTest
           exited: %w[preparing.packing preparing], entered: ['cancelled']
         )
         expect(finished.payload.final).to eq('cancelled')
+      end
+    end
+
+    describe 'declared starts' do
+      def machine(*keys, &block)
+        klass = Class.new(Sourced::Machine)
+        stub_const("MachineChildrenTest::Starts#{klass.object_id}", klass)
+        klass.partition_by(*(keys.empty? ? %i[order_id] : keys))
+        klass.class_eval(&block)
+        klass
+      end
+
+      # A child keyed by the parent's keys alone.
+      let(:audit) do
+        machine do
+          started :auditing
+          stopped :dropped
+        end
+      end
+
+      def lines(*ids) = StartLines.new(payload: { order_id: 'o1', line_ids: ids.join(',') })
+      def started_lines(events) = events.grep(LineItemMachine::Started).map { |evt| evt.payload.line_id }
+
+      def parent_with(starts)
+        machine do
+          initial do
+            command(StartLines => :placed, starts:) do |_order, cmd|
+              cmd.payload.line_ids.split(',').each { |id| start LineItemMachine, line_id: id, sku: id }
+            end
+          end
+          final :placed
+        end
+      end
+
+      describe 'Machine.|' do
+        it 'builds a union of machines, nil last' do
+          expect((LineItemMachine | PaymentMachine).members).to eq([LineItemMachine, PaymentMachine])
+          expect((LineItemMachine | nil).members).to eq([LineItemMachine, nil])
+          expect((LineItemMachine | PaymentMachine | nil | LineItemMachine).members).to eq([LineItemMachine, PaymentMachine, nil])
+          expect(LineItemMachine | PaymentMachine).to be_a(Sourced::Machine::Starts)
+        end
+
+        it 'refuses checkpoints and other values, naming both operands' do
+          expect { LineItemMachine | OrderMachine::Placed }
+            .to raise_error(Sourced::Machine::DefinitionError, /LineItemMachine \| .*OrderMachine::Placed: a union of machines/)
+          expect { LineItemMachine | 'x' }.to raise_error(Sourced::Machine::DefinitionError, /a union of machines/)
+          expect { OrderMachine::Placed | LineItemMachine }
+            .to raise_error(Sourced::Machine::DefinitionError, /OrderMachine::Placed \| .*LineItemMachine: .*LineItemMachine is a machine/)
+          expect { OrderMachine::Placed | 'x' }.to raise_error(Sourced::Machine::DefinitionError, /a union of checkpoints/)
+        end
+
+        it 'is for machines that can be children' do
+          expect { machine { initial { command(StartLines, starts: OrderMachine) { nil } } } }
+            .to raise_error(Sourced::Machine::DefinitionError, /OrderMachine has no start checkpoint/)
+          expect { machine { initial { command(StartLines, starts: [LineItemMachine]) { nil } } } }
+            .to raise_error(Sourced::Machine::DefinitionError, /starts: takes a machine or a union of them/)
+        end
+      end
+
+      describe 'without a block' do
+        it "starts one child, keyed by the message's payload, the rest its input" do
+          parent = machine { initial { command AddLine, starts: LineItemMachine } }
+
+          started, *rest = parent.new(order_id: 'o1').decide(AddLine.new(payload: { order_id: 'o1', line_id: 'l1', sku: 'A1' }))
+          expect(rest).to be_empty
+          expect(started).to be_a(LineItemMachine::Started)
+          expect(started.payload.to_h).to include(order_id: 'o1', line_id: 'l1', input: { sku: 'A1' })
+        end
+
+        it 'requires the message to declare the keys the child has beyond ours' do
+          expect { machine { initial { command PlaceOrder, starts: LineItemMachine } }.validate! }
+            .to raise_error(Sourced::Machine::DefinitionError,
+                            /command .*PlaceOrder starts .*LineItemMachine without a block, so it must declare .*line_id/)
+        end
+
+        it 'needs a block to start one of several, or none' do
+          expect { machine { initial { command AddLine, starts: LineItemMachine | ParcelMachine } } }
+            .to raise_error(Sourced::Machine::DefinitionError, /needs a block: nothing chooses which to start/)
+          expect { machine { initial { command AddLine, starts: LineItemMachine | nil } } }
+            .to raise_error(Sourced::Machine::DefinitionError, /needs a block: nothing decides whether to start one/)
+        end
+      end
+
+      describe 'with a block' do
+        it 'starts: A must start at least one A' do
+          parent = parent_with(LineItemMachine)
+
+          expect(started_lines(parent.new(order_id: 'o1').decide(lines('l1', 'l2')))).to eq(%w[l1 l2])
+          expect { parent.new(order_id: 'o1').decide(lines) }
+            .to raise_error(Sourced::Machine::StartError, /StartLines must start .*LineItemMachine/)
+        end
+
+        it 'starts: A | B must start at least one of them, any number' do
+          parent = parent_with(LineItemMachine | ParcelMachine)
+
+          expect(started_lines(parent.new(order_id: 'o1').decide(lines('l1', 'l2', 'l3')))).to eq(%w[l1 l2 l3])
+          expect { parent.new(order_id: 'o1').decide(lines) }
+            .to raise_error(Sourced::Machine::StartError, /must start one of .*LineItemMachine \| .*ParcelMachine/)
+        end
+
+        it 'starts: A | nil may start any number' do
+          parent = parent_with(LineItemMachine | nil)
+
+          expect(started_lines(parent.new(order_id: 'o1').decide(lines('l1', 'l2')))).to eq(%w[l1 l2])
+          placed, *rest = parent.new(order_id: 'o1').decide(lines)
+          expect(rest).to be_empty
+          expect(placed.payload.target).to eq('placed')
+        end
+
+        it 'refuses to start a machine starts: does not declare' do
+          parent = machine do
+            initial do
+              command(StartLines, starts: LineItemMachine) { |_order, _cmd| start PaymentMachine, payment_id: 'p1' }
+            end
+          end
+
+          expect { parent.new(order_id: 'o1').decide(lines) }
+            .to raise_error(Sourced::Machine::StartError, /StartLines starts .*PaymentMachine, which its starts: doesn't declare/)
+        end
+      end
+
+      it 'starts only from handlers' do
+        parent = parent_with(LineItemMachine)
+        expect { parent.new(order_id: 'o1').send(:start, LineItemMachine, line_id: 'l1') }
+          .to raise_error(Sourced::Machine::Error, /start is for command, on and children_done handlers/)
+      end
+
+      it 'starts from on handlers' do
+        parent = machine do
+          initial { on LineRequested => :requested, starts: LineItemMachine }
+          checkpoint :requested
+        end
+
+        started, moved = parent.new(order_id: 'o1').__decide_on(LineRequested.new(payload: { order_id: 'o1', line_id: 'l1', sku: 'A1' }))
+        expect(moved.payload.target).to eq('requested')
+        expect(started.payload.to_h).to include(line_id: 'l1', input: { sku: 'A1' })
+      end
+
+      describe 'from children_done' do
+        let(:keys) { { order_id: 'o1', parcel_id: 'p1' } }
+
+        def parcel_done(parent)
+          instance = parent.new(order_id: 'o1')
+          instance.evolve([
+            ParcelMachine::Started.new(payload: { **keys, trigger: 'start', source: 'initial', target: 'preparing',
+                                                          exited: [], entered: %w[preparing preparing.packing] }),
+            ParcelMachine::Finished.new(payload: { **keys, final: 'shipped' })
+          ])
+          instance.__decide_eventless
+        end
+
+        it 'starts with a block' do
+          parent = machine do
+            initial do
+              command ShipParcel, starts: ParcelMachine
+              children_done(ParcelMachine => :shipped, starts: LineItemMachine) { |_order| start LineItemMachine, line_id: 'returns' }
+            end
+            final :shipped
+          end
+
+          started, moved = parcel_done(parent)
+          expect(started.payload.line_id).to eq('returns')
+          expect(moved.payload.target).to eq('shipped')
+        end
+
+        it 'starts without a block a child keyed by ours alone' do
+          child = audit
+          parent = machine do
+            initial do
+              command ShipParcel, starts: ParcelMachine
+              children_done ParcelMachine => :shipped, starts: child
+            end
+            final :shipped
+          end
+
+          started, moved = parcel_done(parent)
+          expect(started).to be_a(child::Started)
+          expect(started.payload.to_h).to include(order_id: 'o1', input: {})
+          expect(moved.payload.target).to eq('shipped')
+        end
+
+        it 'has no message to take other keys from' do
+          parent = machine do
+            initial do
+              command ShipParcel, starts: ParcelMachine
+              children_done ParcelMachine => :shipped, starts: LineItemMachine
+            end
+            final :shipped
+          end
+
+          expect { parent.validate! }
+            .to raise_error(Sourced::Machine::DefinitionError, /children_done .*ParcelMachine starts .*LineItemMachine without a block/)
+        end
+      end
+
+      it 'tracks children by machine' do
+        child = audit
+        parent = machine do
+          initial do
+            command AddLine, starts: LineItemMachine
+            command ShipParcel, starts: child
+          end
+        end
+        instance = parent.new(order_id: 'o1')
+        instance.evolve(instance.decide(AddLine.new(payload: { order_id: 'o1', line_id: 'l1', sku: 'A1' })))
+        instance.evolve(instance.decide(ShipParcel.new(payload: { order_id: 'o1', parcel_id: 'p1' })))
+
+        expect(instance.machine.children(LineItemMachine).map(&:keys)).to eq([{ line_id: 'l1' }])
+        expect(instance.machine.children.keys).to eq([LineItemMachine, child])
+        expect(instance.machine.children(child).map(&:state)).to eq([child::Auditing])
+      end
+
+      it 'keeps one spec per machine, in one role' do
+        parent = machine do
+          initial do
+            command AddLine, starts: LineItemMachine
+            command(StartLines, starts: LineItemMachine | nil) { |_order, _cmd| nil }
+          end
+        end
+        expect(parent.tree.children_specs.keys).to eq([LineItemMachine])
+
+        expect do
+          machine do
+            initial { command RequestPayment => :awaiting }
+            checkpoint(:awaiting) { invoke LineItemMachine, keys: ->(_) { { line_id: 'l1' } } }
+            checkpoint(:other) { command AddLine, starts: LineItemMachine }
+          end
+        end.to raise_error(Sourced::Machine::DefinitionError, /LineItemMachine is invoked, so handlers can't start it too/)
+      end
+
+      it 'stops started children where a checkpoint stops them' do
+        parent = machine do
+          initial { command AddLine, starts: LineItemMachine }
+          checkpoint(:placed) { stops LineItemMachine }
+        end
+
+        expect(parent.tree.children_specs.fetch(LineItemMachine).stop_on.map(&:path)).to eq(['placed'])
       end
     end
 
@@ -511,7 +747,7 @@ module MachineChildrenTest
           stopped :cancelled
         end
 
-        expect { machine { spawns other, as: :others }.validate! }
+        expect { machine { initial { command(PlaceOrder, starts: other) { start other, line_id: 'l1' } } }.validate! }
           .to raise_error(Sourced::Machine::DefinitionError, /must partition by our keys too, missing order_id/)
       end
 
@@ -521,7 +757,7 @@ module MachineChildrenTest
           stopped :cancelled
           Checkpoint(:stray)
         end
-        parent = machine { spawns child, as: :lines }
+        parent = machine { initial { command AddLine, starts: child } }
 
         expect { parent.validate! }.to raise_error(Sourced::Machine::DefinitionError, /stray.* declared but never placed/)
       end
@@ -535,8 +771,8 @@ module MachineChildrenTest
           started :added
           stopped :cancelled
         end
-        parent.spawns child, as: :children
-        child.spawns parent, as: :parents
+        child.class_eval { checkpoint(:adding) { command PlaceOrder, starts: parent } }
+        parent.class_eval { checkpoint(:adding) { command PlaceOrder, starts: child } }
 
         expect(parent.validate!).to be(true)
         expect(child.tree).to equal(child.tree)
@@ -551,18 +787,20 @@ module MachineChildrenTest
 
         expect do
           machine do
-            spawns no_stop, as: :x
+            initial { command AddLine, starts: no_stop }
           end
         end.to raise_error(Sourced::Machine::DefinitionError, /has no stopped checkpoint/)
       end
 
-      it 'checks stop_on, on_done and children_done' do
-        expect { machine { spawns LineItemMachine, as: :lines, stop_on: LineItemMachine::Cancelled } }
-          .to raise_error(Sourced::Machine::DefinitionError, /LineItemMachine's checkpoint, not/)
+      it 'checks stops, on_done and children_done' do
+        expect { machine { initial { command(CancelOrder => :cancelled) }; final(:cancelled) { stops LineItemMachine } }.validate! }
+          .to raise_error(Sourced::Machine::DefinitionError, /cancelled stops .*LineItemMachine, but no handler declares starts:/)
+        expect { machine { final(:cancelled) { stops :lines } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /stops takes a child machine/)
 
         bad_done = machine do
           checkpoint(:awaiting_payment) do
-            invoke PaymentMachine, as: :payment, keys: ->(_) { {} }, on_done: { PaymentMachine::Requested => :paid }
+            invoke PaymentMachine, keys: ->(_) { {} }, on_done: { PaymentMachine::Requested => :paid }
           end
           final :paid
         end
@@ -572,11 +810,13 @@ module MachineChildrenTest
 
         expect do
           machine do
-            checkpoint(:placed) { children_done(lines: :lines_done) }
+            checkpoint(:placed) { children_done(LineItemMachine => :lines_done) }
             final :lines_done
           end.validate!
         end
-          .to raise_error(Sourced::Machine::DefinitionError, /children_done :lines doesn't name spawned children/)
+          .to raise_error(Sourced::Machine::DefinitionError, /children_done .*LineItemMachine: no handler declares starts: .*LineItemMachine/)
+        expect { machine { checkpoint(:placed) { children_done(lines: :lines_done) } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /children_done takes a child machine/)
       end
 
       it 'requires stopped machines to be named, after partition_by' do

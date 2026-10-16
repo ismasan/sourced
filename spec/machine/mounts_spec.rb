@@ -153,10 +153,8 @@ module MachineMountsTest
   end
 
   class LinesRegion < Sourced::Machine
-    spawns LineMachine, as: :lines
-
     initial do
-      command(AddLine) { |_order, cmd| spawn :lines, line_id: cmd.payload.line_id }
+      command(AddLine, starts: LineMachine) { |_order, cmd| start LineMachine, line_id: cmd.payload.line_id }
     end
   end
 
@@ -188,7 +186,7 @@ module MachineMountsTest
   class ChecksRegion < Sourced::Machine
     initial { command StartCheck => :checking }
     checkpoint :checking do
-      invoke CheckMachine, as: :check, keys: ->(_order) { { check_id: 'c1' } }, on_done: { CheckMachine::Passed => :checked }
+      invoke CheckMachine, keys: ->(_order) { { check_id: 'c1' } }, on_done: { CheckMachine::Passed => :checked }
     end
     final :checked
   end
@@ -360,7 +358,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
   end
 
   describe 'children of a mounted machine' do
-    it 'spawns and tracks them as the parent' do
+    it 'starts and tracks them as the parent' do
       machine = MM::OrderWithLines
       instance = decided(machine, msg(MM::PlaceOrder))
       events = instance.decide(msg(MM::AddLine, line_id: 'l1'))
@@ -368,8 +366,8 @@ RSpec.describe 'Sourced::Machine region mounts' do
       expect(summary(events)).to eq(summary([MM::LineMachine::Started.new(payload: {
         order_id: 'o1', line_id: 'l1', input: {}, trigger: 'start', source: 'initial', target: 'added', exited: [], entered: %w[added]
       })]))
-      expect(instance.machine.children(:lines).map(&:keys)).to eq([{ line_id: 'l1' }])
-      expect(instance.machine.children(:lines).map(&:state)).to eq([MM::LineMachine::Added])
+      expect(instance.machine.children(MM::LineMachine).map(&:keys)).to eq([{ line_id: 'l1' }])
+      expect(instance.machine.children(MM::LineMachine).map(&:state)).to eq([MM::LineMachine::Added])
       expect(machine.handled_messages).to include(MM::LineMachine::Started, MM::LineMachine::Finished)
     end
   end
@@ -386,8 +384,8 @@ RSpec.describe 'Sourced::Machine region mounts' do
       expect(finished).to be_a(MM::CheckMachine::Finished)
 
       instance.evolve([finished])
-      expect(instance.machine.children(:check).map(&:final?)).to eq([true])
-      expect(instance.machine.children(:check).map(&:state)).to eq([MM::CheckMachine::Passed])
+      expect(instance.machine.children(MM::CheckMachine).map(&:final?)).to eq([true])
+      expect(instance.machine.children(MM::CheckMachine).map(&:state)).to eq([MM::CheckMachine::Passed])
       expect(summary(instance.__decide_eventless)).to eq(moves(
         MM::OrderWithChecks,
         [MM::CheckMachine::Finished.type, { from: 'placed.checks.checking', to: 'placed.checks.checked', exited: %w[placed.checks.checking] }]
