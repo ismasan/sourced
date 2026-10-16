@@ -658,7 +658,9 @@ module Sourced
       # The child's +Started+ payload: its own keys (ours are filled in), and
       # anything else as its +input+. Called once, when the child is started.
       # @yieldparam context the domain context
-      # @yieldparam checkpoint [Checkpoint] the event that entered this checkpoint
+      # @yieldparam checkpoint [Checkpoint, ChildEvent] the event that entered
+      #   this checkpoint: a checkpoint event, or this machine's +Started+ for
+      #   the checkpoint a parent starts it at
       def payload(&block)
         raise DefinitionError, "#{@machine}: start #{@child}'s payload needs a block" unless block
         raise DefinitionError, "#{@machine}: start #{@child} declares payload twice" if @payload_block
@@ -2039,7 +2041,7 @@ module Sourced
       active.each do |node|
         node.invokes.each do |spec|
           entered_by = @runtime.entered_by(node.region)
-          ref = @runtime.children(spec.machine).find { |child| child.entry_id == entered_by&.id }
+          ref = @runtime.children(spec.machine).find { |child| child.entry_id == entered_by.id }
           if ref.nil?
             start_child(spec, spec.payload.call(context, entered_by).to_h)
             return true
