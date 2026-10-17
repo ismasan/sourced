@@ -44,21 +44,43 @@ module Sourced
   # Shared consumer configuration for reactors.
   # Extended (not included) onto reactor classes.
   module Consumer
-    # Copy partition keys into subclasses, which can redeclare them.
+    # Copy the partition schema into subclasses, which can redeclare it.
     #
     # @param subclass [Class] subclass being created
     # @return [void]
     def inherited(subclass)
       super
-      subclass.partition_by(@partition_keys) if @partition_keys
+      subclass.partition_by(**@partition_schema.to_h.transform_keys(&:to_sym)) if @partition_schema
+    end
+
+    # @return [Plumb::HashClass] the partition keys and their types
+    def partition_schema
+      @partition_schema ||= Types::Hash
     end
 
     def partition_keys
-      @partition_keys ||= []
+      @partition_keys ||= partition_schema.to_h.keys.map(&:to_sym).freeze
     end
 
-    def partition_by(*keys)
-      @partition_keys = keys.flatten.map(&:to_sym)
+    # Declare the partition keys. Bare keys are +Types::String+; give a type
+    # with a Hash:
+    #
+    #   partition_by :order_id, item_id: Types::UUID::V4
+    #
+    # Messages handled by the reactor are checked against it (see {PartitionSchema}).
+    def partition_by(*keys, **typed)
+      __check_no_messages_defined!(:partition_by)
+      schema = keys.flatten.to_h { |key| [key.to_sym, Types::String] }
+      typed.each do |key, type|
+        raise ArgumentError, "#{self}: partition key #{key} is declared twice" if schema.key?(key.to_sym)
+        unless Plumb::Composable === type || Class === type
+          raise ArgumentError, "#{self}: partition key #{key} needs a Plumb type or a class, got #{type.inspect}"
+        end
+
+        schema[key.to_sym] = Plumb::Composable.wrap(type)
+      end
+      @partition_keys = nil
+      @partition_schema = Types::Hash[schema]
     end
 
     def group_id
@@ -66,8 +88,37 @@ module Sourced
     end
 
     def consumer_group(id)
+      __check_no_messages_defined!(:consumer_group)
       @group_id = id
     end
+
+    # The prefix of the types {.Command} and {.Event} define. Defaults to
+    # +group_id+ (+Shop::Orders+ => +shop.orders+); declare one to keep stored
+    # types stable when the class or group is renamed.
+    #
+    # @param prefix [String, nil] the prefix to declare, or nil to read it
+    # @return [String]
+    def message_prefix(prefix = nil)
+      if prefix
+        __check_no_messages_defined!(:message_prefix)
+        return @message_prefix = prefix.to_s
+      end
+      @message_prefix || Types::ModuleToMessageType.parse(group_id.to_s)
+    end
+
+    # Define a command typed +"<message_prefix>.<name>"+, with the partition
+    # schema's attributes before the block's.
+    #
+    #   AddItem = Command(:add_item) do
+    #     attribute :quantity, Integer
+    #   end
+    #
+    # @return [Class<Sourced::Command>]
+    def Command(name, &block) = __define_message(Sourced::Command, name, &block)
+
+    # Define an event, as {.Command} does.
+    # @return [Class<Sourced::Event>]
+    def Event(name, &block) = __define_message(Sourced::Event, name, &block)
 
     # Declare this reactor as the exclusive owner of its handled message types:
     # the router validates that no other reactor handles the same types. This is
@@ -143,6 +194,23 @@ module Sourced
         raise Sourced::PartialBatchError.new(results, msg, e)
       end
       results
+    end
+
+    private def __define_message(base, name, &block)
+      prefix = message_prefix
+      raise ArgumentError, "#{self}: defining #{name} needs a group_id, or declare message_prefix" if prefix.empty?
+
+      schema = partition_schema
+      @__messages_defined = true
+      base.define("#{prefix}.#{name}") do
+        schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
+        class_exec(&block) if block
+      end
+    end
+
+    # Messages take the schema and prefix when they're defined.
+    private def __check_no_messages_defined!(what)
+      raise ArgumentError, "#{self}: declare #{what} before defining messages with Command or Event" if @__messages_defined
     end
   end
 end

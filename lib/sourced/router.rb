@@ -219,6 +219,7 @@ module Sourced
           "partition_by or declaring `partition_by :__id`.)"
       end
 
+      PartitionSchema.check!(reactor_class)
       handled_types = reactor_class.handled_messages.map(&:type).uniq
       validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
 

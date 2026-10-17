@@ -188,9 +188,9 @@ module Sourced
           raise DefinitionError, "#{owner}: message type #{type.inspect} is already #{existing}'s"
         end
 
-        keys = owner.partition_keys
+        schema = owner.partition_schema
         klass = define(type) do
-          keys.each { |k| attribute k, String }
+          schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
           Machine.__transition_attributes(self)
         end
         klass.instance_variable_set(:@owner, owner)
@@ -1029,8 +1029,8 @@ module Sourced
           raise DefinitionError, "#{self}: stopped #{@stop_checkpoint} must be a final checkpoint of the root region"
         end
 
-        keys = partition_keys
-        const_set(:Stop, Sourced::Command.define("#{type_prefix}.runtime.child.stop") { keys.each { |k| attribute k, String } })
+        schema = partition_schema
+        const_set(:Stop, Sourced::Command.define("#{type_prefix}.runtime.child.stop") { schema.to_h.each { |key, key_type| attribute key.to_sym, key_type } })
         __define_child_messages
       end
 
@@ -1041,8 +1041,14 @@ module Sourced
       def |(other) = Starts.new(members: [self]) | other
 
       # Before any checkpoint or mount: their classes take the keys.
-      def partition_by(*keys)
+      def partition_by(*keys, **typed)
         __check_declared_first!(:partition_by)
+        super
+      end
+
+      # Before any checkpoint or mount: their types take the prefix.
+      def message_prefix(prefix = nil)
+        __check_declared_first!(:message_prefix) if prefix
         super
       end
 
@@ -1068,9 +1074,9 @@ module Sourced
         Mermaid.new(self).to_s
       end
 
-      # Message type prefix derived from +group_id+ (the class name unless
-      # +consumer_group+ fixes it): +Shop::OrderMachine+ => +shop.order_machine+.
-      def type_prefix = Types::Underscore.parse(group_id.to_s.gsub('::', '.'))
+      # Prefix of the generated message types: {.message_prefix}, by default
+      # derived from +group_id+: +Shop::OrderMachine+ => +shop.order_machine+.
+      def type_prefix = message_prefix
 
       # The machine's position before its first checkpoint.
       def initial(&block) = __define_node(root, INITIAL, final: false, &block)
@@ -1300,15 +1306,15 @@ module Sourced
       end
 
       def __define_child_messages
-        keys = partition_keys
+        schema = partition_schema
         const_set(:Started, ChildEvent.define("#{type_prefix}.runtime.child.started") do
-          keys.each { |k| attribute k, String }
+          schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
           Machine.__transition_attributes(self)
           attribute :input, Sourced::Types::Hash.default { {} }
         end)
         __transition_classes << (@__started_class = self::Started)
         @__finished_class = const_set(:Finished, ChildEvent.define("#{type_prefix}.runtime.child.finished") do
-          keys.each { |k| attribute k, String }
+          schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
           attribute :final, String
         end)
       end
@@ -1559,12 +1565,10 @@ module Sourced
           raise DefinitionError, "#{self}: final checkpoint #{node.label} can't take events" if node.final? && node.ons.any?
 
           node.commands.each_value do |definition|
-            __check_partition_keys!(definition.command_class, 'command')
             __check_auto_start!(definition, __attribute_names(definition.command_class), "command #{definition.command_class}")
             definition.checkpoint_targets.each { |target| __check_target!(tree, node, target) }
           end
           node.ons.each_value do |definition|
-            __check_partition_keys!(definition.command_class, 'on event')
             __check_auto_start!(definition, __attribute_names(definition.command_class), "on #{definition.command_class}")
             definition.checkpoint_targets.each { |target| __check_target!(tree, node, target) }
           end
@@ -1581,9 +1585,9 @@ module Sourced
           end
         end
 
-        handled_messages_for_react.each { |klass| __check_partition_keys!(klass, 'reaction') }
         tree.all_regions.each { |region| __check_mount!(tree, region) if region.mount }
         tree.children_specs.each_value { |spec| __check_child!(tree, spec) }
+        PartitionSchema.check!(self, error: DefinitionError)
       end
 
       # A mounted machine escalates through its root finals, mapped onto the
@@ -1665,14 +1669,6 @@ module Sourced
         raise DefinitionError, "#{prefix} start children" if node.invokes.any?
         raise DefinitionError, "#{prefix} have regions" if node.regions.any?
         raise DefinitionError, "#{prefix} join with done or children_done" if node.dones.any? || node.children_joins.any?
-      end
-
-      def __check_partition_keys!(klass, role)
-        names = __attribute_names(klass)
-        missing = partition_keys - names
-        return if missing.empty?
-
-        raise DefinitionError, "#{self}: #{role} #{klass} must declare #{missing.join(', ')}"
       end
 
       def __attribute_names(klass)

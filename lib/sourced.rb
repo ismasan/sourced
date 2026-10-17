@@ -27,6 +27,10 @@ module Sourced
   # state (its +#handles_command?+ is false). Nothing is appended.
   CommandNotHandledError = Class.new(Error)
 
+  # Raised when a reactor's definition is invalid, ex. a handled message that
+  # doesn't match its partition schema. Checked when it's registered with a Router.
+  DefinitionError = Class.new(Error)
+
   # Default logger for components built outside a configured system, ex. in specs.
   NULL_LOGGER = Logger.new(nil)
 
@@ -244,6 +248,7 @@ require 'sourced/actions'
 require 'sourced/action_runner'
 require 'sourced/reactor_defaults'
 require 'sourced/consumer'
+require 'sourced/partition_schema'
 require 'sourced/projection'
 require 'sourced/evolve'
 require 'sourced/react'

@@ -90,6 +90,8 @@ module Sourced
           if projection? && partition_attrs.any?
             raise ArgumentError, "#{reactor_class} is a projection: it takes no partition values"
           end
+          # What Router registration would reject fails the spec too.
+          Sourced::PartitionSchema.check!(reactor_class)
 
           @partition_values = partition_attrs
           @given_messages = []
