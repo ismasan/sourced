@@ -58,32 +58,32 @@ class RouterTestDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'router-test-decider'
 
-  state { { exists: false, bound: false } }
+  context { { exists: false, bound: false } }
 
-  evolve RouterTestMessages::DeviceRegistered do |state, _evt|
-    state[:exists] = true
+  evolve RouterTestMessages::DeviceRegistered do |context, _evt|
+    context[:exists] = true
   end
 
-  evolve RouterTestMessages::DeviceBound do |state, _evt|
-    state[:bound] = true
+  evolve RouterTestMessages::DeviceBound do |context, _evt|
+    context[:bound] = true
   end
 
-  command RouterTestMessages::BindDevice do |state, cmd|
-    raise 'Not found' unless state[:exists]
-    raise 'Already bound' if state[:bound]
+  command RouterTestMessages::BindDevice do |context, cmd|
+    raise 'Not found' unless context[:exists]
+    raise 'Already bound' if context[:bound]
     event RouterTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
-  evolve RouterTestMessages::DeviceRenamed do |state, evt|
-    state[:name] = evt.payload.name
+  evolve RouterTestMessages::DeviceRenamed do |context, evt|
+    context[:name] = evt.payload.name
   end
 
-  command RouterTestMessages::RenameDevice do |state, cmd|
-    raise 'Not found' unless state[:exists]
+  command RouterTestMessages::RenameDevice do |context, cmd|
+    raise 'Not found' unless context[:exists]
     event RouterTestMessages::DeviceRenamed, device_id: cmd.payload.device_id, name: cmd.payload.name
   end
 
-  reaction RouterTestMessages::DeviceBound do |_state, evt|
+  reaction RouterTestMessages::DeviceBound do |_context, evt|
     RouterTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
   end
 end
@@ -93,19 +93,19 @@ class RouterTestProjector < Sourced::Projector::StateStored
   partition_by :device_id
   consumer_group 'router-test-projector'
 
-  state { { devices: [] } }
+  context { { devices: [] } }
 
-  evolve RouterTestMessages::DeviceRegistered do |state, evt|
-    state[:devices] << evt.payload.name
+  evolve RouterTestMessages::DeviceRegistered do |context, evt|
+    context[:devices] << evt.payload.name
   end
 
-  evolve RouterTestMessages::DeviceBound do |state, _evt|
+  evolve RouterTestMessages::DeviceBound do |context, _evt|
     # nothing
   end
 
-  sync do |state:, messages:, replaying:|
+  sync do |context:, messages:, replaying:|
     # In a real projector, this would persist to DB
-    state[:synced] = true
+    context[:synced] = true
   end
 end
 

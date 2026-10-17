@@ -21,50 +21,50 @@ end
 RSpec.describe Sourced::Projection do
   let(:projection_class) do
     Class.new(Sourced::Projection) do
-      state do
+      context do
         { items: [] }
       end
 
-      evolve ProjectionTestMessages::ItemAdded do |state, msg|
-        state[:items] << { id: msg.payload.item_id, name: msg.payload.name }
+      evolve ProjectionTestMessages::ItemAdded do |context, msg|
+        context[:items] << { id: msg.payload.item_id, name: msg.payload.name }
       end
 
-      evolve ProjectionTestMessages::ItemRemoved do |state, msg|
-        state[:items].reject! { |i| i[:id] == msg.payload.item_id }
+      evolve ProjectionTestMessages::ItemRemoved do |context, msg|
+        context[:items].reject! { |i| i[:id] == msg.payload.item_id }
       end
     end
   end
 
   def added(id, name) = ProjectionTestMessages::ItemAdded.new(payload: { item_id: id, name: name })
 
-  describe '#state' do
-    it 'builds the initial state from the state block' do
-      expect(projection_class.new.state).to eq(items: [])
+  describe '#context' do
+    it 'builds the initial context from the context block' do
+      expect(projection_class.new.context).to eq(items: [])
     end
 
-    it 'builds a fresh state per instance' do
+    it 'builds a fresh context per instance' do
       first = projection_class.new
       first.evolve([added('i1', 'Apple')])
-      expect(projection_class.new.state).to eq(items: [])
+      expect(projection_class.new.context).to eq(items: [])
     end
 
-    it 'is nil without a state block' do
-      expect(Class.new(Sourced::Projection).new.state).to be_nil
+    it 'is nil without a context block' do
+      expect(Class.new(Sourced::Projection).new.context).to be_nil
     end
 
-    it 'starts from a given state instead of the state block' do
+    it 'starts from a given context instead of the context block' do
       projection = projection_class.new({ items: [{ id: 'i0', name: 'Pear' }] })
       projection.evolve([added('i1', 'Apple')])
-      expect(projection.state[:items].map { |i| i[:id] }).to eq(%w[i0 i1])
+      expect(projection.context[:items].map { |i| i[:id] }).to eq(%w[i0 i1])
     end
 
-    it 'keeps an explicit nil starting state' do
-      expect(projection_class.new(nil).state).to be_nil
+    it 'keeps an explicit nil starting context' do
+      expect(projection_class.new(nil).context).to be_nil
     end
   end
 
   describe '#evolve' do
-    it 'applies registered handlers in order and returns the state' do
+    it 'applies registered handlers in order and returns the context' do
       projection = projection_class.new
       result = projection.evolve([
         added('i1', 'Apple'),
@@ -72,30 +72,30 @@ RSpec.describe Sourced::Projection do
         ProjectionTestMessages::ItemRemoved.new(payload: { item_id: 'i1' })
       ])
 
-      expect(result).to equal(projection.state)
-      expect(projection.state[:items]).to eq([{ id: 'i2', name: 'Banana' }])
+      expect(result).to equal(projection.context)
+      expect(projection.context[:items]).to eq([{ id: 'i2', name: 'Banana' }])
     end
 
     it 'accepts a single message' do
       projection = projection_class.new
       projection.evolve(added('i1', 'Apple'))
-      expect(projection.state[:items].size).to eq(1)
+      expect(projection.context[:items].size).to eq(1)
     end
 
     it 'skips unregistered message types' do
       projection = projection_class.new
       projection.evolve([added('i1', 'Apple'), ProjectionTestMessages::Unhandled.new(payload: { foo: 'bar' })])
-      expect(projection.state[:items]).to eq([{ id: 'i1', name: 'Apple' }])
+      expect(projection.context[:items]).to eq([{ id: 'i1', name: 'Apple' }])
     end
 
     it 'runs evolve blocks in the projection scope' do
       klass = Class.new(Sourced::Projection) do
-        state { {} }
-        evolve(ProjectionTestMessages::ItemAdded) { |state, _| state[:scope] = self }
+        context { {} }
+        evolve(ProjectionTestMessages::ItemAdded) { |context, _| context[:scope] = self }
       end
       projection = klass.new
       projection.evolve([added('i1', 'Apple')])
-      expect(projection.state[:scope]).to equal(projection)
+      expect(projection.context[:scope]).to equal(projection)
     end
   end
 
@@ -112,10 +112,10 @@ RSpec.describe Sourced::Projection do
       expect(projection_class.handled_messages_for_evolve).to equal(projection_class.handled_messages)
     end
 
-    it 'rejects state blocks that take arguments' do
-      expect { Class.new(Sourced::Projection) { state { |values| values } } }
+    it 'rejects context blocks that take arguments' do
+      expect { Class.new(Sourced::Projection) { context { |values| values } } }
         .to raise_error(ArgumentError, /no arguments/)
-      expect { Class.new(Sourced::Projection) { state { |_| {} } } }
+      expect { Class.new(Sourced::Projection) { context { |_| {} } } }
         .to raise_error(ArgumentError, /no arguments/)
     end
 
@@ -130,8 +130,8 @@ RSpec.describe Sourced::Projection do
   describe '.before_evolve' do
     let(:stamped) do
       Class.new(projection_class) do
-        before_evolve { |state, msg| (state[:log] ||= []) << [:first, msg.class, state[:items].size] }
-        before_evolve { |state, _| state[:log] << [:second, self.class] }
+        before_evolve { |context, msg| (context[:log] ||= []) << [:first, msg.class, context[:items].size] }
+        before_evolve { |context, _| context[:log] << [:second, self.class] }
       end
     end
 
@@ -139,21 +139,21 @@ RSpec.describe Sourced::Projection do
       projection = stamped.new
       projection.evolve([added('i1', 'Apple')])
 
-      expect(projection.state[:log]).to eq([
+      expect(projection.context[:log]).to eq([
         [:first, ProjectionTestMessages::ItemAdded, 0],
         [:second, stamped]
       ])
-      expect(projection.state[:items].size).to eq(1)
+      expect(projection.context[:items].size).to eq(1)
     end
 
     it 'skips messages without a handler' do
       projection = stamped.new
       projection.evolve([ProjectionTestMessages::Unhandled.new(payload: { foo: 'bar' })])
-      expect(projection.state).to eq(items: [])
+      expect(projection.context).to eq(items: [])
     end
 
     it 'is inherited, and blocks added to a subclass do not change the parent' do
-      child = Class.new(stamped) { before_evolve { |state, _| state[:log] << :child } }
+      child = Class.new(stamped) { before_evolve { |context, _| context[:log] << :child } }
 
       expect(child.before_evolve_blocks.size).to eq(3)
       expect(stamped.before_evolve_blocks.size).to eq(2)
@@ -166,18 +166,18 @@ RSpec.describe Sourced::Projection do
   end
 
   describe 'inheritance' do
-    it 'subclasses inherit the state block and handlers' do
+    it 'subclasses inherit the context block and handlers' do
       subclass = Class.new(projection_class)
       expect(subclass.handled_messages).to eq(projection_class.handled_messages)
 
       projection = subclass.new
       projection.evolve([added('i1', 'Apple')])
-      expect(projection.state[:items]).to eq([{ id: 'i1', name: 'Apple' }])
+      expect(projection.context[:items]).to eq([{ id: 'i1', name: 'Apple' }])
     end
 
     it 'handlers added to a subclass do not change the parent' do
       subclass = Class.new(projection_class) do
-        evolve(ProjectionTestMessages::Unhandled) { |state, _| state[:seen] = true }
+        evolve(ProjectionTestMessages::Unhandled) { |context, _| context[:seen] = true }
       end
 
       expect(subclass.handled_messages).to include(ProjectionTestMessages::Unhandled)

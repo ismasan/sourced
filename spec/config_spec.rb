@@ -588,7 +588,7 @@ RSpec.describe 'Sourced.config' do
         partition_by :thing_id
         consumer_group 'config-load-decider'
 
-        state { { count: 0 } }
+        context { { count: 0 } }
       end
     end
 
@@ -598,7 +598,7 @@ RSpec.describe 'Sourced.config' do
 
       instance, read_result = Sourced.load(decider_class, thing_id: 'abc')
 
-      expect(instance.state[:count]).to eq(0)
+      expect(instance.context[:count]).to eq(0)
       expect(read_result.messages).to be_empty
     end
 
@@ -608,7 +608,7 @@ RSpec.describe 'Sourced.config' do
 
       instance, read_result = Sourced.load(decider_class, store: other_store, thing_id: 'abc')
 
-      expect(instance.state[:count]).to eq(0)
+      expect(instance.context[:count]).to eq(0)
       expect(read_result.messages).to be_empty
       expect(Sourced.config.boot_status).to eq(:open)
     end

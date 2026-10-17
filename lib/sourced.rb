@@ -180,7 +180,7 @@ module Sourced
   #
   # @example
   #   cart, read_result = Sourced.load(CartProjection, cart_id: 'c1')
-  #   cart.state
+  #   cart.context
   def self.load(reactor_class, store: nil, upto: nil, **values)
     store ||= self.store
     partitioned = reactor_class.respond_to?(:partition_keys)

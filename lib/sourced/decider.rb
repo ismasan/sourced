@@ -27,7 +27,7 @@ module Sourced
       # Register a command handler.
       #
       # @param message_class [Class] commands class to handle
-      # @yield [state, message] command handler block
+      # @yield [context, message] command handler block
       # @return [void]
       def command(message_class, &block)
         handled_commands << message_class
@@ -46,7 +46,7 @@ module Sourced
       # 2. **Reaction-triggering event** — if the decider
       #    {React#reacts_to? reacts to} this message and
       #    {React#should_react?} allows it (by default: the batch is not
-      #    replaying), its state is evolved with the event, {React#react} is
+      #    replaying), its context is evolved with the event, {React#react} is
       #    invoked, and any produced messages are wrapped in an
       #    {Actions::Append} with +source: msg+ so the infra layer correlates
       #    reaction messages against the event (future-dated ones are deferred
@@ -80,7 +80,7 @@ module Sourced
       #
       # @param partition_values [Hash{Symbol => String}] partition key-value pairs
       # @param new_messages [Array<PositionedMessage>] claimed messages to process
-      # @param history [ReadResult] prior partition history (evolved into state)
+      # @param history [ReadResult] prior partition history (evolved into context)
       # @param replaying [Boolean] forwarded to {React#should_react?}, which by
       #   default skips the reaction branch when +true+
       # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
@@ -94,17 +94,17 @@ module Sourced
             actions = Actions.build_for(raw_events, guard: history.guard, source: msg)
             # The runner correlates the events as it appends them; +events:+
             # is bound then, so the hooks see the events as stored.
-            actions += instance.collect_actions(state: instance.state, messages: [msg]) do |appended|
+            actions += instance.collect_actions(context: instance.context, messages: [msg]) do |appended|
               { events: appended }
             end
 
             [actions, msg]
-          elsif instance.reacts_to?(msg) && instance.should_react?(instance.state, msg, replaying:)
+          elsif instance.reacts_to?(msg) && instance.should_react?(instance.context, msg, replaying:)
             instance.evolve([msg])
             reaction_msgs = Array(instance.react(msg))
             actions = Actions.build_for(reaction_msgs, source: msg)
             actions += instance.collect_actions(
-              state: instance.state, messages: [msg], events: []
+              context: instance.context, messages: [msg], events: []
             )
 
             [actions, msg]
@@ -148,26 +148,26 @@ module Sourced
       @uncommitted_events = []
     end
 
-    # Decide a command against the decider's current in-memory state.
+    # Decide a command against the decider's current in-memory context.
     #
     # @param command [Sourced::Message] command to handle
     # @return [Array<Sourced::Message>] newly produced events
     def decide(command)
       @uncommitted_events = []
       method_name = Sourced.message_method_name(PREFIX, command.class.to_s)
-      send(method_name, state, command) if respond_to?(method_name)
+      send(method_name, context, command) if respond_to?(method_name)
       @uncommitted_events.dup
     end
 
     # Produce a new event from within a command handler and apply it
-    # to the decider's in-memory state immediately.
+    # to the decider's in-memory context immediately.
     #
     # @param event_class [Class] event class
     # @param payload [Hash] payload attributes for the event
     # @return [Sourced::Message] the newly built event
     #
     # @example
-    #   command RegisterDevice do |_state, cmd|
+    #   command RegisterDevice do |_context, cmd|
     #     event DeviceRegistered, device_id: cmd.payload.device_id
     #   end
     def event(event_class, payload = {})

@@ -48,36 +48,36 @@ class GWTTestDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'gwt-test-decider'
 
-  state { { exists: false, bound: false } }
+  context { { exists: false, bound: false } }
 
-  evolve GWTTestMessages::DeviceRegistered do |state, _evt|
-    state[:exists] = true
+  evolve GWTTestMessages::DeviceRegistered do |context, _evt|
+    context[:exists] = true
   end
 
-  evolve GWTTestMessages::DeviceBound do |state, _evt|
-    state[:bound] = true
+  evolve GWTTestMessages::DeviceBound do |context, _evt|
+    context[:bound] = true
   end
 
-  command GWTTestMessages::BindDevice do |state, cmd|
-    raise 'Not found' unless state[:exists]
-    raise 'Already bound' if state[:bound]
+  command GWTTestMessages::BindDevice do |context, cmd|
+    raise 'Not found' unless context[:exists]
+    raise 'Already bound' if context[:bound]
     event GWTTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
-  command GWTTestMessages::NoopCommand do |_state, _cmd|
+  command GWTTestMessages::NoopCommand do |_context, _cmd|
     # intentionally produces no events
   end
 
-  reaction GWTTestMessages::DeviceBound do |_state, evt|
+  reaction GWTTestMessages::DeviceBound do |_context, evt|
     GWTTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
   end
 
-  sync do |state:, messages:, events:|
-    state[:synced] = true
+  sync do |context:, messages:, events:|
+    context[:synced] = true
   end
 
-  after_sync do |state:, messages:, events:|
-    state[:after_synced] = true
+  after_sync do |context:, messages:, events:|
+    context[:after_synced] = true
   end
 end
 
@@ -86,14 +86,14 @@ class GWTTestSimpleDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'gwt-test-simple-decider'
 
-  state { { exists: false } }
+  context { { exists: false } }
 
-  evolve GWTTestMessages::DeviceRegistered do |state, _evt|
-    state[:exists] = true
+  evolve GWTTestMessages::DeviceRegistered do |context, _evt|
+    context[:exists] = true
   end
 
-  command GWTTestMessages::BindDevice do |state, cmd|
-    raise 'Not found' unless state[:exists]
+  command GWTTestMessages::BindDevice do |context, cmd|
+    raise 'Not found' unless context[:exists]
     event GWTTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 end
@@ -102,24 +102,24 @@ class GWTTestStateStoredProjector < Sourced::Projector::StateStored
   partition_by :list_id
   consumer_group 'gwt-test-ss-projector'
 
-  state do
+  context do
     { items: [], synced: false, after_synced: false }
   end
 
-  evolve GWTTestMessages::ItemAdded do |state, msg|
-    state[:items] << msg.payload.name
+  evolve GWTTestMessages::ItemAdded do |context, msg|
+    context[:items] << msg.payload.name
   end
 
-  evolve GWTTestMessages::ItemArchived do |state, msg|
-    state[:items].delete(msg.payload.name)
+  evolve GWTTestMessages::ItemArchived do |context, msg|
+    context[:items].delete(msg.payload.name)
   end
 
-  sync do |state:, messages:, replaying:|
-    state[:synced] = true
+  sync do |context:, messages:, replaying:|
+    context[:synced] = true
   end
 
-  after_sync do |state:, messages:, replaying:|
-    state[:after_synced] = true
+  after_sync do |context:, messages:, replaying:|
+    context[:after_synced] = true
   end
 end
 
@@ -127,41 +127,41 @@ class GWTTestEventSourcedProjector < Sourced::Projector::EventSourced
   partition_by :list_id
   consumer_group 'gwt-test-es-projector'
 
-  state do
+  context do
     { items: [], synced: false, after_synced: false }
   end
 
-  evolve GWTTestMessages::ItemAdded do |state, msg|
-    state[:items] << msg.payload.name
+  evolve GWTTestMessages::ItemAdded do |context, msg|
+    context[:items] << msg.payload.name
   end
 
-  evolve GWTTestMessages::ItemArchived do |state, msg|
-    state[:items].delete(msg.payload.name)
+  evolve GWTTestMessages::ItemArchived do |context, msg|
+    context[:items].delete(msg.payload.name)
   end
 
-  sync do |state:, messages:, replaying:|
-    state[:synced] = true
+  sync do |context:, messages:, replaying:|
+    context[:synced] = true
   end
 
-  after_sync do |state:, messages:, replaying:|
-    state[:after_synced] = true
+  after_sync do |context:, messages:, replaying:|
+    context[:after_synced] = true
   end
 end
 
 class GWTTestProjection < Sourced::Projection
-  state do
+  context do
     { list_id: nil, items: [] }
   end
 
-  evolve GWTTestMessages::ItemAdded do |state, msg|
+  evolve GWTTestMessages::ItemAdded do |context, msg|
     raise ArgumentError, 'no blanks' if msg.payload.name.empty?
 
-    state[:list_id] = msg.payload.list_id
-    state[:items] << msg.payload.name
+    context[:list_id] = msg.payload.list_id
+    context[:items] << msg.payload.name
   end
 
-  evolve GWTTestMessages::ItemArchived do |state, msg|
-    state[:items].delete(msg.payload.name)
+  evolve GWTTestMessages::ItemArchived do |context, msg|
+    context[:items].delete(msg.payload.name)
   end
 end
 
@@ -296,14 +296,14 @@ RSpec.describe Sourced::Testing::RSpec do
       expect(recording_projector.seen).to eq([apple, pear])
     end
 
-    it 'starts state from load_state' do
+    it 'starts context from load_context' do
       projector = Class.new(GWTTestStateStoredProjector) do
-        load_state { |values| { list_id: values[:list_id], items: ['Stored'] } }
+        load_context { |values| { list_id: values[:list_id], items: ['Stored'] } }
       end
 
       with_reactor(projector, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .then { |r| expect(r.state[:items]).to eq(%w[Stored Apple]) }
+        .then { |r| expect(r.context[:items]).to eq(%w[Stored Apple]) }
     end
 
     it 'refuses when: a projector consumes events that already exist' do
@@ -322,35 +322,35 @@ RSpec.describe Sourced::Testing::RSpec do
       recording_projector.calls.clear
       with_reactor(recording_projector, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .then! { |r| expect(r.state[:synced]).to be true }
+        .then! { |r| expect(r.context[:synced]).to be true }
       expect(recording_projector.calls).to contain_exactly(:sync, :after_sync)
     end
 
-    it 'given events → then block asserts evolved state' do
+    it 'given events → then block asserts evolved context' do
       with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .then { |r| expect(r.state[:items]).to eq(['Apple']) }
+        .then { |r| expect(r.context[:items]).to eq(['Apple']) }
     end
 
-    it 'then! runs sync actions before yielding state' do
+    it 'then! runs sync actions before yielding context' do
       with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .then! { |r| expect(r.state[:synced]).to be true }
+        .then! { |r| expect(r.context[:synced]).to be true }
     end
 
-    it 'then! runs after_sync actions before yielding state' do
+    it 'then! runs after_sync actions before yielding context' do
       with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .then! { |r| expect(r.state[:after_synced]).to be true }
+        .then! { |r| expect(r.context[:after_synced]).to be true }
     end
   end
 
   describe 'Projector (EventSourced)' do
-    it 'given events are both history and batch: state evolves and hooks see them' do
+    it 'given events are both history and batch: context evolves and hooks see them' do
       seen = []
       klass = Class.new(GWTTestEventSourcedProjector) do
         consumer_group 'gwt-test-es-projector-recording'
-        after_sync { |state:, messages:, **| seen << [state[:items].dup, messages.size] }
+        after_sync { |context:, messages:, **| seen << [context[:items].dup, messages.size] }
       end
 
       with_reactor(klass, list_id: 'L1')
@@ -361,34 +361,34 @@ RSpec.describe Sourced::Testing::RSpec do
       expect(seen).to eq([[%w[Apple Banana], 2]])
     end
 
-    it 'given events → then block asserts evolved state' do
+    it 'given events → then block asserts evolved context' do
       with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Banana')
-        .then { |r| expect(r.state[:items]).to eq(['Apple', 'Banana']) }
+        .then { |r| expect(r.context[:items]).to eq(['Apple', 'Banana']) }
     end
 
-    it 'then! runs sync actions before yielding state' do
+    it 'then! runs sync actions before yielding context' do
       with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .then! { |r| expect(r.state[:synced]).to be true }
+        .then! { |r| expect(r.context[:synced]).to be true }
     end
 
-    it 'then! runs after_sync actions before yielding state' do
+    it 'then! runs after_sync actions before yielding context' do
       with_reactor(GWTTestEventSourcedProjector, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .then! { |r| expect(r.state[:after_synced]).to be true }
+        .then! { |r| expect(r.context[:after_synced]).to be true }
     end
 
   end
 
   describe 'Projection' do
-    it 'evolves given messages and yields the state' do
+    it 'evolves given messages and yields the context' do
       with_reactor(GWTTestProjection)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .and(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Pear')
         .and(GWTTestMessages::ItemArchived, list_id: 'L1', name: 'Apple')
-        .then { |r| expect(r.state).to eq(list_id: 'L1', items: ['Pear']) }
+        .then { |r| expect(r.context).to eq(list_id: 'L1', items: ['Pear']) }
     end
 
     it 'yields no messages' do
@@ -400,7 +400,7 @@ RSpec.describe Sourced::Testing::RSpec do
     it 'accepts then! and an empty expectation' do
       with_reactor(GWTTestProjection)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-        .then! { |r| expect(r.state[:items]).to eq(['Apple']) }
+        .then! { |r| expect(r.context[:items]).to eq(['Apple']) }
 
       with_reactor(GWTTestProjection)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
@@ -413,18 +413,18 @@ RSpec.describe Sourced::Testing::RSpec do
         .then(ArgumentError, 'no blanks')
     end
 
-    it 'works with any class that evolves state and has no handle_batch' do
+    it 'works with any class that evolves context and has no handle_batch' do
       counter = Class.new do
-        attr_reader :state
+        attr_reader :context
 
-        def initialize = @state = 0
-        def evolve(messages) = @state += Array(messages).size
+        def initialize = @context = 0
+        def evolve(messages) = @context += Array(messages).size
       end
 
       with_reactor(counter)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Pear')
-        .then { |r| expect(r.state).to eq(2) }
+        .then { |r| expect(r.context).to eq(2) }
     end
 
     it 'refuses partition values: a projection takes none' do

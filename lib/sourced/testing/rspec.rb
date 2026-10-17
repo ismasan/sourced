@@ -27,24 +27,24 @@ module Sourced
       #     .when(BindDevice, device_id: 'd1', asset_id: 'a1')
       #     .then(DeviceBound, device_id: 'd1', asset_id: 'a1')
       #
-      # @example Projector — assert state via block
+      # @example Projector — assert context via block
       #   with_reactor(MyProjector, list_id: 'L1')
       #     .given(ItemAdded, list_id: 'L1', name: 'Apple')
-      #     .then { |r| expect(r.state[:items]).to eq(['Apple']) }
+      #     .then { |r| expect(r.context[:items]).to eq(['Apple']) }
       #
-      # @example Projection — evolve given messages, assert state via block
+      # @example Projection — evolve given messages, assert context via block
       #   with_reactor(CartProjection)
       #     .given(ItemAdded, cart_id: 'c1', item_id: 'i1')
-      #     .then { |r| expect(r.state[:items]).to eq(['i1']) }
+      #     .then { |r| expect(r.context[:items]).to eq(['i1']) }
       def with_reactor(reactor_class, **partition_attrs)
         GWT.new(reactor_class, **partition_attrs)
       end
 
       # Uniform result yielded to +.then+ / +.then!+ block callbacks.
       # Gives access to both the reactor's produced action pairs / messages
-      # (what deciders typically assert on) and the evolved state (what
+      # (what deciders typically assert on) and the evolved context (what
       # projectors typically assert on).
-      RunResult = Data.define(:pairs, :messages, :state)
+      RunResult = Data.define(:pairs, :messages, :context)
 
       class MessageMatcher
         def initialize(expected_messages)
@@ -183,19 +183,19 @@ module Sourced
           if projection? && !build_expected(*expected).empty?
             raise ArgumentError,
                   "#{@reactor_class} is a projection: it produces no messages, " \
-                  'so assert its state with a `then` block'
+                  'so assert its context with a `then` block'
           end
 
           pairs = run_handle_batch
 
-          # With a block, the hooks run inside compute_state, on the instance
-          # whose state the block receives, so their effects on it are
+          # With a block, the hooks run inside compute_context, on the instance
+          # whose context the block receives, so their effects on it are
           # visible. Without one they run here, on the pipeline's own
           # instance. Either way they run once.
           run_hooks(pairs) if sync && !block_given?
 
           if block_given?
-            block.call(RunResult.new(pairs: pairs, messages: extract_messages(pairs), state: compute_state(pairs, sync: sync)))
+            block.call(RunResult.new(pairs: pairs, messages: extract_messages(pairs), context: compute_context(pairs, sync: sync)))
             return self
           end
 
@@ -276,20 +276,20 @@ module Sourced
         end
 
         # Build an instance and evolve it with all known messages so the
-        # caller can assert on state regardless of reactor type. For reactors
+        # caller can assert on context regardless of reactor type. For reactors
         # whose +handle_batch+ evolves its own instance (Decider, Projector,
         # DurableWorkflow), this is an independent, predictable computation.
         # When +sync+ is true, also runs the reactor's Sync / AfterSync
-        # blocks against this instance so their state mutations are visible,
+        # blocks against this instance so their context mutations are visible,
         # handing them the messages the +pairs+ would have appended.
-        def compute_state(pairs, sync: false)
+        def compute_context(pairs, sync: false)
           instance = projection? ? @reactor_class.new : @reactor_class.new(@partition_values)
-          return nil unless instance.respond_to?(:evolve) && instance.respond_to?(:state)
+          return nil unless instance.respond_to?(:evolve) && instance.respond_to?(:context)
 
           messages = @given_messages + @when_messages
           instance.evolve(messages)
           run_sync_on(instance, messages, pairs.flat_map { |actions, source| appended_in(actions, source) }) if sync
-          instance.state
+          instance.context
         end
 
         # Invoke Sync / AfterSync blocks against +instance+. Per-block
@@ -298,7 +298,7 @@ module Sourced
         # parameters and pass only what it declares. +events:+ carries the
         # appended messages, correlated, as the runner would bind them.
         def run_sync_on(instance, messages, appended)
-          all_args = { state: instance.state, messages: messages, events: appended, replaying: false }
+          all_args = { context: instance.context, messages: messages, events: appended, replaying: false }
           klass = instance.class
           blocks = []
           blocks.concat(klass.sync_blocks) if klass.respond_to?(:sync_blocks)

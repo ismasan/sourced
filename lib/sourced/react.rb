@@ -21,7 +21,7 @@ module Sourced
       __handling_reactions(Array(messages)) do |message|
         method_name = Sourced.message_method_name(PREFIX, message.class.to_s)
         if respond_to?(method_name)
-          Array(send(method_name, state, message)).compact
+          Array(send(method_name, context, message)).compact
         else
           EMPTY_ARRAY
         end
@@ -44,25 +44,25 @@ module Sourced
     # a partition (after a consumer group reset, or an offset rewind) does not
     # re-dispatch commands that already ran.
     #
-    # Override to react on replay, or to gate on state or payload:
+    # Override to react on replay, or to gate on context or payload:
     #
     #   # always react, even on replay
-    #   def should_react?(_state, _message, replaying: false) = true
+    #   def should_react?(_context, _message, replaying: false) = true
     #
     #   # react on replay only for messages the projection hasn't seen
-    #   def should_react?(state, message, replaying: false)
+    #   def should_react?(context, message, replaying: false)
     #     return true unless replaying
-    #     !state[:notified].include?(message.payload.student_id)
+    #     !context[:notified].include?(message.payload.student_id)
     #   end
     #
-    # +state+ is the reactor's state with +message+ already applied. In
+    # +context+ is the reactor's context with +message+ already applied. In
     # projectors the whole claimed batch has been applied, not just +message+.
     #
-    # @param state [Object] reactor state
+    # @param context [Object] reactor context
     # @param message [Sourced::Message] the message about to be reacted to
     # @param replaying [Boolean] whether this batch has been processed before
     # @return [Boolean]
-    def should_react?(_state, _message, replaying: false)
+    def should_react?(_context, _message, replaying: false)
       !replaying
     end
 
@@ -111,12 +111,12 @@ module Sourced
     # @return [Dispatcher] chainable wrapper around the dispatched message
     #
     # @example Dispatch
-    #   reaction StudentEnrolled do |_state, event|
+    #   reaction StudentEnrolled do |_context, event|
     #     dispatch(NotifyStudent, student_id: event.payload.student_id)
     #   end
     #
     # @example Dispatch with delay and metadata
-    #   reaction StudentEnrolled do |_state, event|
+    #   reaction StudentEnrolled do |_context, event|
     #     dispatch(NotifyStudent, student_id: event.payload.student_id)
     #       .with_metadata(channel: 'email')
     #       .at(Time.now + 300)
@@ -156,12 +156,12 @@ module Sourced
       # catch-all reaction across all evolve types without an explicit handler.
       #
       # @example React to a specific event class
-      #   reaction StudentEnrolled do |state, event|
+      #   reaction StudentEnrolled do |context, event|
       #     dispatch(NotifyStudent, student_id: event.payload.student_id)
       #   end
       #
       # @example React to several message classes
-      #   reaction StudentEnrolled, StudentRejoined do |state, event|
+      #   reaction StudentEnrolled, StudentRejoined do |context, event|
       #     dispatch(NotifyStudent, student_id: event.payload.student_id)
       #   end
       def reaction(*args, &block)

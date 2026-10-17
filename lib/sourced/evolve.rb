@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 module Sourced
-  # Evolve mixin for reactors: evolves reactor state through a {Sourced::Projection}.
+  # Evolve mixin for reactors: evolves reactor context through a {Sourced::Projection}.
   #
-  # The +state+ / +evolve+ DSL declares the reactor's projection, so evolve
+  # The +context+ / +evolve+ DSL declares the reactor's projection, so evolve
   # blocks run in the projection's scope, not the reactor's. A reactor can also
   # adopt a standalone projection class with <tt>evolve SomeProjection</tt>.
   #
@@ -13,10 +13,10 @@ module Sourced
   #
   # @example Inline projection
   #   class Carts < Sourced::Decider
-  #     state { { items: [] } }
+  #     context { { items: [] } }
   #
-  #     evolve ItemAdded do |state, evt|
-  #       state[:items] << evt.payload.item_id
+  #     evolve ItemAdded do |context, evt|
+  #       context[:items] << evt.payload.item_id
   #     end
   #   end
   #
@@ -37,15 +37,15 @@ module Sourced
       @projection ||= self.class.projection_class.new
     end
 
-    # @return [Object] the projection's current state
-    def state
-      projection.state
+    # @return [Object] the projection's current context
+    def context
+      projection.context
     end
 
-    # Apply messages to state through the projection.
+    # Apply messages to context through the projection.
     #
     # @param messages [Sourced::Message, Array<Sourced::Message>]
-    # @return [Object] the evolved state
+    # @return [Object] the evolved context
     def evolve(messages)
       projection.evolve(messages)
     end
@@ -66,10 +66,10 @@ module Sourced
         projection_class.handled_messages
       end
 
-      # Define the projection's initial state factory. The block takes no arguments.
-      def state(&)
+      # Define the projection's initial context factory. The block takes no arguments.
+      def context(&)
         @declares_projection = true
-        projection_class.state(&)
+        projection_class.context(&)
       end
 
       # Register a block on the reactor's projection to run before the evolve
@@ -82,13 +82,13 @@ module Sourced
       # Register an evolve handler on the reactor's projection, or adopt a
       # standalone projection class.
       #
-      # Adopting must come before this reactor's own +state+ / +evolve+ /
+      # Adopting must come before this reactor's own +context+ / +evolve+ /
       # +before_evolve+ declarations, which it would otherwise discard. It replaces handlers
       # inherited from a parent reactor.
       #
       # @overload evolve(message_class, &block)
       #   @param message_class [Class] a {Sourced::Message} subclass
-      #   @yield [state, message] runs in the projection's scope
+      #   @yield [context, message] runs in the projection's scope
       # @overload evolve(projection_class)
       #   @param projection_class [Class<Sourced::Projection>] projection to adopt
       # @raise [ArgumentError] when adopting after own declarations, or with a block
@@ -97,7 +97,7 @@ module Sourced
           raise ArgumentError, "#{self}.evolve(#{klass}) takes no block" if block
           if @declares_projection
             raise ArgumentError,
-                  "#{self}.evolve(#{klass}) must come before #{self}'s own state/evolve/before_evolve declarations"
+                  "#{self}.evolve(#{klass}) must come before #{self}'s own context/evolve/before_evolve declarations"
           end
 
           @declares_projection = true

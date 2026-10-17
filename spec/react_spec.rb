@@ -39,11 +39,11 @@ RSpec.describe Sourced::React do
       include Sourced::React
       extend Sourced::Consumer
 
-      def state
+      def context
         {}
       end
 
-      reaction ReactTestMessages::SomethingHappened do |_state, msg|
+      reaction ReactTestMessages::SomethingHappened do |_context, msg|
         ReactTestMessages::DoNext.new(payload: { thing_id: msg.payload.thing_id })
       end
     end
@@ -104,7 +104,7 @@ RSpec.describe Sourced::React do
   describe '.reaction' do
     it 'rejects symbols' do
       expect {
-        reactor_class.reaction(:react_test_something_happened) { |_state, _msg| nil }
+        reactor_class.reaction(:react_test_something_happened) { |_context, _msg| nil }
       }.to raise_error(ArgumentError, /Invalid arguments/)
     end
   end
@@ -131,30 +131,30 @@ RSpec.describe Sourced::React do
 
         consumer_group 'ccc-reactor'
 
-        def state
-          { source: 'state' }
+        def context
+          { source: 'context' }
         end
 
         def self.handled_messages_for_evolve
           [ReactTestMessages::Wildcarded]
         end
 
-        reaction ReactTestMessages::SomethingHappened do |_state, msg|
+        reaction ReactTestMessages::SomethingHappened do |_context, msg|
           dispatch(ReactTestMessages::DoNext, thing_id: msg.payload.thing_id)
         end
 
-        reaction ReactTestMessages::DelayedCommand do |_state, msg|
+        reaction ReactTestMessages::DelayedCommand do |_context, msg|
           dispatch(ReactTestMessages::DelayedCommand, thing_id: msg.payload.thing_id)
             .with_metadata(foo: 'bar')
             .at(Time.now + 10)
         end
 
-        reaction ReactTestMessages::MultiReaction, ReactTestMessages::AnotherMultiReaction do |_state, msg|
+        reaction ReactTestMessages::MultiReaction, ReactTestMessages::AnotherMultiReaction do |_context, msg|
           dispatch(ReactTestMessages::DoNext, thing_id: msg.payload.thing_id)
         end
 
-        reaction do |state, msg|
-          dispatch(ReactTestMessages::DoNext, thing_id: "#{state[:source]}-#{msg.payload.thing_id}")
+        reaction do |context, msg|
+          dispatch(ReactTestMessages::DoNext, thing_id: "#{context[:source]}-#{msg.payload.thing_id}")
         end
       end
     end
@@ -181,11 +181,11 @@ RSpec.describe Sourced::React do
         include Sourced::React
         extend Sourced::Consumer
 
-        def state
+        def context
           {}
         end
 
-        reaction ReactTestMessages::SomethingHappened do |_state, msg|
+        reaction ReactTestMessages::SomethingHappened do |_context, msg|
           dispatch(ReactTestMessages::DoNext, thing_id: msg.payload.thing_id)
           dispatch(ReactTestMessages::DelayedCommand, thing_id: msg.payload.thing_id)
         end
@@ -207,7 +207,7 @@ RSpec.describe Sourced::React do
       )
 
       expect(result.map(&:class)).to eq([ReactTestMessages::DoNext])
-      expect(result.first.payload.thing_id).to eq('state-t1')
+      expect(result.first.payload.thing_id).to eq('context-t1')
       expect(dsl_reactor_class.catch_all_react_events).to eq(Set[
         ReactTestMessages::Wildcarded
       ])

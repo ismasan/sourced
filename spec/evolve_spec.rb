@@ -19,17 +19,17 @@ module EvolveTestMessages
   end
 
   class CartProjection < Sourced::Projection
-    state do
+    context do
       { cart_id: nil, items: [] }
     end
 
-    evolve ItemAdded do |state, evt|
-      state[:cart_id] = evt.payload.cart_id
-      state[:items] << evt.payload.item_id
+    evolve ItemAdded do |context, evt|
+      context[:cart_id] = evt.payload.cart_id
+      context[:items] << evt.payload.item_id
     end
 
-    evolve ItemRemoved do |state, evt|
-      state[:items].delete(evt.payload.item_id)
+    evolve ItemRemoved do |context, evt|
+      context[:items].delete(evt.payload.item_id)
     end
   end
 end
@@ -37,26 +37,26 @@ end
 RSpec.describe Sourced::Evolve do
   def added(item_id) = EvolveTestMessages::ItemAdded.new(payload: { cart_id: 'c1', item_id: })
 
-  describe 'inline state and evolve declarations' do
+  describe 'inline context and evolve declarations' do
     let(:decider) do
       Class.new(Sourced::Decider) do
         partition_by :cart_id
 
-        state { { cart_id: nil, items: [] } }
+        context { { cart_id: nil, items: [] } }
 
-        evolve EvolveTestMessages::ItemAdded do |state, evt|
-          state[:cart_id] = evt.payload.cart_id
-          state[:items] << evt.payload.item_id
+        evolve EvolveTestMessages::ItemAdded do |context, evt|
+          context[:cart_id] = evt.payload.cart_id
+          context[:items] << evt.payload.item_id
         end
 
         def helper = :reactor_helper
       end
     end
 
-    it 'evolves the reactor instance state through its projection' do
+    it 'evolves the reactor instance context through its projection' do
       instance = decider.new(cart_id: 'c1')
       expect(instance.evolve([added('i1')])).to eq(cart_id: 'c1', items: ['i1'])
-      expect(instance.state).to eq(cart_id: 'c1', items: ['i1'])
+      expect(instance.context).to eq(cart_id: 'c1', items: ['i1'])
     end
 
     it 'declares them on a projection subclass the reactor owns' do
@@ -72,11 +72,11 @@ RSpec.describe Sourced::Evolve do
     end
 
     it 'runs evolve blocks in the projection scope, not the reactor scope' do
-      decider.evolve(EvolveTestMessages::CartClosed) { |state, _| state[:closed_by] = respond_to?(:helper) }
+      decider.evolve(EvolveTestMessages::CartClosed) { |context, _| context[:closed_by] = respond_to?(:helper) }
 
       instance = decider.new(cart_id: 'c1')
       instance.evolve([EvolveTestMessages::CartClosed.new(payload: { cart_id: 'c1' })])
-      expect(instance.state[:closed_by]).to be(false)
+      expect(instance.context[:closed_by]).to be(false)
     end
   end
 
@@ -104,14 +104,14 @@ RSpec.describe Sourced::Evolve do
 
         instance = reactor.new(cart_id: 'c1')
         instance.evolve([added('i1'), added('i2')])
-        expect(instance.state).to eq(cart_id: 'c1', items: %w[i1 i2])
+        expect(instance.context).to eq(cart_id: 'c1', items: %w[i1 i2])
       end
 
       expect(projector.handled_messages).to eq([EvolveTestMessages::ItemAdded, EvolveTestMessages::ItemRemoved])
     end
 
     it 'extends the reactor own subclass with inline evolve blocks, leaving the shared class alone' do
-      decider.evolve(EvolveTestMessages::CartClosed) { |state, _| state[:closed] = true }
+      decider.evolve(EvolveTestMessages::CartClosed) { |context, _| context[:closed] = true }
 
       expect(decider.handled_messages_for_evolve).to include(EvolveTestMessages::CartClosed)
       expect(EvolveTestMessages::CartProjection.handled_messages).not_to include(EvolveTestMessages::CartClosed)
@@ -121,10 +121,10 @@ RSpec.describe Sourced::Evolve do
       )).to be(false)
     end
 
-    it 'raises after the reactor own state or evolve declarations' do
+    it 'raises after the reactor own context or evolve declarations' do
       expect {
         Class.new(Sourced::Decider) do
-          state { {} }
+          context { {} }
           evolve EvolveTestMessages::CartProjection
         end
       }.to raise_error(ArgumentError, /must come before/)
@@ -150,11 +150,11 @@ RSpec.describe Sourced::Evolve do
     end
 
     it 'adds before_evolve blocks to the reactor own subclass, leaving the shared class alone' do
-      decider.before_evolve { |state, _| state[:seen] = (state[:seen] || 0) + 1 }
+      decider.before_evolve { |context, _| context[:seen] = (context[:seen] || 0) + 1 }
 
       instance = decider.new(cart_id: 'c1')
       instance.evolve([added('i1'), added('i2')])
-      expect(instance.state[:seen]).to eq(2)
+      expect(instance.context[:seen]).to eq(2)
       expect(EvolveTestMessages::CartProjection.before_evolve_blocks).to be_empty
     end
 
@@ -173,8 +173,8 @@ RSpec.describe Sourced::Evolve do
   describe 'reactor inheritance' do
     let(:parent) do
       Class.new(Sourced::Decider) do
-        state { { items: [] } }
-        evolve(EvolveTestMessages::ItemAdded) { |state, evt| state[:items] << evt.payload.item_id }
+        context { { items: [] } }
+        evolve(EvolveTestMessages::ItemAdded) { |context, evt| context[:items] << evt.payload.item_id }
       end
     end
 
@@ -185,12 +185,12 @@ RSpec.describe Sourced::Evolve do
 
       instance = child.new
       instance.evolve([added('i1')])
-      expect(instance.state).to eq(items: ['i1'])
+      expect(instance.context).to eq(items: ['i1'])
     end
 
     it 'declarations on a subclass do not change the parent' do
       child = Class.new(parent) do
-        evolve(EvolveTestMessages::CartClosed) { |state, _| state[:closed] = true }
+        evolve(EvolveTestMessages::CartClosed) { |context, _| context[:closed] = true }
       end
 
       expect(child.handled_messages_for_evolve).to include(EvolveTestMessages::CartClosed)
@@ -201,7 +201,7 @@ RSpec.describe Sourced::Evolve do
       child = Class.new(parent) { evolve EvolveTestMessages::CartProjection }
 
       expect(child.handled_messages_for_evolve).to eq([EvolveTestMessages::ItemAdded, EvolveTestMessages::ItemRemoved])
-      expect(child.new(cart_id: 'c1').state).to eq(cart_id: nil, items: [])
+      expect(child.new(cart_id: 'c1').context).to eq(cart_id: nil, items: [])
     end
   end
 end

@@ -33,28 +33,28 @@ class TestDeviceDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'device-decider-test'
 
-  state { { exists: false, bound: false } }
+  context { { exists: false, bound: false } }
 
-  evolve DeciderTestMessages::DeviceRegistered do |state, _evt|
-    state[:exists] = true
+  evolve DeciderTestMessages::DeviceRegistered do |context, _evt|
+    context[:exists] = true
   end
 
-  evolve DeciderTestMessages::DeviceBound do |state, _evt|
-    state[:bound] = true
+  evolve DeciderTestMessages::DeviceBound do |context, _evt|
+    context[:bound] = true
   end
 
-  command DeciderTestMessages::BindDevice do |state, cmd|
-    raise 'Not found' unless state[:exists]
-    raise 'Already bound' if state[:bound]
+  command DeciderTestMessages::BindDevice do |context, cmd|
+    raise 'Not found' unless context[:exists]
+    raise 'Already bound' if context[:bound]
     event DeciderTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
-  reaction DeciderTestMessages::DeviceBound do |_state, evt|
+  reaction DeciderTestMessages::DeviceBound do |_context, evt|
     DeciderTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
   end
 
-  after_sync do |state:, messages:, events:|
-    state[:after_synced] = true
+  after_sync do |context:, messages:, events:|
+    context[:after_synced] = true
   end
 end
 
@@ -62,23 +62,23 @@ class TestDelayedReactionDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'device-delayed-decider-test'
 
-  state { { exists: false, bound: false } }
+  context { { exists: false, bound: false } }
 
-  evolve DeciderTestMessages::DeviceRegistered do |state, _evt|
-    state[:exists] = true
+  evolve DeciderTestMessages::DeviceRegistered do |context, _evt|
+    context[:exists] = true
   end
 
-  evolve DeciderTestMessages::DeviceBound do |state, _evt|
-    state[:bound] = true
+  evolve DeciderTestMessages::DeviceBound do |context, _evt|
+    context[:bound] = true
   end
 
-  command DeciderTestMessages::BindDevice do |state, cmd|
-    raise 'Not found' unless state[:exists]
-    raise 'Already bound' if state[:bound]
+  command DeciderTestMessages::BindDevice do |context, cmd|
+    raise 'Not found' unless context[:exists]
+    raise 'Already bound' if context[:bound]
     event DeciderTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
-  reaction DeciderTestMessages::DeviceBound do |_state, evt|
+  reaction DeciderTestMessages::DeviceBound do |_context, evt|
     dispatch(DeciderTestMessages::DelayedNotifyBound, device_id: evt.payload.device_id)
       .at(Time.now + 10)
   end
@@ -89,19 +89,19 @@ class TestReplayingReactionDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'device-replaying-decider-test'
 
-  state { { exists: false, bound: false } }
+  context { { exists: false, bound: false } }
 
-  evolve DeciderTestMessages::DeviceBound do |state, _evt|
-    state[:bound] = true
+  evolve DeciderTestMessages::DeviceBound do |context, _evt|
+    context[:bound] = true
   end
 
-  # device_id echoes whether the reacted message was evolved into state first.
-  reaction DeciderTestMessages::DeviceBound do |state, evt|
-    device_id = state[:bound] ? evt.payload.device_id : 'not-evolved'
+  # device_id echoes whether the reacted message was evolved into context first.
+  reaction DeciderTestMessages::DeviceBound do |context, evt|
+    device_id = context[:bound] ? evt.payload.device_id : 'not-evolved'
     DeciderTestMessages::NotifyBound.new(payload: { device_id: device_id })
   end
 
-  def should_react?(_state, _message, replaying: false)
+  def should_react?(_context, _message, replaying: false)
     true
   end
 end
@@ -111,15 +111,15 @@ class TestCountingDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'device-counting-decider-test'
 
-  state { { bound_count: 0 } }
+  context { { bound_count: 0 } }
 
-  evolve DeciderTestMessages::DeviceBound do |state, _evt|
-    state[:bound_count] += 1
+  evolve DeciderTestMessages::DeviceBound do |context, _evt|
+    context[:bound_count] += 1
   end
 
   # device_id echoes how many times the reacted message hit the evolve block.
-  reaction DeciderTestMessages::DeviceBound do |state, _evt|
-    DeciderTestMessages::NotifyBound.new(payload: { device_id: "count:#{state[:bound_count]}" })
+  reaction DeciderTestMessages::DeviceBound do |context, _evt|
+    DeciderTestMessages::NotifyBound.new(payload: { device_id: "count:#{context[:bound_count]}" })
   end
 end
 
@@ -141,7 +141,7 @@ RSpec.describe Sourced::Decider do
   end
 
   describe '#event inside command handler' do
-    it 'adds to uncommitted events and evolves state immediately' do
+    it 'adds to uncommitted events and evolves context immediately' do
       instance = TestDeviceDecider.new
       instance.evolve([DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1' })])
 
@@ -150,7 +150,7 @@ RSpec.describe Sourced::Decider do
       )
 
       expect(events.size).to eq(1)
-      expect(instance.state[:bound]).to be true
+      expect(instance.context[:bound]).to be true
     end
   end
 
@@ -204,7 +204,7 @@ RSpec.describe Sourced::Decider do
     end
 
     it 'runs deferred reactions when the triggering event is re-claimed' do
-      # History: device was already registered and bound (state reflects both)
+      # History: device was already registered and bound (context reflects both)
       reg = DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       bound = DeciderTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
       history_msgs = [Sourced::PositionedMessage.new(reg, 1)]
@@ -380,7 +380,7 @@ RSpec.describe Sourced::Decider do
         messages: [cmd_positioned], replaying: false, guard: guard
       )
 
-      # No history → state[:exists] is false → raises 'Not found'
+      # No history → context[:exists] is false → raises 'Not found'
       expect {
         TestDeviceDecider.handle_claim(claim, history: history)
       }.to raise_error(RuntimeError, 'Not found')
@@ -406,8 +406,8 @@ RSpec.describe Sourced::Decider do
       instance = TestDeviceDecider.new(device_id: 'd1')
       msg = DeciderTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
 
-      expect(instance.should_react?(instance.state, msg, replaying: false)).to be(true)
-      expect(instance.should_react?(instance.state, msg, replaying: true)).to be(false)
+      expect(instance.should_react?(instance.context, msg, replaying: false)).to be(true)
+      expect(instance.should_react?(instance.context, msg, replaying: true)).to be(false)
     end
 
     it 'runs reactions on replaying claims when overridden to true' do
@@ -424,7 +424,7 @@ RSpec.describe Sourced::Decider do
       expect(append.source).to eq(bound)
     end
 
-    it 'evolves state with the reacted message when reacting on replay' do
+    it 'evolves context with the reacted message when reacting on replay' do
       claim, _bound = bound_claim(replaying: true)
       history = Sourced::ReadResult.new(messages: [], guard: guard)
 

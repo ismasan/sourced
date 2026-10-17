@@ -28,24 +28,24 @@ class HandleTestDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'handle-test-decider'
 
-  state { { exists: false, active: false } }
+  context { { exists: false, active: false } }
 
-  evolve HandleTestMessages::DeviceCreated do |state, _evt|
-    state[:exists] = true
+  evolve HandleTestMessages::DeviceCreated do |context, _evt|
+    context[:exists] = true
   end
 
-  evolve HandleTestMessages::DeviceActivated do |state, _evt|
-    state[:active] = true
+  evolve HandleTestMessages::DeviceActivated do |context, _evt|
+    context[:active] = true
   end
 
-  command HandleTestMessages::CreateDevice do |state, cmd|
-    raise 'Already exists' if state[:exists]
+  command HandleTestMessages::CreateDevice do |context, cmd|
+    raise 'Already exists' if context[:exists]
     event HandleTestMessages::DeviceCreated, device_id: cmd.payload.device_id, name: cmd.payload.name
   end
 
-  command HandleTestMessages::ActivateDevice do |state, cmd|
-    raise 'Not found' unless state[:exists]
-    raise 'Already active' if state[:active]
+  command HandleTestMessages::ActivateDevice do |context, cmd|
+    raise 'Not found' unless context[:exists]
+    raise 'Already active' if context[:active]
     event HandleTestMessages::DeviceActivated, device_id: cmd.payload.device_id
   end
 end
@@ -83,14 +83,14 @@ RSpec.describe 'Sourced.handle!' do
       expect(events.size).to eq(1)
     end
 
-    it 'evolves reactor state' do
+    it 'evolves reactor context' do
       cmd = HandleTestMessages::CreateDevice.new(
         payload: { device_id: 'd1', name: 'Sensor' }
       )
 
       _cmd, reactor, _events = Sourced.handle!(HandleTestDecider, cmd, store: store)
 
-      expect(reactor.state[:exists]).to be true
+      expect(reactor.context[:exists]).to be true
     end
 
     it 'appends command and correlated events to the store' do
@@ -138,8 +138,8 @@ RSpec.describe 'Sourced.handle!' do
 
       expect(events.size).to eq(1)
       expect(events.first).to be_a(HandleTestMessages::DeviceActivated)
-      expect(reactor.state[:exists]).to be true
-      expect(reactor.state[:active]).to be true
+      expect(reactor.context[:exists]).to be true
+      expect(reactor.context[:active]).to be true
     end
   end
 

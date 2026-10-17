@@ -85,8 +85,8 @@ module Sourced
       # Register a block to run inside the store transaction.
       #
       # The block receives the same keyword arguments as the reactor's
-      # action-building step (e.g. +state:+, +messages:+, +events:+
-      # for deciders, or +state:+, +messages:+, +replaying:+ for projectors).
+      # action-building step (e.g. +context:+, +messages:+, +events:+
+      # for deciders, or +context:+, +messages:+, +replaying:+ for projectors).
       #
       # @yield [**args] side-effect block executed within the transaction
       # @return [void]

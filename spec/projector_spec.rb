@@ -27,29 +27,29 @@ class TestItemProjector < Sourced::Projector::StateStored
   partition_by :list_id
   consumer_group 'item-projector-test'
 
-  state do
+  context do
     { items: [], synced: false }
   end
 
-  evolve ProjectorTestMessages::ItemAdded do |state, msg|
-    state[:items] << msg.payload.name
+  evolve ProjectorTestMessages::ItemAdded do |context, msg|
+    context[:items] << msg.payload.name
   end
 
-  evolve ProjectorTestMessages::ItemArchived do |state, msg|
-    state[:items].delete(msg.payload.name)
+  evolve ProjectorTestMessages::ItemArchived do |context, msg|
+    context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_state, msg|
+  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
     ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
   end
 
-  sync do |state:, messages:, replaying:|
-    state[:synced] = true
-    state[:last_replaying] = replaying
+  sync do |context:, messages:, replaying:|
+    context[:synced] = true
+    context[:last_replaying] = replaying
   end
 
-  after_sync do |state:, messages:, replaying:|
-    state[:after_synced] = true
+  after_sync do |context:, messages:, replaying:|
+    context[:after_synced] = true
   end
 end
 
@@ -57,29 +57,29 @@ class TestItemESProjector < Sourced::Projector::EventSourced
   partition_by :list_id
   consumer_group 'item-es-projector-test'
 
-  state do
+  context do
     { items: [], synced: false }
   end
 
-  evolve ProjectorTestMessages::ItemAdded do |state, msg|
-    state[:items] << msg.payload.name
+  evolve ProjectorTestMessages::ItemAdded do |context, msg|
+    context[:items] << msg.payload.name
   end
 
-  evolve ProjectorTestMessages::ItemArchived do |state, msg|
-    state[:items].delete(msg.payload.name)
+  evolve ProjectorTestMessages::ItemArchived do |context, msg|
+    context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_state, msg|
+  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
     ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
   end
 
-  sync do |state:, messages:, replaying:|
-    state[:synced] = true
-    state[:last_replaying] = replaying
+  sync do |context:, messages:, replaying:|
+    context[:synced] = true
+    context[:last_replaying] = replaying
   end
 
-  after_sync do |state:, messages:, replaying:|
-    state[:after_synced] = true
+  after_sync do |context:, messages:, replaying:|
+    context[:after_synced] = true
   end
 end
 
@@ -87,15 +87,15 @@ class TestDelayedItemProjector < Sourced::Projector::StateStored
   partition_by :list_id
   consumer_group 'delayed-item-projector-test'
 
-  state do
+  context do
     { items: [] }
   end
 
-  evolve ProjectorTestMessages::ItemArchived do |state, msg|
-    state[:items].delete(msg.payload.name)
+  evolve ProjectorTestMessages::ItemArchived do |context, msg|
+    context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_state, msg|
+  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
     dispatch(ProjectorTestMessages::DelayedNotifyArchive, list_id: msg.payload.list_id)
       .at(Time.now + 10)
   end
@@ -106,19 +106,19 @@ class TestReplayingItemProjector < Sourced::Projector::StateStored
   partition_by :list_id
   consumer_group 'replaying-item-projector-test'
 
-  state do
+  context do
     { items: [] }
   end
 
-  evolve ProjectorTestMessages::ItemArchived do |state, msg|
-    state[:items].delete(msg.payload.name)
+  evolve ProjectorTestMessages::ItemArchived do |context, msg|
+    context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_state, msg|
+  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
     ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
   end
 
-  def should_react?(_state, _message, replaying: false)
+  def should_react?(_context, _message, replaying: false)
     true
   end
 end
@@ -128,19 +128,19 @@ class TestSelectiveItemProjector < Sourced::Projector::StateStored
   partition_by :list_id
   consumer_group 'selective-item-projector-test'
 
-  state do
+  context do
     { items: [] }
   end
 
-  evolve ProjectorTestMessages::ItemArchived do |state, msg|
-    state[:items].delete(msg.payload.name)
+  evolve ProjectorTestMessages::ItemArchived do |context, msg|
+    context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_state, msg|
+  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
     ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
   end
 
-  def should_react?(_state, message, replaying: false)
+  def should_react?(_context, message, replaying: false)
     message.payload.name == 'Apple'
   end
 end
@@ -491,8 +491,8 @@ RSpec.describe Sourced::Projector do
       instance = TestItemProjector.new(['L1'])
       msg = archived('Apple', 1)
 
-      expect(instance.should_react?(instance.state, msg, replaying: false)).to be(true)
-      expect(instance.should_react?(instance.state, msg, replaying: true)).to be(false)
+      expect(instance.should_react?(instance.context, msg, replaying: false)).to be(true)
+      expect(instance.should_react?(instance.context, msg, replaying: true)).to be(false)
     end
 
     it 'runs reactions on replaying batches when overridden to true' do
@@ -520,7 +520,7 @@ RSpec.describe Sourced::Projector do
     end
   end
 
-  describe '.load_state (StateStored)' do
+  describe '.load_context (StateStored)' do
     let(:stored) { {} }
 
     let(:projector) do
@@ -528,18 +528,18 @@ RSpec.describe Sourced::Projector do
       Class.new(Sourced::Projector::StateStored) do
         partition_by :list_id
 
-        state { { list_id: nil, items: [] } }
+        context { { list_id: nil, items: [] } }
 
-        evolve ProjectorTestMessages::ItemAdded do |state, msg|
-          state[:list_id] = msg.payload.list_id
-          state[:items] << msg.payload.name
+        evolve ProjectorTestMessages::ItemAdded do |context, msg|
+          context[:list_id] = msg.payload.list_id
+          context[:items] << msg.payload.name
         end
 
-        load_state { |values| find(values[:list_id]) }
+        load_context { |values| find(values[:list_id]) }
 
-        # Reactions see the evolved state, so they show what handle_batch built.
-        reaction ProjectorTestMessages::ItemArchived do |state, msg|
-          ProjectorTestMessages::NotifyArchive.new(payload: { list_id: state[:items].join(',') })
+        # Reactions see the evolved context, so they show what handle_batch built.
+        reaction ProjectorTestMessages::ItemArchived do |context, msg|
+          ProjectorTestMessages::NotifyArchive.new(payload: { list_id: context[:items].join(',') })
         end
 
         define_method(:find) { |list_id| db[list_id] }
@@ -548,19 +548,19 @@ RSpec.describe Sourced::Projector do
 
     def item_added(name) = ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: })
 
-    it 'starts from the stored state, loaded in the reactor scope' do
+    it 'starts from the stored context, loaded in the reactor scope' do
       stored['L1'] = { list_id: 'L1', items: ['Stored'] }
 
       instance = projector.new(list_id: 'L1')
       instance.evolve([item_added('Apple')])
-      expect(instance.state).to eq(list_id: 'L1', items: %w[Stored Apple])
+      expect(instance.context).to eq(list_id: 'L1', items: %w[Stored Apple])
     end
 
-    it 'falls back to the projection state block when nothing is stored' do
-      expect(projector.new(list_id: 'L1').state).to eq(list_id: nil, items: [])
+    it 'falls back to the projection context block when nothing is stored' do
+      expect(projector.new(list_id: 'L1').context).to eq(list_id: nil, items: [])
     end
 
-    it 'evolves the claimed batch on top of the stored state in handle_batch' do
+    it 'evolves the claimed batch on top of the stored context in handle_batch' do
       stored['L1'] = { list_id: 'L1', items: ['Stored'] }
       msgs = [
         Sourced::PositionedMessage.new(item_added('Apple'), 1),

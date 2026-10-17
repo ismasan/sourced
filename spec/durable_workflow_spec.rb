@@ -196,14 +196,14 @@ RSpec.describe Sourced::DurableWorkflow do
   end
 
   context 'asserting with a block' do
-    it 'yields no state, since workflows keep none' do
+    it 'yields the workflow context, nil when it declares none' do
       get_ip_key = Sourced::DurableWorkflow.step_key(:get_ip, [])
 
       with_reactor(DurableTests::Task, workflow_id: workflow_id)
         .given(DurableTests::Task::WorkflowStarted, workflow_id:, args: [name])
         .given(DurableTests::Task::WorkflowFailed, workflow_id:)
         .when(DurableTests::Task::StepStarted, workflow_id:, key: get_ip_key, step_name: :get_ip, args: [])
-        .then { |result| expect(result.state).to be_nil }
+        .then { |result| expect(result.context).to be_nil }
     end
   end
 
