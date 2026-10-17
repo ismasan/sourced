@@ -10,7 +10,7 @@ require_relative 'support/holiday_booking'
 # restarts its regions, data-only commands, an optional transition (`| nil`)
 # and a checkout timer. Then a guided tour (see the support file's header):
 # nested compound starts, history, `always`, a machine mounted twice, `on`,
-# children started by handlers and by checkpoints, and timers left behind.
+# children started by handlers and by states, and timers left behind.
 module MachineAcceptanceHoliday
   Booking = HolidayBooking
 
@@ -110,7 +110,7 @@ module MachineAcceptanceHoliday
                                                   booking_started])
     end
 
-    it 'refuses commands no active checkpoint accepts' do
+    it 'refuses commands no active state accepts' do
       expect(booking(start).handles_command?(msg(Pay, card_number: '4111111111111111'))).to be(false)
       expect(booking(start).handles_command?(msg(ChooseRoom, room: 'sea'))).to be(false)
     end
@@ -171,7 +171,7 @@ module MachineAcceptanceHoliday
     def msg(klass, **attrs) = klass.new(payload: { booking_id: 'b1', **attrs })
     def request(visas_for: []) = msg(RequestTour, budget: 1000, deposit: 200, visas_for:)
     def tour(*commands) = TourBooking.new(booking_id: 'b1').tap { |t| commands.each { |cmd| t.decide(cmd) } }
-    def moves(events) = events.select { |e| Sourced::Machine::Checkpoint === e }.map { |e| [e.payload.trigger, e.payload.entered] }
+    def moves(events) = events.select { |e| Sourced::Machine::State === e }.map { |e| [e.payload.trigger, e.payload.entered] }
     def quoted = [request, msg(AddStop, city: 'Porto', cost: 400), msg(PriceItinerary)]
     def over_budget = [request, msg(AddStop, city: 'Porto', cost: 700), msg(AddStop, city: 'Faro', cost: 600), msg(PriceItinerary)]
 
@@ -184,7 +184,7 @@ module MachineAcceptanceHoliday
       expect(trip.__react(events.last).map(&:class)).to eq([StartPlannerChat, ShareItinerary])
     end
 
-    it 'prices through a transient checkpoint, by its guards' do
+    it 'prices through a transient state, by its guards' do
       expect(moves(tour(request).decide(msg(PriceItinerary))).last).to eq(['always', %w[planning.itinerary.outlining]])
       expect(moves(tour(*quoted[0..1]).decide(msg(PriceItinerary))).last).to eq(['always', %w[planning.itinerary.quoted]])
       expect(tour(*over_budget).machine.value).to eq(TourBooking::Planning => { PlanningMachine::Itinerary => ItineraryMachine::AwaitingSignOff })
@@ -203,7 +203,7 @@ module MachineAcceptanceHoliday
       trip = tour(*quoted)
       events = trip.decide(msg(ChangeDates, depart_on: Date.new(2027, 5, 1)))
 
-      expect(events.map(&:class)).to eq([DatesChanged, TourBooking.checkpoint_class(ItineraryMachine::Outlining)])
+      expect(events.map(&:class)).to eq([DatesChanged, TourBooking.state_class(ItineraryMachine::Outlining)])
       expect(events.last.payload.to_h).to include(exited: %w[planning.itinerary.quoted planning.itinerary],
                                                   entered: %w[planning.itinerary planning.itinerary.outlining])
       expect(trip.__react(events.last).map(&:class)).to eq([ShareItinerary])
@@ -239,7 +239,7 @@ module MachineAcceptanceHoliday
       trip = tour(*quoted, msg(AcceptQuote))
       held = trip.decide(msg(HoldSeats))
 
-      expect(held.map(&:class).uniq).to eq([TourBooking.checkpoint_class(FlightLeg::SeatsHeld)])
+      expect(held.map(&:class).uniq).to eq([TourBooking.state_class(FlightLeg::SeatsHeld)])
       expect(held.map { |e| e.payload.target }).to eq(%w[reserving.outbound.seats_held reserving.return.seats_held])
 
       # Only the outbound leg maps Released: losing the seats makes the tour unavailable.

@@ -3,24 +3,24 @@
 module Sourced
   class Machine
     # Draws a machine as a Mermaid state diagram (+stateDiagram-v2+):
-    # checkpoints, regions as concurrent sections, and transitions labelled
+    # states, regions as concurrent sections, and transitions labelled
     # with the commands (or joins) that take them, and +/ starts Child+ for
     # the children a handler's +starts:+ declares. Data-only handlers, which
     # don't move the machine, have no edge: those that start children, and the
-    # children a checkpoint +stops+, are listed in a note on the checkpoint.
+    # children a state +stops+, are listed in a note on the state.
     # A note on a region's initial position goes on the composite state that
     # contains the region; the root's initial position, with no such state,
     # is drawn as an +initial+ state to carry it.
     #
-    # State ids are checkpoint paths, +.+ as +_+. A transition to an ancestor
-    # region's checkpoint starts from the state that takes it, and is declared
+    # State ids are state paths, +.+ as +_+. A transition to an ancestor
+    # region's state starts from the state that takes it, and is declared
     # in the ancestor region. From a region's initial position, which has no
     # state of its own, it starts from the composite state that contains the
-    # region. A child's +started+ checkpoint is entered from the diagram's
-    # start. A compound checkpoint (a machine's) is a composite state entered
+    # region. A child's +started+ state is entered from the diagram's
+    # start. A compound state (a machine's) is a composite state entered
     # at its machine's start. A mounted machine's +on_done+ mappings are drawn
-    # from its finals, labelled +on_done+. A transition to a checkpoint's
-    # history goes to the checkpoint, its label suffixed +(H)+ (+(H*)+ for deep).
+    # from its finals, labelled +on_done+. A transition to a state's
+    # history goes to the state, its label suffixed +(H)+ (+(H*)+ for deep).
     #
     #   Sourced::Machine::Mermaid.new(OrderMachine).to_s
     class Mermaid
@@ -56,7 +56,7 @@ module Sourced
           node.children_joins.each { |join| handler(node, join.definition, "children_done #{short_name(join.machine)}") }
           node.invokes.each do |spec|
             spec.on_done.each do |child_final, target|
-              edge(node, target, "#{short_name(spec.machine)} #{child_final.checkpoint_name}")
+              edge(node, target, "#{short_name(spec.machine)} #{child_final.state_name}")
             end
           end
         end
@@ -64,9 +64,9 @@ module Sourced
         @tree.all_regions.each do |region|
           region.on_done.each { |final, target| edge(region.nodes.fetch(final), target, 'on_done', from: region.parent) }
         end
-        return unless @machine.stop_checkpoint
+        return unless @machine.stop_state
 
-        stop = @tree.root.nodes.fetch(@machine.stop_checkpoint)
+        stop = @tree.root.nodes.fetch(@machine.stop_state)
         @tree.root.nodes.each_value do |node|
           edge(node, stop.key, 'Stop', from: stop) unless node.final? || node.initial?
         end
@@ -77,7 +77,7 @@ module Sourced
         if definition.starts.any?
           label = "#{label} / starts #{definition.starts.map { it ? short_name(it) : 'nil' }.join(' | ')}"
         end
-        targets = definition.checkpoint_targets
+        targets = definition.state_targets
         targets.each { |target| edge(node, target, label) }
         @notes[note_node(node)] << label if targets.empty? && definition.starts.any?
       end
@@ -89,7 +89,7 @@ module Sourced
         node
       end
 
-      # Whether +node+ is drawn as a state: checkpoints, and the root's
+      # Whether +node+ is drawn as a state: states, and the root's
       # initial position when it carries a note.
       def drawn?(node) = !node.initial? || @notes.key?(node)
 
@@ -124,7 +124,7 @@ module Sourced
         region.nodes.each_value do |node|
           next unless drawn?(node)
 
-          label = node.initial? ? 'initial' : node.key.checkpoint_name
+          label = node.initial? ? 'initial' : node.key.state_name
           # Mermaid can't render an empty composite state: regions holding
           # only an initial position draw as a plain state.
           sections = node.regions.map { region_lines(it, "#{indent}  ") }.reject(&:empty?)
@@ -139,7 +139,7 @@ module Sourced
             lines << "#{indent}}"
           end
         end
-        lines << "#{indent}[*] --> #{id(region.nodes.fetch(@machine.start_checkpoint))}" if region.root? && @machine.start_checkpoint
+        lines << "#{indent}[*] --> #{id(region.nodes.fetch(@machine.start_state))}" if region.root? && @machine.start_state
         lines << "#{indent}[*] --> #{id(region.initial_node)}" if region.root? && drawn?(region.initial_node)
         lines << "#{indent}[*] --> #{id(region.start_node)}" if region.compound?
         @edges[region].uniq.each do |source, target, label|

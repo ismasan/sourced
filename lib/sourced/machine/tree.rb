@@ -2,12 +2,12 @@
 
 module Sourced
   class Machine
-    # A machine's definition placed into one tree: its regions and checkpoints,
+    # A machine's definition placed into one tree: its regions and states,
     # and those of the machines it mounts, each knowing where it sits. A
     # {Region} or {Node} is a definition, owned by the machine that declares
     # it; a {PlacedRegion} or {PlacedNode} is that definition at a position in
     # the tree, with its own parent links and path. A machine mounted twice is
-    # placed twice: its checkpoints are one set of handles at two sets of paths.
+    # placed twice: its states are one set of handles at two sets of paths.
     # The runtime, routing, validation and rendering work on the placed tree.
     #
     # Placed objects are built once per tree and compared by identity: the
@@ -40,17 +40,17 @@ module Sourced
       # @return [Array<PlacedNode>]
       def placed(node) = @placed.fetch(node)
 
-      # @param handle [Checkpoint]
-      # @return [Array<PlacedNode>] where the checkpoint is placed
+      # @param handle [State]
+      # @return [Array<PlacedNode>] where the state is placed
       def placements(handle) = @placements.fetch(handle, NONE)
 
-      # @param handle [Checkpoint]
-      def checkpoint?(handle) = @placements.key?(handle)
+      # @param handle [State]
+      def state?(handle) = @placements.key?(handle)
 
-      # @return [Array<Checkpoint>] every placed checkpoint
-      def checkpoints = @placements.keys
+      # @return [Array<State>] every placed state
+      def states = @placements.keys
 
-      # @param path [String] a checkpoint's path, or a region's initial position's (+<region path>.initial+)
+      # @param path [String] a state's path, or a region's initial position's (+<region path>.initial+)
       # @param message [Sourced::Message, nil] the stored message +path+ comes from, named in the error
       # @return [PlacedNode]
       # @raise [UnresolvablePathError] if nothing is at +path+
@@ -60,7 +60,7 @@ module Sourced
           region = last == INITIAL.to_s && @region_paths[region_path.empty? ? nil : region_path]
           unless region
             from = message && " (#{message.type} #{message.id})"
-            raise UnresolvablePathError, "#{@top}: no checkpoint at #{path.inspect}#{from}"
+            raise UnresolvablePathError, "#{@top}: no state at #{path.inspect}#{from}"
           end
 
           region.initial_node
@@ -83,13 +83,13 @@ module Sourced
       # or else the one below +node+. Never a sibling region's.
       #
       # @param node [PlacedNode] the node that declares the transition
-      # @param target [Checkpoint, History] a {History} resolves to its checkpoint
+      # @param target [State, History] a {History} resolves to its state
       # @return [PlacedNode]
       # @raise [DefinitionError] if +target+ isn't reachable from +node+, is
-      #   below it more than once, or is the history of a checkpoint without regions
+      #   below it more than once, or is the history of a state without regions
       def resolve(node, target)
         @resolved.fetch([node, target]) do
-          placed = resolve!(node, target.checkpoint)
+          placed = resolve!(node, target.state)
           if (target in History) && placed.regions.empty?
             raise DefinitionError, "#{@top}: #{node.label} targets #{target}, but #{placed.label} has no regions to remember"
           end
@@ -99,7 +99,7 @@ module Sourced
       end
 
       # What entering +node+ from outside enters: +node+, then its default
-      # configuration, each compound checkpoint's machine's start all the way
+      # configuration, each compound state's machine's start all the way
       # down (any other region starts at its initial position, which isn't entered).
       # @param node [PlacedNode]
       # @return [Array<PlacedNode>] outermost first
@@ -107,7 +107,7 @@ module Sourced
         [node, *node.regions.flat_map { |region| region.compound? ? default_entry(region.start_node) : NONE }]
       end
 
-      # @param handle [Checkpoint] a checkpoint of the root region
+      # @param handle [State] a state of the root region
       # @return [Array<String>] the paths starting at +handle+ enters
       def default_entry_paths(handle) = default_entry(root.nodes.fetch(handle)).map(&:path)
 
@@ -115,7 +115,7 @@ module Sourced
 
       def resolve!(node, handle)
         placements = placements(handle)
-        raise DefinitionError, "#{@top}: #{node.label} targets #{handle.inspect}, which isn't a checkpoint" if placements.empty?
+        raise DefinitionError, "#{@top}: #{node.label} targets #{handle.inspect}, which isn't a state" if placements.empty?
 
         lineage = node.region.lineage
         around = placements.select { |placed| lineage.include?(placed.region) }
@@ -149,7 +149,7 @@ module Sourced
         @all_regions << placed
         @region_paths[placed.path] = placed unless placed.compound?
         region.nodes.each_value do |node|
-          # A compound checkpoint's machine starts at its start checkpoint: its
+          # A compound state's machine starts at its start state: its
           # initial position is never reached, so it isn't part of the tree.
           next if node.initial? && placed.compound?
 
@@ -165,7 +165,7 @@ module Sourced
         unless node.initial?
           (@placements[node.key] ||= []) << placed
           if @paths.key?(placed.path)
-            raise DefinitionError, "#{@top}: two checkpoints at #{placed.path} (#{@paths[placed.path].node.key.inspect}, #{node.key.inspect})"
+            raise DefinitionError, "#{@top}: two states at #{placed.path} (#{@paths[placed.path].node.key.inspect}, #{node.key.inspect})"
           end
 
           @paths[placed.path] = placed
@@ -181,21 +181,21 @@ module Sourced
       end
 
       # One spec per child machine: several machines' handlers may start it,
-      # but a checkpoint's child is started in one place only.
+      # but a state's child is started in one place only.
       def add_child(machine, spec)
         if (known = @children_specs[spec.machine])
           return unless known.invoke? || spec.invoke?
 
           raise DefinitionError,
                 "#{@top}: #{spec.machine} is a child of #{@owners[spec.machine]} and #{machine}, " \
-                "and a checkpoint's child can't be started anywhere else"
+                "and a state's child can't be started anywhere else"
         end
 
         @children_specs[spec.machine] = spec
         @owners[spec.machine] = machine
       end
 
-      # Started children are stopped where a placed checkpoint +stops+ them.
+      # Started children are stopped where a placed state +stops+ them.
       def finish_children
         @children_specs.transform_values! do |spec|
           spec.invoke? ? spec : spec.with(stop_on: @all_nodes.select { |node| node.stops.include?(spec.machine) })
@@ -226,17 +226,17 @@ module Sourced
 
       def root? = parent.nil?
 
-      # A compound checkpoint's region: entered at its machine's start
-      # checkpoint, with the checkpoint that mounts it.
+      # A compound state's region: entered at its machine's start
+      # state, with the state that mounts it.
       def compound? = mount&.compound? || false
 
       # @return [PlacedNode, nil] where a compound region starts
-      def start_node = compound? ? nodes.fetch(machine.start_checkpoint) : nil
+      def start_node = compound? ? nodes.fetch(machine.start_state) : nil
 
-      # @return [Hash{Checkpoint => Checkpoint}] a mounted machine's root finals => the parent's checkpoints
+      # @return [Hash{State => State}] a mounted machine's root finals => the parent's states
       def on_done = mount ? mount.on_done : NONE_MAP
 
-      # The region's position before its first checkpoint, declared or not.
+      # The region's position before its first state, declared or not.
       def initial_node = nodes[INITIAL] || (@blank_initial ||= PlacedNode.new(region.initial_node, self))
 
       # @return [Array<PlacedRegion>] this region and its ancestors, innermost first
@@ -244,8 +244,8 @@ module Sourced
 
       def depth = lineage.size
 
-      # The region's part of its checkpoints' paths: a compound region's
-      # checkpoints follow its checkpoint directly, a parallel region's go
+      # The region's part of its states' paths: a compound region's
+      # states follow its state directly, a parallel region's go
       # through the region's name.
       # @return [String, nil] nil for the root
       def path
@@ -295,14 +295,14 @@ module Sourced
 
       # Dot-separated names from the root: +reserving.suppliers.hotel.holding+.
       # A region's initial position is +<region path>.initial+.
-      def path = @path ||= [region.path, initial? ? INITIAL : key.checkpoint_name].compact.join('.')
+      def path = @path ||= [region.path, initial? ? INITIAL : key.state_name].compact.join('.')
 
       def label = initial? ? "#{region.label}'s initial position" : path
 
-      # @return [PlacedRegion, nil] the region of a compound checkpoint
+      # @return [PlacedRegion, nil] the region of a compound state
       def compound_region = regions.find(&:compound?)
 
-      # Whether this checkpoint is inside +other+'s regions, at any depth.
+      # Whether this state is inside +other+'s regions, at any depth.
       def descendant_of?(other)
         parent = region.parent
         !parent.nil? && (parent.equal?(other) || parent.descendant_of?(other))

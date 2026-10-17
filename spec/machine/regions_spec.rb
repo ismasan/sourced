@@ -51,15 +51,15 @@ module MachineRegionsTest
   class OrderMachine < Sourced::Machine
     partition_by :order_id
 
-    Placed = Checkpoint(:placed)
-    Paused = Checkpoint(:paused)
-    Completed = Checkpoint(:completed)
-    Cancelled = Checkpoint(:cancelled)
-    Charging = Checkpoint(:charging)
-    Rejected = Checkpoint(:rejected)
-    Captured = Checkpoint(:captured)
-    Packed = Checkpoint(:packed)
-    Dispatched = Checkpoint(:dispatched)
+    Placed = State(:placed)
+    Paused = State(:paused)
+    Completed = State(:completed)
+    Cancelled = State(:cancelled)
+    Charging = State(:charging)
+    Rejected = State(:rejected)
+    Captured = State(:captured)
+    Packed = State(:packed)
+    Dispatched = State(:dispatched)
 
     context { OrderState.new }
     evolve(OrderPlaced) { |order, evt| order.total = evt.payload.total }
@@ -74,7 +74,7 @@ module MachineRegionsTest
       end
     end
 
-    checkpoint Placed do
+    state Placed do
       exit { |_order, _evt| dispatch NotifyOrderClosed }
       command CancelOrder => Cancelled
       command Pause => Paused
@@ -97,16 +97,16 @@ module MachineRegionsTest
           command(Note) { |order, _cmd| event PaymentNoted, seen: order.notes.size.to_s }
         end
 
-        checkpoint Charging do
+        state Charging do
           entry { |order, _evt| dispatch ChargeCard, card: order.card }
           exit { |_order, _evt| dispatch VoidPayment }
           after(3600) { |_order, _evt| dispatch ExpirePayment }
-          command ExpirePayment => Cancelled               # an ancestor region's checkpoint
+          command ExpirePayment => Cancelled               # an ancestor region's state
           command Abort => Cancelled
           command CapturePayment => Captured
         end
 
-        checkpoint Rejected
+        state Rejected
         final(Captured) do
           entry { |_order, _evt| dispatch SendReceipt }
         end
@@ -123,7 +123,7 @@ module MachineRegionsTest
           command(Abort) { |_order, _cmd| event ShippingAborted }
         end
 
-        checkpoint Packed do
+        state Packed do
           command DispatchShipment => Dispatched
           command(Hold) { |_order, _cmd| event ShippingHeld }  # deeper than Placed's Hold
         end
@@ -134,7 +134,7 @@ module MachineRegionsTest
       done Completed
     end
 
-    checkpoint Paused do
+    state Paused do
       command Resume => Placed
     end
 
@@ -180,7 +180,7 @@ RSpec.describe 'Sourced::Machine regions' do
   let(:resumed) { moved_by(Resume, from: 'paused', to: 'placed', exited: %w[paused]) }
 
   describe 'configuration' do
-    it 'activates every region of a checkpoint, each at its initial position' do
+    it 'activates every region of a state, each at its initial position' do
       m = machine_after(history_placed)
 
       expect(m.machine.value).to eq(M::Placed => { payment: :initial, shipping: :initial })
@@ -199,7 +199,7 @@ RSpec.describe 'Sourced::Machine regions' do
       expect(m.machine.entered_by).to eq(placed)
     end
 
-    it 'deactivates regions when their checkpoint is left' do
+    it 'deactivates regions when their state is left' do
       m = machine_after(history_placed, history_charging, cancelled)
 
       expect(m.machine.value).to eq(M::Cancelled)
@@ -208,7 +208,7 @@ RSpec.describe 'Sourced::Machine regions' do
       expect(m.machine.final?).to be(true)
     end
 
-    it "starts a region's history when its checkpoint is entered again" do
+    it "starts a region's history when its state is entered again" do
       m = machine_after(history_placed, history_charging, paused, resumed)
 
       expect(m.machine.value).to eq(M::Placed => { payment: :initial, shipping: :initial })
@@ -241,7 +241,7 @@ RSpec.describe 'Sourced::Machine regions' do
         .then(msg(PaymentRejected, reason: 'zero total'), moved_by(StartPayment, from: 'placed.payment.initial', to: 'placed.payment.rejected'))
     end
 
-    it 'gives a command to the deepest active checkpoint that accepts it' do
+    it 'gives a command to the deepest active state that accepts it' do
       given(*history_placed)
         .when(Hold, order_id: 'o1').then(OrderHeld, order_id: 'o1')
 
@@ -272,7 +272,7 @@ RSpec.describe 'Sourced::Machine regions' do
   end
 
   describe 'transition domains' do
-    it 'moves within a region without leaving its siblings or its checkpoint' do
+    it 'moves within a region without leaving its siblings or its state' do
       m = machine_after(history_placed, history_charging, history_packed)
       events = m.decide(msg(DispatchShipment))
 
@@ -302,7 +302,7 @@ RSpec.describe 'Sourced::Machine regions' do
       expect(m.machine.entered_by).to eq(placed)
     end
 
-    it 're-enters a parallel checkpoint that targets itself, resetting its regions' do
+    it 're-enters a parallel state that targets itself, resetting its regions' do
       m = machine_after(history_placed, history_charging, history_packed)
       events = m.decide(msg(Restart))
 
@@ -313,7 +313,7 @@ RSpec.describe 'Sourced::Machine regions' do
       expect(m.machine.entered_by).to eq(events.last)
     end
 
-    it 'resets the regions of a parallel checkpoint entered from outside' do
+    it 'resets the regions of a parallel state entered from outside' do
       m = machine_after(history_placed, history_charging, paused)
       events = m.decide(msg(Resume))
 
@@ -323,7 +323,7 @@ RSpec.describe 'Sourced::Machine regions' do
   end
 
   describe 'to_mermaid' do
-    it "draws a checkpoint's transition into its own region beside it, which Mermaid can lay out" do
+    it "draws a state's transition into its own region beside it, which Mermaid can lay out" do
       lines = M.to_mermaid.lines.map(&:chomp)
 
       expect(lines).to include('  placed --> placed_shipping_packed : Rush')
@@ -331,7 +331,7 @@ RSpec.describe 'Sourced::Machine regions' do
   end
 
   describe 'entry and exit actions' do
-    it 'exits the active checkpoints innermost first' do
+    it 'exits the active states innermost first' do
       given(*history_placed, *history_charging)
         .when(cancelled)
         .then(msg(VoidPayment), msg(NotifyOrderClosed))
@@ -343,7 +343,7 @@ RSpec.describe 'Sourced::Machine regions' do
         .then(msg(VoidPayment), msg(SendReceipt))
     end
 
-    it "runs a region checkpoint's entry with the domain context, and starts its timers" do
+    it "runs a region state's entry with the domain context, and starts its timers" do
       given(*history_placed, msg(PaymentInfoAdded, card: 'tok'))
         .when(charging)
         .then do |result|
@@ -405,7 +405,7 @@ RSpec.describe 'Sourced::Machine regions' do
       transition.correlate(msg(ExpirePayment).with_metadata(entered_by: transition.id))
     end
 
-    it "go stale when the region's checkpoint entry is left, including by its parent being re-entered" do
+    it "go stale when the region's state entry is left, including by its parent being re-entered" do
       charging_again = charging.with(id: SecureRandom.uuid)
       m = machine_after(history_placed, history_charging, paused, resumed, charging_again)
 
@@ -424,7 +424,7 @@ RSpec.describe 'Sourced::Machine regions' do
 
     it 'rejects targets in a sibling region' do
       m = machine do
-        checkpoint :placed do
+        state :placed do
           region(:a) { initial { command Abort => :dispatched } }
           region(:b) { final :dispatched }
         end
@@ -433,13 +433,13 @@ RSpec.describe 'Sourced::Machine regions' do
     end
 
     it 'rejects done without regions, or out of reach' do
-      expect { machine { checkpoint(:placed) { done :completed }; final :completed }.validate! }
+      expect { machine { state(:placed) { done :completed }; final :completed }.validate! }
         .to raise_error(Sourced::Machine::DefinitionError, /declares done but has no regions/)
 
       unreachable = machine do
-        checkpoint(:placed) do
+        state(:placed) do
           region(:a) do
-            checkpoint(:paying) do
+            state(:paying) do
               region(:inner) { final :captured }
               done :completed
             end
@@ -451,17 +451,17 @@ RSpec.describe 'Sourced::Machine regions' do
         .to raise_error(Sourced::Machine::DefinitionError, /placed\.a\.paying targets .*completed.*can only reach/)
     end
 
-    it 'rejects regions on initial positions and final checkpoints, and duplicate region names' do
+    it 'rejects regions on initial positions and final states, and duplicate region names' do
       expect { machine { initial { region(:a) { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /initial position can't have regions/)
       expect { machine { final(:completed) { region(:a) { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /can't have regions/)
-      expect { machine { checkpoint(:placed) { region(:a) { nil }; region(:a) { nil } } } }
+      expect { machine { state(:placed) { region(:a) { nil }; region(:a) { nil } } } }
         .to raise_error(Sourced::Machine::DefinitionError, /region :a is declared twice/)
     end
 
-    it 'rejects a checkpoint placed in two regions' do
+    it 'rejects a state placed in two regions' do
       expect do
         machine do
-          checkpoint(:placed) do
+          state(:placed) do
             region(:a) { final :captured }
             region(:b) { final :captured }
           end

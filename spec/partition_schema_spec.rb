@@ -243,9 +243,9 @@ RSpec.describe Sourced::PartitionSchema do
       machine = Class.new(Sourced::Machine) do
         consumer_group 'partition_schema_test.typed_machine'
         partition_by order_id: Sourced::Types::Integer
-        Checkpoint(:open)
+        State(:open)
       end
-      type, = Sourced::PartitionSchema.attributes_of(machine.declared_checkpoints.values.first)[:order_id]
+      type, = Sourced::PartitionSchema.attributes_of(machine.declared_states.values.first)[:order_id]
       expect(type).to eq(Sourced::Types::Integer)
     end
 
@@ -253,9 +253,9 @@ RSpec.describe Sourced::PartitionSchema do
       machine = Class.new(Sourced::Machine) do
         consumer_group 'partition_schema_test.mistyped_machine'
         partition_by :order_id
-        Checkpoint(:open)
+        State(:open)
         initial { command PartitionSchemaTest::IntegerOrder => :open }
-        checkpoint :open
+        state :open
       end
       expect { machine.validate! }
         .to raise_error(Sourced::Machine::DefinitionError, /command PartitionSchemaTest::IntegerOrder declares order_id as Integer/)

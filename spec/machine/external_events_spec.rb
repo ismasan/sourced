@@ -22,11 +22,11 @@ module MachineExternalEventsTest
   class OrderMachine < Sourced::Machine
     partition_by :order_id
 
-    Placed = Checkpoint(:placed)
-    Retrying = Checkpoint(:retrying)
-    Paid = Checkpoint(:paid)
-    Failed = Checkpoint(:failed)
-    Shipped = Checkpoint(:shipped)
+    Placed = State(:placed)
+    Retrying = State(:retrying)
+    Paid = State(:paid)
+    Failed = State(:failed)
+    Shipped = State(:shipped)
 
     context { { retries: 0, captured: nil } }
     evolve(PaymentFailed) { |order, _evt| order[:retries] += 1 }
@@ -34,14 +34,14 @@ module MachineExternalEventsTest
 
     initial { command PlaceOrder => Placed }
 
-    checkpoint Placed do
+    state Placed do
       on PaymentCaptured => Paid
       on PaymentFailed => Retrying | Failed do |order, _evt|
         to(order[:retries] < 3 ? Retrying : Failed)
       end
     end
 
-    checkpoint Retrying do
+    state Retrying do
       on PaymentCaptured => Paid
       on PaymentFailed => Retrying | Failed do |order, evt|
         event Noted, order_id: evt.payload.order_id
@@ -49,7 +49,7 @@ module MachineExternalEventsTest
       end
     end
 
-    checkpoint Paid do
+    state Paid do
       entry { |_order, _evt| dispatch NotifyPaid }
       command Ship => Shipped
     end
@@ -62,13 +62,13 @@ module MachineExternalEventsTest
   class WarehouseMachine < Sourced::Machine
     partition_by :order_id
 
-    Receiving = Checkpoint(:receiving)
-    Checking = Checkpoint(:checking)
-    Ready = Checkpoint(:ready)
+    Receiving = State(:receiving)
+    Checking = State(:checking)
+    Ready = State(:ready)
 
     initial { on PaymentCaptured => Receiving }
 
-    checkpoint Receiving do
+    state Receiving do
       on Stocked => Ready
       region :stock do
         initial { on Stocked => :in_stock }
@@ -76,13 +76,13 @@ module MachineExternalEventsTest
       end
       region :packing do
         initial { on Stocked => :packing }
-        checkpoint(:packing) { on Packed => :packed }
+        state(:packing) { on Packed => :packed }
         final :packed
       end
       done Checking
     end
 
-    checkpoint Checking do
+    state Checking do
       always Ready
     end
 
@@ -91,22 +91,22 @@ module MachineExternalEventsTest
 
   # Mounted: its `on` runs in the mounting machine's partition.
   class PaymentMachine < Sourced::Machine
-    Authorizing = Checkpoint(:authorizing)
-    Captured = Checkpoint(:captured)
+    Authorizing = State(:authorizing)
+    Captured = State(:captured)
 
     initial { on PaymentFailed => Authorizing }
-    checkpoint(Authorizing) { on PaymentCaptured => Captured }
+    state(Authorizing) { on PaymentCaptured => Captured }
     final Captured
   end
 
   class CheckoutMachine < Sourced::Machine
     partition_by :order_id
 
-    Placed = Checkpoint(:placed)
-    Done = Checkpoint(:done)
+    Placed = State(:placed)
+    Done = State(:done)
 
     initial { command PlaceOrder => Placed }
-    checkpoint(Placed) { region :payment, PaymentMachine, on_done: { PaymentMachine::Captured => Done } }
+    state(Placed) { region :payment, PaymentMachine, on_done: { PaymentMachine::Captured => Done } }
     final Done
   end
 
@@ -144,7 +144,7 @@ RSpec.describe 'Sourced::Machine external events' do
   let(:placed) { history_of(MX::OrderMachine, msg(MX::PlaceOrder)) }
 
   describe 'deciding' do
-    it 'moves the machine when an active checkpoint declares the event, triggered by its type' do
+    it 'moves the machine when an active state declares the event, triggered by its type' do
       captured = msg(MX::PaymentCaptured, amount: '10')
 
       expect(summary(appended(MX::OrderMachine, placed, captured))).to eq(moves(
@@ -161,7 +161,7 @@ RSpec.describe 'Sourced::Machine external events' do
       targets = failures.map do |failed|
         instance.evolve([failed])
         events = instance.__decide_on(failed)
-        events.find { |e| e.class < Sourced::Machine::Checkpoint }.payload.target
+        events.find { |e| e.class < Sourced::Machine::State }.payload.target
       end
       expect(targets).to eq(%w[retrying retrying failed])
     end
@@ -177,7 +177,7 @@ RSpec.describe 'Sourced::Machine external events' do
       expect(instance.__decide_on(second).map(&:class)).to eq([MX::Noted, MX::OrderMachine::Retrying])
     end
 
-    it 'ignores the event while no active checkpoint declares it, still evolving it' do
+    it 'ignores the event while no active state declares it, still evolving it' do
       first = msg(MX::PaymentCaptured, amount: '1')
       paid = placed + [first] + appended(MX::OrderMachine, placed, first)
       late = msg(MX::PaymentCaptured, amount: '99')
@@ -202,7 +202,7 @@ RSpec.describe 'Sourced::Machine external events' do
       ))
     end
 
-    it 'lets every deepest active checkpoint take it, in definition order, then runs eventless steps' do
+    it 'lets every deepest active state take it, in definition order, then runs eventless steps' do
       receiving = appended(MX::WarehouseMachine, [], msg(MX::PaymentCaptured, amount: '1'))
       stocked = appended(MX::WarehouseMachine, receiving, msg(MX::Stocked))
       expect(stocked.map { |e| e.payload.target }).to eq(%w[receiving.stock.in_stock receiving.packing.packing])
@@ -219,7 +219,7 @@ RSpec.describe 'Sourced::Machine external events' do
     it "runs a mounted machine's on in the mounting machine's partition, appending its classes" do
       placed = history_of(MX::CheckoutMachine, msg(MX::PlaceOrder))
       failed = appended(MX::CheckoutMachine, placed, msg(MX::PaymentFailed))
-      expect(failed.map(&:class)).to eq([MX::CheckoutMachine.checkpoint_class(MX::PaymentMachine::Authorizing)])
+      expect(failed.map(&:class)).to eq([MX::CheckoutMachine.state_class(MX::PaymentMachine::Authorizing)])
 
       captured = appended(MX::CheckoutMachine, placed + failed, msg(MX::PaymentCaptured, amount: '1'))
       expect(captured.map { |e| e.payload.target }).to eq(%w[placed.payment.captured done])
@@ -250,11 +250,11 @@ RSpec.describe 'Sourced::Machine external events' do
       expect { unkeyed.validate! }.to raise_error(Sourced::Machine::DefinitionError, /on event .*Unkeyed must declare order_id/)
     end
 
-    it "rejects commands, checkpoint classes and children's messages" do
+    it "rejects commands, state classes and children's messages" do
       expect { machine { initial { on MX::Ship => :done }; final :done } }
         .to raise_error(Sourced::Machine::DefinitionError, /on takes an event/)
       expect { machine { initial { on MX::OrderMachine::Paid => :done }; final :done } }
-        .to raise_error(Sourced::Machine::DefinitionError, /checkpoint/)
+        .to raise_error(Sourced::Machine::DefinitionError, /state/)
       child = Class.new(Sourced::Machine) do
         def self.name = 'MachineExternalEventsTest::Child'
         partition_by :order_id, :line_id
@@ -265,10 +265,10 @@ RSpec.describe 'Sourced::Machine external events' do
         .to raise_error(Sourced::Machine::DefinitionError, /on_done or children_done/)
     end
 
-    it 'rejects on in final and transient checkpoints, twice, and unions without a block' do
+    it 'rejects on in final and transient states, twice, and unions without a block' do
       expect { machine { initial { command MX::PlaceOrder => :done }; final(:done) { on MX::Noted => :done } }.validate! }
-        .to raise_error(Sourced::Machine::DefinitionError, /final checkpoint .* can't take events/)
-      expect { machine { initial { command MX::PlaceOrder => :a }; checkpoint(:a) { always :b; on MX::Noted => :b }; final :b }.validate! }
+        .to raise_error(Sourced::Machine::DefinitionError, /final state .* can't take events/)
+      expect { machine { initial { command MX::PlaceOrder => :a }; state(:a) { always :b; on MX::Noted => :b }; final :b }.validate! }
         .to raise_error(Sourced::Machine::DefinitionError, /transient .* take events/)
       expect { machine { initial { on MX::Noted => :a; on MX::Noted => :a }; final :a } }
         .to raise_error(Sourced::Machine::DefinitionError, /takes .*Noted twice/)

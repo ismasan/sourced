@@ -25,32 +25,32 @@ module MachineHistoryTest
   class DocMachine < Sourced::Machine
     partition_by :doc_id
 
-    Editing = Checkpoint(:editing)
-    Blocked = Checkpoint(:blocked)
-    Archived = Checkpoint(:archived)
+    Editing = State(:editing)
+    Blocked = State(:blocked)
+    Archived = State(:archived)
 
     initial { command Start => Editing }
 
-    checkpoint Editing do
+    state Editing do
       region :text do
         initial { command Draft => :drafted }
-        checkpoint :drafted do
+        state :drafted do
           region :review do
             initial { command Review => :reviewing }
-            checkpoint(:reviewing) { command Approve => :approved }
-            checkpoint :approved
+            state(:reviewing) { command Approve => :approved }
+            state :approved
           end
         end
       end
       region :layout do
         initial { command Layout => :laid_out }
-        checkpoint(:laid_out) { entry { |_doc, _evt| dispatch NotifyLaidOut } }
+        state(:laid_out) { entry { |_doc, _evt| dispatch NotifyLaidOut } }
       end
       command Block => Blocked
       command Refresh => Editing.history(deep: true)
     end
 
-    checkpoint Blocked do
+    state Blocked do
       command Unblock => Editing.history
       command UnblockDeep => Editing.history(deep: true)
       command Restart => Editing
@@ -61,7 +61,7 @@ module MachineHistoryTest
       on Unblocked => Editing.history
     end
 
-    checkpoint(:bouncing) { always Editing.history }
+    state(:bouncing) { always Editing.history }
 
     final Archived
   end
@@ -70,24 +70,24 @@ module MachineHistoryTest
   Pause = command(:pause)
   Continue = command(:continue)
 
-  # Mounted as a compound checkpoint.
+  # Mounted as a compound state.
   class DraftMachine < Sourced::Machine
-    Writing = Checkpoint(:writing)
-    Reviewing = Checkpoint(:reviewing)
+    Writing = State(:writing)
+    Reviewing = State(:reviewing)
 
     started(Writing) { command Review => Reviewing }
-    checkpoint(Reviewing) { command Write => Writing }
+    state(Reviewing) { command Write => Writing }
   end
 
   class ProjectMachine < Sourced::Machine
     partition_by :doc_id
 
-    Working = Checkpoint(:working)
-    Paused = Checkpoint(:paused)
+    Working = State(:working)
+    Paused = State(:paused)
 
     initial { command Start => Working }
-    checkpoint(Working, DraftMachine) { command Pause => Paused }
-    checkpoint(Paused) { command Continue => Working.history }
+    state(Working, DraftMachine) { command Pause => Paused }
+    state(Paused) { command Continue => Working.history }
   end
 end
 
@@ -106,7 +106,7 @@ RSpec.describe 'Sourced::Machine history' do
   let(:edited) { cmds(MH::Start, MH::Draft, MH::Review, MH::Layout, MH::Block) }
 
   describe 'shallow' do
-    it "re-enters each region's last checkpoint, with default entry below it" do
+    it "re-enters each region's last state, with default entry below it" do
       instance = decided(doc, *edited)
       events = instance.decide(msg(MH::Unblock))
 
@@ -134,14 +134,14 @@ RSpec.describe 'Sourced::Machine history' do
       expect(instance.decide(msg(MH::Unblock)).last.payload.entered).to eq(%w[editing])
     end
 
-    it 'runs entry actions for the restored checkpoints' do
+    it 'runs entry actions for the restored states' do
       unblocked = decided(doc, *edited).decide(msg(MH::Unblock)).last
       expect(decided(doc, *edited).tap { |m| m.evolve([unblocked]) }.__react(unblocked).map(&:class)).to eq([MH::NotifyLaidOut])
     end
   end
 
   describe 'deep' do
-    it 'restores the whole configuration below the checkpoint' do
+    it 'restores the whole configuration below the state' do
       events = decided(doc, *edited).decide(msg(MH::UnblockDeep))
 
       expect(events.last.payload.entered).to eq(
@@ -149,7 +149,7 @@ RSpec.describe 'Sourced::Machine history' do
       )
     end
 
-    it 're-enters its own checkpoint as it was, as a self-transition' do
+    it 're-enters its own state as it was, as a self-transition' do
       instance = decided(doc, *cmds(MH::Start, MH::Draft, MH::Review, MH::Layout))
       events = instance.decide(msg(MH::Refresh))
 
@@ -190,7 +190,7 @@ RSpec.describe 'Sourced::Machine history' do
     expect(instance.__decide_on(unblocked).last.payload.entered).to eq(%w[editing editing.text.drafted editing.layout.laid_out])
   end
 
-  it "restores a compound checkpoint's machine where it was" do
+  it "restores a compound state's machine where it was" do
     project = MH::ProjectMachine
     instance = decided(project, *cmds(MH::Start, MH::Review, MH::Pause))
     events = instance.decide(msg(MH::Continue))
@@ -199,25 +199,25 @@ RSpec.describe 'Sourced::Machine history' do
     expect(instance.machine.value).to eq(project::Working => MH::DraftMachine::Reviewing)
   end
 
-  it "rejects the history of a checkpoint without regions" do
+  it "rejects the history of a state without regions" do
     machine = Class.new(Sourced::Machine) do
       def self.name = 'MachineHistoryTest::NoRegions'
       partition_by :doc_id
-      plain = Checkpoint(:plain)
+      plain = State(:plain)
       initial { command MH::Start => plain }
-      checkpoint(plain) { command MH::Refresh => plain.history }
+      state(plain) { command MH::Refresh => plain.history }
     end
 
     expect { machine.validate! }.to raise_error(Sourced::Machine::DefinitionError, /targets .*plain\.history, but plain has no regions to remember/i)
   end
 
-  it "rejects a done that targets its own checkpoint's history" do
+  it "rejects a done that targets its own state's history" do
     machine = Class.new(Sourced::Machine) do
       def self.name = 'MachineHistoryTest::SelfJoin'
       partition_by :doc_id
-      busy = Checkpoint(:busy)
+      busy = State(:busy)
       initial { command MH::Start => busy }
-      checkpoint(busy) do
+      state(busy) do
         region(:r) { initial { command MH::Refresh => :done_r }; final :done_r }
         done busy.history
       end
@@ -247,7 +247,7 @@ RSpec.describe 'Sourced::Machine history' do
       expect(diagram).to include('bouncing --> editing : always (H)')
     end
 
-    it "produces the checkpoint's class in Topology" do
+    it "produces the state's class in Topology" do
       nodes = Sourced::Topology.build([doc])
       unblock = nodes.find { |n| n.type == 'command' && n.id == 'machine_history_test.unblock' }
       expect(unblock.produces).to eq(['machine_history_test.doc_machine.runtime.editing'])

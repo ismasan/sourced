@@ -29,9 +29,9 @@ module MachineMountsTest
 
   # The payment region on its own: its context is the parent's when mounted.
   class PaymentMachine < Sourced::Machine
-    Authorizing = Checkpoint(:authorizing)
-    Captured = Checkpoint(:captured)
-    Expired = Checkpoint(:expired)
+    Authorizing = State(:authorizing)
+    Captured = State(:captured)
+    Expired = State(:expired)
 
     evolve(PaymentInfoAdded) { |order, evt| order.card = evt.payload.card }
 
@@ -41,7 +41,7 @@ module MachineMountsTest
       end
     end
 
-    checkpoint Authorizing do
+    state Authorizing do
       entry { |order, _evt| dispatch ChargeCard, card: order.card }
       exit { |_order, _evt| dispatch VoidPayment }
       after(3600) { |_order, _evt| dispatch ExpirePayment }
@@ -57,13 +57,13 @@ module MachineMountsTest
     partition_by :order_id
     context { OrderState.new }
 
-    Placed = Checkpoint(:placed)
-    Completed = Checkpoint(:completed)
-    Cancelled = Checkpoint(:cancelled)
+    Placed = State(:placed)
+    Completed = State(:completed)
+    Cancelled = State(:cancelled)
 
     initial { command PlaceOrder => Placed }
 
-    checkpoint Placed do
+    state Placed do
       command CancelOrder => Cancelled
       region :payment, PaymentMachine, on_done: { PaymentMachine::Expired => Cancelled }
       region :shipping do
@@ -83,14 +83,14 @@ module MachineMountsTest
     context { OrderState.new }
     evolve(PaymentInfoAdded) { |order, evt| order.card = evt.payload.card }
 
-    Placed = Checkpoint(:placed)
-    Authorizing = Checkpoint(:authorizing)
-    Completed = Checkpoint(:completed)
-    Cancelled = Checkpoint(:cancelled)
+    Placed = State(:placed)
+    Authorizing = State(:authorizing)
+    Completed = State(:completed)
+    Cancelled = State(:cancelled)
 
     initial { command PlaceOrder => Placed }
 
-    checkpoint Placed do
+    state Placed do
       command CancelOrder => Cancelled
       region :payment do
         initial do
@@ -99,7 +99,7 @@ module MachineMountsTest
           end
         end
 
-        checkpoint Authorizing do
+        state Authorizing do
           entry { |order, _evt| dispatch ChargeCard, card: order.card }
           exit { |_order, _evt| dispatch VoidPayment }
           after(3600) { |_order, _evt| dispatch ExpirePayment }
@@ -126,16 +126,16 @@ module MachineMountsTest
     partition_by :order_id
     context { OrderState.new }
 
-    Placed = Checkpoint(:placed)
-    Shipped = Checkpoint(:shipped)
+    Placed = State(:placed)
+    Shipped = State(:shipped)
 
     initial { command PlaceOrder => Placed }
 
-    checkpoint Placed do
+    state Placed do
       region :deposit, PaymentMachine
       region :balance do
         initial { command Ship => Shipped }
-        checkpoint Shipped do
+        state Shipped do
           region :payment, PaymentMachine
         end
       end
@@ -146,7 +146,7 @@ module MachineMountsTest
   class LineMachine < Sourced::Machine
     partition_by :order_id, :line_id
 
-    Added = Checkpoint(:added)
+    Added = State(:added)
 
     started Added
     stopped :cancelled
@@ -161,20 +161,20 @@ module MachineMountsTest
   class OrderWithLines < Sourced::Machine
     partition_by :order_id
 
-    Placed = Checkpoint(:placed)
+    Placed = State(:placed)
 
     initial { command PlaceOrder => Placed }
-    checkpoint Placed do
+    state Placed do
       region :lines, LinesRegion
     end
   end
 
-  # A child machine a mounted region's checkpoint starts.
+  # A child machine a mounted region's state starts.
   class CheckMachine < Sourced::Machine
     partition_by :order_id, :check_id
 
-    Running = Checkpoint(:running)
-    Passed = Checkpoint(:passed)
+    Running = State(:running)
+    Passed = State(:passed)
 
     started Running do
       command PassCheck => Passed
@@ -185,9 +185,9 @@ module MachineMountsTest
 
   class ChecksRegion < Sourced::Machine
     initial { command StartCheck => :checking }
-    checkpoint :checking do
+    state :checking do
       start CheckMachine do
-        payload { |_order, _checkpoint| { check_id: 'c1' } }
+        payload { |_order, _state| { check_id: 'c1' } }
         on_done CheckMachine::Passed => :checked
       end
     end
@@ -197,10 +197,10 @@ module MachineMountsTest
   class OrderWithChecks < Sourced::Machine
     partition_by :order_id
 
-    Placed = Checkpoint(:placed)
+    Placed = State(:placed)
 
     initial { command PlaceOrder => Placed }
-    checkpoint Placed do
+    state Placed do
       region :checks, ChecksRegion
     end
   end
@@ -225,7 +225,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
     let(:place) { msg(MM::PlaceOrder) }
     let(:start) { msg(MM::StartPayment, card: 'tok') }
 
-    it 'activates the region with its checkpoint' do
+    it 'activates the region with its state' do
       expect(decided(machine, place).machine.value).to eq(
         machine::Placed => { payment: :initial, shipping: :initial }
       )
@@ -261,7 +261,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
       expect(expire.metadata[Sourced::Machine::ENTERED_BY]).to eq(transitioned.id)
     end
 
-    it 'exits innermost first when the checkpoint is left' do
+    it 'exits innermost first when the state is left' do
       instance = decided(machine, place, start)
       cancelled = instance.decide(msg(MM::CancelOrder))
 
@@ -296,14 +296,14 @@ RSpec.describe 'Sourced::Machine region mounts' do
 
     it_behaves_like 'a payment region'
 
-    it "places the mounted machine's checkpoints in the tree" do
+    it "places the mounted machine's states in the tree" do
       region = machine.tree.root.nodes.fetch(MM::MountedOrder::Placed).regions.find { |r| r.name == :payment }
 
       expect(region.machine).to eq(MM::PaymentMachine)
       expect(region.parent.key).to eq(MM::MountedOrder::Placed)
       expect(region.nodes.keys).to eq([:initial, MM::PaymentMachine::Authorizing, MM::PaymentMachine::Captured, MM::PaymentMachine::Expired])
       expect(machine.handled_commands).to include(MM::StartPayment, MM::Capture)
-      expect(machine.handled_messages_for_evolve).to include(MM::PaymentInfoAdded, machine.checkpoint_class(authorizing))
+      expect(machine.handled_messages_for_evolve).to include(MM::PaymentInfoAdded, machine.state_class(authorizing))
       expect(machine.handled_messages_for_evolve).not_to include(authorizing)
     end
   end
@@ -324,7 +324,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
     let(:machine) { MM::TwicePaidOrder }
     let(:authorizing) { MM::PaymentMachine::Authorizing }
 
-    it 'places its checkpoints at two paths' do
+    it 'places its states at two paths' do
       expect(machine.tree.placements(authorizing).map(&:path))
         .to eq(%w[placed.deposit.authorizing placed.balance.shipped.payment.authorizing])
     end
@@ -336,7 +336,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
       )
 
       events = instance.decide(msg(MM::StartPayment, card: 'bal'))
-      expect(events.map(&:class)).to eq([MM::PaymentInfoAdded, machine.checkpoint_class(authorizing)])
+      expect(events.map(&:class)).to eq([MM::PaymentInfoAdded, machine.state_class(authorizing)])
       expect(events.last.payload.target).to eq('placed.balance.shipped.payment.authorizing')
       expect(instance.machine.in?('placed.deposit.authorizing')).to be(true)
       expect(instance.machine.in?(:payment, authorizing)).to be(true)
@@ -380,11 +380,11 @@ RSpec.describe 'Sourced::Machine region mounts' do
     end
   end
 
-  describe "children a mounted machine's checkpoint starts" do
-    it 'starts the child when its checkpoint is entered, and maps its final' do
+  describe "children a mounted machine's state starts" do
+    it 'starts the child when its state is entered, and maps its final' do
       instance = decided(MM::OrderWithChecks, msg(MM::PlaceOrder))
       events = instance.decide(msg(MM::StartCheck))
-      expect(events.map(&:class)).to eq([MM::OrderWithChecks.checkpoint_class(MM::ChecksRegion::Checking), MM::CheckMachine::Started])
+      expect(events.map(&:class)).to eq([MM::OrderWithChecks.state_class(MM::ChecksRegion::Checking), MM::CheckMachine::Started])
       expect(events.last.payload.check_id).to eq('c1')
 
       child = MM::CheckMachine.new(order_id: 'o1', check_id: 'c1').tap { |m| m.evolve([events.last]) }
@@ -428,7 +428,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
 
       expect(commands.map(&:name)).to include(MM::StartPayment.name, MM::Capture.name)
       expect(commands.find { |n| n.name == MM::StartPayment.name }.produces)
-        .to contain_exactly(machine.checkpoint_class(MM::PaymentMachine::Authorizing).type, MM::PaymentInfoAdded.type)
+        .to contain_exactly(machine.state_class(MM::PaymentMachine::Authorizing).type, MM::PaymentInfoAdded.type)
       expect(automations).to include('actions(placed.payment.authorizing)')
     end
   end
@@ -438,25 +438,25 @@ RSpec.describe 'Sourced::Machine region mounts' do
       stub_const('MachineMountsSpecParent', Class.new(Sourced::Machine) do
         partition_by :order_id
         consumer_group 'machine_mounts_spec_parent'
-        Checkpoint(:placed)
+        State(:placed)
         initial { command MachineMountsTest::PlaceOrder => :placed }
         instance_eval(&block)
       end)
     end
 
-    it 'rejects a mounted machine that targets a checkpoint outside itself' do
+    it 'rejects a mounted machine that targets a state outside itself' do
       parent = stub_const('MachineMountsSpecOutward', Class.new(Sourced::Machine) { partition_by :order_id })
-      placed = parent.Checkpoint(:placed)
+      placed = parent.State(:placed)
       outward = Class.new(Sourced::Machine) do
         initial { command MachineMountsTest::ExpirePayment => placed }
       end
       parent.class_eval do
         initial { command MachineMountsTest::PlaceOrder => placed }
-        checkpoint(placed) { region :payment, outward }
+        state(placed) { region :payment, outward }
       end
 
       expect { parent.validate! }
-        .to raise_error(Sourced::Machine::DefinitionError, /another machine's checkpoint that isn't below it/)
+        .to raise_error(Sourced::Machine::DefinitionError, /another machine's state that isn't below it/)
     end
 
     it 'rejects reactions and sync blocks on a mounted machine' do
@@ -465,23 +465,23 @@ RSpec.describe 'Sourced::Machine region mounts' do
       end
       syncing = Class.new(Sourced::Machine) { sync { |**| nil } }
 
-      expect { machine { checkpoint(:placed) { region :payment, reacting } } }
+      expect { machine { state(:placed) { region :payment, reacting } } }
         .to raise_error(Sourced::Machine::DefinitionError, /reactions or sync blocks/)
-      expect { machine { checkpoint(:placed) { region :payment, syncing } } }
+      expect { machine { state(:placed) { region :payment, syncing } } }
         .to raise_error(Sourced::Machine::DefinitionError, /reactions or sync blocks/)
     end
 
-    it "rejects another machine's checkpoints, and clashing region names" do
+    it "rejects another machine's states, and clashing region names" do
       expect do
         machine do
-          checkpoint(:placed) { region :payment, MachineMountsTest::PaymentMachine }
-          checkpoint MachineMountsTest::PaymentMachine::Captured
+          state(:placed) { region :payment, MachineMountsTest::PaymentMachine }
+          state MachineMountsTest::PaymentMachine::Captured
         end
-      end.to raise_error(Sourced::Machine::DefinitionError, /PaymentMachine's checkpoint, not/)
+      end.to raise_error(Sourced::Machine::DefinitionError, /PaymentMachine's state, not/)
 
       expect do
         machine do
-          checkpoint(:placed) do
+          state(:placed) do
             region(:payment) { initial }
             region :payment, MachineMountsTest::PaymentMachine
           end
@@ -491,7 +491,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
 
     it 'rejects a machine with children mounted twice' do
       twice = machine do
-        checkpoint(:placed) do
+        state(:placed) do
           region :lines, MachineMountsTest::LinesRegion
           region :more_lines, MachineMountsTest::LinesRegion
         end
@@ -501,23 +501,23 @@ RSpec.describe 'Sourced::Machine region mounts' do
 
     it 'rejects on_done keys that are not root finals, and unreachable targets' do
       not_final = machine do
-        checkpoint(:placed) do
+        state(:placed) do
           region :payment, MachineMountsTest::PaymentMachine, on_done: { MachineMountsTest::PaymentMachine::Authorizing => :cancelled }
         end
         final :cancelled
       end
-      expect { not_final.validate! }.to raise_error(Sourced::Machine::DefinitionError, /Authorizing isn't a final checkpoint/)
+      expect { not_final.validate! }.to raise_error(Sourced::Machine::DefinitionError, /Authorizing isn't a final state/)
 
       elsewhere = machine do
-        checkpoint(:placed) do
+        state(:placed) do
           region :payment, MachineMountsTest::PaymentMachine, on_done: { MachineMountsTest::PaymentMachine::Expired => :refunded }
         end
-        checkpoint(:returned) { region(:refund) { final :refunded } }
+        state(:returned) { region(:refund) { final :refunded } }
       end
       expect { elsewhere.validate! }.to raise_error(Sourced::Machine::DefinitionError, /can only reach/)
 
       unplaced = machine do
-        checkpoint(:placed) do
+        state(:placed) do
           region :payment, MachineMountsTest::PaymentMachine, on_done: { MachineMountsTest::PaymentMachine::Expired => :cancelled }
         end
       end
@@ -526,10 +526,10 @@ RSpec.describe 'Sourced::Machine region mounts' do
 
     it 'rejects a block with a machine, and on_done without one' do
       expect do
-        machine { checkpoint(:placed) { region(:payment, MachineMountsTest::PaymentMachine) { initial } } }
+        machine { state(:placed) { region(:payment, MachineMountsTest::PaymentMachine) { initial } } }
       end.to raise_error(Sourced::Machine::DefinitionError, /a machine or a block, not both/)
       expect do
-        machine { checkpoint(:placed) { region(:payment, on_done: { 1 => 2 }) { initial } } }
+        machine { state(:placed) { region(:payment, on_done: { 1 => 2 }) { initial } } }
       end.to raise_error(Sourced::Machine::DefinitionError, /on_done is for a mounted machine/)
     end
   end
