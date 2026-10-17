@@ -222,6 +222,33 @@ class CourseDecider < Sourced::Decider
 end
 ```
 
+#### Partition schemas and reactor messages
+
+`partition_by` keys are Strings unless typed: `partition_by :order_id, item_id: Types::Integer`. `Command` and `Event` define messages typed `"<message_prefix>.<name>"` (the prefix defaults to the `group_id`, so `Shop::Orders` gives `shop.orders`; declare `message_prefix 'orders'` to keep stored types stable across renames), with the partition keys declared before the block's attributes:
+
+```ruby
+class Orders < Sourced::Decider
+  partition_by :order_id, item_id: Types::Integer
+
+  AddItem = Command(:add_item) do   # 'orders.add_item', with order_id and item_id
+    attribute :quantity, Integer
+  end
+
+  ItemAdded = Event(:item_added) do
+    attribute :quantity, Integer
+  end
+end
+```
+
+`partition_by`, `consumer_group` and `message_prefix` must come before the first `Command` / `Event`.
+
+Hand-defined messages work too, and every handled message is checked against the schema when the reactor is registered with a Router (and by the GWT test helpers), raising `Sourced::DefinitionError`:
+
+- commands, reactions and a machine's `on` events must declare every key, as required attributes;
+- other evolved events must declare at least one key: the store reads a message into a partition when the keys it declares match, so events carrying some of the keys are fine;
+- each declared key must be the schema's type or a stricter one (`String.present` passes for `String`; `Integer` doesn't);
+- at least one handled message must declare every key, or no partition is ever created.
+
 #### Synchronous command handling
 
 `Sourced.handle!` loads history, runs the decider, appends the command + events, and advances the decider's consumer group offset so workers skip the command — all in one call and one transaction. Designed for web controllers. It uses `Sourced.store`, so Sourced must be started (or pass `store:`).
