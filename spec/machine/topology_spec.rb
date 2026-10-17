@@ -32,16 +32,16 @@ module MachineTopologyTest
   class TripMachine < Sourced::Machine
     partition_by :trip_id
 
-    Opened = Checkpoint(:opened)
-    Booked = Checkpoint(:booked)
-    Done = Checkpoint(:done)
-    Cancelled = Checkpoint(:cancelled)
+    Opened = State(:opened)
+    Booked = State(:booked)
+    Done = State(:done)
+    Cancelled = State(:cancelled)
 
     initial do
       command Open => Opened
     end
 
-    checkpoint Opened do
+    state Opened do
       entry { |_s, _evt| dispatch Remind }
       command(Note) { |_s, _cmd| event Noted }
       command AddLeg, starts: LegMachine
@@ -49,7 +49,7 @@ module MachineTopologyTest
       command Cancel => Cancelled
     end
 
-    checkpoint Booked do
+    state Booked do
       region :payment do
         initial { command Pay => :paid }
         final :paid
@@ -79,7 +79,7 @@ module MachineTopologyTest
       def command(name) = nodes.find { |n| n.type == 'command' && n.id == t(name) }
       def automation(name) = nodes.find { |n| n.type == 'automation' && n.name == name }
 
-      it "has commands produce their targets' checkpoint classes, data events and started children" do
+      it "has commands produce their targets' state classes, data events and started children" do
         expect(command(:open).produces).to eq([trip(:opened)])
         expect(command(:note).produces).to eq([t(:noted)])
         expect(command(:add_leg).produces).to eq([t('leg_machine.runtime.child.started')])
@@ -89,9 +89,9 @@ module MachineTopologyTest
         expect(command('leg_machine.runtime.child.stop').produces).to eq([leg(:dropped), t('leg_machine.runtime.child.finished')])
       end
 
-      it 'describes actions, joins and stopping children as automations, consuming the checkpoints that run them' do
+      it 'describes actions, joins and stopping children as automations, consuming the states that run them' do
         expect(automation('actions(opened)')).to have_attributes(consumes: [trip(:opened)], produces: [t(:remind)])
-        # Exit actions run on the transitions that leave the checkpoint, not on entering it.
+        # Exit actions run on the transitions that leave the state, not on entering it.
         expect(automation('exit(booked)')).to have_attributes(consumes: [trip(:cancelled), trip(:done)], produces: [t(:archive)])
         expect(automation('done(booked)')).to have_attributes(consumes: [trip(:paid), trip(:shipped)], produces: [trip(:done)])
         expect(automation('stop(MachineTopologyTest::LegMachine)')).to have_attributes(
@@ -99,20 +99,20 @@ module MachineTopologyTest
         )
       end
 
-      it "stops a checkpoint's child on the transitions that leave its checkpoint" do
+      it "stops a state's child on the transitions that leave its state" do
         machine = Class.new(Sourced::Machine) do
           def self.name = 'MachineTopologyTest::Invoking'
           partition_by :trip_id
 
           initial { command Open => :waiting }
-          checkpoint :waiting do
+          state :waiting do
             start LegMachine do
-              payload { |_s, _checkpoint| { leg_id: 'l1' } }
-              on_done LegMachine.declared_checkpoints.fetch(:confirmed) => :booked
+              payload { |_s, _state| { leg_id: 'l1' } }
+              on_done LegMachine.declared_states.fetch(:confirmed) => :booked
             end
             region :notes do
               initial { command Note => :noted }
-              checkpoint :noted
+              state :noted
             end
             command Cancel => :cancelled
           end
@@ -141,12 +141,12 @@ module MachineTopologyTest
           partition_by :trip_id
 
           initial { command Open => :opened }
-          checkpoint :opened do
+          state :opened do
             region :lines, lines
             on(Settled => :settled, starts: LegMachine) { |_s, _evt| start LegMachine, leg_id: 'l1' }
             command(Book => :settled, starts: LegMachine | nil) { |_s, _cmd| nil }
           end
-          checkpoint :settled do
+          state :settled do
             children_done(LegMachine => :done, starts: LegMachine) { |_s| start LegMachine, leg_id: 'l2' }
           end
           final :done
@@ -179,7 +179,7 @@ module MachineTopologyTest
           def self.name = 'MachineTopologyTest::Outer'
           partition_by :trip_id
           initial { command Open => :busy }
-          checkpoint :busy, inner, on_done: { inner.declared_checkpoints.fetch(:finished) => :done }
+          state :busy, inner, on_done: { inner.declared_states.fetch(:finished) => :done }
           final :done
         end
         nodes = Sourced::Topology.build([outer])
@@ -188,14 +188,14 @@ module MachineTopologyTest
         expect(confirm.produces).to eq([t('outer.runtime.mounted.machine_topology_test.inner.finished'), t('outer.runtime.done')])
       end
 
-      it 'includes checkpoint classes, child events and data events' do
+      it 'includes state classes, child events and data events' do
         events = nodes.select { |n| n.type == 'event' }.map(&:id)
         expect(events).to include(trip(:opened), t(:noted), t('leg_machine.runtime.child.started'), leg(:confirmed))
       end
     end
 
     describe '.to_mermaid' do
-      it 'draws checkpoints, regions and the commands between them' do
+      it 'draws states, regions and the commands between them' do
         expect(TripMachine.to_mermaid).to eq(<<~MERMAID.chomp)
           stateDiagram-v2
             state "opened" as opened
@@ -232,18 +232,18 @@ module MachineTopologyTest
         expect(diagram).to include("\n  added --> dropped : Stop\n")
       end
 
-      it "draws transitions to an ancestor region's checkpoint from the state that takes them" do
+      it "draws transitions to an ancestor region's state from the state that takes them" do
         machine = Class.new(Sourced::Machine) do
           def self.name = 'MachineTopologyTest::Ancestors'
           partition_by :trip_id
           initial { command Open => :opened }
-          checkpoint :opened do
+          state :opened do
             region :payment do
               initial do
                 command Pay => :paid
                 command Note => :cancelled
               end
-              checkpoint(:paid) { command Cancel => :cancelled }
+              state(:paid) { command Cancel => :cancelled }
             end
           end
           final :cancelled

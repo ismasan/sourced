@@ -39,24 +39,24 @@ module MachineAlwaysTest
   class GroupTripMachine < Sourced::Machine
     partition_by :trip_id
 
-    Open = Checkpoint(:open)
-    Reviewing = Checkpoint(:reviewing)
-    Cancelled = Checkpoint(:cancelled)
-    Refused = Checkpoint(:refused)
-    Confirmed = Checkpoint(:confirmed)
-    AwaitingSuppliers = Checkpoint(:awaiting_suppliers)
+    Open = State(:open)
+    Reviewing = State(:reviewing)
+    Cancelled = State(:cancelled)
+    Refused = State(:refused)
+    Confirmed = State(:confirmed)
+    AwaitingSuppliers = State(:awaiting_suppliers)
 
     context { GroupState.new }
     evolve(BookingAdded) { |trip, evt| trip.bookings << evt.payload.status }
 
     initial { command OpenTrip => Open }
 
-    checkpoint Open do
+    state Open do
       command(AddBooking) { |_trip, cmd| event BookingAdded, status: cmd.payload.status }
       command Review => Reviewing
     end
 
-    checkpoint Reviewing do
+    state Reviewing do
       entry { |_trip, _evt| dispatch NotifyOrganiser }
       always Cancelled, if: ->(trip) { trip.any?('cancelled') }
       always Refused, if: :any_refused?
@@ -64,7 +64,7 @@ module MachineAlwaysTest
       always AwaitingSuppliers
     end
 
-    checkpoint AwaitingSuppliers do
+    state AwaitingSuppliers do
       command ConfirmTrip => Confirmed
     end
 
@@ -73,19 +73,19 @@ module MachineAlwaysTest
     final Confirmed
   end
 
-  # A guarded always on a checkpoint that accepts commands: taken once the guard passes.
+  # A guarded always on a state that accepts commands: taken once the guard passes.
   class CollectingMachine < Sourced::Machine
     partition_by :trip_id
 
-    Collecting = Checkpoint(:collecting)
-    Ready = Checkpoint(:ready)
+    Collecting = State(:collecting)
+    Ready = State(:ready)
 
     context { GroupState.new }
     evolve(BookingAdded) { |trip, evt| trip.bookings << evt.payload.status }
 
     initial { command OpenTrip => Collecting }
 
-    checkpoint Collecting do
+    state Collecting do
       always Ready, if: :enough?
       command(AddBooking) { |_trip, cmd| event BookingAdded, status: cmd.payload.status }
     end
@@ -93,13 +93,13 @@ module MachineAlwaysTest
     final Ready
   end
 
-  # Guarded joins, and a transient checkpoint completing a region before its join.
+  # Guarded joins, and a transient state completing a region before its join.
   class ShipmentMachine < Sourced::Machine
     partition_by :trip_id
 
-    Shipping = Checkpoint(:shipping)
-    Delivered = Checkpoint(:delivered)
-    Partial = Checkpoint(:partial)
+    Shipping = State(:shipping)
+    Delivered = State(:delivered)
+    Partial = State(:partial)
 
     context { GroupState.new }
     evolve(BookingAdded) { |trip, evt| trip.bookings << evt.payload.status }
@@ -109,12 +109,12 @@ module MachineAlwaysTest
       command(AddBooking) { |_trip, cmd| event BookingAdded, status: cmd.payload.status }
     end
 
-    checkpoint Shipping do
+    state Shipping do
       command(AddBooking) { |_trip, cmd| event BookingAdded, status: cmd.payload.status }
 
       region :a do
         initial { command ShipA => :a_checking }
-        checkpoint(:a_checking) { always :a_shipped }
+        state(:a_checking) { always :a_shipped }
         final :a_shipped
       end
       region :b do
@@ -168,11 +168,11 @@ RSpec.describe 'Sourced::Machine always' do
         context { MA::GroupState.new }
         evolve(MA::BookingAdded) { |trip, evt| trip.bookings << evt.payload.status }
         initial { command MA::OpenTrip => :open }
-        checkpoint(:open) do
+        state(:open) do
           command(MA::AddBooking) { |_trip, cmd| event MA::BookingAdded, status: cmd.payload.status }
           command MA::Review => :reviewing
         end
-        checkpoint(:reviewing) do
+        state(:reviewing) do
           always :cancelled, if: MA::AnyCancelled
           always :plenty, if: MA::AtLeast.new(2)
           always :awaiting_suppliers
@@ -182,9 +182,9 @@ RSpec.describe 'Sourced::Machine always' do
         final :awaiting_suppliers
       end
 
-      checkpoints = machine.declared_checkpoints
-      expect(decided(machine, msg(MA::OpenTrip), *bookings('cancelled'), msg(MA::Review)).machine.value).to eq(checkpoints.fetch(:cancelled))
-      expect(decided(machine, msg(MA::OpenTrip), *bookings('confirmed', 'confirmed'), msg(MA::Review)).machine.value).to eq(checkpoints.fetch(:plenty))
+      states = machine.declared_states
+      expect(decided(machine, msg(MA::OpenTrip), *bookings('cancelled'), msg(MA::Review)).machine.value).to eq(states.fetch(:cancelled))
+      expect(decided(machine, msg(MA::OpenTrip), *bookings('confirmed', 'confirmed'), msg(MA::Review)).machine.value).to eq(states.fetch(:plenty))
       expect(machine.to_h[:states]['reviewing'][:always]).to eq([
         { target: 'cancelled', guard: 'MachineAlwaysTest::AnyCancelled' },
         { target: 'plenty', guard: 'MachineAlwaysTest::AtLeast' },
@@ -192,14 +192,14 @@ RSpec.describe 'Sourced::Machine always' do
       ])
     end
 
-    it "runs a transient checkpoint's entry actions when it's claimed" do
+    it "runs a transient state's entry actions when it's claimed" do
       instance = decided(MA::GroupTripMachine, msg(MA::OpenTrip))
       reviewing = instance.decide(msg(MA::Review)).first
 
       expect(instance.__react(reviewing).map(&:class)).to eq([MA::NotifyOrganiser])
     end
 
-    it 'is re-evaluated after every decision while its checkpoint is active' do
+    it 'is re-evaluated after every decision while its state is active' do
       instance = decided(MA::CollectingMachine, msg(MA::OpenTrip))
       expect(summary(instance.decide(bookings('confirmed').first))).to eq(summary([msg(MA::BookingAdded, status: 'confirmed')]))
 
@@ -220,7 +220,7 @@ RSpec.describe 'Sourced::Machine always' do
       expect(instance.machine.value).to eq(MA::GroupTripMachine::Reviewing)
     end
 
-    it 'resolves a transient checkpoint before its parent checkpoint joins' do
+    it 'resolves a transient state before its parent state joins' do
       instance = decided(MA::ShipmentMachine, msg(MA::OpenTrip), *bookings('confirmed'), msg(MA::ShipB))
       events = instance.decide(msg(MA::ShipA))
 
@@ -228,14 +228,14 @@ RSpec.describe 'Sourced::Machine always' do
       expect(instance.machine.value).to eq(MA::ShipmentMachine::Delivered)
     end
 
-    it 'raises when always checkpoints loop' do
+    it 'raises when always states loop' do
       looping = Class.new(Sourced::Machine) do
         def self.name = 'MachineAlwaysTest::Looping'
         partition_by :trip_id
 
         initial { command MA::OpenTrip => :ping }
-        checkpoint(:ping) { always :pong }
-        checkpoint(:pong) { always :ping }
+        state(:ping) { always :pong }
+        state(:pong) { always :ping }
       end
 
       expect { looping.new(trip_id: 't1').decide(msg(MA::OpenTrip)) }.to raise_error(Sourced::Machine::Error, /more than 100 joins/)
@@ -260,7 +260,7 @@ RSpec.describe 'Sourced::Machine always' do
         context { MA::GroupState.new }
 
         initial { command MA::OpenTrip => :shipping }
-        checkpoint :shipping do
+        state :shipping do
           region(:a) { initial { command MA::ShipA => :shipped }; final :shipped }
           done :delivered, if: :all_confirmed?
         end
@@ -268,7 +268,7 @@ RSpec.describe 'Sourced::Machine always' do
       end
 
       instance = decided(guarded, msg(MA::OpenTrip), msg(MA::ShipA))
-      expect(instance.machine.value).to eq(guarded.declared_checkpoints.fetch(:shipping) => { a: guarded.declared_checkpoints.fetch(:shipped) })
+      expect(instance.machine.value).to eq(guarded.declared_states.fetch(:shipping) => { a: guarded.declared_states.fetch(:shipped) })
     end
   end
 
@@ -281,13 +281,13 @@ RSpec.describe 'Sourced::Machine always' do
       end
     end
 
-    it "rejects commands and timers on a transient checkpoint" do
+    it "rejects commands and timers on a transient state" do
       with_command = machine do
-        checkpoint(:a) { always :b; command MA::ConfirmTrip => :b }
+        state(:a) { always :b; command MA::ConfirmTrip => :b }
         final :b
       end
       with_timer = machine do
-        checkpoint(:a) { always :b; after(60) { dispatch MA::ConfirmTrip } }
+        state(:a) { always :b; after(60) { dispatch MA::ConfirmTrip } }
         final :b
       end
 
@@ -295,13 +295,13 @@ RSpec.describe 'Sourced::Machine always' do
       expect { with_timer.validate! }.to raise_error(Sourced::Machine::DefinitionError, /a is transient \(always .*b\), so it can't have timers/i)
     end
 
-    it 'rejects regions and joins on a transient checkpoint, which it leaves before they could run' do
+    it 'rejects regions and joins on a transient state, which it leaves before they could run' do
       with_regions = machine do
-        checkpoint(:a) { always :b; region(:r) { initial } }
+        state(:a) { always :b; region(:r) { initial } }
         final :b
       end
       with_done = machine do
-        checkpoint(:a) { always :b; done :c }
+        state(:a) { always :b; done :c }
         final :b
         final :c
       end
@@ -311,35 +311,35 @@ RSpec.describe 'Sourced::Machine always' do
     end
 
     it 'rejects unreachable always and done' do
-      expect { machine { checkpoint(:a) { always :b; always :c }; final :b; final :c } }
+      expect { machine { state(:a) { always :b; always :c }; final :b; final :c } }
         .to raise_error(Sourced::Machine::DefinitionError, /always .*c is unreachable, after an unguarded always/i)
       expect do
         machine do
-          checkpoint(:a) { region(:r) { initial { command MA::ShipA => :x }; final :x }; done :b; done :c }
+          state(:a) { region(:r) { initial { command MA::ShipA => :x }; final :x }; done :b; done :c }
           final :b
           final :c
         end
       end.to raise_error(Sourced::Machine::DefinitionError, /done .*c is unreachable, after an unguarded done/i)
     end
 
-    it 'rejects always on the initial position or a final checkpoint' do
+    it 'rejects always on the initial position or a final state' do
       expect { machine { initial { always :a }; final :a } }
         .to raise_error(Sourced::Machine::DefinitionError, /the initial position is never entered, so no always/)
       expect { machine { final(:a) { always :b }; final :b } }
-        .to raise_error(Sourced::Machine::DefinitionError, /final checkpoint .*a can't have always/i)
+        .to raise_error(Sourced::Machine::DefinitionError, /final state .*a can't have always/i)
     end
 
     it 'rejects guards that are neither a Symbol nor callable' do
-      expect { machine { checkpoint(:a) { always :b, if: 'nope' }; final :b } }
+      expect { machine { state(:a) { always :b, if: 'nope' }; final :b } }
         .to raise_error(Sourced::Machine::DefinitionError, /if: takes a Symbol or a #call\(context\), got "nope"/)
     end
 
     it 'checks always targets as command targets' do
       out_of_reach = machine do
         initial { command MA::OpenTrip => :a }
-        checkpoint :a do
-          region(:left) { initial { command MA::ShipA => :l }; checkpoint(:l) { always :r } }
-          region(:right) { initial { command MA::ShipB => :r }; checkpoint :r }
+        state :a do
+          region(:left) { initial { command MA::ShipA => :l }; state(:l) { always :r } }
+          region(:right) { initial { command MA::ShipB => :r }; state :r }
         end
       end
 
@@ -371,7 +371,7 @@ RSpec.describe 'Sourced::Machine always' do
       expect(MA::ShipmentMachine.to_mermaid).to include('shipping --> delivered : done [all_confirmed?]', 'shipping --> partial : done')
     end
 
-    it "has commands produce the checkpoints their targets' always can reach" do
+    it "has commands produce the states their targets' always can reach" do
       nodes = Sourced::Topology.build([MA::GroupTripMachine])
       review = nodes.find { |n| n.type == 'command' && n.id == MA::Review.type }
       types = %i[reviewing cancelled refused confirmed awaiting_suppliers].map { |name| "machine_always_test.group_trip_machine.runtime.#{name}" }

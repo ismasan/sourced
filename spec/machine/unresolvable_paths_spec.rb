@@ -9,22 +9,22 @@ module MachineUnresolvablePathsTest
   class DocMachine < Sourced::Machine
     partition_by :doc_id
 
-    Opened = Checkpoint(:opened)
+    Opened = State(:opened)
 
     initial { command Open => Opened }
-    checkpoint(Opened) { after(60) { dispatch Tick } }
+    state(Opened) { after(60) { dispatch Tick } }
   end
 end
 
 RSpec.describe 'Sourced::Machine stored paths that no longer resolve' do
   let(:machine) { MachineUnresolvablePathsTest::DocMachine }
 
-  # A stored event from a definition that had a checkpoint at +gone+.
+  # A stored event from a definition that had a state at +gone+.
   def stored(entered: %w[opened], exited: [])
     machine::Opened.new(payload: { doc_id: 'd1', trigger: 'x', source: 'initial', target: entered.last, exited:, entered: })
   end
 
-  def error_for(event) = /no checkpoint at "gone" \(#{Regexp.escape(event.type)} #{event.id}\)/
+  def error_for(event) = /no state at "gone" \(#{Regexp.escape(event.type)} #{event.id}\)/
 
   it 'raises when replaying an entered path' do
     event = stored(entered: %w[gone])
@@ -41,7 +41,7 @@ RSpec.describe 'Sourced::Machine stored paths that no longer resolve' do
     expect { machine.new(doc_id: 'd1').__react(event) }.to raise_error(Sourced::Machine::UnresolvablePathError, error_for(event))
   end
 
-  it "raises for a timer whose checkpoint's path is gone" do
+  it "raises for a timer whose state's path is gone" do
     entering = stored
     instance = machine.new(doc_id: 'd1').tap { |m| m.evolve([entering]) }
     timer = MachineUnresolvablePathsTest::Tick.new(
