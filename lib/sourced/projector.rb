@@ -24,12 +24,12 @@ module Sourced
       # can branch themselves.
       def build_action_pairs(instance, messages, replaying:)
         sync_actions = instance.collect_actions(
-          state: instance.state, messages:, replaying:
+          context: instance.context, messages:, replaying:
         )
 
         reaction_pairs = each_with_partial_ack(messages) do |msg|
           next unless instance.reacts_to?(msg)
-          next unless instance.should_react?(instance.state, msg, replaying:)
+          next unless instance.should_react?(instance.context, msg, replaying:)
 
           reaction_msgs = Array(instance.react(msg))
           actions = Actions.build_for(reaction_msgs)
@@ -47,28 +47,28 @@ module Sourced
       @partition_values = partition_values
     end
 
-    # Projector variant that evolves only the claimed messages on top of stored state.
+    # Projector variant that evolves only the claimed messages on top of stored context.
     #
-    # The stored state is loaded by the +load_state+ block, which runs in the
+    # The stored context is loaded by the +load_context+ block, which runs in the
     # reactor's scope and so may read a database. When it returns +nil+ (or
-    # isn't declared), the projection's +state+ block builds the initial state.
+    # isn't declared), the projection's +context+ block builds the initial context.
     #
     # @example
     #   class CartListing < Sourced::Projector::StateStored
     #     partition_by :cart_id
     #     evolve CartProjection
     #
-    #     load_state { |partition_values| MyDB.find(partition_values[:cart_id]) }
-    #     sync { |state:, **| MyDB.upsert(state) }
+    #     load_context { |partition_values| MyDB.find(partition_values[:cart_id]) }
+    #     sync { |context:, **| MyDB.upsert(context) }
     #   end
     class StateStored < self
       class << self
-        # Declare how to load the stored state for a partition.
+        # Declare how to load the stored context for a partition.
         #
         # @yield [partition_values] runs in the reactor instance's scope
-        # @yieldreturn [Object, nil] the stored state, or +nil+ if there is none
-        def load_state(&)
-          define_method(:load_state, &)
+        # @yieldreturn [Object, nil] the stored context, or +nil+ if there is none
+        def load_context(&)
+          define_method(:load_context, &)
         end
 
         def handle_batch(partition_values, new_messages, history: nil, replaying: false)
@@ -86,23 +86,23 @@ module Sourced
       end
 
       # @param _partition_values [Hash{Symbol => String}] partition key-value pairs
-      # @return [Object, nil] the stored state; +nil+ by default
-      def load_state(_partition_values)
+      # @return [Object, nil] the stored context; +nil+ by default
+      def load_context(_partition_values)
         nil
       end
 
-      # The projection starts from the stored state when +load_state+ returns one.
+      # The projection starts from the stored context when +load_context+ returns one.
       #
       # @return [Sourced::Projection]
       def projection
         @projection ||= begin
-          stored = load_state(partition_values)
+          stored = load_context(partition_values)
           stored.nil? ? self.class.projection_class.new : self.class.projection_class.new(stored)
         end
       end
     end
 
-    # Projector variant that rebuilds state from full history each time.
+    # Projector variant that rebuilds context from full history each time.
     class EventSourced < self
       class << self
         def handle_batch(partition_values, new_messages, history:, replaying: false)

@@ -16,10 +16,10 @@ class ReaperTestProjector < Sourced::Projector::StateStored
   partition_by :device_id
   consumer_group 'reaper-test-projector'
 
-  state { { devices: [] } }
+  context { { devices: [] } }
 
-  evolve StaleClaimReaperTestMessages::DeviceRegistered do |state, evt|
-    state[:devices] << evt.payload.name
+  evolve StaleClaimReaperTestMessages::DeviceRegistered do |context, evt|
+    context[:devices] << evt.payload.name
   end
 end
 

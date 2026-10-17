@@ -26,23 +26,23 @@ class LoadTestDecider < Sourced::Decider
   partition_by :course_id, :student_id
   consumer_group 'load-test-decider'
 
-  state { { enrolled: false, grades: [] } }
+  context { { enrolled: false, grades: [] } }
 
-  evolve LoadTestMessages::StudentEnrolled do |state, _evt|
-    state[:enrolled] = true
+  evolve LoadTestMessages::StudentEnrolled do |context, _evt|
+    context[:enrolled] = true
   end
 
-  evolve LoadTestMessages::AssignmentSubmitted do |state, evt|
-    state[:grades] << evt.payload.grade
+  evolve LoadTestMessages::AssignmentSubmitted do |context, evt|
+    context[:grades] << evt.payload.grade
   end
 end
 
 class LoadTestProjection < Sourced::Projection
-  state { { course_id: nil, students: [] } }
+  context { { course_id: nil, students: [] } }
 
-  evolve LoadTestMessages::StudentEnrolled do |state, evt|
-    state[:course_id] = evt.payload.course_id
-    state[:students] << evt.payload.student_id
+  evolve LoadTestMessages::StudentEnrolled do |context, evt|
+    context[:course_id] = evt.payload.course_id
+    context[:students] << evt.payload.student_id
   end
 end
 
@@ -50,17 +50,17 @@ class LoadTestProjector < Sourced::Projector::StateStored
   partition_by :course_id
   consumer_group 'load-test-projector'
 
-  state do
+  context do
     { course_id: nil, title: nil, student_count: 0 }
   end
 
-  evolve LoadTestMessages::CourseCreated do |state, evt|
-    state[:course_id] = evt.payload.course_id
-    state[:title] = evt.payload.title
+  evolve LoadTestMessages::CourseCreated do |context, evt|
+    context[:course_id] = evt.payload.course_id
+    context[:title] = evt.payload.title
   end
 
-  evolve LoadTestMessages::StudentEnrolled do |state, _evt|
-    state[:student_count] += 1
+  evolve LoadTestMessages::StudentEnrolled do |context, _evt|
+    context[:student_count] += 1
   end
 end
 
@@ -99,14 +99,14 @@ RSpec.describe 'Sourced.load' do
       expect(read_result).to be_a(Sourced::ReadResult)
     end
 
-    it 'evolves state from matching messages' do
+    it 'evolves context from matching messages' do
       instance, _read_result = Sourced.load(
         LoadTestDecider, store: store,
         course_id: 'algebra', student_id: 'joe'
       )
 
-      expect(instance.state[:enrolled]).to be true
-      expect(instance.state[:grades]).to eq(%w[A B])
+      expect(instance.context[:enrolled]).to be true
+      expect(instance.context[:grades]).to eq(%w[A B])
     end
 
     it 'sets partition_values on the instance' do
@@ -171,8 +171,8 @@ RSpec.describe 'Sourced.load' do
       # jane's StudentEnrolled shares course_id=algebra but has student_id=jane.
       # AND filtering excludes it at the query level: the message declares
       # student_id, and it doesn't match joe.
-      expect(instance.state[:enrolled]).to be true
-      expect(instance.state[:grades]).to eq(%w[A B])
+      expect(instance.context[:enrolled]).to be true
+      expect(instance.context[:grades]).to eq(%w[A B])
 
       # read_result.messages only contains joe's messages (3 total)
       expect(read_result.messages.size).to eq(3)
@@ -211,8 +211,8 @@ RSpec.describe 'Sourced.load' do
           course_id: 'algebra', student_id: 'joe'
         )
 
-        expect(instance.state[:enrolled]).to be true
-        expect(instance.state[:grades]).to eq([])
+        expect(instance.context[:enrolled]).to be true
+        expect(instance.context[:grades]).to eq([])
       end
 
       it 'counts partition messages, not global positions (upto: 2 → first 2 matches)' do
@@ -222,7 +222,7 @@ RSpec.describe 'Sourced.load' do
         )
 
         expect(read_result.messages.size).to eq(2)
-        expect(instance.state[:grades]).to eq(%w[A])
+        expect(instance.context[:grades]).to eq(%w[A])
       end
 
       it 'returns all partition messages when upto equals the partition size' do
@@ -232,7 +232,7 @@ RSpec.describe 'Sourced.load' do
         )
 
         expect(read_result.messages.size).to eq(3)
-        expect(instance.state[:grades]).to eq(%w[A B])
+        expect(instance.context[:grades]).to eq(%w[A B])
       end
 
       it 'returns all partition messages when upto exceeds the partition size' do
@@ -242,7 +242,7 @@ RSpec.describe 'Sourced.load' do
         )
 
         expect(read_result.messages.size).to eq(3)
-        expect(instance.state[:grades]).to eq(%w[A B])
+        expect(instance.context[:grades]).to eq(%w[A B])
       end
 
       it 'returns empty when upto is 0' do
@@ -251,7 +251,7 @@ RSpec.describe 'Sourced.load' do
           course_id: 'algebra', student_id: 'joe'
         )
 
-        expect(instance.state[:enrolled]).to be false
+        expect(instance.context[:enrolled]).to be false
         expect(read_result.messages).to be_empty
       end
 
@@ -299,14 +299,14 @@ RSpec.describe 'Sourced.load' do
       ])
     end
 
-    it 'evolves projector state from matching messages' do
+    it 'evolves projector context from matching messages' do
       instance, _read_result = Sourced.load(
         LoadTestProjector, store: store,
         course_id: 'algebra'
       )
 
-      expect(instance.state[:title]).to eq('Algebra 101')
-      expect(instance.state[:student_count]).to eq(2)
+      expect(instance.context[:title]).to eq('Algebra 101')
+      expect(instance.context[:student_count]).to eq(2)
     end
 
   end
@@ -324,26 +324,26 @@ RSpec.describe 'Sourced.load' do
       projection, read_result = Sourced.load(LoadTestProjection, store: store, course_id: 'algebra')
 
       expect(projection).to be_a(LoadTestProjection)
-      expect(projection.state).to eq(course_id: 'algebra', students: %w[joe jane])
+      expect(projection.context).to eq(course_id: 'algebra', students: %w[joe jane])
       expect(read_result.messages.size).to eq(2)
     end
 
     it 'evolves over at most upto messages' do
       projection, _read_result = Sourced.load(LoadTestProjection, store: store, upto: 1, course_id: 'algebra')
 
-      expect(projection.state[:students]).to eq(['joe'])
+      expect(projection.context[:students]).to eq(['joe'])
     end
   end
 
   describe 'empty history' do
-    it 'returns instance with initial state when no matching messages' do
+    it 'returns instance with initial context when no matching messages' do
       instance, read_result = Sourced.load(
         LoadTestDecider, store: store,
         course_id: 'nonexistent', student_id: 'nobody'
       )
 
-      expect(instance.state[:enrolled]).to be false
-      expect(instance.state[:grades]).to eq([])
+      expect(instance.context[:enrolled]).to be false
+      expect(instance.context[:grades]).to eq([])
       expect(read_result.messages).to be_empty
     end
   end

@@ -1,38 +1,38 @@
 # frozen_string_literal: true
 
 module Sourced
-  # In-memory state evolved from a history of messages.
+  # In-memory context evolved from a history of messages.
   #
   # A projection knows nothing about stores, partitions, commands or side
-  # effects: it declares an initial state and how each message type changes it,
-  # so its state is a function of the messages it evolves. Evolve blocks run in
+  # effects: it declares an initial context and how each message type changes it,
+  # so its context is a function of the messages it evolves. Evolve blocks run in
   # the projection's own scope.
   #
   # Identifying values (ex. a cart's id) come from the messages, not from
   # outside: set them in the evolve blocks.
   #
-  # Reactors evolve their state through a projection class (see {Sourced::Evolve}),
+  # Reactors evolve their context through a projection class (see {Sourced::Evolve}),
   # either one declared inline or a standalone class shared between reactors.
   #
   # @example
   #   class CartProjection < Sourced::Projection
-  #     state do
+  #     context do
   #       { cart_id: nil, items: [] }
   #     end
   #
-  #     evolve ItemAdded do |state, evt|
-  #       state[:cart_id] = evt.payload.cart_id
-  #       state[:items] << evt.payload.item_id
+  #     evolve ItemAdded do |context, evt|
+  #       context[:cart_id] = evt.payload.cart_id
+  #       context[:items] << evt.payload.item_id
   #     end
   #   end
   #
   #   projection = CartProjection.new
   #   projection.evolve(messages)
-  #   projection.state # => { items: [...] }
+  #   projection.context # => { items: [...] }
   class Projection
     PREFIX = 'sourced_evolution'
 
-    # Default for the +state+ argument, distinct from an explicit +nil+ state.
+    # Default for the +context+ argument, distinct from an explicit +nil+ context.
     UNSET = Object.new.freeze
 
     class << self
@@ -51,18 +51,18 @@ module Sourced
       # can be loaded the same way (see {Sourced.load}).
       alias handled_messages_for_evolve handled_messages
 
-      # Define the initial state factory.
+      # Define the initial context factory.
       #
-      # @yieldreturn [Object] the initial state
+      # @yieldreturn [Object] the initial context
       # @raise [ArgumentError] if the block declares arguments: it receives none
-      def state(&blk)
+      def context(&blk)
         if blk.arity.positive?
           raise ArgumentError,
-                "#{self}.state takes a block with no arguments; " \
+                "#{self}.context takes a block with no arguments; " \
                 'set identifying values (ex. ids) from messages in evolve blocks'
         end
 
-        define_method(:init_state, &blk)
+        define_method(:init_context, &blk)
       end
 
       # @return [Array<Proc>] blocks run before each evolve handler, in order
@@ -76,12 +76,12 @@ module Sourced
       # subclasses inherit them.
       #
       # @example Stamp every order event
-      #   before_evolve do |state, evt|
-      #     state[:order_id] ||= evt.payload.order_id
-      #     state[:updated_at] = evt.created_at
+      #   before_evolve do |context, evt|
+      #     context[:order_id] ||= evt.payload.order_id
+      #     context[:updated_at] = evt.created_at
       #   end
       #
-      # @yield [state, message]
+      # @yield [context, message]
       # @raise [ArgumentError] without a block
       def before_evolve(&block)
         raise ArgumentError, "#{self}.before_evolve requires a block" unless block
@@ -92,7 +92,7 @@ module Sourced
       # Register an evolve handler for a {Sourced::Message} subclass.
       #
       # @param message_class [Class] message class to evolve from
-      # @yield [state, message] mutates +state+ for +message+
+      # @yield [context, message] mutates +context+ for +message+
       # @raise [ArgumentError] if +message_class+ isn't a {Sourced::Message} subclass
       def evolve(message_class, &block)
         unless message_class.is_a?(Class) && message_class < Sourced::Message
@@ -104,36 +104,36 @@ module Sourced
       end
     end
 
-    # @param state [Object] starting state, used instead of the +state+ block
-    def initialize(state = UNSET)
-      @state = state unless UNSET.equal?(state)
+    # @param context [Object] starting context, used instead of the +context+ block
+    def initialize(context = UNSET)
+      @context = context unless UNSET.equal?(context)
     end
 
-    def init_state
+    def init_context
       nil
     end
 
-    # @return [Object] current state, built by the +state+ block on first access
-    def state
-      return @state if defined?(@state)
+    # @return [Object] current context, built by the +context+ block on first access
+    def context
+      return @context if defined?(@context)
 
-      @state = init_state
+      @context = init_context
     end
 
-    # Apply messages to state via registered handlers, each preceded by the
+    # Apply messages to context via registered handlers, each preceded by the
     # +before_evolve+ blocks. Skips messages without a registered handler.
     #
     # @param messages [Sourced::Message, Array<Sourced::Message>]
-    # @return [Object] the evolved state
+    # @return [Object] the evolved context
     def evolve(messages)
       Array(messages).each do |msg|
         method_name = Sourced.message_method_name(PREFIX, msg.class.to_s)
         next unless respond_to?(method_name)
 
-        self.class.before_evolve_blocks.each { |blk| instance_exec(state, msg, &blk) }
-        send(method_name, state, msg)
+        self.class.before_evolve_blocks.each { |blk| instance_exec(context, msg, &blk) }
+        send(method_name, context, msg)
       end
-      state
+      context
     end
   end
 end

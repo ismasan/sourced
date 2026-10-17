@@ -30,23 +30,23 @@ class DispatchTestDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'dispatch-test-decider'
 
-  state { { exists: false, bound: false } }
+  context { { exists: false, bound: false } }
 
-  evolve DispatcherTestMessages::DeviceRegistered do |state, _evt|
-    state[:exists] = true
+  evolve DispatcherTestMessages::DeviceRegistered do |context, _evt|
+    context[:exists] = true
   end
 
-  evolve DispatcherTestMessages::DeviceBound do |state, _evt|
-    state[:bound] = true
+  evolve DispatcherTestMessages::DeviceBound do |context, _evt|
+    context[:bound] = true
   end
 
-  command DispatcherTestMessages::BindDevice do |state, cmd|
-    raise 'Not found' unless state[:exists]
-    raise 'Already bound' if state[:bound]
+  command DispatcherTestMessages::BindDevice do |context, cmd|
+    raise 'Not found' unless context[:exists]
+    raise 'Already bound' if context[:bound]
     event DispatcherTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
-  reaction DispatcherTestMessages::DeviceBound do |_state, evt|
+  reaction DispatcherTestMessages::DeviceBound do |_context, evt|
     dispatch(DispatcherTestMessages::DelayedNotify, device_id: evt.payload.device_id)
       .at(Time.now + 2)
   end
@@ -56,18 +56,18 @@ class DispatchTestProjector < Sourced::Projector::StateStored
   partition_by :device_id
   consumer_group 'dispatch-test-projector'
 
-  state { { devices: [] } }
+  context { { devices: [] } }
 
-  evolve DispatcherTestMessages::DeviceRegistered do |state, evt|
-    state[:devices] << evt.payload.name
+  evolve DispatcherTestMessages::DeviceRegistered do |context, evt|
+    context[:devices] << evt.payload.name
   end
 
-  evolve DispatcherTestMessages::DeviceBound do |state, _evt|
+  evolve DispatcherTestMessages::DeviceBound do |context, _evt|
     # noop
   end
 
-  sync do |state:, messages:, replaying:|
-    state[:synced] = true
+  sync do |context:, messages:, replaying:|
+    context[:synced] = true
   end
 end
 

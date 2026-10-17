@@ -22,8 +22,8 @@ Sourced is a Ruby library for **aggregateless, stream-less event sourcing**. Mes
 - **Actions / signals** (`lib/sourced/actions.rb`) — a reactor's `handle_claim` returns `[[signals, source_message], …]` pairs. Each signal is **inert data**: a plain Hash (`{type: :append|:sync|:after_sync|:ack, …}`) or a `Sourced::Actions` value object that `deconstruct_keys` to the same shape. A `delete: true` flag marks the source message for deletion on ack. There is **no separate `:schedule` signal** — a future-dated message (built with `Message#at`) in an `:append` is transparently deferred by the store (see below).
 - **ActionRunner** (`lib/sourced/action_runner.rb`) — the only code that touches the store on behalf of actions. Routes each signal to `append`/sync work, applying correlation. Third-party reactors emit plain-Hash signals with no Sourced dependency.
 - **ReactorDefaults** (`lib/sourced/reactor_defaults.rb`) — `ReactorDefaults.apply(reactor)` defines missing optional protocol methods directly on the reactor class (only where absent, so the reactor's own definitions win). Chosen over a `SimpleDelegator` wrapper so the reactor stays a real class and `Injector` signature reflection keeps working.
-- **Projection** (`lib/sourced/projection.rb`) — in-memory state container: `state` / `evolve` / `before_evolve` DSL (`before_evolve` blocks run before the handler of every handled message), `handled_messages`, `#evolve(messages)`, `#state`. No store, partitions, commands or side effects; evolve blocks run in the projection's scope. The `state` block takes no arguments (it raises if it declares any): identifying values come from the events. `new(state)` seeds a starting state instead of the `state` block.
-- **Mixins**: `Sourced::Evolve` (reactor state through a projection), `Sourced::React` (event → command/event reactions), `Sourced::Sync` (post-append side effects). `Evolve` gives each reactor its own projection subclass (`projection_class`): inline `state` / `evolve` / `before_evolve` declare on it, `evolve SomeProjection` adopts a standalone one (subclassed, so inline blocks never change the shared class; must precede own declarations), and subclassed reactors subclass their parent's. Reactor `handled_messages_for_evolve` delegates to the projection's `handled_messages`; instance `#state` / `#evolve` delegate to `#projection`. Its class methods are prepended so `handled_messages_for_evolve` wins over `Consumer`'s default. `DurableWorkflow` doesn't include it.
+- **Projection** (`lib/sourced/projection.rb`) — in-memory context container: `context` / `evolve` / `before_evolve` DSL (`before_evolve` blocks run before the handler of every handled message), `handled_messages`, `#evolve(messages)`, `#context`. No store, partitions, commands or side effects; evolve blocks run in the projection's scope. The `context` block takes no arguments (it raises if it declares any): identifying values come from the events. `new(context)` seeds a starting context instead of the `context` block.
+- **Mixins**: `Sourced::Evolve` (reactor context through a projection), `Sourced::React` (event → command/event reactions), `Sourced::Sync` (post-append side effects). `Evolve` gives each reactor its own projection subclass (`projection_class`): inline `context` / `evolve` / `before_evolve` declare on it, `evolve SomeProjection` adopts a standalone one (subclassed, so inline blocks never change the shared class; must precede own declarations), and subclassed reactors subclass their parent's. Reactor `handled_messages_for_evolve` delegates to the projection's `handled_messages`; instance `#context` / `#evolve` delegate to `#projection`. Its class methods are prepended so `handled_messages_for_evolve` wins over `Consumer`'s default. `DurableWorkflow` doesn't include it.
 - **Router** (`lib/sourced/router.rb`) — registers reactors (applies defaults, validates exclusive ownership), dispatches claimed batches via the `ActionRunner`, manages consumer-group lifecycle hooks.
 - **Dispatcher / Worker / WorkQueue** (`lib/sourced/{dispatcher,worker,work_queue}.rb`) — claim-and-drain processing; signal-driven via `InlineNotifier` + `CatchUpPoller`. Restartable: each run has fresh workers and queue; `#push(reactor)` feeds the current run (dropped while stopped).
 - **PeriodicTask** (`lib/sourced/periodic_task.rb`) — base of the three loops below: `start(context)` spawns (via `Spawner`: `spawn`/`async`, else a Thread), `stop` wakes the loop and waits, restartable. Each is its own component (see Configuration).
@@ -43,7 +43,7 @@ Sourced is a Ruby library for **aggregateless, stream-less event sourcing**. Mes
 
 Reactions are **deferred**: a Decider's `react` blocks don't run inline with the command that produced the triggering event. When the Decider appends events, its own subscription (`handled_messages_for_react`) picks them up on the next claim cycle and runs the reaction in a separate `handle_batch`. Consequence: the originating command's `after_sync` commits as soon as its events commit, not after reactions finish. Trade-off: command and reactions are no longer in the same transaction — a failing reaction does not roll back the command.
 
-Reactions are gated per message by `React#should_react?(state, message, replaying:)`, which defaults to `!replaying` — reactions are skipped while a partition is being re-processed (after a consumer group reset or offset rewind). Deciders and projectors override the method to react on replay, or to gate on state/payload. `sync` / `after_sync` blocks are never gated; projectors pass `replaying:` into them so they can branch themselves. `DurableWorkflow` doesn't include `React` and ignores `replaying` entirely — step memoisation handles re-processing.
+Reactions are gated per message by `React#should_react?(context, message, replaying:)`, which defaults to `!replaying` — reactions are skipped while a partition is being re-processed (after a consumer group reset or offset rewind). Deciders and projectors override the method to react on replay, or to gate on context/payload. `sync` / `after_sync` blocks are never gated; projectors pass `replaying:` into them so they can branch themselves. `DurableWorkflow` doesn't include `React` and ignores `replaying` entirely — step memoisation handles re-processing.
 
 All reactors implement `.handle_claim(claim, history:)` and/or `.handle_batch(partition_values, new_messages, history:, replaying:)` with a uniform signature so GWT helpers and partial-ack logic work across types.
 
@@ -117,13 +117,13 @@ Tree: `logger`, `db`, `notifier`, `executor`, `error_strategy`, `store` (deps db
 class Courses < Sourced::Decider
   partition_by :course_id
 
-  command CreateCourse do |_state, cmd|
+  command CreateCourse do |_context, cmd|
     event CourseCreated, course_id: cmd.payload.course_id, course_name: cmd.payload.course_name
   end
 
-  event CourseCreated do |state, evt|
-    state[:course_id] = evt.payload.course_id
-    state[:name] = evt.payload.course_name
+  event CourseCreated do |context, evt|
+    context[:course_id] = evt.payload.course_id
+    context[:name] = evt.payload.course_name
   end
 
   reaction CourseCreated do |evt|
@@ -169,7 +169,7 @@ Other notes:
 
 ### Projector flavors
 
-- `Projector::StateStored` — evolves only the claimed batch on top of the stored state snapshot, loaded by its `load_state` block (reactor scope, may do IO; `nil` falls back to the projection's `state` block).
+- `Projector::StateStored` — evolves only the claimed batch on top of the stored context snapshot, loaded by its `load_context` block (reactor scope, may do IO; `nil` falls back to the projection's `context` block).
 - `Projector::EventSourced` — evolves from full history every claim (via `context_for`).
 
 ### Delete-on-ack queue reactor
@@ -226,7 +226,7 @@ In reactions: `dispatch(Cmd, ...).at(time)` (the produced message is future-date
 - `append(messages, guard: nil, index_by: nil)` — the single write path. Immediate messages are written + auto-indexed (`index_by` optionally overrides the basis, otherwise resolved per message from the owning group); **future-dated messages (`created_at > now`) are transparently deferred to `scheduled_messages`** and promoted when due. Raises `ConcurrentAppendError` if guard is violated (rolls back any scheduling in the same call).
 - `update_schedule!` — promote due scheduled messages into the log (the `ScheduledMessagePoller` calls this).
 - `read(conditions, after_position:, limit:)` → `ReadResult(messages, guard)`.
-- `read_partition(partition_attrs, handled_types:)` — AND-filtered read for loading reactor state.
+- `read_partition(partition_attrs, handled_types:)` — AND-filtered read for loading reactor context.
 - `read_all(after_position:, limit:, order: :asc, conditions: nil)` → `ReadAllResult` (lazy pagination via `to_enum`).
 - `claim_next(reactor, worker_id:)` → `ClaimResult` with partition batch + guard. Supports compound partitions and replaying flag.
 - `ack(claim, last_position:)` / `release(claim)` / `advance_offset(group_id, partition:, position:)`.

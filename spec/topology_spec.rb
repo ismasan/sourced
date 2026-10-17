@@ -43,25 +43,25 @@ module TopologyTest
   class WidgetDecider < Sourced::Decider
     partition_by :widget_id
 
-    state { { exists: false } }
+    context { { exists: false } }
 
-    evolve WidgetCreated do |state, _evt|
-      state[:exists] = true
+    evolve WidgetCreated do |context, _evt|
+      context[:exists] = true
     end
 
-    evolve WidgetArchived do |state, _evt|
-      state[:exists] = false
+    evolve WidgetArchived do |context, _evt|
+      context[:exists] = false
     end
 
-    command CreateWidget do |_state, cmd|
+    command CreateWidget do |_context, cmd|
       event WidgetCreated, widget_id: cmd.payload.widget_id, name: cmd.payload.name
     end
 
-    command ArchiveWidget do |_state, _cmd|
+    command ArchiveWidget do |_context, _cmd|
       event WidgetArchived, widget_id: 'x'
     end
 
-    reaction WidgetCreated do |_state, evt|
+    reaction WidgetCreated do |_context, evt|
       dispatch NotifyWidget, widget_id: evt.payload.widget_id
     end
   end
@@ -70,13 +70,13 @@ module TopologyTest
   class NotifierDecider < Sourced::Decider
     partition_by :widget_id
 
-    state { {} }
+    context { {} }
 
-    evolve WidgetNotified do |state, _evt|
-      state[:notified] = true
+    evolve WidgetNotified do |context, _evt|
+      context[:notified] = true
     end
 
-    command NotifyWidget do |_state, cmd|
+    command NotifyWidget do |_context, cmd|
       event WidgetNotified, widget_id: cmd.payload.widget_id
     end
   end
@@ -86,10 +86,10 @@ module TopologyTest
     partition_by :widget_id
     consumer_group 'TopologyTest::WidgetListProjector'
 
-    state { { items: [] } }
+    context { { items: [] } }
 
-    evolve WidgetCreated do |state, msg|
-      state[:items] << msg.payload.name
+    evolve WidgetCreated do |context, msg|
+      context[:items] << msg.payload.name
     end
   end
 
@@ -98,13 +98,13 @@ module TopologyTest
     partition_by :widget_id
     consumer_group 'TopologyTest::ReactingProjector'
 
-    state { { items: [] } }
+    context { { items: [] } }
 
-    evolve WidgetCreated do |state, msg|
-      state[:items] << msg.payload.name
+    evolve WidgetCreated do |context, msg|
+      context[:items] << msg.payload.name
     end
 
-    reaction do |_state, evt|
+    reaction do |_context, evt|
       dispatch NotifyWidget, widget_id: 'x'
     end
   end
@@ -114,20 +114,20 @@ module TopologyTest
     partition_by :widget_id
     consumer_group 'TopologyTest::MixedReactingProjector'
 
-    state { { items: [] } }
+    context { { items: [] } }
 
-    evolve WidgetCreated do |state, msg|
-      state[:items] << msg.payload.name
+    evolve WidgetCreated do |context, msg|
+      context[:items] << msg.payload.name
     end
 
-    evolve WidgetArchived do |_state, _msg|
+    evolve WidgetArchived do |_context, _msg|
     end
 
-    reaction WidgetCreated do |_state, evt|
+    reaction WidgetCreated do |_context, evt|
       dispatch NotifyWidget, widget_id: evt.payload.widget_id
     end
 
-    reaction do |_state, _evt|
+    reaction do |_context, _evt|
       dispatch ArchiveWidget, widget_id: 'x'
     end
   end
@@ -136,17 +136,17 @@ module TopologyTest
   class SchedulingDecider < Sourced::Decider
     partition_by :widget_id
 
-    state { {} }
+    context { {} }
 
-    evolve ScheduleEvent do |state, _evt|
-      state[:scheduled] = true
+    evolve ScheduleEvent do |context, _evt|
+      context[:scheduled] = true
     end
 
-    command CreateWidget do |_state, cmd|
+    command CreateWidget do |_context, cmd|
       event ScheduleEvent, widget_id: cmd.payload.widget_id
     end
 
-    reaction ScheduleEvent do |_state, evt|
+    reaction ScheduleEvent do |_context, evt|
       dispatch(DelayedCmd, widget_id: evt.payload.widget_id).at(evt.created_at + 300)
     end
   end
