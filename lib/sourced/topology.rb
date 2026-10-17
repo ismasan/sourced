@@ -158,18 +158,18 @@ module Sourced
       nodes + event_nodes.values
     end
 
-    # A machine's commands produce the classes of the checkpoints they move
-    # to (see {Machine.checkpoint_class}), the +Started+ of the children their
+    # A machine's commands produce the classes of the states they move
+    # to (see {Machine.state_class}), the +Started+ of the children their
     # +starts:+ declare, and what their blocks emit (+event+). Entry, exit and
     # +after+ actions, joins, and starting and stopping children are automations.
-    # What runs on entering a checkpoint consumes its class; what runs on
+    # What runs on entering a state consumes its class; what runs on
     # leaving it (exit actions, stopping the children it started) consumes the
     # classes of the transitions that can leave it.
     # @api private
     def self.add_machine(machine, analyzer, nodes, command_ids, event_nodes)
       machine.validate!
       group_id = machine.group_id
-      type_of = ->(handle) { machine.checkpoint_class(handle).type }
+      type_of = ->(handle) { machine.state_class(handle).type }
       produced = Hash.new { |h, k| h[k] = [] }
 
       machine.all_nodes.each do |node|
@@ -177,7 +177,7 @@ module Sourced
           produced[definition.command_class] |= machine_block_produces(machine, analyzer, definition)
         end
       end
-      produced[machine::Stop] |= [type_of.call(machine.stop_checkpoint), machine::Finished.type] if machine.stop_checkpoint
+      produced[machine::Stop] |= [type_of.call(machine.stop_state), machine::Finished.type] if machine.stop_state
 
       produced.each do |cmd_class, types|
         if (existing = command_ids[cmd_class.type])
@@ -252,14 +252,14 @@ module Sourced
     end
 
     # Every transition the definition declares, as +[source, target]+ placed
-    # nodes: commands, +children_done+, +always+, +done+, checkpoint-started and
-    # mounted machines' +on_done+, and +stopped+ (from each top-level checkpoint).
+    # nodes: commands, +children_done+, +always+, +done+, state-started and
+    # mounted machines' +on_done+, and +stopped+ (from each top-level state).
     # @api private
     def self.machine_transitions(machine)
       tree = machine.tree
       pairs = tree.all_nodes.flat_map do |node|
         definitions = node.commands.values + node.ons.values + node.children_joins.map(&:definition)
-        targets = definitions.flat_map(&:checkpoint_targets)
+        targets = definitions.flat_map(&:state_targets)
         targets += (node.always + node.dones).map(&:target)
         targets += node.invokes.flat_map { |spec| spec.on_done.values }
         own = targets.map { |handle| [node, tree.resolve(node, handle)] }
@@ -268,8 +268,8 @@ module Sourced
         end
         own + mounted
       end
-      if machine.stop_checkpoint
-        stop = tree.root.nodes.fetch(machine.stop_checkpoint)
+      if machine.stop_state
+        stop = tree.root.nodes.fetch(machine.stop_state)
         pairs += tree.root.nodes.each_value.reject { |node| node.equal?(stop) }.map { |node| [node, stop] }
       end
       pairs
@@ -298,8 +298,8 @@ module Sourced
 
     # @api private
     def self.machine_block_produces(machine, analyzer, definition)
-      reached = eventless_closure(machine, definition.checkpoint_targets)
-      types = reached.map { |handle| machine.checkpoint_class(handle).type }
+      reached = eventless_closure(machine, definition.state_targets)
+      types = reached.map { |handle| machine.state_class(handle).type }
       # Reaching a root final finishes a child machine.
       if machine.__finished_class && reached.any? { |handle| machine.root.nodes[handle]&.final? }
         types << machine.__finished_class.type
@@ -309,14 +309,14 @@ module Sourced
       types.uniq
     end
 
-    # +handles+, and every checkpoint their +always+ or a mounted machine's
-    # +on_done+ can move on to, through the checkpoints entering them enters
+    # +handles+, and every state their +always+ or a mounted machine's
+    # +on_done+ can move on to, through the states entering them enters
     # (compound starts), each once.
     # @api private
     def self.eventless_closure(machine, handles)
       tree = machine.tree
       reached = []
-      pending = handles.map(&:checkpoint)
+      pending = handles.map(&:state)
       until pending.empty?
         handle = pending.shift
         next if reached.include?(handle)

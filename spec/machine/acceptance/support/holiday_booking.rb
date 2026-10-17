@@ -2,7 +2,7 @@
 
 require 'securerandom'
 
-# The holiday booking from sidereal's machine example, on checkpoint classes.
+# The holiday booking from sidereal's machine example, on state classes.
 # Starting a booking enters BookingStarted, which runs three regions in
 # parallel: the flight, the hotel (which nests room and board) and the extras.
 # Once every region is final, `done` moves to checkout, which holds the
@@ -66,18 +66,18 @@ module MachineAcceptanceHoliday
 
     HOLD_SECONDS = 180
 
-    BookingStarted = Checkpoint(:booking_started)
-    FlightChosen = Checkpoint(:flight_chosen)
-    FlightConfirmed = Checkpoint(:flight_confirmed)
-    HotelChosen = Checkpoint(:hotel_chosen)
-    RoomChosen = Checkpoint(:room_chosen)
-    BoardChosen = Checkpoint(:board_chosen)
-    HotelConfirmed = Checkpoint(:hotel_confirmed)
-    ExtrasChosen = Checkpoint(:extras_chosen)
-    ItineraryReady = Checkpoint(:itinerary_ready)
-    BookingConfirmed = Checkpoint(:booking_confirmed)
-    BookingCancelled = Checkpoint(:booking_cancelled)
-    HoldExpired = Checkpoint(:hold_expired)
+    BookingStarted = State(:booking_started)
+    FlightChosen = State(:flight_chosen)
+    FlightConfirmed = State(:flight_confirmed)
+    HotelChosen = State(:hotel_chosen)
+    RoomChosen = State(:room_chosen)
+    BoardChosen = State(:board_chosen)
+    HotelConfirmed = State(:hotel_confirmed)
+    ExtrasChosen = State(:extras_chosen)
+    ItineraryReady = State(:itinerary_ready)
+    BookingConfirmed = State(:booking_confirmed)
+    BookingCancelled = State(:booking_cancelled)
+    HoldExpired = State(:hold_expired)
 
     context { Trip.new }
 
@@ -107,7 +107,7 @@ module MachineAcceptanceHoliday
     evolve(PaymentDeclined) { |trip, evt| trip.declined = evt.payload.reason }
     evolve(PaymentCaptured) { |trip, evt| trip.reference = evt.payload.reference }
 
-    # The hold starts when checkout is entered: its own checkpoint event.
+    # The hold starts when checkout is entered: its own state event.
     evolve(ItineraryReady) { |trip, evt| trip.hold_until = evt.created_at + HOLD_SECONDS }
 
     initial do
@@ -116,7 +116,7 @@ module MachineAcceptanceHoliday
       end
     end
 
-    checkpoint BookingStarted do
+    state BookingStarted do
       command CancelBooking => BookingCancelled
 
       region :flight do
@@ -124,7 +124,7 @@ module MachineAcceptanceHoliday
           command(ChooseFlight => FlightChosen) { |_trip, cmd| event FlightSelected, flight: cmd.payload.flight }
         end
 
-        checkpoint FlightChosen do
+        state FlightChosen do
           command(ChooseFlight => FlightChosen) { |_trip, cmd| event FlightSelected, flight: cmd.payload.flight }
           command ConfirmFlight => FlightConfirmed
         end
@@ -137,7 +137,7 @@ module MachineAcceptanceHoliday
           command(ChooseHotel => HotelChosen) { |_trip, cmd| event HotelSelected, hotel: cmd.payload.hotel }
         end
 
-        checkpoint HotelChosen do
+        state HotelChosen do
           command(ChooseHotel => HotelChosen) { |_trip, cmd| event HotelSelected, hotel: cmd.payload.hotel }
 
           region :room do
@@ -176,7 +176,7 @@ module MachineAcceptanceHoliday
       done ItineraryReady
     end
 
-    checkpoint ItineraryReady do
+    state ItineraryReady do
       after(HOLD_SECONDS) { |_trip, _transition| dispatch ExpireHold }
 
       # A card ending in 0000 is declined, and checkout stays where it is, hold
@@ -285,11 +285,11 @@ module MachineAcceptanceHoliday
 
   # Mounted only: the tour's context and partition. Outlined, priced, then quoted.
   class ItineraryMachine < Sourced::Machine
-    Outlining = Checkpoint(:outlining)
-    Pricing = Checkpoint(:pricing)
-    AwaitingSignOff = Checkpoint(:awaiting_sign_off)
-    Quoted = Checkpoint(:quoted)
-    Accepted = Checkpoint(:accepted)
+    Outlining = State(:outlining)
+    Pricing = State(:pricing)
+    AwaitingSignOff = State(:awaiting_sign_off)
+    Quoted = State(:quoted)
+    Accepted = State(:accepted)
 
     evolve(StopAdded) { |tour, evt| tour.stops << [evt.payload.city, evt.payload.cost] }
 
@@ -298,18 +298,18 @@ module MachineAcceptanceHoliday
       command PriceItinerary => Pricing
     end
 
-    checkpoint Pricing do
+    state Pricing do
       always Outlining, if: NothingToPrice
       always AwaitingSignOff, if: :over_budget?
       always Quoted
     end
 
-    checkpoint AwaitingSignOff do
+    state AwaitingSignOff do
       command SignOffBudget => Quoted
       command ReviseItinerary => Outlining
     end
 
-    checkpoint Quoted do
+    state Quoted do
       entry { |_tour, _evt| dispatch EmailQuote }
       after(REMINDER_SECONDS) { |_tour, _evt| dispatch RemindTraveller }
       command(RemindTraveller) { |_tour, _cmd| event TravellerReminded }
@@ -320,10 +320,10 @@ module MachineAcceptanceHoliday
     final Accepted
   end
 
-  # Mounted only: its start is itself a compound checkpoint.
+  # Mounted only: its start is itself a compound state.
   class PlanningMachine < Sourced::Machine
-    Itinerary = Checkpoint(:itinerary)
-    Agreed = Checkpoint(:agreed)
+    Itinerary = State(:itinerary)
+    Agreed = State(:agreed)
 
     started Itinerary, ItineraryMachine, on_done: { ItineraryMachine::Accepted => Agreed } do
       entry { |_tour, _evt| dispatch ShareItinerary }
@@ -334,13 +334,13 @@ module MachineAcceptanceHoliday
 
   # Mounted twice by TourBooking, as :outbound and :return.
   class FlightLeg < Sourced::Machine
-    SeatsHeld = Checkpoint(:seats_held)
-    Ticketed = Checkpoint(:ticketed)
-    Released = Checkpoint(:released)
+    SeatsHeld = State(:seats_held)
+    Ticketed = State(:ticketed)
+    Released = State(:released)
 
     initial { command HoldSeats => SeatsHeld }
 
-    checkpoint SeatsHeld do
+    state SeatsHeld do
       after(SEAT_HOLD_SECONDS) { |_tour, _evt| dispatch ReleaseSeats }
       on SeatsTicketed => Ticketed
       command ReleaseSeats => Released
@@ -354,12 +354,12 @@ module MachineAcceptanceHoliday
   class VisaApplication < Sourced::Machine
     partition_by :booking_id, :traveller_id
 
-    Withdrawn = Checkpoint(:withdrawn)
+    Withdrawn = State(:withdrawn)
     stopped Withdrawn
 
-    Applied = Checkpoint(:applied)
-    Granted = Checkpoint(:granted)
-    Refused = Checkpoint(:refused)
+    Applied = State(:applied)
+    Granted = State(:granted)
+    Refused = State(:refused)
 
     started Applied do
       command GrantVisa => Granted
@@ -374,11 +374,11 @@ module MachineAcceptanceHoliday
   class AirportTransfer < Sourced::Machine
     partition_by :booking_id, :transfer_id
 
-    Dropped = Checkpoint(:dropped)
+    Dropped = State(:dropped)
     stopped Dropped
 
-    Requested = Checkpoint(:requested)
-    Arranged = Checkpoint(:arranged)
+    Requested = State(:requested)
+    Arranged = State(:arranged)
 
     started(Requested) { command ArrangeTransfer => Arranged }
     final Arranged
@@ -396,16 +396,16 @@ module MachineAcceptanceHoliday
   class TourBooking < Sourced::Machine
     partition_by :booking_id
 
-    Planning = Checkpoint(:planning)
-    OnHold = Checkpoint(:on_hold)
-    Reserving = Checkpoint(:reserving)
-    DepositPaid = Checkpoint(:deposit_paid)
-    AwaitingVisas = Checkpoint(:awaiting_visas)
-    Confirmed = Checkpoint(:confirmed)
-    Completed = Checkpoint(:completed)
-    Unavailable = Checkpoint(:unavailable)
-    VisaRefused = Checkpoint(:visa_refused)
-    Cancelled = Checkpoint(:cancelled)
+    Planning = State(:planning)
+    OnHold = State(:on_hold)
+    Reserving = State(:reserving)
+    DepositPaid = State(:deposit_paid)
+    AwaitingVisas = State(:awaiting_visas)
+    Confirmed = State(:confirmed)
+    Completed = State(:completed)
+    Unavailable = State(:unavailable)
+    VisaRefused = State(:visa_refused)
+    Cancelled = State(:cancelled)
 
     context { Tour.new }
 
@@ -426,7 +426,7 @@ module MachineAcceptanceHoliday
       end
     end
 
-    checkpoint Planning, PlanningMachine, on_done: { PlanningMachine::Agreed => Reserving } do
+    state Planning, PlanningMachine, on_done: { PlanningMachine::Agreed => Reserving } do
       entry { |_tour, _evt| dispatch StartPlannerChat }
       command ChangeDates => ItineraryMachine::Outlining do |_tour, cmd|
         event DatesChanged, depart_on: cmd.payload.depart_on
@@ -435,14 +435,14 @@ module MachineAcceptanceHoliday
       command CancelTour => Cancelled
     end
 
-    checkpoint OnHold do
+    state OnHold do
       after(PAUSE_SECONDS) { |_tour, _evt| dispatch CancelTour }
       command ResumeTour => Planning.history(deep: true)
       command ReopenPlanning => Planning.history
       command CancelTour => Cancelled
     end
 
-    checkpoint Reserving do
+    state Reserving do
       entry { |tour, _evt| dispatch ChargeDeposit, amount: tour.deposit }
       command CancelTour => Cancelled
 
@@ -458,7 +458,7 @@ module MachineAcceptanceHoliday
       done AwaitingVisas
     end
 
-    checkpoint AwaitingVisas do
+    state AwaitingVisas do
       command RequestVisas, starts: VisaApplication | nil do |tour, _cmd|
         tour.visas_for.each { |id| start VisaApplication, traveller_id: id }
       end
@@ -470,9 +470,9 @@ module MachineAcceptanceHoliday
       command CancelTour => Cancelled
     end
 
-    checkpoint Confirmed do
+    state Confirmed do
       start AirportTransfer do
-        payload { |_tour, _checkpoint| { transfer_id: 'airport' } }
+        payload { |_tour, _state| { transfer_id: 'airport' } }
         on_done AirportTransfer::Arranged => Completed
       end
     end

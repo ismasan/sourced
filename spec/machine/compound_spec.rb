@@ -22,14 +22,14 @@ module MachineCompoundTest
   NotifyThingStarted = command(:notify_thing_started)
   Cleanup = command(:cleanup)
 
-  # Usable standalone, as a child, and as a compound checkpoint.
+  # Usable standalone, as a child, and as a compound state.
   class ThingMachine < Sourced::Machine
     partition_by :order_id, :thing_id
 
-    Begun = Checkpoint(:begun)
-    Progressed = Checkpoint(:progressed)
-    Completed = Checkpoint(:completed)
-    Aborted = Checkpoint(:aborted)
+    Begun = State(:begun)
+    Progressed = State(:progressed)
+    Completed = State(:completed)
+    Aborted = State(:aborted)
 
     context { {} }
     evolve(ThingBegun) { |thing, evt| thing[:thing_id] = evt.payload.thing_id }
@@ -43,7 +43,7 @@ module MachineCompoundTest
       command Nudge => Progressed
     end
 
-    checkpoint Progressed do
+    state Progressed do
       exit { |_context, _evt| dispatch Cleanup }
       command Finish => Completed
     end
@@ -55,22 +55,22 @@ module MachineCompoundTest
   class OrderMachine < Sourced::Machine
     partition_by :order_id
 
-    Placed = Checkpoint(:placed)
-    Thing = Checkpoint(:thing)
-    Ready = Checkpoint(:ready)
-    Cancelled = Checkpoint(:cancelled)
+    Placed = State(:placed)
+    Thing = State(:thing)
+    Ready = State(:ready)
+    Cancelled = State(:cancelled)
 
     context { {} }
 
     initial { command PlaceOrder => Placed }
 
-    checkpoint Placed do
+    state Placed do
       command StartThing => Thing do |_context, cmd|
         event ThingBegun, thing_id: cmd.payload.thing_id
       end
     end
 
-    checkpoint Thing, ThingMachine, on_done: { ThingMachine::Completed => Ready } do
+    state Thing, ThingMachine, on_done: { ThingMachine::Completed => Ready } do
       entry { |_context, _evt| dispatch NotifyCompound }
       exit { |_context, _evt| dispatch NotifyLeft }
       command RestartThing => Thing
@@ -81,38 +81,38 @@ module MachineCompoundTest
     final Cancelled
   end
 
-  # The same machine, started as a child by a checkpoint elsewhere.
+  # The same machine, started as a child by a state elsewhere.
   class InvokingMachine < Sourced::Machine
     partition_by :order_id
 
-    Placed = Checkpoint(:placed)
-    Ready = Checkpoint(:ready)
+    Placed = State(:placed)
+    Ready = State(:ready)
 
     initial { command PlaceOrder => Placed }
-    checkpoint Placed do
+    state Placed do
       start ThingMachine do
-        payload { |_context, _checkpoint| { thing_id: 't9' } }
+        payload { |_context, _state| { thing_id: 't9' } }
         on_done ThingMachine::Completed => Ready
       end
     end
     final Ready
   end
 
-  # The same machine as two compound checkpoints, one after the other.
+  # The same machine as two compound states, one after the other.
   class TwiceMachine < Sourced::Machine
     partition_by :order_id
 
-    First = Checkpoint(:first)
-    Second = Checkpoint(:second)
-    Ready = Checkpoint(:ready)
+    First = State(:first)
+    Second = State(:second)
+    Ready = State(:ready)
 
     initial { command StartThing => First }
-    checkpoint First, ThingMachine, on_done: { ThingMachine::Completed => Second }
-    checkpoint Second, ThingMachine, on_done: { ThingMachine::Completed => Ready }
+    state First, ThingMachine, on_done: { ThingMachine::Completed => Second }
+    state Second, ThingMachine, on_done: { ThingMachine::Completed => Ready }
     final Ready
   end
 
-  # Three levels: a compound checkpoint whose machine starts at a compound checkpoint.
+  # Three levels: a compound state whose machine starts at a compound state.
   StartPlanning = command(:start_planning)
   Propose = command(:propose)
   Revise = command(:revise)
@@ -127,9 +127,9 @@ module MachineCompoundTest
   LeftPlanning = command(:left_planning)
 
   class OutlineMachine < Sourced::Machine
-    Outline = Checkpoint(:outline)
-    Proposed = Checkpoint(:proposed)
-    Agreed = Checkpoint(:agreed)
+    Outline = State(:outline)
+    Proposed = State(:proposed)
+    Agreed = State(:agreed)
 
     started Outline do
       entry { |_context, _evt| dispatch NotifyOutline }
@@ -138,7 +138,7 @@ module MachineCompoundTest
       command Propose => Proposed
     end
 
-    checkpoint Proposed do
+    state Proposed do
       command Revise => Outline
       command Agree => Agreed
     end
@@ -147,8 +147,8 @@ module MachineCompoundTest
   end
 
   class ItineraryMachine < Sourced::Machine
-    Itinerary = Checkpoint(:itinerary)
-    Finalised = Checkpoint(:finalised)
+    Itinerary = State(:itinerary)
+    Finalised = State(:finalised)
 
     started Itinerary, OutlineMachine, on_done: { OutlineMachine::Agreed => Finalised } do
       entry { |_context, _evt| dispatch NotifyItinerary }
@@ -163,12 +163,12 @@ module MachineCompoundTest
   class TripPlanMachine < Sourced::Machine
     partition_by :order_id
 
-    Planning = Checkpoint(:planning)
-    Done = Checkpoint(:done)
+    Planning = State(:planning)
+    Done = State(:done)
 
     initial { command StartPlanning => Planning }
 
-    checkpoint Planning, ItineraryMachine, on_done: { ItineraryMachine::Finalised => Done } do
+    state Planning, ItineraryMachine, on_done: { ItineraryMachine::Finalised => Done } do
       entry { |_context, _evt| dispatch NotifyPlanning }
       exit { |_context, _evt| dispatch LeftPlanning }
     end
@@ -178,7 +178,7 @@ module MachineCompoundTest
 
 end
 
-RSpec.describe 'Sourced::Machine compound checkpoints' do
+RSpec.describe 'Sourced::Machine compound states' do
   include MachineHelpers
 
   M = MachineCompoundTest
@@ -200,7 +200,7 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
   describe 'definition' do
     let(:tree) { M::OrderMachine.tree }
 
-    it 'places the machine under the checkpoint, starting at its start' do
+    it 'places the machine under the state, starting at its start' do
       compound = tree.root.nodes.fetch(M::OrderMachine::Thing)
       region = compound.regions.first
 
@@ -221,7 +221,7 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
   end
 
   describe 'runtime' do
-    it 'enters the machine at its start, with the compound checkpoint' do
+    it 'enters the machine at its start, with the compound state' do
       instance = decided(place)
       events = instance.decide(start)
 
@@ -237,7 +237,7 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
       expect(view.entered_by(:thing)).to equal(events.last)
     end
 
-    it "routes the machine's commands and the compound checkpoint's own" do
+    it "routes the machine's commands and the compound state's own" do
       instance = decided(place, start)
       expect(instance.handles_command?(msg(M::Cancel))).to be(true)
 
@@ -259,7 +259,7 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
       expect(dispatched.last.created_at).to eq(transitioned.created_at + 60)
     end
 
-    it 'exits innermost first when the compound checkpoint is left' do
+    it 'exits innermost first when the compound state is left' do
       instance = decided(place, start, progress)
       events = instance.decide(msg(M::Cancel))
 
@@ -270,7 +270,7 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
       expect(instance.__react(events.last).map(&:class)).to eq([M::Cleanup, M::NotifyLeft])
     end
 
-    it 'restarts the machine when the compound checkpoint is re-entered' do
+    it 'restarts the machine when the compound state is re-entered' do
       instance = decided(place, start, progress)
       events = instance.decide(msg(M::RestartThing))
 
@@ -293,7 +293,7 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
       ))
     end
 
-    it "keeps the start checkpoint's timer valid while the compound checkpoint is active" do
+    it "keeps the start state's timer valid while the compound state is active" do
       instance = decided(place)
       nudge = instance.__react(instance.decide(start).last).last
 
@@ -366,8 +366,8 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
     end
   end
 
-  describe "a compound checkpoint's own command targeting its sub-state" do
-    it 'enters the sub-state without leaving the compound checkpoint' do
+  describe "a compound state's own command targeting its sub-state" do
+    it 'enters the sub-state without leaving the compound state' do
       itinerary_machine = stub_const('MachineCompoundTest::FastTrackItineraryMachine', Class.new(Sourced::Machine) do
         consumer_group 'machine_compound_test.fast_track_itinerary_machine'
         started :itinerary, M::OutlineMachine do
@@ -378,7 +378,7 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
         partition_by :order_id
         consumer_group 'machine_compound_test.fast_track_machine'
         initial { command M::StartPlanning => :planning }
-        checkpoint :planning, itinerary_machine
+        state :planning, itinerary_machine
       end)
 
       instance = decided(msg(M::StartPlanning), machine:)
@@ -391,11 +391,11 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
     end
   end
 
-  describe 'the same machine as two compound checkpoints' do
+  describe 'the same machine as two compound states' do
     let(:machine) { M::TwiceMachine }
     let(:finish) { msg(M::Finish, thing_id: 't1') }
 
-    it 'places it under each checkpoint' do
+    it 'places it under each state' do
       expect(machine.tree.placements(M::ThingMachine::Progressed).map(&:path)).to eq(%w[first.progressed second.progressed])
     end
 
@@ -416,7 +416,7 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
   describe 'rendering' do
     let(:machine) { M::OrderMachine }
 
-    it 'describes the compound checkpoint in to_h, with its start as its initial state' do
+    it 'describes the compound state in to_h, with its start as its initial state' do
       compound = machine.to_h[:states]['thing']
 
       expect(compound[:type]).to eq('compound')
@@ -441,7 +441,7 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
       expect(value).to eq('thing' => 'thing.progressed')
     end
 
-    it 'draws the compound checkpoint as a nested state' do
+    it 'draws the compound state as a nested state' do
       mermaid = machine.to_mermaid
       expect(mermaid).to include('state "thing" as thing {')
       expect(mermaid).to include('[*] --> thing_begun')
@@ -488,14 +488,14 @@ RSpec.describe 'Sourced::Machine compound checkpoints' do
         consumer_group 'machine_compound_test.no_start'
         final :done
       end
-      expect { machine { checkpoint :thing, no_start } }.to raise_error(Sourced::Machine::DefinitionError, /has no start checkpoint/)
+      expect { machine { state :thing, no_start } }.to raise_error(Sourced::Machine::DefinitionError, /has no start state/)
     end
 
-    it 'rejects regions in a compound checkpoint, and on_done without a machine' do
-      expect { machine { checkpoint(:thing, M::ThingMachine) { region(:x) { initial } } } }
-        .to raise_error(Sourced::Machine::DefinitionError, /compound checkpoint, so it can't have regions/)
-      expect { machine { checkpoint :placed, on_done: { M::ThingMachine::Completed => :ready } } }
-        .to raise_error(Sourced::Machine::DefinitionError, /on_done is for a compound checkpoint/)
+    it 'rejects regions in a compound state, and on_done without a machine' do
+      expect { machine { state(:thing, M::ThingMachine) { region(:x) { initial } } } }
+        .to raise_error(Sourced::Machine::DefinitionError, /compound state, so it can't have regions/)
+      expect { machine { state :placed, on_done: { M::ThingMachine::Completed => :ready } } }
+        .to raise_error(Sourced::Machine::DefinitionError, /on_done is for a compound state/)
     end
   end
 end

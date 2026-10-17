@@ -30,9 +30,9 @@ module MachineChartTest
   class LegMachine < Sourced::Machine
     partition_by :trip_id, :leg_id
 
-    Added = Checkpoint(:added)
-    Confirmed = Checkpoint(:confirmed)
-    Dropped = Checkpoint(:dropped)
+    Added = State(:added)
+    Confirmed = State(:confirmed)
+    Dropped = State(:dropped)
 
     started Added do
       command Confirm => Confirmed
@@ -44,10 +44,10 @@ module MachineChartTest
   class ChargeMachine < Sourced::Machine
     partition_by :trip_id, :charge_id
 
-    Requested = Checkpoint(:requested)
-    Captured = Checkpoint(:captured)
-    Declined = Checkpoint(:declined)
-    Voided = Checkpoint(:voided)
+    Requested = State(:requested)
+    Captured = State(:captured)
+    Declined = State(:declined)
+    Voided = State(:voided)
 
     started Requested do
       command Capture => Captured
@@ -60,23 +60,23 @@ module MachineChartTest
   class TripMachine < Sourced::Machine
     partition_by :trip_id
 
-    Opened = Checkpoint(:opened)
-    Quoted = Checkpoint(:quoted)
-    Rejected = Checkpoint(:rejected)
-    Booked = Checkpoint(:booked)
-    AwaitingPayment = Checkpoint(:awaiting_payment)
-    PaymentFailed = Checkpoint(:payment_failed)
-    Paid = Checkpoint(:paid)
-    Shipped = Checkpoint(:shipped)
-    LegsDone = Checkpoint(:legs_done)
-    Done = Checkpoint(:done)
-    Cancelled = Checkpoint(:cancelled)
+    Opened = State(:opened)
+    Quoted = State(:quoted)
+    Rejected = State(:rejected)
+    Booked = State(:booked)
+    AwaitingPayment = State(:awaiting_payment)
+    PaymentFailed = State(:payment_failed)
+    Paid = State(:paid)
+    Shipped = State(:shipped)
+    LegsDone = State(:legs_done)
+    Done = State(:done)
+    Cancelled = State(:cancelled)
 
     initial do
       command Open => Opened
     end
 
-    checkpoint Opened do
+    state Opened do
       entry { |_s, _evt| dispatch Remind }
       after(60) { |_s, _evt| dispatch Remind }
       command(Note) { |_s, _cmd| event Noted }
@@ -87,20 +87,20 @@ module MachineChartTest
       children_done LegMachine => LegsDone
     end
 
-    checkpoint Quoted do
+    state Quoted do
       command Book => Booked
     end
 
-    checkpoint Booked do
+    state Booked do
       region :payment do
         initial { command Pay => AwaitingPayment }
-        checkpoint AwaitingPayment do
+        state AwaitingPayment do
           start ChargeMachine do
-            payload { |_s, _checkpoint| { charge_id: 'c1' } }
+            payload { |_s, _state| { charge_id: 'c1' } }
             on_done ChargeMachine::Captured => Paid, ChargeMachine::Declined => PaymentFailed
           end
         end
-        checkpoint PaymentFailed do
+        state PaymentFailed do
           command Cancel => Cancelled
         end
         final Paid
@@ -119,20 +119,20 @@ module MachineChartTest
     final(Cancelled) { stops LegMachine }
   end
 
-  # Handlers that start children, and a checkpoint that stops them.
+  # Handlers that start children, and a state that stops them.
   class StartingMachine < Sourced::Machine
     partition_by :trip_id
 
     initial { command Open => :opened }
 
-    checkpoint :opened do
+    state :opened do
       command AddLeg, starts: LegMachine
       command(Quote => :quoted, starts: ChargeMachine | nil) { |_s, _cmd| nil }
       on(Settled => :quoted, starts: LegMachine) { |_s, _evt| start LegMachine, leg_id: 'l1' }
       command Cancel => :cancelled
     end
 
-    checkpoint :quoted do
+    state :quoted do
       children_done(LegMachine => :done, starts: ChargeMachine) { |_s| start ChargeMachine, charge_id: 'c1' }
     end
 
@@ -140,34 +140,34 @@ module MachineChartTest
     final(:cancelled) { stops LegMachine }
   end
 
-  # Mounted twice, as two regions: one handle per checkpoint, at two paths.
+  # Mounted twice, as two regions: one handle per state, at two paths.
   class SupplierMachine < Sourced::Machine
-    Holding = Checkpoint(:holding)
-    Held = Checkpoint(:held)
+    Holding = State(:holding)
+    Held = State(:held)
 
     initial { command RequestHold => Holding }
-    checkpoint Holding do
+    state Holding do
       command ConfirmHold => Held
     end
     final Held
   end
 
   class OutlineMachine < Sourced::Machine
-    Outline = Checkpoint(:outline)
-    Agreed = Checkpoint(:agreed)
+    Outline = State(:outline)
+    Agreed = State(:agreed)
 
     started Outline do
       command Agree => Agreed
     end
-    checkpoint Agreed do
+    state Agreed do
       command Revise => Outline
     end
   end
 
-  # Starts at a compound checkpoint of its own.
+  # Starts at a compound state of its own.
   class PlanningMachine < Sourced::Machine
-    Itinerary = Checkpoint(:itinerary)
-    Finalised = Checkpoint(:finalised)
+    Itinerary = State(:itinerary)
+    Finalised = State(:finalised)
 
     started Itinerary, OutlineMachine do
       command Finalise => Finalised
@@ -178,13 +178,13 @@ module MachineChartTest
   class TourMachine < Sourced::Machine
     partition_by :trip_id
 
-    Planning = Checkpoint(:planning)
-    Reserving = Checkpoint(:reserving)
-    Confirmed = Checkpoint(:confirmed)
+    Planning = State(:planning)
+    Reserving = State(:reserving)
+    Confirmed = State(:confirmed)
 
     initial { command Open => Planning }
-    checkpoint Planning, PlanningMachine, on_done: { PlanningMachine::Finalised => Reserving }
-    checkpoint Reserving do
+    state Planning, PlanningMachine, on_done: { PlanningMachine::Finalised => Reserving }
+    state Reserving do
       region :hotel, SupplierMachine
       region :flights, SupplierMachine, on_done: { SupplierMachine::Held => Confirmed }
     end
@@ -238,7 +238,7 @@ module MachineChartTest
         expect(chart[:states].keys).to eq(%w[initial opened quoted booked legs_done rejected done cancelled])
       end
 
-      it 'describes checkpoints and their transitions' do
+      it 'describes states and their transitions' do
         expect(chart[:states]['initial']).to include(id: 'initial', key: 'initial', type: 'initial')
         expect(chart[:states]['initial'][:on]).to eq(
           t(:open) => { kind: 'command', event: t(:open), label: 'Open', targets: ['opened'], optional: false, auto: true,
@@ -257,7 +257,7 @@ module MachineChartTest
         expect(chart[:states]['done'][:type]).to eq('final')
       end
 
-      it "describes regions, joins and checkpoints' children" do
+      it "describes regions, joins and states' children" do
         booked = chart[:states]['booked']
         expect(booked).to include(id: 'booked', type: 'parallel', on_done: 'done')
         payment = booked[:states]['payment']
@@ -268,20 +268,20 @@ module MachineChartTest
           { id: 'MachineChartTest::ChargeMachine', src: 'MachineChartTest::ChargeMachine',
             on_done: { 'captured' => 'booked.payment.paid', 'declined' => 'booked.payment.payment_failed' } }
         ])
-        # A transition to an ancestor region's checkpoint is listed where it's taken
+        # A transition to an ancestor region's state is listed where it's taken
         expect(payment[:states]['payment_failed'][:on][t(:cancel)][:targets]).to eq(['cancelled'])
       end
 
       it 'describes children' do
         expect(chart[:children]).to eq([
-          { id: 'MachineChartTest::LegMachine', machine: 'MachineChartTest::LegMachine', kind: 'spawn', checkpoint: nil,
+          { id: 'MachineChartTest::LegMachine', machine: 'MachineChartTest::LegMachine', kind: 'spawn', state: nil,
             stop_on: ['cancelled'], status: nil },
           { id: 'MachineChartTest::ChargeMachine', machine: 'MachineChartTest::ChargeMachine', kind: 'invoke',
-            checkpoint: 'booked.payment.awaiting_payment', stop_on: [], status: nil }
+            state: 'booked.payment.awaiting_payment', stop_on: [], status: nil }
         ])
       end
 
-      it 'starts a child machine at its start checkpoint, with its Stop' do
+      it 'starts a child machine at its start state, with its Stop' do
         chart = LegMachine.to_h
         expect(chart).to include(initial: 'added', start: 'added',
                                  stop: { event: 'machine_chart_test.leg_machine.runtime.child.stop', label: 'Stop', targets: ['dropped'] })
@@ -304,7 +304,7 @@ module MachineChartTest
         expect(flights[:states]['holding'][:on][t(:confirm_hold)][:targets]).to eq(['reserving.flights.held'])
       end
 
-      it 'nests a compound start in a compound checkpoint' do
+      it 'nests a compound start in a compound state' do
         planning = TourMachine.to_h[:states]['planning']
         expect(planning).to include(id: 'planning', type: 'compound', initial: 'planning.itinerary',
                                     mounts: [{ region: 'planning', src: 'MachineChartTest::PlanningMachine',
@@ -320,7 +320,7 @@ module MachineChartTest
         expect(itinerary[:states]['agreed'][:on][t(:revise)][:targets]).to eq(['planning.itinerary.outline'])
       end
 
-      it "lists the children handlers start, and those a checkpoint stops" do
+      it "lists the children handlers start, and those a state stops" do
         chart = StartingMachine.to_h
         opened = chart[:states]['opened']
         leg, charge = 'MachineChartTest::LegMachine', 'MachineChartTest::ChargeMachine'
@@ -348,7 +348,7 @@ module MachineChartTest
         expect(shape(at_awaiting_payment.to_h)).to eq(shape(TripMachine.to_h))
       end
 
-      it "fills in the machine's, regions' and checkpoints' status" do
+      it "fills in the machine's, regions' and states' status" do
         trip = at_awaiting_payment
         chart = trip.to_h
         booked = chart[:states]['booked']
@@ -373,7 +373,7 @@ module MachineChartTest
         expect(booked[:states]['shipping'][:states]['initial'][:status]).to include(active: true, visited: true)
       end
 
-      it "clears a region's visited checkpoints when its parent checkpoint is re-entered" do
+      it "clears a region's visited states when its parent state is re-entered" do
         trip = finish_charge(at_awaiting_payment, 'declined')
         payment = trip.to_h[:states]['booked'][:states]['payment']
         expect(payment[:states]['awaiting_payment'][:status]).to include(visited: true)
@@ -464,7 +464,7 @@ module MachineChartTest
             command AddLeg, starts: leg
             command Open => :opened
           end
-          checkpoint :opened do
+          state :opened do
             region :legs do
               initial { command AddLeg, starts: leg }
             end

@@ -90,10 +90,10 @@ module MachineTest
   class CartMachine < Sourced::Machine
     partition_by :cart_id
 
-    Open     = Checkpoint(:open)
-    Rejected = Checkpoint(:rejected)
-    Ordered  = Checkpoint(:ordered)
-    Paid     = Checkpoint(:paid)
+    Open     = State(:open)
+    Rejected = State(:rejected)
+    Ordered  = State(:ordered)
+    Paid     = State(:paid)
 
     context { CartState.new }
     evolve(CartOpened) { |cart, evt| cart.currency = evt.payload.currency }
@@ -105,7 +105,7 @@ module MachineTest
       end
     end
 
-    checkpoint Open do
+    state Open do
       exit { |cart, _transition| dispatch ReleaseStock, skus: cart.items.keys }
 
       command AddItem do |_cart, cmd|
@@ -123,11 +123,11 @@ module MachineTest
       end
     end
 
-    checkpoint Rejected do
+    state Rejected do
       command Reopen => Open
     end
 
-    checkpoint Ordered do
+    state Ordered do
       entry { |cart, _transition| dispatch SendReceipt, total: cart.total }
       command Pay => Paid
     end
@@ -138,29 +138,29 @@ module MachineTest
   class TimerMachine < Sourced::Machine
     partition_by :cart_id
 
-    Open    = Checkpoint(:open)
-    Ordered = Checkpoint(:ordered)
-    Expired = Checkpoint(:expired)
+    Open    = State(:open)
+    Ordered = State(:ordered)
+    Expired = State(:expired)
 
     initial do
       command OpenCart => Open
     end
 
-    checkpoint Open do
+    state Open do
       after(3600) { |_cart, _transition| dispatch Expire }
       command Expire => Expired
       command Checkout => Ordered
       command Reopen => Open # re-entry
     end
 
-    checkpoint Ordered do
+    state Ordered do
       command Expire => Expired # accepted here too: a stale timer must still be refused
     end
 
     final Expired
   end
 
-  # Entry actions see the data events of the decision that entered the checkpoint.
+  # Entry actions see the data events of the decision that entered the state.
   class PingMachine < Sourced::Machine
     partition_by :cart_id
 
@@ -173,7 +173,7 @@ module MachineTest
       end
     end
 
-    checkpoint :pinged do
+    state :pinged do
       entry { |s, _transition| dispatch Notify, note: s[:note] }
     end
   end
@@ -214,9 +214,9 @@ RSpec.describe Sourced::Machine do
     end
   end
 
-  describe 'checkpoint classes' do
+  describe 'state classes' do
     it 'are events typed under the runtime segment, with the partition keys and the transition attributes' do
-      expect(CartMachine::Open).to be < Sourced::Machine::Checkpoint
+      expect(CartMachine::Open).to be < Sourced::Machine::State
       expect(CartMachine::Open.type).to eq('machine_test.cart_machine.runtime.open')
       expect(CartMachine::Open.payload_attribute_names)
         .to contain_exactly(:cart_id, :trigger, :source, :target, :exited, :entered)
@@ -225,9 +225,9 @@ RSpec.describe Sourced::Machine do
 
     it 'are their own handles' do
       expect(CartMachine::Open).to have_attributes(
-        checkpoint: CartMachine::Open, machine: CartMachine, owner: CartMachine, checkpoint_name: :open
+        state: CartMachine::Open, machine: CartMachine, owner: CartMachine, state_name: :open
       )
-      expect(CartMachine.checkpoint_class(CartMachine::Open)).to equal(CartMachine::Open)
+      expect(CartMachine.state_class(CartMachine::Open)).to equal(CartMachine::Open)
       expect(CartMachine.transition_classes)
         .to eq([CartMachine::Open, CartMachine::Rejected, CartMachine::Ordered, CartMachine::Paid])
     end
@@ -237,12 +237,12 @@ RSpec.describe Sourced::Machine do
       expect(targets.members).to eq([CartMachine::Open, CartMachine::Paid, nil])
     end
 
-    it 'sets a constant for a checkpoint declared by Symbol' do
+    it 'sets a constant for a state declared by Symbol' do
       m = machine do
         initial { command Ping => :awaiting_payment }
-        checkpoint :awaiting_payment
+        state :awaiting_payment
       end
-      expect(m::AwaitingPayment).to equal(m.declared_checkpoints[:awaiting_payment])
+      expect(m::AwaitingPayment).to equal(m.declared_states[:awaiting_payment])
       expect(m::AwaitingPayment.type).to eq("#{m.type_prefix}.runtime.awaiting_payment")
     end
 
@@ -250,40 +250,40 @@ RSpec.describe Sourced::Machine do
       m = Class.new(Sourced::Machine) do
         partition_by :cart_id
         consumer_group 'renamed.carts'
-        Checkpoint(:open)
+        State(:open)
       end
-      expect(m.declared_checkpoints[:open].type).to eq('renamed.carts.runtime.open')
+      expect(m.declared_states[:open].type).to eq('renamed.carts.runtime.open')
     end
 
     it 'require partition_by and consumer_group before them' do
       expect do
         Class.new(Sourced::Machine) do
           consumer_group 'machine_test.late_keys'
-          Checkpoint(:open)
+          State(:open)
           partition_by :cart_id
         end
-      end.to raise_error(Sourced::Machine::DefinitionError, /declare partition_by before checkpoints and mounts/)
+      end.to raise_error(Sourced::Machine::DefinitionError, /declare partition_by before states and mounts/)
       expect do
         machine do
-          Checkpoint(:open)
+          State(:open)
           consumer_group 'machine_test.late_group'
         end
-      end.to raise_error(Sourced::Machine::DefinitionError, /declare consumer_group before checkpoints and mounts/)
+      end.to raise_error(Sourced::Machine::DefinitionError, /declare consumer_group before states and mounts/)
     end
 
     it "can't be declared once the machine is validated" do
       m = machine do
         initial { command Ping => :pinged }
-        checkpoint :pinged
+        state :pinged
       end
       m.validate!
-      expect { m.Checkpoint(:late) }.to raise_error(Sourced::Machine::DefinitionError, /declared after the machine was validated/)
+      expect { m.State(:late) }.to raise_error(Sourced::Machine::DefinitionError, /declared after the machine was validated/)
     end
 
     it "rejects context, evolve, before_evolve and reaction once the machine is validated, which it wouldn't read" do
       m = machine do
         initial { command Ping => :pinged }
-        checkpoint :pinged
+        state :pinged
       end
       m.validate!
 
@@ -307,7 +307,7 @@ RSpec.describe Sourced::Machine do
       end
       parent = machine do
         initial { command Ping => :pinged }
-        checkpoint(:pinged) { region :sub, mounted }
+        state(:pinged) { region :sub, mounted }
       end
       parent.validate!
 
@@ -317,7 +317,7 @@ RSpec.describe Sourced::Machine do
     end
 
     it 'reject names with dots' do
-      expect { machine { Checkpoint(:'a.b') } }.to raise_error(Sourced::Machine::DefinitionError, /can't contain dots/)
+      expect { machine { State(:'a.b') } }.to raise_error(Sourced::Machine::DefinitionError, /can't contain dots/)
     end
 
     it "reject a type another message already has" do
@@ -326,15 +326,15 @@ RSpec.describe Sourced::Machine do
         Class.new(Sourced::Machine) do
           partition_by :cart_id
           consumer_group 'machine_test.taken'
-          Checkpoint(:open)
+          State(:open)
         end
       end.to raise_error(Sourced::Machine::DefinitionError, /"machine_test.taken.runtime.open" is already/)
     end
 
     it 'are redefined by a machine with the same group_id, as when reloading code' do
-      define = -> { Class.new(Sourced::Machine) { partition_by :cart_id; consumer_group 'machine_test.reloaded'; Checkpoint(:open) } }
-      first = define.().declared_checkpoints[:open]
-      second = define.().declared_checkpoints[:open]
+      define = -> { Class.new(Sourced::Machine) { partition_by :cart_id; consumer_group 'machine_test.reloaded'; State(:open) } }
+      first = define.().declared_states[:open]
+      second = define.().declared_states[:open]
       expect(Sourced::Message.registry['machine_test.reloaded.runtime.open']).to equal(second)
       expect(second).not_to equal(first)
     end
@@ -356,13 +356,13 @@ RSpec.describe Sourced::Machine do
   end
 
   describe 'command forms' do
-    it 'moves to a single declared checkpoint, after the data events its block appends' do
+    it 'moves to a single declared state, after the data events its block appends' do
       with_reactor(CartMachine, cart_id: 'c1')
         .when(OpenCart, cart_id: 'c1', currency: 'EUR', channel: 'app')
         .then(cart_opened, opened)
     end
 
-    it 'moves to a single declared checkpoint without a block' do
+    it 'moves to a single declared state without a block' do
       with_reactor(CartMachine, cart_id: 'c1')
         .given(opened)
         .and(ordered)
@@ -377,7 +377,7 @@ RSpec.describe Sourced::Machine do
         .then(ItemAdded, cart_id: 'c1', sku: 'A1', qty: 2, unit_price: 50)
     end
 
-    it 'moves to the checkpoint the handler chooses from a union' do
+    it 'moves to the state the handler chooses from a union' do
       with_reactor(CartMachine, cart_id: 'c1')
         .given(opened)
         .and(item_added)
@@ -393,7 +393,7 @@ RSpec.describe Sourced::Machine do
         )
     end
 
-    it 'moves back to a checkpoint it has left' do
+    it 'moves back to a state it has left' do
       with_reactor(CartMachine, cart_id: 'c1')
         .given(opened)
         .and(moved(CartMachine, 'machine_test.checkout', from: 'open', to: 'rejected', exited: %w[open], cart_id: 'c1'))
@@ -403,14 +403,14 @@ RSpec.describe Sourced::Machine do
 
     it 'may stay when the union includes nil' do
       m = machine do
-        pinged = Checkpoint(:pinged)
+        pinged = State(:pinged)
         initial do
           command Ping => pinged | nil do |_s, cmd|
             event NoteTaken, note: cmd.payload.note
             to :pinged if cmd.payload.note == 'go'
           end
         end
-        checkpoint :pinged
+        state :pinged
       end
 
       with_reactor(m, cart_id: 'c1').when(Ping, cart_id: 'c1', note: 'wait')
@@ -427,7 +427,7 @@ RSpec.describe Sourced::Machine do
         initial do
           command(Ping => [:pinged, nil]) { |_s, cmd| to :pinged if cmd.payload.note == 'go' }
         end
-        checkpoint :pinged
+        state :pinged
       end
 
       with_reactor(m, cart_id: 'c1').when(Ping, cart_id: 'c1', note: 'wait').then([])
@@ -437,12 +437,12 @@ RSpec.describe Sourced::Machine do
 
     it "raises when a union handler doesn't choose a target" do
       m = machine do
-        pinged = Checkpoint(:pinged)
-        paid = Checkpoint(:paid)
+        pinged = State(:pinged)
+        paid = State(:paid)
         initial do
           command(Ping => pinged | paid) { |_s, _cmd| nil }
         end
-        checkpoint :pinged
+        state :pinged
         final :paid
       end
 
@@ -450,12 +450,12 @@ RSpec.describe Sourced::Machine do
         .to raise_error(Sourced::Machine::TransitionError, /must move to one of .*::Pinged \| .*::Paid/)
     end
 
-    it 'raises when a handler moves to a checkpoint it did not declare' do
+    it 'raises when a handler moves to a state it did not declare' do
       m = machine do
         initial do
           command(Ping) { |_s, _cmd| to :pinged }
         end
-        checkpoint :pinged
+        state :pinged
       end
 
       expect { m.new(cart_id: 'c1').decide(Ping.new(payload: { cart_id: 'c1', note: 'x' })) }
@@ -470,7 +470,7 @@ RSpec.describe Sourced::Machine do
             to :paid
           end
         end
-        checkpoint :pinged
+        state :pinged
         final :paid
       end
 
@@ -478,32 +478,32 @@ RSpec.describe Sourced::Machine do
         .to raise_error(Sourced::Machine::TransitionError, /moved the machine twice/)
     end
 
-    it 'raises when a handler appends a checkpoint as an event' do
+    it 'raises when a handler appends a state as an event' do
       m = machine do
-        pinged = Checkpoint(:pinged)
+        pinged = State(:pinged)
         initial do
           command(Ping => pinged) { |_s, _cmd| event pinged }
         end
-        checkpoint :pinged
+        state :pinged
       end
 
       expect { m.new(cart_id: 'c1').decide(Ping.new(payload: { cart_id: 'c1', note: 'x' })) }
-        .to raise_error(Sourced::Machine::Error, /is a checkpoint; move to it with to/)
+        .to raise_error(Sourced::Machine::Error, /is a state; move to it with to/)
     end
 
-    it 'raises when a handler appends a union of checkpoints as an event' do
+    it 'raises when a handler appends a union of states as an event' do
       m = machine do
-        pinged = Checkpoint(:pinged)
-        ponged = Checkpoint(:ponged)
+        pinged = State(:pinged)
+        ponged = State(:ponged)
         initial do
           command(Ping => pinged | ponged) { |_s, _cmd| event pinged | ponged }
         end
-        checkpoint :pinged
-        checkpoint :ponged
+        state :pinged
+        state :ponged
       end
 
       expect { m.new(cart_id: 'c1').decide(Ping.new(payload: { cart_id: 'c1', note: 'x' })) }
-        .to raise_error(Sourced::Machine::Error, /::Pinged \| .*::Ponged are checkpoints; move to one of them with to/)
+        .to raise_error(Sourced::Machine::Error, /::Pinged \| .*::Ponged are states; move to one of them with to/)
     end
 
     it 'raises when a data event is invalid' do
@@ -511,7 +511,7 @@ RSpec.describe Sourced::Machine do
         initial do
           command(Notify => :noted) { |_s, cmd| event NoteTaken, note: cmd.payload.note }
         end
-        checkpoint :noted
+        state :noted
       end
       cmd = Notify.new(payload: { cart_id: 'c1', note: nil })
 
@@ -534,7 +534,7 @@ RSpec.describe Sourced::Machine do
   end
 
   describe '#handles_command?' do
-    it 'is true only for commands the current checkpoint accepts' do
+    it 'is true only for commands the current state accepts' do
       fresh = CartMachine.new(cart_id: 'c1')
       expect(fresh.handles_command?(OpenCart.new(payload: { cart_id: 'c1', currency: 'EUR' }))).to be(true)
       expect(fresh.handles_command?(Checkout.new(payload: { cart_id: 'c1' }))).to be(false)
@@ -544,7 +544,7 @@ RSpec.describe Sourced::Machine do
       expect(fresh.handles_command?(OpenCart.new(payload: { cart_id: 'c1', currency: 'EUR' }))).to be(false)
     end
 
-    it 'acks commands the current checkpoint does not accept, with no events' do
+    it 'acks commands the current state does not accept, with no events' do
       cmd = Pay.new(payload: { cart_id: 'c1' })
 
       with_reactor(CartMachine, cart_id: 'c1')
@@ -555,7 +555,7 @@ RSpec.describe Sourced::Machine do
   end
 
   describe 'runtime state' do
-    it 'exposes the current checkpoint through a read-only view' do
+    it 'exposes the current state through a read-only view' do
       instance = CartMachine.new(cart_id: 'c1')
       expect(instance.machine.value).to eq(:initial)
       expect(instance.machine.entered_by).to be_nil
@@ -590,7 +590,7 @@ RSpec.describe Sourced::Machine do
         cart_id: 'c1', trigger: 'machine_test.open_cart', source: 'initial', target: 'nowhere', exited: [], entered: %w[nowhere]
       })
 
-      expect { instance.evolve([stray]) }.to raise_error(Sourced::Machine::Error, /no checkpoint at "nowhere"/)
+      expect { instance.evolve([stray]) }.to raise_error(Sourced::Machine::Error, /no state at "nowhere"/)
     end
   end
 
@@ -606,7 +606,7 @@ RSpec.describe Sourced::Machine do
         )
     end
 
-    it 'runs the exit actions of the checkpoint that was left' do
+    it 'runs the exit actions of the state that was left' do
       with_reactor(CartMachine, cart_id: 'c1')
         .given(opened)
         .and(item_added)
@@ -618,7 +618,7 @@ RSpec.describe Sourced::Machine do
       seen = []
       m = machine do
         initial { command Ping => :pinged }
-        checkpoint(:pinged) { entry { |s, transition| seen << [s, transition] } }
+        state(:pinged) { entry { |s, transition| seen << [s, transition] } }
       end
       transition = moved(m, 'machine_test.ping', from: 'initial', to: 'pinged', cart_id: 'c1')
 
@@ -626,10 +626,10 @@ RSpec.describe Sourced::Machine do
       expect(seen.map(&:last)).to eq([transition])
     end
 
-    it 'runs exit then entry actions when a checkpoint is re-entered' do
+    it 'runs exit then entry actions when a state is re-entered' do
       m = machine do
         initial { command Ping => :pinged }
-        checkpoint :pinged do
+        state :pinged do
           exit { |_s, _transition| dispatch Notify, note: 'exit' }
           entry { |_s, _transition| dispatch Notify, note: 'entry' }
           command Ping => :pinged
@@ -684,7 +684,7 @@ RSpec.describe Sourced::Machine do
     it 'takes the delay as a duration string' do
       timed = machine do
         initial { command OpenCart => :open }
-        checkpoint(:open) { after('1h30m') { |_cart, _transition| dispatch Expire } }
+        state(:open) { after('1h30m') { |_cart, _transition| dispatch Expire } }
       end
       transition = moved(timed, 'machine_test.open_cart', from: 'initial', to: 'open', cart_id: 'c1')
       expire, = timed.new(cart_id: 'c1').tap { |m| m.evolve([transition]) }.__react(transition)
@@ -693,7 +693,7 @@ RSpec.describe Sourced::Machine do
       expect(expire.metadata[:entered_by]).to eq(transition.id)
     end
 
-    it 'accepts a timer command while its checkpoint entry is current' do
+    it 'accepts a timer command while its state entry is current' do
       instance = TimerMachine.new(cart_id: 'c1')
       instance.evolve([opened])
 
@@ -708,7 +708,7 @@ RSpec.describe Sourced::Machine do
       expect(instance.handles_command?(Expire.new(payload: { cart_id: 'c1' }))).to be(true)
     end
 
-    it 'refuses a timer command from an earlier entry of the same checkpoint' do
+    it 'refuses a timer command from an earlier entry of the same state' do
       reentered = moved(TimerMachine, 'machine_test.reopen', from: 'open', to: 'open', exited: %w[open], cart_id: 'c1')
       instance = TimerMachine.new(cart_id: 'c1')
       instance.evolve([opened, reentered])
@@ -726,7 +726,7 @@ RSpec.describe Sourced::Machine do
       expect(instance.handles_command?(inherited)).to be(true)
     end
 
-    it "doesn't start timers for a checkpoint the machine has already left" do
+    it "doesn't start timers for a state the machine has already left" do
       claimed = Sourced::PositionedMessage.new(opened, 1)
       claim = Sourced::ClaimResult.new(
         offset_id: 1, key_pair_ids: [], partition_key: 'cart_id:c1', partition_value: { 'cart_id' => 'c1' },
@@ -742,9 +742,9 @@ RSpec.describe Sourced::Machine do
 
     it 'rejects timers on the initial position, and without a delay or block' do
       expect { machine { initial { after(60) { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /no timers/)
-      expect { machine { checkpoint(:open) { after('soon') { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
-      expect { machine { checkpoint(:open) { after(:soon) { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
-      expect { machine { checkpoint(:open) { after(60) } } }.to raise_error(Sourced::Machine::DefinitionError, /needs a block/)
+      expect { machine { state(:open) { after('soon') { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
+      expect { machine { state(:open) { after(:soon) { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
+      expect { machine { state(:open) { after(60) } } }.to raise_error(Sourced::Machine::DefinitionError, /needs a block/)
     end
 
     describe 'on a store' do
@@ -786,7 +786,7 @@ RSpec.describe Sourced::Machine do
         expect(targets).to eq(%w[open ordered])
       end
 
-      it "doesn't schedule a timer when the checkpoint was left before it was claimed" do
+      it "doesn't schedule a timer when the state was left before it was claimed" do
         fresh = Sourced::Store.new(Sequel.sqlite).tap(&:install!)
         fresh_router = Sourced::Router.new(store: fresh, reactors: [TimerMachine]).setup!
         fresh.append([
@@ -806,7 +806,7 @@ RSpec.describe Sourced::Machine do
     it 'fixes what the runtime reads per message once validated' do
       m = machine do
         initial { command Ping => :pinged }
-        checkpoint :pinged
+        state :pinged
       end
       expect(m.handled_commands).not_to be_frozen
 
@@ -820,7 +820,7 @@ RSpec.describe Sourced::Machine do
       m = Class.new(Sourced::Machine) do
         consumer_group 'machine_test.unpartitioned'
         initial { command MachineTest::OpenCart => :open }
-        checkpoint :open
+        state :open
       end
       expect { m.validate! }.to raise_error(Sourced::Machine::DefinitionError, /needs partition_by/)
     end
@@ -829,7 +829,7 @@ RSpec.describe Sourced::Machine do
       expect do
         Class.new(Sourced::Machine) do
           partition_by :cart_id
-          Checkpoint(:open)
+          State(:open)
         end
       end.to raise_error(Sourced::Machine::DefinitionError, /a machine needs a name or a consumer_group/)
     end
@@ -837,45 +837,45 @@ RSpec.describe Sourced::Machine do
     it 'requires commands to declare the partition keys' do
       m = machine do
         initial { command Unkeyed => :open }
-        checkpoint :open
+        state :open
       end
       expect { m.validate! }
         .to raise_error(Sourced::Machine::DefinitionError, /command MachineTest::Unkeyed must declare cart_id/)
     end
 
-    it 'requires declared checkpoints to be placed' do
+    it 'requires declared states to be placed' do
       m = machine { initial { command OpenCart => :open } }
       expect { m.validate! }.to raise_error(Sourced::Machine::DefinitionError, /::Open declared but never placed/)
     end
 
-    it "rejects another machine's checkpoints" do
+    it "rejects another machine's states" do
       m = machine { initial { command OpenCart => CartMachine::Open } }
-      expect { m.validate! }.to raise_error(Sourced::Machine::DefinitionError, /targets MachineTest::CartMachine::Open, which isn't a checkpoint/)
+      expect { m.validate! }.to raise_error(Sourced::Machine::DefinitionError, /targets MachineTest::CartMachine::Open, which isn't a state/)
     end
 
-    it 'rejects commands in final checkpoints' do
+    it 'rejects commands in final states' do
       m = machine { final(:paid) { command Pay => :paid } }
-      expect { m.validate! }.to raise_error(Sourced::Machine::DefinitionError, /final checkpoint paid can't accept commands/)
+      expect { m.validate! }.to raise_error(Sourced::Machine::DefinitionError, /final state paid can't accept commands/)
     end
 
     it 'requires a block for unions and for data-only commands' do
-      expect { machine { a = Checkpoint(:a); b = Checkpoint(:b); initial { command Checkout => a | b } } }
+      expect { machine { a = State(:a); b = State(:b); initial { command Checkout => a | b } } }
         .to raise_error(Sourced::Machine::DefinitionError, /needs a block/)
-      expect { machine { a = Checkpoint(:a); initial { command Checkout => a | nil } } }
+      expect { machine { a = State(:a); initial { command Checkout => a | nil } } }
         .to raise_error(Sourced::Machine::DefinitionError, /needs a block/)
       expect { machine { initial { command Checkout } } }
         .to raise_error(Sourced::Machine::DefinitionError, /needs a block/)
     end
 
-    it 'rejects placing a checkpoint or accepting a command twice' do
-      expect { machine { checkpoint :open; checkpoint :open } }
+    it 'rejects placing a state or accepting a command twice' do
+      expect { machine { state :open; state :open } }
         .to raise_error(Sourced::Machine::DefinitionError, /placed twice/)
-      expect { machine { checkpoint(:open) { command(Pay => :paid); command(Pay => :paid) } } }
+      expect { machine { state(:open) { command(Pay => :paid); command(Pay => :paid) } } }
         .to raise_error(Sourced::Machine::DefinitionError, /accepts MachineTest::Pay twice/)
     end
 
-    it 'rejects a checkpoint named initial' do
-      expect { machine { Checkpoint(:initial) } }
+    it 'rejects a state named initial' do
+      expect { machine { State(:initial) } }
         .to raise_error(Sourced::Machine::DefinitionError, /can't be named :initial/)
     end
 
@@ -914,7 +914,7 @@ RSpec.describe Sourced::Machine do
       expect(snapshot.context.total).to eq(30)
     end
 
-    it 'acks commands the current checkpoint does not accept' do
+    it 'acks commands the current state does not accept' do
       store.append(Pay.new(payload: { cart_id: 'c1' }))
       router.drain
 
@@ -933,7 +933,7 @@ RSpec.describe Sourced::Machine do
     end
 
     describe 'Sourced.handle!' do
-      it 'decides a command the current checkpoint accepts' do
+      it 'decides a command the current state accepts' do
         _cmd, reactor, events = Sourced.handle!(CartMachine, OpenCart.new(payload: { cart_id: 'c1', currency: 'EUR' }), store:)
 
         expect(events.map(&:class)).to eq([CartOpened, CartMachine::Open])
@@ -941,7 +941,7 @@ RSpec.describe Sourced::Machine do
         expect(reactor.machine.value).to eq(CartMachine::Open)
       end
 
-      it "raises CommandNotHandledError for a command the current checkpoint doesn't accept" do
+      it "raises CommandNotHandledError for a command the current state doesn't accept" do
         expect { Sourced.handle!(CartMachine, Pay.new(payload: { cart_id: 'c1' }), store:) }
           .to raise_error(Sourced::CommandNotHandledError, /CartMachine doesn't handle MachineTest::Pay/)
         expect(types).to be_empty
