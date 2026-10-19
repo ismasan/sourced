@@ -200,13 +200,17 @@ module MachineTopologyTest
           stateDiagram-v2
             state "opened" as opened
             state "booked" as booked {
-              state "paid" as booked_payment_paid
-              [*] --> booked_payment_paid : Pay
-              booked_payment_paid --> [*]
+              state "payment" as booked_payment {
+                state "paid" as booked_payment_paid
+                [*] --> booked_payment_paid : Pay
+                booked_payment_paid --> [*]
+              }
               --
-              state "shipped" as booked_shipping_shipped
-              [*] --> booked_shipping_shipped : Ship
-              booked_shipping_shipped --> [*]
+              state "shipping" as booked_shipping {
+                state "shipped" as booked_shipping_shipped
+                [*] --> booked_shipping_shipped : Ship
+                booked_shipping_shipped --> [*]
+              }
             }
             state "done" as done
             state "cancelled" as cancelled
