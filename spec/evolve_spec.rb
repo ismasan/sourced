@@ -66,9 +66,8 @@ RSpec.describe Sourced::Evolve do
       expect(decider.new(cart_id: 'c1').projection).to be_a(decider.projection_class)
     end
 
-    it 'builds history conditions from the projection types' do
-      types = decider.context_for(cart_id: 'c1').map(&:message_type).uniq
-      expect(types).to eq([EvolveTestMessages::ItemAdded.type])
+    it 'builds the history query from the projection types' do
+      expect(decider.context_for(cart_id: 'c1').types).to eq([EvolveTestMessages::ItemAdded.type])
     end
 
     it 'runs evolve blocks in the projection scope, not the reactor scope' do

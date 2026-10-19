@@ -115,6 +115,19 @@ RSpec.describe Sourced::Message do
       )
     end
 
+    it 'raises when a tag passed to .new names a payload attribute with a different value' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }, tags: { device_id: 'dev-2' })
+      expect { msg.extracted_keys }.to raise_error(
+        Sourced::Message::TagConflictError,
+        'device.registered tag device_id: "dev-2" conflicts with its payload value "dev-1"'
+      )
+    end
+
+    it 'accepts a tag passed to .new equal to its payload attribute, compared as strings' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }, tags: { device_id: 'dev-1' })
+      expect(msg.extracted_keys).to contain_exactly(['device_id', 'dev-1'], ['name', 'A'])
+    end
+
     it 'extracts all top-level payload attributes as string pairs' do
       msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
       keys = msg.extracted_keys
@@ -169,11 +182,9 @@ RSpec.describe Sourced::Message do
       expect(conditions.first.attrs).to eq({ device_id: 'dev-1', name: 'Sensor A' })
     end
 
-    it 'uses all attributes when the class declares none of them, as they can only be tags' do
-      conditions = TestMessages::DeviceRegistered.to_conditions(course_name: 'Algebra', seats: 10)
-      expect(conditions.size).to eq(1)
-      expect(conditions.first.message_type).to eq('device.registered')
-      expect(conditions.first.attrs).to eq({ course_name: 'Algebra', seats: '10' })
+    it 'returns empty array when no attributes match' do
+      conditions = TestMessages::DeviceRegistered.to_conditions(course_name: 'Algebra')
+      expect(conditions).to eq([])
     end
 
     it 'returns empty array when no attributes are given' do

@@ -49,6 +49,17 @@ module StoreTestMessages
     attribute :text, String
   end
 
+  # Carries order_id in its payload; tenant_id comes as a tag.
+  SomethingHappened = Sourced::Message.define('store_test.something.happened') do
+    attribute :order_id, String
+    attribute :note, String
+  end
+
+  # A foreign event: carries only order_id, so it's read into every (order_id, *) partition.
+  OrderTouched = Sourced::Message.define('store_test.order.touched') do
+    attribute :order_id, String
+  end
+
   # Native Ruby types, carried through the JSON payload column by the codec.
   Booking = Sourced::Message.define('store_test.booking') do
     attribute :booking_id, String
@@ -1426,7 +1437,7 @@ RSpec.describe Sourced::Store do
       expect(result.messages.size).to eq(1)
       expect(result.messages.first).to be_a(StoreTestMessages::DeviceRegistered)
       expect(result.messages.first.position).to eq(1)
-      expect(result.guard).to be_a(Sourced::ConsistencyGuard)
+      expect(result.guard).to be_a(Sourced::PartitionGuard)
     end
 
     it 'returns multiple pending messages for same partition' do
@@ -1557,22 +1568,18 @@ RSpec.describe Sourced::Store do
       expect(r2.partition_value).to eq({ 'device_id' => 'dev-3' })
     end
 
-    it 'returns a guard with conditions only for attrs each type actually has' do
+    it 'returns a partition guard over the claimed partition and handled types' do
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
       result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      guard = result.guard
 
-      expect(guard).to be_a(Sourced::ConsistencyGuard)
-      expect(guard.last_position).to eq(result.messages.last.position)
-
-      # 1 handled_type with device_id attr = 1 condition
-      expect(guard.conditions.size).to eq(1)
-      cond = guard.conditions.first
-      expect(cond.message_type).to eq('store_test.device.registered')
-      expect(cond.attrs).to eq({ device_id: 'dev-1' })
+      expect(result.guard).to eq(Sourced::PartitionGuard.new(
+        attrs: { 'device_id' => 'dev-1' },
+        types: handled_types,
+        last_position: result.messages.last.position
+      ))
     end
 
     it 'guard can be used for optimistic concurrency on append' do
@@ -1975,36 +1982,19 @@ RSpec.describe Sourced::Store do
       expect(courses.uniq.size).to eq(1)
     end
 
-    it 'returns guard with one condition per message type containing only matching attrs' do
+    it 'returns a partition guard over the compound partition' do
       store.append([
         StoreTestMessages::CourseCreated.new(payload: { course_name: 'Algebra' }),
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
       ])
 
       result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
-      guard = result.guard
 
-      expect(guard.last_position).to eq(result.messages.last.position)
-
-      # Expected conditions (one per message type, compound attrs):
-      #   CourseCreated     has course_name only                       → 1 condition with { course_name: 'Algebra' }
-      #   UserRegistered    has user_id (+ name, not a partition attr) → 1 condition with { user_id: 'joe' }
-      #   CourseClosed      has course_name only                       → 1 condition with { course_name: 'Algebra' }
-      #   UserJoinedCourse  has course_name + user_id                  → 1 condition with { course_name: 'Algebra', user_id: 'joe' }
-      # Total: 4 conditions
-      expect(guard.conditions.size).to eq(4)
-
-      # CourseCreated has only course_name
-      course_created_cond = guard.conditions.find { |c| c.message_type == 'store_test.course.created' }
-      expect(course_created_cond.attrs).to eq({ course_name: 'Algebra' })
-
-      # UserRegistered has only user_id
-      user_registered_cond = guard.conditions.find { |c| c.message_type == 'store_test.user.registered' }
-      expect(user_registered_cond.attrs).to eq({ user_id: 'joe' })
-
-      # UserJoinedCourse has both attrs in a single condition
-      joined_cond = guard.conditions.find { |c| c.message_type == 'store_test.user.joined_course' }
-      expect(joined_cond.attrs).to eq({ course_name: 'Algebra', user_id: 'joe' })
+      expect(result.guard).to eq(Sourced::PartitionGuard.new(
+        attrs: { 'course_name' => 'Algebra', 'user_id' => 'joe' },
+        types: handled_types,
+        last_position: result.messages.last.position
+      ))
     end
 
     it 'guard detects concurrent writes in composite partition' do
@@ -2388,6 +2378,20 @@ RSpec.describe Sourced::Store do
       Timecop.freeze(now + 61) { store.update_schedule! } # promotes via append — must still index by id
 
       expect(db[:sourced_key_pairs].select_map(:name).uniq).to eq(['__id'])
+    end
+
+    it 'returns an empty guard that runs no conflict query, as before partition guards' do
+      store.register_consumer_group('q', partition_by: ['__id'], exclusive: true, handled_types: handled_types)
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+
+      claim = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w1')
+      expect(claim.guard).to eq(Sourced::ConsistencyGuard.new(conditions: [], last_position: claim.messages.last.position))
+
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' }))
+      expect(store).not_to receive(:query_messages)
+      expect {
+        store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'C' }), guard: claim.guard)
+      }.not_to raise_error
     end
 
     it 'gives each message its own partition (one offset per message), claimed by disjoint workers' do
@@ -3211,11 +3215,27 @@ RSpec.describe Sourced::Store do
       expect(db[:sourced_messages].order(:position).select_map(:tags)).to eq(['{"device_id":"dev-1"}', nil])
     end
 
-    it 'indexes tags as key pairs, read by #read' do
+    it 'indexes tags as key pairs, read by #read with a partition query' do
       store.append([note('one', device_id: 'dev-1'), note('two', device_id: 'dev-2')])
 
-      messages, = store.read(StoreTestMessages::NoteAdded.to_conditions(device_id: 'dev-1'))
+      messages, = store.read(Sourced::PartitionQuery.new(attrs: { device_id: 'dev-1' }, types: [note_type]))
       expect(messages.map { |m| m.payload.text }).to eq(['one'])
+    end
+
+    it 'raises on append, appending nothing, when a tag conflicts with a payload attribute' do
+      msg = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }, tags: { device_id: 'dev-2' })
+
+      expect { store.append([note('first'), msg]) }.to raise_error(Sourced::Message::TagConflictError, /device_id/)
+      expect(store.latest_position).to eq(0)
+    end
+
+    it 'raises on append when a scheduled or id-basis message has a conflicting tag' do
+      msg = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }, tags: { device_id: 'dev-2' })
+
+      expect { store.append(msg.at(Time.now + 60)) }.to raise_error(Sourced::Message::TagConflictError)
+      expect { store.append(msg, index_by: :id) }.to raise_error(Sourced::Message::TagConflictError)
+      expect(db[:sourced_scheduled_messages].count).to eq(0)
+      expect(store.latest_position).to eq(0)
     end
 
     it 'indexes only __id for id-basis types' do
@@ -3281,9 +3301,103 @@ RSpec.describe Sourced::Store do
 
       Timecop.freeze(now + 3) { store.update_schedule! }
 
-      messages, = store.read(StoreTestMessages::NoteAdded.to_conditions(device_id: 'dev-1'))
+      messages, = store.read(Sourced::PartitionQuery.new(attrs: { device_id: 'dev-1' }, types: [note_type]))
       expect(messages.map { |m| m.payload.text }).to eq(['later'])
       expect(messages.first.tags).to eq(device_id: 'dev-1')
+    end
+  end
+
+  describe 'partition keys from payload and tags' do
+    let(:types) { [StoreTestMessages::SomethingHappened.type, StoreTestMessages::OrderTouched.type] }
+    let(:partition) { { order_id: '01', tenant_id: 't1' } }
+
+    def happened(note, tenant_id)
+      StoreTestMessages::SomethingHappened.new(payload: { order_id: '01', note: }).with_tags(tenant_id:)
+    end
+
+    def touched = StoreTestMessages::OrderTouched.new(payload: { order_id: '01' })
+
+    def notes(messages) = messages.map { |m| m.type == StoreTestMessages::OrderTouched.type ? :touched : m.payload.note }
+
+    before do
+      store.append([happened('a', 't1'), happened('b', 't2'), touched, happened('c', 't1')])
+    end
+
+    it 'claims only the partition matching both keys, plus the foreign partial-key event' do
+      store.register_consumer_group('mixed', partition_by: %i[order_id tenant_id], handled_types: types)
+
+      claim = store.claim_next('mixed', partition_by: %w[order_id tenant_id], handled_types: types, worker_id: 'w-1')
+      expect(claim.partition_value).to eq('order_id' => '01', 'tenant_id' => 't1')
+      expect(notes(claim.messages)).to eq(['a', :touched, 'c'])
+    end
+
+    it 'reads the same messages with a partition query and #read_partition' do
+      read = store.read(Sourced::PartitionQuery.new(attrs: partition, types:))
+      expect(notes(read.messages)).to eq(['a', :touched, 'c'])
+      expect(read.guard).to eq(Sourced::PartitionGuard.new(attrs: { 'order_id' => '01', 'tenant_id' => 't1' }, types:, last_position: 4))
+
+      expect(notes(store.read_partition(partition, handled_types: types).messages)).to eq(['a', :touched, 'c'])
+    end
+
+    it 'reads a partition whose tag key_pair does not exist yet: only the foreign event' do
+      read = store.read_partition({ order_id: '01', tenant_id: 't9' }, handled_types: types)
+      expect(notes(read.messages)).to eq([:touched])
+    end
+
+    it 'honours after_position and limit' do
+      read = store.read(Sourced::PartitionQuery.new(attrs: partition, types:), after_position: 1, limit: 1)
+      expect(notes(read.messages)).to eq([:touched])
+      expect(read.guard.last_position).to eq(3)
+    end
+
+    shared_examples 'a partition guard' do
+      it 'does not conflict with an append to another partition' do
+        store.append(happened('other', 't2'))
+        store.append(StoreTestMessages::OrderTouched.new(payload: { order_id: '02' }))
+        expect { store.append(happened('next', 't1'), guard:) }.not_to raise_error
+      end
+
+      it 'conflicts with an append to its partition' do
+        store.append(happened('concurrent', 't1'))
+        expect { store.append(happened('next', 't1'), guard:) }.to raise_error(Sourced::ConcurrentAppendError)
+      end
+
+      it 'conflicts with a foreign event in its partition' do
+        store.append(touched)
+        expect { store.append(happened('next', 't1'), guard:) }.to raise_error(Sourced::ConcurrentAppendError)
+      end
+
+      it 'keeps working after ActionRunner-style position bumps' do
+        position = store.append(happened('mine', 't1'), guard:)
+        expect { store.append(happened('more', 't1'), guard: guard.with(last_position: position)) }.not_to raise_error
+      end
+    end
+
+    context 'with a claim guard' do
+      before { store.register_consumer_group('mixed', partition_by: %i[order_id tenant_id], handled_types: types) }
+
+      let!(:guard) do
+        store.claim_next('mixed', partition_by: %w[order_id tenant_id], handled_types: types, worker_id: 'w-1').guard
+      end
+
+      it_behaves_like 'a partition guard'
+    end
+
+    context 'with a read guard' do
+      let!(:guard) { store.read(Sourced::PartitionQuery.new(attrs: partition, types:)).guard }
+
+      it_behaves_like 'a partition guard'
+    end
+
+    context 'with a guard read from an empty partition' do
+      let!(:guard) { store.read_partition({ order_id: '02', tenant_id: 't1' }, handled_types: types).guard }
+
+      it 'conflicts with the first append to the partition' do
+        store.append(StoreTestMessages::OrderTouched.new(payload: { order_id: '02' }))
+        expect {
+          store.append(StoreTestMessages::OrderTouched.new(payload: { order_id: '02' }), guard:)
+        }.to raise_error(Sourced::ConcurrentAppendError)
+      end
     end
   end
 

@@ -135,7 +135,7 @@ RSpec.describe 'Sourced.load' do
         course_id: 'algebra', student_id: 'joe'
       )
 
-      expect(read_result.guard).to be_a(Sourced::ConsistencyGuard)
+      expect(read_result.guard).to be_a(Sourced::PartitionGuard)
       expect(read_result.guard.last_position).to be > 0
     end
 

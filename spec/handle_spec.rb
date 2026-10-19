@@ -81,6 +81,50 @@ class HandleTagTestDecider < Sourced::Decider
   end
 end
 
+# order_id in the payload, tenant_id as a tag.
+module HandleMixedTestMessages
+  AddNote = Sourced::Command.define('handle_mixed_test.add_note') do
+    attribute :order_id, String
+    attribute :note, String
+  end
+
+  SomethingHappened = Sourced::Event.define('handle_mixed_test.something_happened') do
+    attribute :order_id, String
+    attribute :note, String
+  end
+
+  # Foreign event carrying only order_id.
+  OrderTouched = Sourced::Event.define('handle_mixed_test.order_touched') do
+    attribute :order_id, String
+  end
+
+  NotesCounted = Sourced::Event.define('handle_mixed_test.notes_counted') do
+    attribute :order_id, String
+    attribute :tenant_id, String
+    attribute :count, Integer
+  end
+end
+
+class HandleMixedTestDecider < Sourced::Decider
+  partition_by :order_id, :tenant_id
+  consumer_group 'handle-mixed-test-decider'
+
+  context { { notes: [], touched: false } }
+
+  evolve HandleMixedTestMessages::SomethingHappened do |context, evt|
+    context[:notes] << evt.payload.note
+  end
+
+  evolve HandleMixedTestMessages::OrderTouched do |context, _evt|
+    context[:touched] = true
+  end
+
+  command HandleMixedTestMessages::AddNote do |context, cmd|
+    event HandleMixedTestMessages::NotesCounted,
+          order_id: cmd.payload.order_id, tenant_id: cmd.tags.fetch(:tenant_id), count: context[:notes].size + 1
+  end
+end
+
 RSpec.describe 'Sourced.handle!' do
   let(:db) { Sequel.sqlite }
   let(:store) { Sourced::Store.new(db) }
@@ -240,8 +284,58 @@ RSpec.describe 'Sourced.handle!' do
 
       expect(store).to have_received(:append).with(
         anything,
-        guard: an_instance_of(Sourced::ConsistencyGuard)
+        guard: an_instance_of(Sourced::PartitionGuard)
       )
+    end
+  end
+
+  describe 'partition keys from payload and tags' do
+    def happened(note, tenant_id)
+      HandleMixedTestMessages::SomethingHappened.new(payload: { order_id: '01', note: }).with_tags(tenant_id:)
+    end
+
+    def add_note(tenant_id)
+      HandleMixedTestMessages::AddNote.new(payload: { order_id: '01', note: 'x' }).with_tags(tenant_id:)
+    end
+
+    before do
+      store.append([
+        happened('a', 't1'), happened('b', 't2'),
+        HandleMixedTestMessages::OrderTouched.new(payload: { order_id: '01' }),
+        happened('c', 't1')
+      ])
+    end
+
+    it 'evolves only the partition matching both keys, plus foreign partial-key events' do
+      _cmd, reactor, events = Sourced.handle!(HandleMixedTestDecider, add_note('t1'), store: store)
+
+      expect(reactor.context).to eq(notes: %w[a c], touched: true)
+      expect(events.map { |e| e.payload.count }).to eq([3])
+    end
+
+    it 'loads the same partition' do
+      reactor, read_result = Sourced.load(HandleMixedTestDecider, store: store, order_id: '01', tenant_id: 't2')
+
+      expect(reactor.context).to eq(notes: %w[b], touched: true)
+      expect(read_result.messages.size).to eq(2)
+    end
+
+    it 'does not conflict with a concurrent append to another tenant' do
+      allow(store).to receive(:read_partition).and_wrap_original do |original, *args, **kwargs|
+        original.call(*args, **kwargs).tap { store.append(happened('concurrent', 't2')) }
+      end
+
+      expect { Sourced.handle!(HandleMixedTestDecider, add_note('t1'), store: store) }.not_to raise_error
+    end
+
+    it 'conflicts with a concurrent append to its tenant' do
+      allow(store).to receive(:read_partition).and_wrap_original do |original, *args, **kwargs|
+        original.call(*args, **kwargs).tap { store.append(happened('concurrent', 't1')) }
+      end
+
+      expect {
+        Sourced.handle!(HandleMixedTestDecider, add_note('t1'), store: store)
+      }.to raise_error(Sourced::ConcurrentAppendError)
     end
   end
 
@@ -263,7 +357,7 @@ RSpec.describe 'Sourced.handle!' do
       expect(reactor.context[:notes]).to eq(%w[a c])
       expect(events.map { |e| e.payload.count }).to eq([3])
 
-      stored = store.read(HandleTagTestMessages::AddNote.to_conditions(device_id: 'd1')).messages
+      stored = store.read(Sourced::PartitionQuery.new(attrs: { device_id: 'd1' }, types: [HandleTagTestMessages::AddNote.type])).messages
       expect(stored.map(&:id)).to eq([cmd.id])
       expect(stored.first.tags).to eq(device_id: 'd1')
     end

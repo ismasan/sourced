@@ -51,6 +51,64 @@ module RouterTestMessages
     attribute :queue_id, String
     attribute :name, String
   end
+
+  # Carries order_id in its payload; tenant_id comes as a tag.
+  SomethingHappened = Sourced::Message.define('router_test.something.happened') do
+    attribute :order_id, String
+    attribute :note, String
+  end
+
+  # Foreign event carrying only order_id.
+  OrderTouched = Sourced::Message.define('router_test.order.touched') do
+    attribute :order_id, String
+  end
+end
+
+# Records the history the Router reads for each claim.
+module RouterTestHistoryRecorder
+  def histories = (@histories ||= [])
+
+  def handle_claim(claim, history:)
+    histories << history
+    claim.messages.map { |m| [Sourced::Actions::OK, m] }
+  end
+end
+
+# Partitioned by a payload key and a tag key.
+class RouterTestMixedKeysReactor
+  extend Sourced::Consumer
+  extend RouterTestHistoryRecorder
+
+  partition_by :order_id, :tenant_id
+  consumer_group 'router-test-mixed-keys'
+
+  def self.handled_messages = [RouterTestMessages::SomethingHappened]
+  def self.handled_messages_for_evolve = [RouterTestMessages::SomethingHappened, RouterTestMessages::OrderTouched]
+end
+
+# Overrides context_for with conditions: only SomethingHappened declaring order_id.
+class RouterTestCustomHistoryReactor
+  extend Sourced::Consumer
+  extend RouterTestHistoryRecorder
+
+  partition_by :order_id, :tenant_id
+  consumer_group 'router-test-custom-history'
+
+  def self.handled_messages = [RouterTestMessages::SomethingHappened]
+
+  def self.context_for(attrs) = RouterTestMessages::SomethingHappened.to_conditions(order_id: attrs[:order_id])
+end
+
+# Id-partitioned queue reactor with evolve types: gets no history.
+class RouterTestQueueHistoryReactor
+  extend Sourced::Consumer
+  extend RouterTestHistoryRecorder
+
+  consumer_group 'router-test-queue-history'
+  exclusive
+
+  def self.handled_messages = [RouterTestMessages::OrderTouched]
+  def self.handled_messages_for_evolve = [RouterTestMessages::OrderTouched]
 end
 
 # Test decider for router specs
@@ -854,6 +912,58 @@ RSpec.describe Sourced::Router do
         'router_test.device.bound',
         'router_test.device.registered'
       ])
+    end
+  end
+
+  describe 'history for partition keys from payload and tags' do
+    def happened(note, tenant_id)
+      RouterTestMessages::SomethingHappened.new(payload: { order_id: '01', note: }).with_tags(tenant_id:)
+    end
+
+    def notes(history)
+      history.messages.map { |m| m.type == RouterTestMessages::OrderTouched.type ? :touched : m.payload.note }
+    end
+
+    before do
+      store.append([
+        happened('a', 't1'), happened('b', 't2'),
+        RouterTestMessages::OrderTouched.new(payload: { order_id: '01' }),
+        happened('c', 't1')
+      ])
+    end
+
+    it 'reads the claimed partition: both keys must match, foreign partial-key events included' do
+      RouterTestMixedKeysReactor.histories.clear
+      router.register(RouterTestMixedKeysReactor)
+
+      router.handle_next_for(RouterTestMixedKeysReactor)
+      router.handle_next_for(RouterTestMixedKeysReactor)
+
+      t1, t2 = RouterTestMixedKeysReactor.histories
+      expect(notes(t1)).to eq(['a', :touched, 'c'])
+      expect(notes(t2)).to eq(['b', :touched])
+      expect(t1.guard).to be_a(Sourced::PartitionGuard)
+    end
+
+    it 'reads custom conditions from a context_for override' do
+      RouterTestCustomHistoryReactor.histories.clear
+      router.register(RouterTestCustomHistoryReactor)
+
+      router.handle_next_for(RouterTestCustomHistoryReactor)
+
+      history = RouterTestCustomHistoryReactor.histories.first
+      expect(notes(history)).to eq(%w[a b c])
+      expect(history.guard).to be_a(Sourced::ConsistencyGuard)
+    end
+
+    it 'reads no history for an id-partitioned reactor' do
+      RouterTestQueueHistoryReactor.histories.clear
+      router.register(RouterTestQueueHistoryReactor)
+      store.append(RouterTestMessages::OrderTouched.new(payload: { order_id: '01' }))
+
+      expect(router.handle_next_for(RouterTestQueueHistoryReactor)).to be true
+      expect(RouterTestQueueHistoryReactor.context_for(__id: 'x')).to eq([])
+      expect(RouterTestQueueHistoryReactor.histories.first.messages).to eq([])
     end
   end
 

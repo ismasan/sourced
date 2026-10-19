@@ -96,12 +96,17 @@ module Sourced
       @handled_messages_for_evolve ||= []
     end
 
-    # Build query conditions from partition attributes and handled evolve types.
-    # Override in reactor for custom per-command conditions.
+    # The history query {Router} reads for a claimed partition: a
+    # {PartitionQuery} over the evolve types, matching messages as the claim
+    # does. Empty (no history) when the reactor evolves nothing or is
+    # id-partitioned. Override to return custom +QueryCondition+s instead.
+    #
+    # @param partition_attrs [Hash{Symbol => String}]
+    # @return [PartitionQuery, Array<QueryCondition>]
     def context_for(partition_attrs)
-      handled_messages_for_evolve.flat_map { |klass|
-        klass.to_conditions(**partition_attrs)
-      }
+      return Plumb::BLANK_ARRAY if handled_messages_for_evolve.empty? || IdPartition.keys?(partition_attrs.keys)
+
+      PartitionQuery.new(attrs: partition_attrs, types: handled_messages_for_evolve.map(&:type))
     end
 
     # Called by {Router#stop_consumer_group} after the group is marked as stopped.

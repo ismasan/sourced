@@ -195,7 +195,7 @@ module Sourced
       # not collide with a payload attribute) and must be sole-owned, so it is only
       # allowed for exclusive reactors. This keeps id-indexing safe: a type is only
       # id-indexed when its lone exclusive owner is id-partitioned.
-      if partition_keys == [:__id] && !exclusive
+      if IdPartition.keys?(partition_keys) && !exclusive
         raise ArgumentError,
           "#{reactor_class} must declare `partition_by`. (Only an `exclusive` reactor may " \
           "be id-partitioned — one partition per message — whether by omitting " \
@@ -231,7 +231,7 @@ module Sourced
     # none (validated when the reactor is added).
     def effective_partition_keys(reactor)
       keys = Array(reactor.partition_keys)
-      keys.empty? ? [:__id] : keys
+      keys.empty? ? [IdPartition::KEY.to_sym] : keys
     end
 
     # Enforce that an exclusive reactor is the sole handler of its message types.

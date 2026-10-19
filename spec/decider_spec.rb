@@ -479,14 +479,13 @@ RSpec.describe Sourced::Decider do
   end
 
   describe '.context_for' do
-    it 'builds conditions from partition_keys × handled_messages_for_evolve' do
-      conditions = TestDeviceDecider.context_for(device_id: 'd1')
+    it 'builds a partition query over handled_messages_for_evolve' do
+      query = TestDeviceDecider.context_for(device_id: 'd1')
 
-      # DeviceRegistered and DeviceBound both have device_id
-      types = conditions.map(&:message_type).uniq.sort
-      expect(types).to include('decider_test.device.registered')
-      expect(types).to include('decider_test.device.bound')
-      expect(conditions.all? { |c| c.attrs[:device_id] == 'd1' }).to be true
+      expect(query).to be_a(Sourced::PartitionQuery)
+      expect(query.attrs).to eq('device_id' => 'd1')
+      expect(query.types).to include('decider_test.device.registered')
+      expect(query.types).to include('decider_test.device.bound')
     end
   end
 
