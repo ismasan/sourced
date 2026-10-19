@@ -3,11 +3,12 @@
 module Sourced
   class Machine
     # Draws a machine as a Mermaid state diagram (+stateDiagram-v2+):
-    # states, regions as concurrent sections, and transitions labelled
-    # with the commands (or joins) that take them, and +/ starts Child+ for
-    # the children a handler's +starts:+ declares. Data-only handlers, which
-    # don't move the machine, have no edge: those that start children, and the
-    # children a state +stops+, are listed in a note on the state.
+    # states, regions as concurrent sections labelled with their names, and
+    # transitions labelled with the commands (or joins) that take them, and
+    # +/ starts Child+ for the children a handler's +starts:+ declares.
+    # Data-only handlers, which don't move the machine, have no edge: those
+    # that start children, and the children a state +stops+, are listed in a
+    # note on the state.
     # A note on a region's initial position goes on the composite state that
     # contains the region; the root's initial position, with no such state,
     # is drawn as an +initial+ state to carry it.
@@ -127,7 +128,7 @@ module Sourced
           label = node.initial? ? 'initial' : node.key.state_name
           # Mermaid can't render an empty composite state: regions holding
           # only an initial position draw as a plain state.
-          sections = node.regions.map { region_lines(it, "#{indent}  ") }.reject(&:empty?)
+          sections = node.regions.map { section_lines(it, "#{indent}  ") }.reject(&:empty?)
           if sections.empty?
             lines << %(#{indent}state "#{label}" as #{id(node)})
           else
@@ -157,6 +158,19 @@ module Sourced
           lines << "#{indent}end note"
         end
         lines
+      end
+
+      # Mermaid's concurrent sections have no labels: a named region's
+      # section is a composite state labelled with its name. A compound
+      # region is its state's own, already labelled.
+      def section_lines(region, indent)
+        return region_lines(region, indent) if region.compound?
+
+        lines = region_lines(region, "#{indent}  ")
+        return lines if lines.empty?
+
+        region_id = region.path.tr('.', '_')
+        [%(#{indent}state "#{region.name}" as #{region_id} {), *lines, "#{indent}}"]
       end
 
       def id(node) = node.path.tr('.', '_')

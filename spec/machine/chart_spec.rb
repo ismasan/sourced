@@ -526,17 +526,21 @@ module MachineChartTest
               planning_finalised --> [*]
             }
             state "reserving" as reserving {
-              state "holding" as reserving_hotel_holding
-              state "held" as reserving_hotel_held
-              [*] --> reserving_hotel_holding : RequestHold
-              reserving_hotel_holding --> reserving_hotel_held : ConfirmHold
-              reserving_hotel_held --> [*]
+              state "hotel" as reserving_hotel {
+                state "holding" as reserving_hotel_holding
+                state "held" as reserving_hotel_held
+                [*] --> reserving_hotel_holding : RequestHold
+                reserving_hotel_holding --> reserving_hotel_held : ConfirmHold
+                reserving_hotel_held --> [*]
+              }
               --
-              state "holding" as reserving_flights_holding
-              state "held" as reserving_flights_held
-              [*] --> reserving_flights_holding : RequestHold
-              reserving_flights_holding --> reserving_flights_held : ConfirmHold
-              reserving_flights_held --> [*]
+              state "flights" as reserving_flights {
+                state "holding" as reserving_flights_holding
+                state "held" as reserving_flights_held
+                [*] --> reserving_flights_holding : RequestHold
+                reserving_flights_holding --> reserving_flights_held : ConfirmHold
+                reserving_flights_held --> [*]
+              }
             }
             state "confirmed" as confirmed
             [*] --> planning : Open
