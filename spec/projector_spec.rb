@@ -211,7 +211,7 @@ RSpec.describe Sourced::Projector do
   end
 
   describe '.handle_batch (EventSourced)' do
-    let(:guard) { Sourced::ConsistencyGuard.new(conditions: [], last_position: 5) }
+    let(:guard) { Sourced::ConsistencyGuard.new(query: [], last_position: 5) }
 
     def make_history(messages)
       Sourced::ReadResult.new(messages: messages, guard: guard)
@@ -277,7 +277,7 @@ RSpec.describe Sourced::Projector do
   end
 
   describe '.handle_claim' do
-    let(:guard) { Sourced::ConsistencyGuard.new(conditions: [], last_position: 2) }
+    let(:guard) { Sourced::ConsistencyGuard.new(query: [], last_position: 2) }
 
     def make_claim(messages, replaying: false)
       Sourced::ClaimResult.new(
@@ -383,7 +383,7 @@ RSpec.describe Sourced::Projector do
   end
 
   describe 'EventSourced' do
-    let(:guard) { Sourced::ConsistencyGuard.new(conditions: [], last_position: 5) }
+    let(:guard) { Sourced::ConsistencyGuard.new(query: [], last_position: 5) }
 
     def make_claim(messages, replaying: false)
       Sourced::ClaimResult.new(

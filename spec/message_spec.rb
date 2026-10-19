@@ -494,10 +494,10 @@ RSpec.describe Sourced::Message do
   end
 
   describe Sourced::ConsistencyGuard do
-    it 'is a Data struct with conditions and last_position' do
+    it 'is a Data struct with query and last_position' do
       conditions = [Sourced::QueryCondition.new(message_type: 'device.registered', attrs: { device_id: 'dev-1' })]
-      guard = Sourced::ConsistencyGuard.new(conditions: conditions, last_position: 42)
-      expect(guard.conditions).to eq(conditions)
+      guard = Sourced::ConsistencyGuard.new(query: conditions, last_position: 42)
+      expect(guard.query).to eq(conditions)
       expect(guard.last_position).to eq(42)
     end
   end

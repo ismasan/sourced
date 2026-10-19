@@ -236,7 +236,7 @@ module Sourced
             return []
           end
 
-          guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 0)
+          guard = Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 0)
           history = Sourced::ReadResult.new(messages: @given_messages, guard: guard)
           @reactor_class.handle_batch(
             @partition_values,

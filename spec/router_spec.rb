@@ -942,7 +942,7 @@ RSpec.describe Sourced::Router do
       t1, t2 = RouterTestMixedKeysReactor.histories
       expect(notes(t1)).to eq(['a', :touched, 'c'])
       expect(notes(t2)).to eq(['b', :touched])
-      expect(t1.guard).to be_a(Sourced::PartitionGuard)
+      expect(t1.guard).to have_attributes(class: Sourced::ConsistencyGuard, query: an_instance_of(Sourced::PartitionQuery))
     end
 
     it 'reads custom conditions from a context_for override' do

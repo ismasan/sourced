@@ -502,7 +502,7 @@ RSpec.describe Sourced::Store do
       msg1 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
       store.append(msg1)
 
-      guard = Sourced::ConsistencyGuard.new(conditions: [cond], last_position: store.latest_position)
+      guard = Sourced::ConsistencyGuard.new(query: [cond], last_position: store.latest_position)
 
       msg2 = StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
       pos = store.append(msg2, guard: guard)
@@ -952,14 +952,14 @@ RSpec.describe Sourced::Store do
       expect(msg.created_at).to be_a(Time)
     end
 
-    it 'returns a ConsistencyGuard with correct conditions' do
+    it 'returns a ConsistencyGuard over the conditions' do
       cond = Sourced::QueryCondition.new(
         message_type: 'store_test.device.registered',
         attrs: { device_id: 'dev-1' }
       )
       _results, guard = store.read([cond])
       expect(guard).to be_a(Sourced::ConsistencyGuard)
-      expect(guard.conditions).to eq([cond])
+      expect(guard.query).to eq([cond])
     end
 
     it 'guard last_position reflects the last result position' do
@@ -1437,7 +1437,7 @@ RSpec.describe Sourced::Store do
       expect(result.messages.size).to eq(1)
       expect(result.messages.first).to be_a(StoreTestMessages::DeviceRegistered)
       expect(result.messages.first.position).to eq(1)
-      expect(result.guard).to be_a(Sourced::PartitionGuard)
+      expect(result.guard).to have_attributes(class: Sourced::ConsistencyGuard, query: an_instance_of(Sourced::PartitionQuery))
     end
 
     it 'returns multiple pending messages for same partition' do
@@ -1575,9 +1575,8 @@ RSpec.describe Sourced::Store do
 
       result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
 
-      expect(result.guard).to eq(Sourced::PartitionGuard.new(
-        attrs: { 'device_id' => 'dev-1' },
-        types: handled_types,
+      expect(result.guard).to eq(Sourced::ConsistencyGuard.new(
+        query: Sourced::PartitionQuery.new(attrs: { 'device_id' => 'dev-1' }, types: handled_types),
         last_position: result.messages.last.position
       ))
     end
@@ -1990,9 +1989,8 @@ RSpec.describe Sourced::Store do
 
       result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
 
-      expect(result.guard).to eq(Sourced::PartitionGuard.new(
-        attrs: { 'course_name' => 'Algebra', 'user_id' => 'joe' },
-        types: handled_types,
+      expect(result.guard).to eq(Sourced::ConsistencyGuard.new(
+        query: Sourced::PartitionQuery.new(attrs: { 'course_name' => 'Algebra', 'user_id' => 'joe' }, types: handled_types),
         last_position: result.messages.last.position
       ))
     end
@@ -2385,7 +2383,7 @@ RSpec.describe Sourced::Store do
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
 
       claim = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w1')
-      expect(claim.guard).to eq(Sourced::ConsistencyGuard.new(conditions: [], last_position: claim.messages.last.position))
+      expect(claim.guard).to eq(Sourced::ConsistencyGuard.new(query: [], last_position: claim.messages.last.position))
 
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' }))
       expect(store).not_to receive(:query_messages)
@@ -3334,7 +3332,7 @@ RSpec.describe Sourced::Store do
     it 'reads the same messages with a partition query and #read_partition' do
       read = store.read(Sourced::PartitionQuery.new(attrs: partition, types:))
       expect(notes(read.messages)).to eq(['a', :touched, 'c'])
-      expect(read.guard).to eq(Sourced::PartitionGuard.new(attrs: { 'order_id' => '01', 'tenant_id' => 't1' }, types:, last_position: 4))
+      expect(read.guard).to eq(Sourced::ConsistencyGuard.new(query: Sourced::PartitionQuery.new(attrs: { 'order_id' => '01', 'tenant_id' => 't1' }, types:), last_position: 4))
 
       expect(notes(store.read_partition(partition, handled_types: types).messages)).to eq(['a', :touched, 'c'])
     end

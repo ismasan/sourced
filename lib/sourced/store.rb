@@ -292,7 +292,7 @@ module Sourced
     # inserting (optimistic concurrency).
     #
     # @param messages [Sourced::Message, Array<Sourced::Message>] one or more messages to append
-    # @param guard [ConsistencyGuard, PartitionGuard, nil] optional guard for conflict detection
+    # @param guard [ConsistencyGuard, nil] optional guard for conflict detection
     # @param index_by [Symbol, nil] override for which message attributes to index as
     #   key_pairs: +:payload+ indexes payload attributes; +:id+ indexes the message id.
     #   When nil (default), the basis is resolved per message from its consuming group
@@ -487,10 +487,12 @@ module Sourced
     # Query messages by conditions, or by partition.
     #
     # Conditions: each matches on (message_type AND key_name AND key_value), and
-    # conditions are OR'd. The guard is a {ConsistencyGuard} over the same conditions.
+    # conditions are OR'd.
     #
     # A {PartitionQuery}: the messages in the partition, matched per message as
-    # {#claim_next} matches them. The guard is a {PartitionGuard}.
+    # {#claim_next} matches them.
+    #
+    # Either way the guard is a {ConsistencyGuard} over the same query.
     #
     # @param query [PartitionQuery, QueryCondition, Array<QueryCondition>]
     # @param after_position [Integer, nil] only return messages after this position (exclusive)
@@ -516,7 +518,7 @@ module Sourced
     #     handled_types: ['device.registered', 'device.bound']
     #   )
     #   result.messages  # => [#<PositionedMessage ...>, ...]
-    #   result.guard     # => #<PartitionGuard ...>
+    #   result.guard     # => #<ConsistencyGuard query=#<PartitionQuery ...> ...>
     #
     # @example Composite partition (AND semantics — messages must match all attributes they declare)
     #   result = store.read_partition(
@@ -697,8 +699,8 @@ module Sourced
     # ALL +partition_by+ attributes), finds the unclaimed partition with the earliest
     # pending message, claims it, and fetches messages using conditional AND semantics.
     #
-    # Returns a {PartitionGuard} over the partition and +handled_types+ alongside
-    # the messages (an empty {ConsistencyGuard} for id-partitioned queue claims).
+    # Returns a {ConsistencyGuard} over a {PartitionQuery} of the partition and
+    # +handled_types+ alongside the messages (an empty one for id-partitioned queue claims).
     #
     # The +replaying+ flag indicates whether the returned messages have been
     # processed by this consumer group before. A message is replaying when its
@@ -806,9 +808,9 @@ module Sourced
       # one message, so a queue claim has nothing to guard.
       last_pos = messages.last.position
       guard = if IdPartition.keys?(partition_value.keys)
-                ConsistencyGuard.new(conditions: Plumb::BLANK_ARRAY, last_position: last_pos)
+                ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: last_pos)
               else
-                PartitionGuard.new(attrs: partition_value, types: handled_types, last_position: last_pos)
+                ConsistencyGuard.new(query: PartitionQuery.new(attrs: partition_value, types: handled_types), last_position: last_pos)
               end
 
       # replaying: true when all messages are at or below the highest position
@@ -1563,7 +1565,7 @@ module Sourced
       key_pair_ids = partition_key_pair_ids(query.attrs)
       messages = fetch_partition_messages(key_pair_ids, query.attrs.keys, after_position, query.types, limit:)
       last_position = messages.empty? ? after_position : messages.last.position
-      guard = PartitionGuard.new(attrs: query.attrs, types: query.types, last_position:)
+      guard = ConsistencyGuard.new(query:, last_position:)
       ReadResult.new(messages:, guard:)
     end
 
@@ -1573,13 +1575,13 @@ module Sourced
     # @return [ReadResult]
     def read_conditions(conditions, after_position:, limit:)
       if conditions.empty?
-        guard = ConsistencyGuard.new(conditions:, last_position: after_position || latest_position)
+        guard = ConsistencyGuard.new(query: conditions, last_position: after_position || latest_position)
         return ReadResult.new(messages: [], guard:)
       end
 
       messages = query_messages(conditions, after_position:, limit:)
       last_position = messages.any? ? messages.last.position : (after_position || latest_position)
-      guard = ConsistencyGuard.new(conditions:, last_position:)
+      guard = ConsistencyGuard.new(query: conditions, last_position:)
       ReadResult.new(messages:, guard:)
     end
 
@@ -1611,13 +1613,15 @@ module Sourced
     end
 
     # Whether a message the guard covers was appended after its position.
-    # A {PartitionGuard} runs the claim's partition match, LIMIT 1.
+    # A {PartitionQuery} runs the claim's partition match, LIMIT 1.
     #
-    # @param guard [ConsistencyGuard, PartitionGuard]
+    # @param guard [ConsistencyGuard]
     # @return [Boolean]
     def check_conflicts(guard)
-      case guard
-      in PartitionGuard[attrs:, types:, last_position:]
+      last_position = guard.last_position
+
+      case guard.query
+      in PartitionQuery[attrs:, types:]
         key_pair_ids = partition_key_pair_ids(attrs)
         return false if key_pair_ids.empty? || types.empty?
 
@@ -1627,8 +1631,10 @@ module Sourced
           LIMIT 1
         SQL
         !db.fetch(sql).first.nil?
-      in ConsistencyGuard[conditions:, last_position:]
-        conditions.any? && query_messages(conditions, after_position: last_position).any?
+      in []
+        false
+      in Array => conditions
+        query_messages(conditions, after_position: last_position).any?
       end
     end
 

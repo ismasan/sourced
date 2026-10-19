@@ -12,10 +12,6 @@ module Sourced
   # Multiple conditions are OR'd when passed to {Store#read}.
   QueryCondition = Data.define(:message_type, :attrs)
 
-  # Returned by {Store#read} for conditions, for optimistic concurrency.
-  # Pass to {Store#append} via +guard:+ to detect conflicting writes.
-  ConsistencyGuard = Data.define(:conditions, :last_position)
-
   # Partitioning by {Message#id}: one partition per message, the store's queue
   # case. The id is indexed under a reserved key name, chosen not to collide
   # with a payload attribute.
@@ -51,12 +47,14 @@ module Sourced
     end
   end
 
-  # Returned by {Store#read} for a {PartitionQuery}, by {Store#read_partition}
-  # and by {Store#claim_next}. {Store#append} raises when a message in the
-  # partition (as {PartitionQuery} defines it) was appended after +last_position+.
-  PartitionGuard = Data.define(:attrs, :types, :last_position) do
-    def query = PartitionQuery.new(attrs:, types:)
-  end
+  # Optimistic concurrency: detects messages matching +query+ appended after
+  # +last_position+. Returned by {Store#read}, {Store#read_partition} and
+  # {Store#claim_next}; pass to {Store#append} via +guard:+. An empty
+  # conditions Array guards nothing.
+  #
+  # @!attribute query [PartitionQuery, Array<QueryCondition>] what {Store#read} read
+  # @!attribute last_position [Integer]
+  ConsistencyGuard = Data.define(:query, :last_position)
 
   class Message
     # Build a {QueryCondition} for the intersection of this message's declared

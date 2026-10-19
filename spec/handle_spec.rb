@@ -249,7 +249,7 @@ RSpec.describe 'Sourced.handle!' do
 
   describe 'optimistic concurrency' do
     it 'guard prevents concurrent writes within the same partition' do
-      # Create the device first so there is history (and thus guard conditions)
+      # Create the device first so there is history (and thus a guard query)
       Sourced.handle!(
         HandleTestDecider,
         HandleTestMessages::CreateDevice.new(payload: { device_id: 'd1', name: 'Sensor' }),
@@ -284,7 +284,7 @@ RSpec.describe 'Sourced.handle!' do
 
       expect(store).to have_received(:append).with(
         anything,
-        guard: an_instance_of(Sourced::PartitionGuard)
+        guard: having_attributes(class: Sourced::ConsistencyGuard, query: an_instance_of(Sourced::PartitionQuery))
       )
     end
   end
