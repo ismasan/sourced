@@ -167,7 +167,7 @@ module MachineTopologyTest
         )
       end
 
-      it "follows a mounted machine's on_done from the command that reaches its final" do
+      it "follows a mounted machine's on_final from the command that reaches its final" do
         inner = Class.new(Sourced::Machine) do
           def self.name = 'MachineTopologyTest::Inner'
           started :working do
@@ -179,7 +179,7 @@ module MachineTopologyTest
           def self.name = 'MachineTopologyTest::Outer'
           partition_by :trip_id
           initial { command Open => :busy }
-          state :busy, inner, on_done: { inner.declared_states.fetch(:finished) => :done }
+          state(:busy, inner) { on_final inner.declared_states.fetch(:finished) => :done }
           final :done
         end
         nodes = Sourced::Topology.build([outer])

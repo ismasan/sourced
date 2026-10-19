@@ -183,10 +183,10 @@ module MachineChartTest
     Confirmed = State(:confirmed)
 
     initial { command Open => Planning }
-    state Planning, PlanningMachine, on_done: { PlanningMachine::Finalised => Reserving }
+    state(Planning, PlanningMachine) { on_final PlanningMachine::Finalised => Reserving }
     state Reserving do
       region :hotel, SupplierMachine
-      region :flights, SupplierMachine, on_done: { SupplierMachine::Held => Confirmed }
+      region :flights, SupplierMachine, on_final: { SupplierMachine::Held => Confirmed }
     end
     final Confirmed
   end
@@ -291,8 +291,8 @@ module MachineChartTest
       it 'places a machine mounted twice at two paths' do
         reserving = TourMachine.to_h[:states]['reserving']
         expect(reserving).to include(type: 'parallel', mounts: [
-          { region: 'hotel', src: 'MachineChartTest::SupplierMachine', on_done: {} },
-          { region: 'flights', src: 'MachineChartTest::SupplierMachine', on_done: { 'reserving.flights.held' => 'confirmed' } }
+          { region: 'hotel', src: 'MachineChartTest::SupplierMachine', on_final: {} },
+          { region: 'flights', src: 'MachineChartTest::SupplierMachine', on_final: { 'reserving.flights.held' => 'confirmed' } }
         ])
         hotel, flights = reserving[:states].values_at('hotel', 'flights')
         expect(hotel).to include(id: 'reserving.hotel', initial: 'reserving.hotel.initial')
@@ -308,7 +308,7 @@ module MachineChartTest
         planning = TourMachine.to_h[:states]['planning']
         expect(planning).to include(id: 'planning', type: 'compound', initial: 'planning.itinerary',
                                     mounts: [{ region: 'planning', src: 'MachineChartTest::PlanningMachine',
-                                               on_done: { 'planning.finalised' => 'reserving' } }])
+                                               on_final: { 'planning.finalised' => 'reserving' } }])
         expect(planning[:states].keys).to eq(%w[itinerary finalised])
 
         itinerary = planning[:states]['itinerary']
@@ -544,8 +544,8 @@ module MachineChartTest
             }
             state "confirmed" as confirmed
             [*] --> planning : Open
-            planning_finalised --> reserving : on_done
-            reserving_flights_held --> confirmed : on_done
+            planning_finalised --> reserving : on_final
+            reserving_flights_held --> confirmed : on_final
             confirmed --> [*]
         MERMAID
       end

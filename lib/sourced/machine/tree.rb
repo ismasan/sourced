@@ -234,7 +234,7 @@ module Sourced
       def start_node = compound? ? nodes.fetch(machine.start_state) : nil
 
       # @return [Hash{State => State}] a mounted machine's root finals => the parent's states
-      def on_done = mount ? mount.on_done : NONE_MAP
+      def on_final = mount ? mount.on_final : NONE_MAP
 
       # The region's position before its first state, declared or not.
       def initial_node = nodes[INITIAL] || (@blank_initial ||= PlacedNode.new(region.initial_node, self))

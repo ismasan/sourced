@@ -221,14 +221,14 @@ module MachineAcceptanceHoliday
       expect(reopened.last.payload.entered).to eq(%w[planning planning.itinerary planning.itinerary.outlining])
     end
 
-    it 'accepts a quote and escalates through two on_done levels to reserving, in the same decision' do
+    it 'accepts a quote and escalates through two on_final levels to reserving, in the same decision' do
       trip = tour(*quoted)
       events = trip.decide(msg(AcceptQuote))
 
       expect(moves(events)).to eq([
         ['acceptance_holidays.accept_quote', %w[planning.itinerary.accepted]],
-        ['on_done', %w[planning.agreed]],
-        ['on_done', %w[reserving]]
+        ['on_final', %w[planning.agreed]],
+        ['on_final', %w[reserving]]
       ])
       expect(events.last).to be_a(TourBooking::Reserving)
       expect(trip.machine.value).to eq(TourBooking::Reserving => { outbound: :initial, return: :initial, deposit: :initial })
@@ -244,7 +244,7 @@ module MachineAcceptanceHoliday
 
       # Only the outbound leg maps Released: losing the seats makes the tour unavailable.
       released = trip.decide(msg(ReleaseSeats))
-      expect(moves(released).last).to eq(['on_done', %w[unavailable]])
+      expect(moves(released).last).to eq(['on_final', %w[unavailable]])
       expect(trip.machine.value).to eq(TourBooking::Unavailable)
     end
 

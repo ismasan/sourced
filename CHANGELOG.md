@@ -208,12 +208,12 @@
   `Machine.to_h` returns the definition as a JSON-serializable, XState-shaped Hash, and
   `Machine#to_h` the same Hash with the instance's status. Design in
   `plans/statecharts-transitions.md`.
-- Composing machines: `region :payment, PaymentMachine, on_done: { PaymentMachine::Expired
-  => Cancelled }` runs another machine as a region, and `state Working, ThingMachine,
-  on_done: { … }` as a compound state whose sub-states start at its `started`
+- Composing machines: `region :payment, PaymentMachine, on_final: { PaymentMachine::Expired
+  => Cancelled }` runs another machine as a region, and `state Working, ThingMachine do
+  on_final ThingMachine::Done => Ready end` as a compound state whose sub-states start at its `started`
   state (which can itself be compound). A composed machine runs in the parent's partition and instance, its
   projection built from the parent's context; it escalates through its root finals, which
-  `on_done` maps onto the parent's states. The mounting machine appends its own
+  `on_final` maps onto the parent's states. The mounting machine appends its own
   generated classes for the composed machine's states
   (`OrderMachine::Mounted::PaymentMachine::Captured`, type
   `order_machine.runtime.mounted.payment_machine.captured`, see `state_class`), so a

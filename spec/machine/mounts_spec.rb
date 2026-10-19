@@ -65,7 +65,7 @@ module MachineMountsTest
 
     state Placed do
       command CancelOrder => Cancelled
-      region :payment, PaymentMachine, on_done: { PaymentMachine::Expired => Cancelled }
+      region :payment, PaymentMachine, on_final: { PaymentMachine::Expired => Cancelled }
       region :shipping do
         initial { command Ship => :shipped }
         final :shipped
@@ -308,14 +308,14 @@ RSpec.describe 'Sourced::Machine region mounts' do
     end
   end
 
-  describe 'on_done' do
+  describe 'on_final' do
     it "maps the mounted machine's final onto ours, in the deciding decision" do
       events = decided(MM::MountedOrder, msg(MM::PlaceOrder), msg(MM::StartPayment, card: 'tok')).decide(msg(MM::ExpirePayment))
 
       expect(summary(events)).to eq(moves(
         MM::MountedOrder,
         ['machine_mounts_test.expire_payment', { from: 'placed.payment.authorizing', to: 'placed.payment.expired', exited: %w[placed.payment.authorizing] }],
-        ['on_done', { from: 'placed.payment.expired', to: 'cancelled', exited: %w[placed.payment.expired placed] }]
+        ['on_final', { from: 'placed.payment.expired', to: 'cancelled', exited: %w[placed.payment.expired placed] }]
       ))
     end
   end
@@ -414,11 +414,11 @@ RSpec.describe 'Sourced::Machine region mounts' do
       expect(machine.to_mermaid).to include('placed_payment_authorizing --> placed_payment_captured : Capture')
     end
 
-    it 'includes the on_done mappings in to_h and to_mermaid' do
+    it 'includes the on_final mappings in to_h and to_mermaid' do
       expect(machine.to_h[:states]['placed'][:mounts]).to eq([{
-        region: 'payment', src: MM::PaymentMachine.name, on_done: { 'placed.payment.expired' => 'cancelled' }
+        region: 'payment', src: MM::PaymentMachine.name, on_final: { 'placed.payment.expired' => 'cancelled' }
       }])
-      expect(machine.to_mermaid).to include('placed_payment_expired --> cancelled : on_done')
+      expect(machine.to_mermaid).to include('placed_payment_expired --> cancelled : on_final')
     end
 
     it "includes the mounted machine's commands and actions in the topology" do
@@ -499,10 +499,10 @@ RSpec.describe 'Sourced::Machine region mounts' do
       expect { twice.validate! }.to raise_error(Sourced::Machine::DefinitionError, /LinesRegion is mounted twice, and declares children/)
     end
 
-    it 'rejects on_done keys that are not root finals, and unreachable targets' do
+    it 'rejects on_final keys that are not root finals, and unreachable targets' do
       not_final = machine do
         state(:placed) do
-          region :payment, MachineMountsTest::PaymentMachine, on_done: { MachineMountsTest::PaymentMachine::Authorizing => :cancelled }
+          region :payment, MachineMountsTest::PaymentMachine, on_final: { MachineMountsTest::PaymentMachine::Authorizing => :cancelled }
         end
         final :cancelled
       end
@@ -510,7 +510,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
 
       elsewhere = machine do
         state(:placed) do
-          region :payment, MachineMountsTest::PaymentMachine, on_done: { MachineMountsTest::PaymentMachine::Expired => :refunded }
+          region :payment, MachineMountsTest::PaymentMachine, on_final: { MachineMountsTest::PaymentMachine::Expired => :refunded }
         end
         state(:returned) { region(:refund) { final :refunded } }
       end
@@ -518,19 +518,19 @@ RSpec.describe 'Sourced::Machine region mounts' do
 
       unplaced = machine do
         state(:placed) do
-          region :payment, MachineMountsTest::PaymentMachine, on_done: { MachineMountsTest::PaymentMachine::Expired => :cancelled }
+          region :payment, MachineMountsTest::PaymentMachine, on_final: { MachineMountsTest::PaymentMachine::Expired => :cancelled }
         end
       end
       expect { unplaced.validate! }.to raise_error(Sourced::Machine::DefinitionError, /Cancelled declared but never placed/)
     end
 
-    it 'rejects a block with a machine, and on_done without one' do
+    it 'rejects a block with a machine, and on_final without one' do
       expect do
         machine { state(:placed) { region(:payment, MachineMountsTest::PaymentMachine) { initial } } }
       end.to raise_error(Sourced::Machine::DefinitionError, /a machine or a block, not both/)
       expect do
-        machine { state(:placed) { region(:payment, on_done: { 1 => 2 }) { initial } } }
-      end.to raise_error(Sourced::Machine::DefinitionError, /on_done is for a mounted machine/)
+        machine { state(:placed) { region(:payment, on_final: { 1 => 2 }) { initial } } }
+      end.to raise_error(Sourced::Machine::DefinitionError, /on_final is for a mounted machine/)
     end
   end
 end

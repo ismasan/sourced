@@ -19,8 +19,8 @@ module Sourced
     # state of its own, it starts from the composite state that contains the
     # region. A child's +started+ state is entered from the diagram's
     # start. A compound state (a machine's) is a composite state entered
-    # at its machine's start. A mounted machine's +on_done+ mappings are drawn
-    # from its finals, labelled +on_done+. A transition to a state's
+    # at its machine's start. A mounted machine's +on_final+ mappings are drawn
+    # from its finals, labelled +on_final+. A transition to a state's
     # history goes to the state, its label suffixed +(H)+ (+(H*)+ for deep).
     #
     #   Sourced::Machine::Mermaid.new(OrderMachine).to_s
@@ -63,7 +63,7 @@ module Sourced
         end
         # A mounted machine's root final escalates from the final itself.
         @tree.all_regions.each do |region|
-          region.on_done.each { |final, target| edge(region.nodes.fetch(final), target, 'on_done', from: region.parent) }
+          region.on_final.each { |final, target| edge(region.nodes.fetch(final), target, 'on_final', from: region.parent) }
         end
         return unless @machine.stop_state
 

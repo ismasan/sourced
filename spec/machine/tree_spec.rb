@@ -34,7 +34,7 @@ module MachineTreeTest
     Itinerary = State(:itinerary)
     Finalised = State(:finalised)
 
-    started Itinerary, OutlineMachine, on_done: { OutlineMachine::Agreed => Finalised }
+    started(Itinerary, OutlineMachine) { on_final OutlineMachine::Agreed => Finalised }
     final Finalised
   end
 

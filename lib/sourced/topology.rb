@@ -260,7 +260,7 @@ module Sourced
 
     # Every transition the definition declares, as +[source, target]+ placed
     # nodes: commands, +children_done+, +always+, +done+, state-started and
-    # mounted machines' +on_done+, and +stopped+ (from each top-level state).
+    # mounted machines' +on_final+, and +stopped+ (from each top-level state).
     # @api private
     def self.machine_transitions(machine)
       tree = machine.tree
@@ -271,7 +271,7 @@ module Sourced
         targets += node.invokes.flat_map { |spec| spec.on_done.values }
         own = targets.map { |handle| [node, tree.resolve(node, handle)] }
         mounted = node.regions.flat_map do |region|
-          region.on_done.map { |final, handle| [region.nodes.fetch(final), tree.resolve(node, handle)] }
+          region.on_final.map { |final, handle| [region.nodes.fetch(final), tree.resolve(node, handle)] }
         end
         own + mounted
       end
@@ -317,7 +317,7 @@ module Sourced
     end
 
     # +handles+, and every state their +always+ or a mounted machine's
-    # +on_done+ can move on to, through the states entering them enters
+    # +on_final+ can move on to, through the states entering them enters
     # (compound starts), each once.
     # @api private
     def self.eventless_closure(machine, handles)
@@ -332,7 +332,7 @@ module Sourced
         tree.placements(handle).flat_map { |placed| tree.default_entry(placed) }.each do |entered|
           pending.concat(entered.always.map { |eventless| tree.resolve(entered, eventless.target).key })
           # A mounted machine's mapped final escalates in the same decision.
-          mapped = entered.region.on_done[entered.key]
+          mapped = entered.region.on_final[entered.key]
           pending << tree.resolve(entered.region.parent, mapped).key if mapped
         end
       end

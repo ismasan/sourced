@@ -331,10 +331,10 @@ module Sourced
     # +region :name, SomeMachine+ or, for a compound state,
     # +state Handle, SomeMachine+. Its definition isn't copied: the tree
     # places the machine's root region under the state (see {Tree}).
-    # +on_done+ maps the machine's root final states onto the parent's. A
-    # compound region starts at the machine's +started+ state; any other at
-    # its initial position.
-    RegionMount = Data.define(:name, :machine, :on_done, :compound) do
+    # +on_final+ maps the machine's root final states onto the parent's
+    # (filled while the machine is defined). A compound region starts at the
+    # machine's +started+ state; any other at its initial position.
+    RegionMount = Data.define(:name, :machine, :on_final, :compound) do
       def compound? = compound
     end
 
@@ -401,8 +401,8 @@ module Sourced
 
       def initial(&block) = @machine.send(:__define_node, @region, INITIAL, final: false, &block)
 
-      def state(handle, machine = nil, on_done: {}, &block)
-        @machine.send(:__define_state, @region, handle, machine, on_done, &block)
+      def state(handle, machine = nil, &block)
+        @machine.send(:__define_state, @region, handle, machine, &block)
       end
 
       def final(handle, &block) = @machine.send(:__define_node, @region, @machine.send(:__handle, handle), final: true, &block)
@@ -453,7 +453,7 @@ module Sourced
         in Class if event_class < State
           raise DefinitionError, "#{@machine}: on #{event_class}: a state class; on takes another reactor's event"
         in Class if event_class < ChildEvent
-          raise DefinitionError, "#{@machine}: on #{event_class}: a child machine's event; use on_done or children_done"
+          raise DefinitionError, "#{@machine}: on #{event_class}: a child machine's event; use start … on_done or children_done"
         in Class if event_class < Sourced::Event
           nil
         else
@@ -511,14 +511,14 @@ module Sourced
       # machine, they're that machine's: it runs as this region, in this
       # machine's partition, decided with it, its context this machine's (its
       # +evolve+ blocks apply to it too). It escalates through its root final
-      # states, which +on_done+ maps onto ours.
+      # states, which +on_final+ maps onto ours.
       #
-      #   region :payment, PaymentMachine, on_done: { PaymentMachine::Expired => Cancelled }
+      #   region :payment, PaymentMachine, on_final: { PaymentMachine::Expired => Cancelled }
       #
       # @param name [Symbol] unique within the machine
       # @param machine [Class<Machine>, nil]
-      # @param on_done [Hash{State => State}] the machine's root final => our state
-      def region(name, machine = nil, on_done: {}, &block)
+      # @param on_final [Hash{State => State}] the machine's root final => our state
+      def region(name, machine = nil, on_final: {}, &block)
         raise DefinitionError, "#{@machine}: the initial position can't have regions" if @node.initial?
         raise DefinitionError, "#{@machine}: final state #{@node.key} can't have regions" if @node.final?
         if @node.regions.any? { |r| r.is_a?(RegionMount) && r.compound? }
@@ -528,9 +528,9 @@ module Sourced
         if machine
           raise DefinitionError, "#{@machine}: region #{name.inspect} takes a machine or a block, not both" if block
 
-          @machine.send(:__mount_region, @node, name.to_sym, machine, on_done)
+          @machine.send(:__mount_region, @node, name.to_sym, machine, on_final)
         else
-          raise DefinitionError, "#{@machine}: region #{name.inspect}: on_done is for a mounted machine" if on_done.any?
+          raise DefinitionError, "#{@machine}: region #{name.inspect}: on_final is for a mounted machine" if on_final.any?
 
           @machine.send(:__define_region, @node, name.to_sym, &block)
         end
@@ -570,6 +570,22 @@ module Sourced
         raise DefinitionError, "#{@machine}: final state #{@node.label} can't have always" if @node.final?
 
         @node.always << @machine.send(:__eventless, @node, 'always', target, binding.local_variable_get(:if), @node.always)
+      end
+
+      # For a compound state (+state Handle, SomeMachine+): when the machine
+      # reaches one of its root finals, move to the target mapped to it, before
+      # any +done+ join. Unmapped finals leave the machine there.
+      #
+      #   state Unverified, VerificationMachine do
+      #     on_final VerificationMachine::Verified => Active
+      #   end
+      #
+      # @param mapping [Hash{State => State}] the machine's root final => our state
+      def on_final(mapping)
+        mount = @node.regions.find { |region| RegionMount === region && region.compound? }
+        raise DefinitionError, "#{@machine}: #{@node.label} mounts no machine, so no on_final; use done" unless mount
+
+        @machine.send(:__map_finals, mount, mapping)
       end
 
       # Run a child machine while this state is active: started in the
@@ -1000,11 +1016,11 @@ module Sourced
       # command. With a machine, the start is a compound state, entered at
       # that machine's own start.
       # @param handle [State, Symbol]
-      def started(handle, machine = nil, on_done: {}, &block)
+      def started(handle, machine = nil, &block)
         raise DefinitionError, "#{self}: started is declared twice" if @start_state
 
         @start_state = __handle(handle)
-        state(@start_state, machine, on_done:, &block)
+        state(@start_state, machine, &block)
       end
 
       # Declare what this machine becomes when its parent stops it. Generates a
@@ -1086,18 +1102,19 @@ module Sourced
       # With a machine, the state is compound: its sub-states are that
       # machine's states, entered at its +started+ state:
       #
-      #   state Planning, PlanningMachine, on_done: { PlanningMachine::Finalised => Reserving }
+      #   state Planning, PlanningMachine do
+      #     on_final PlanningMachine::Finalised => Reserving
+      #   end
       #
       # The block declares the compound state's own commands and actions.
       # The machine runs in this machine's partition and instance, its context
-      # this machine's; it escalates through its root finals, which +on_done+
+      # this machine's; it escalates through its root finals, which +on_final+
       # maps onto our states.
       #
       # @param handle [State, Symbol] one of this machine's states; a Symbol declares it
       # @param machine [Class<Machine>, nil] a machine with +started+, for a compound state
-      # @param on_done [Hash{State => State}] the machine's root final => our state
-      def state(handle, machine = nil, on_done: {}, &block)
-        __define_state(root, handle, machine, on_done, &block)
+      def state(handle, machine = nil, &block)
+        __define_state(root, handle, machine, &block)
       end
 
       # Place a final state. It accepts no commands.
@@ -1236,7 +1253,7 @@ module Sourced
         nodes = tree.all_nodes
         {
           always_step: nodes.any? { |node| node.always.any? },
-          mount_done_step: tree.all_regions.any? { |region| region.on_done.any? },
+          mount_final_step: tree.all_regions.any? { |region| region.on_final.any? },
           join_step: nodes.any? { |node| node.dones.any? },
           children_join_step: nodes.any? { |node| node.children_joins.any? },
           invoke_step: nodes.any? { |node| node.invokes.any? }
@@ -1319,20 +1336,17 @@ module Sourced
         end)
       end
 
-      def __define_state(region, handle, machine, on_done, &block)
+      def __define_state(region, handle, machine, &block)
         handle = __handle(handle)
-        if machine.nil?
-          raise DefinitionError, "#{self}: state #{handle}: on_done is for a compound state" if on_done.any?
+        return __define_node(region, handle, final: false, &block) if machine.nil?
 
-          return __define_node(region, handle, final: false, &block)
-        end
         unless machine.is_a?(Class) && machine < Machine
           raise DefinitionError, "#{self}: state #{handle}: #{machine.inspect} isn't a Sourced::Machine"
         end
         raise DefinitionError, "#{self}: state #{handle}: #{machine} has no start state" unless machine.start_state
 
         # Named after its state, so one machine can be several compound states.
-        mount = __mount(handle.state_name, machine, on_done, compound: true)
+        mount = __mount(handle.state_name, machine, compound: true)
         __define_node(region, handle, final: false, mount:, &block)
       end
 
@@ -1360,18 +1374,19 @@ module Sourced
         region
       end
 
-      def __mount_region(node, name, machine, on_done)
+      def __mount_region(node, name, machine, on_final)
         unless machine.is_a?(Class) && machine < Machine
           raise DefinitionError, "#{self}: region #{name.inspect}: #{machine.inspect} isn't a Sourced::Machine"
         end
 
-        mount = __mount(name, machine, on_done, compound: false)
+        mount = __mount(name, machine, compound: false)
+        __map_finals(mount, on_final) if on_final.any?
         node.regions << mount
         mount
       end
 
       # Record a mount of +machine+ under +name+, unique among this machine's regions.
-      def __mount(name, machine, on_done, compound:)
+      def __mount(name, machine, compound:)
         raise DefinitionError, "#{self}: region #{name.inspect} is declared twice" if regions.key?(name) || mounts.key?(name)
         raise DefinitionError, "#{self}: region #{name.inspect}: a machine can't be its own region" if machine <= self
         # Reactions are methods, and sync blocks the machine's own: neither can
@@ -1384,8 +1399,21 @@ module Sourced
                 "which it can't run as a region; declare them on #{self}"
         end
 
-        on_done = on_done.to_h { |final, target| [machine.send(:__handle, final, declare: false), __own_target(target)] }
-        mounts[name] = RegionMount.new(name:, machine:, on_done:, compound:).tap { __generate_mounted(machine) }
+        mounts[name] = RegionMount.new(name:, machine:, on_final: {}, compound:).tap { __generate_mounted(machine) }
+      end
+
+      # Add +mapping+ (the mounted machine's root final => our target) to +mount+.
+      def __map_finals(mount, mapping)
+        unless Hash === mapping && mapping.any?
+          raise DefinitionError, "#{self}: region #{mount.name.inspect}: on_final takes { Final => target }, got #{mapping.inspect}"
+        end
+
+        mapping.each do |final, target|
+          final = mount.machine.send(:__handle, final, declare: false)
+          raise DefinitionError, "#{self}: region #{mount.name.inspect} maps on_final #{final} twice" if mount.on_final.key?(final)
+
+          mount.on_final[final] = __own_target(target)
+        end
       end
 
       def __define_invoke(child, node:, payload:, on_done:)
@@ -1547,7 +1575,7 @@ module Sourced
 
         raise DefinitionError,
               "#{self}: #{node.label} targets #{handle}, another machine's state that isn't below it; " \
-              'a mounted machine reaches ours through on_done'
+              'a mounted machine reaches ours through on_final'
       end
 
       def __validate!(tree)
@@ -1594,8 +1622,8 @@ module Sourced
       # states reachable from the state that mounts it.
       # @param region [PlacedRegion]
       def __check_mount!(tree, region)
-        region.on_done.each do |final, target|
-          __check_root_final!(region.machine, final, "region #{region.path} on_done")
+        region.on_final.each do |final, target|
+          __check_root_final!(region.machine, final, "region #{region.path} on_final")
           tree.resolve(region.parent, target)
         end
       end
@@ -1819,7 +1847,7 @@ module Sourced
     end
 
     # What the current configuration decides without a command, until nothing
-    # is left: +always+, mounted machines' +on_done+, +done+ joins,
+    # is left: +always+, mounted machines' +on_final+, +done+ joins,
     # +children_done+ joins, starting states' children, and mapping their
     # results.
     # @api private
@@ -1966,18 +1994,18 @@ module Sourced
       raise Error, "#{self.class}: more than #{MAX_JOINS} joins in one decision"
     end
 
-    # A mounted machine at one of its root finals that +on_done+ maps: move to
+    # A mounted machine at one of its root finals that +on_final+ maps: move to
     # the mapped state. Before +done+ joins, so a region's escalation
     # (ex. a payment expiring) wins over completing its state.
-    def mount_done_step(active)
+    def mount_final_step(active)
       active.each do |node|
         node.regions.each do |region|
-          next if region.on_done.empty?
+          next if region.on_final.empty?
 
           current = @runtime.current_node(region)
-          next unless current.final? && (target = region.on_done[current.key])
+          next unless current.final? && (target = region.on_final[current.key])
 
-          move(current, target, trigger: 'on_done', from: node)
+          move(current, target, trigger: 'on_final', from: node)
           return true
         end
       end

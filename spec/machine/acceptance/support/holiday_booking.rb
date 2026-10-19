@@ -202,7 +202,7 @@ module MachineAcceptanceHoliday
 
   # A guided tour, on the same messages helpers: the plan's gaps in travel terms.
   #
-  #   initial ─RequestTour─▶ planning ════════════════════════════════════on_done─▶ reserving ─done─▶ confirmed ─on_done─▶ completed
+  #   initial ─RequestTour─▶ planning ═══════════════════════════════════on_final─▶ reserving ─done─▶ confirmed ─on_done─▶ completed
   #                          └ itinerary (PlanningMachine's start)                  ├ outbound: FlightLeg  │  └ start AirportTransfer 
   #                            └ outlining ─Price─▶ pricing ─always─▶ quoted ─Accept─▶ accepted               ├ return:   FlightLeg  └─▶ awaiting_visas ─children_done─▶ confirmed | visa_refused
   #                                                       └─always─▶ awaiting_sign_off  └ deposit:  on DepositReceived
@@ -221,7 +221,7 @@ module MachineAcceptanceHoliday
   #   ReopenPlanning restores it at its start (shallow).
   # - Gap 6, a compound's command targeting its sub-state: planning's ChangeDates
   #   moves the itinerary back to outlining.
-  # - Gap 7, escalation: AcceptQuote reaches reserving through two on_done
+  # - Gap 7, escalation: AcceptQuote reaches reserving through two on_final
   #   levels, in the deciding command.
   # - External events: a payment gateway's DepositReceived and an airline's
   #   SeatsTicketed move the tour with `on`.
@@ -325,7 +325,8 @@ module MachineAcceptanceHoliday
     Itinerary = State(:itinerary)
     Agreed = State(:agreed)
 
-    started Itinerary, ItineraryMachine, on_done: { ItineraryMachine::Accepted => Agreed } do
+    started Itinerary, ItineraryMachine do
+      on_final ItineraryMachine::Accepted => Agreed
       entry { |_tour, _evt| dispatch ShareItinerary }
     end
 
@@ -426,7 +427,8 @@ module MachineAcceptanceHoliday
       end
     end
 
-    state Planning, PlanningMachine, on_done: { PlanningMachine::Agreed => Reserving } do
+    state Planning, PlanningMachine do
+      on_final PlanningMachine::Agreed => Reserving
       entry { |_tour, _evt| dispatch StartPlannerChat }
       command ChangeDates => ItineraryMachine::Outlining do |_tour, cmd|
         event DatesChanged, depart_on: cmd.payload.depart_on
@@ -446,7 +448,7 @@ module MachineAcceptanceHoliday
       entry { |tour, _evt| dispatch ChargeDeposit, amount: tour.deposit }
       command CancelTour => Cancelled
 
-      region :outbound, FlightLeg, on_done: { FlightLeg::Released => Unavailable }
+      region :outbound, FlightLeg, on_final: { FlightLeg::Released => Unavailable }
       region :return, FlightLeg
 
       region :deposit do
