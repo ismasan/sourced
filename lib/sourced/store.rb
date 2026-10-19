@@ -330,13 +330,15 @@ module Sourced
             raise Sourced::ConcurrentAppendError, "Conflicting messages found after position #{guard.last_position}" if conflicts.any?
           end
 
+          indexed_keys = []
           to_append.each do |msg|
             # The codec turns native Ruby values (Dates, Times, Symbols, …) into
-            # JSON-native ones. Payload and metadata are stored as JSON; the rest of
-            # the envelope goes into columns.
+            # JSON-native ones. Payload, metadata and tags are stored as JSON; the
+            # rest of the envelope goes into columns.
             encoded = message_codec.encode(msg)
             payload_json = encoded['payload'] ? JSON.dump(encoded['payload']) : '{}'
             metadata_json = encoded['metadata'].empty? ? nil : JSON.dump(encoded['metadata'])
+            tags_json = encoded['tags'].empty? ? nil : JSON.dump(encoded['tags'])
 
             # insert returns last_insert_rowid on SQLite — no need for a separate SELECT
             last_position = db[@messages_table].insert(
@@ -346,14 +348,16 @@ module Sourced
               correlation_id: msg.correlation_id,
               payload: payload_json,
               metadata: metadata_json,
+              tags: tags_json,
               created_at: msg.created_at.iso8601(6)
             )
 
             # Upsert key pairs and link to message in 2 statements (was 3):
             # 1. INSERT OR IGNORE the key_pair
             # 2. INSERT message_key_pair with key_pair_id resolved via subquery
-            basis = index_by || @type_index_basis[msg.type] || :payload
-            effective_keys(msg, basis).each do |name, value|
+            keys = effective_keys(msg, index_by)
+            indexed_keys << keys
+            keys.each do |name, value|
               db.run("INSERT OR IGNORE INTO #{@key_pairs_table} (name, value) VALUES (#{db.literal(name)}, #{db.literal(value)})")
               db.run(<<~SQL)
                 INSERT INTO #{@message_key_pairs_table} (message_position, key_pair_id)
@@ -366,7 +370,7 @@ module Sourced
 
           # Only immediate messages advance offsets; scheduled ones get offsets
           # when promoted (re-appended) by #update_schedule!.
-          ensure_offsets_for_registered_groups(to_append)
+          ensure_offsets_for_registered_groups(indexed_keys)
         end
 
         # Announce once the messages are visible: after the *outermost*
@@ -1257,12 +1261,12 @@ module Sourced
     # process (and thus which registration state) performed the append.
     #
     # @param msg [Sourced::Message]
-    # @param index_by [Symbol]
+    # @param index_by [Symbol, nil] +:payload+ or +:id+; nil resolves it from the owning group
     # @return [Enumerable<Array(String, String)>]
-    def effective_keys(msg, index_by)
-      case index_by
-      when :id then [['__id', msg.id]]
-      else [['__id', msg.id], *msg.extracted_keys]
+    def effective_keys(msg, index_by = nil)
+      case index_by || @type_index_basis[msg.type] || :payload
+      in :id then [['__id', msg.id]]
+      in :payload then [['__id', msg.id], *msg.extracted_keys]
       end
     end
 
@@ -1276,9 +1280,10 @@ module Sourced
     # Create offsets eagerly for all registered consumer groups.
     # Called inside the append transaction after messages and key_pairs are inserted.
     #
-    # @param messages [Array<Sourced::Message>] messages being appended
+    # @param indexed_keys [Array<Array<Array(String, String)>>] each appended
+    #   message's {#effective_keys}, as indexed
     # @return [void]
-    def ensure_offsets_for_registered_groups(messages)
+    def ensure_offsets_for_registered_groups(indexed_keys)
       return if @registered_groups.empty?
 
       # Collect partition attribute names across eagerly-offset groups.
@@ -1303,8 +1308,8 @@ module Sourced
         cg_id = group_info[:cg_id]
         seen = Set.new
 
-        messages.each do |msg|
-          keys = msg.extracted_keys.to_h  # {"device_id"=>"dev-1", "name"=>"A"}
+        indexed_keys.each do |pairs|
+          keys = pairs.to_h  # {"__id"=>"…", "device_id"=>"dev-1", "name"=>"A"}
           next unless partition_by.all? { |attr| keys.key?(attr) }
 
           values = partition_by.to_h { |attr| [attr, keys[attr]] }
@@ -1312,11 +1317,9 @@ module Sourced
           next if seen.include?(pk)
           seen << pk
 
-          kp_ids = partition_by.map { |attr| kp_id_cache["#{attr}:#{values[attr]}"] }
-          # A key_pair may be missing if the message was appended with a different
-          # index_by (e.g. :id), so its payload attrs were never indexed. Skip —
-          # such a message isn't claimable by this group anyway.
-          next if kp_ids.any?(&:nil?)
+          kp_ids = partition_by.map do |attr|
+            kp_id_cache.fetch("#{attr}:#{values[attr]}") { raise KeyError, "key pair #{attr}:#{values[attr]} was not indexed" }
+          end
 
           create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids)
         end
@@ -1550,7 +1553,7 @@ module Sourced
         WITH partition_attr_names AS (
           SELECT DISTINCT name FROM #{@key_pairs_table} WHERE id IN (#{kp_ids_list})
         )
-        SELECT DISTINCT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.created_at
+        SELECT DISTINCT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.tags, m.created_at
         FROM #{@messages_table} m
         WHERE m.position > #{db.literal(last_position)}
           AND m.message_type IN (#{types_list})
@@ -1595,7 +1598,7 @@ module Sourced
       direction = order == :desc ? "DESC" : "ASC"
 
       sql = <<~SQL
-        SELECT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.created_at
+        SELECT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.tags, m.created_at
         FROM #{@messages_table} m
         WHERE m.position IN (#{union})
         ORDER BY m.position #{direction}
@@ -1676,7 +1679,7 @@ module Sourced
     # The codec resolves the message class from the registry and decodes the
     # whole message: columns and JSON blobs alike.
     #
-    # @param row [Hash] database row with :position, :message_id, :message_type, :causation_id, :correlation_id, :payload, :metadata, :created_at
+    # @param row [Hash] database row with :position, :message_id, :message_type, :causation_id, :correlation_id, :payload, :metadata, :tags, :created_at
     # @return [PositionedMessage]
     # @raise [Sourced::Message::UnknownMessageError] if the row's message type isn't registered
     # @raise [MessageCodec::DecodeError] if the stored message no longer satisfies its schema
@@ -1690,6 +1693,7 @@ module Sourced
         correlation_id: row[:correlation_id],
         created_at: row[:created_at],
         metadata: row[:metadata] ? JSON.parse(row[:metadata]) : nil,
+        tags: row[:tags] ? JSON.parse(row[:tags]) : nil,
         payload: JSON.parse(row[:payload])
       }.compact)
 

@@ -44,6 +44,19 @@ RSpec.describe Sourced::ActionRunner do
     end
   end
 
+  describe 'tagged messages in a plain Hash signal' do
+    it 'appends them with their tags, indexed into the tagged partition' do
+      tagged = InterpreterTestMessages::ThingDone.new(payload: { thing_id: 't1' }).with_tags(batch_id: 'b1')
+
+      interpreter.run({ type: :append, messages: [tagged] }, source, after_syncs)
+
+      appended = store.read(Sourced::QueryCondition.new(message_type: tagged.type, attrs: { batch_id: 'b1' })).messages
+      expect(appended.map(&:id)).to eq([tagged.id])
+      expect(appended.first.tags).to eq(batch_id: 'b1')
+      expect(appended.first.causation_id).to eq(source.id)
+    end
+  end
+
   describe 'guarded appends within one batch' do
     let(:conditions) { InterpreterTestMessages::ThingDone.to_conditions(thing_id: 't1') }
 

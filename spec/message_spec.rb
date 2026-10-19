@@ -105,6 +105,16 @@ RSpec.describe Sourced::Message do
   end
 
   describe '#extracted_keys' do
+    it 'includes tags, deduped against payload pairs' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+        .with_tags(device_id: 'dev-1', order_id: 'o1')
+      expect(msg.extracted_keys).to contain_exactly(
+        ['device_id', 'dev-1'],
+        ['name', 'A'],
+        ['order_id', 'o1']
+      )
+    end
+
     it 'extracts all top-level payload attributes as string pairs' do
       msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
       keys = msg.extracted_keys
@@ -159,13 +169,59 @@ RSpec.describe Sourced::Message do
       expect(conditions.first.attrs).to eq({ device_id: 'dev-1', name: 'Sensor A' })
     end
 
-    it 'returns empty array when no attributes match' do
-      conditions = TestMessages::DeviceRegistered.to_conditions(course_name: 'Algebra')
-      expect(conditions).to eq([])
+    it 'uses all attributes when the class declares none of them, as they can only be tags' do
+      conditions = TestMessages::DeviceRegistered.to_conditions(course_name: 'Algebra', seats: 10)
+      expect(conditions.size).to eq(1)
+      expect(conditions.first.message_type).to eq('device.registered')
+      expect(conditions.first.attrs).to eq({ course_name: 'Algebra', seats: '10' })
+    end
+
+    it 'returns empty array when no attributes are given' do
+      expect(TestMessages::DeviceRegistered.to_conditions).to eq([])
+    end
+  end
+
+  describe '#tags' do
+    it 'defaults to empty, on classes from .define and on Command / Event subclasses' do
+      expect(TestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'A' }).tags).to eq({})
+      expect(Sourced::Command.define('test.tags.cmd').new.tags).to eq({})
+      expect(Sourced::Event.define('test.tags.evt').new.tags).to eq({})
+    end
+
+    it 'is not part of the payload' do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'A' }).with_tags(order_id: 'o1')
+      expect(msg.payload.to_h).to eq(device_id: 'd1', name: 'A')
+    end
+  end
+
+  describe '#with_tags' do
+    let(:msg) { TestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'A' }) }
+
+    it 'merges tags, stringifying values' do
+      tagged = msg.with_tags(order_id: 'o1').with_tags(line: 2)
+      expect(tagged.tags).to eq(order_id: 'o1', line: '2')
+      expect(msg.tags).to eq({})
+    end
+
+    it 'accepts a tag equal to a payload attribute' do
+      expect(msg.with_tags(device_id: 'd1').tags).to eq(device_id: 'd1')
+    end
+
+    it 'raises when a tag names a payload attribute with a different value' do
+      expect { msg.with_tags(device_id: 'd2') }.to raise_error(Sourced::Message::TagConflictError, /device_id/)
     end
   end
 
   describe '#correlate' do
+    it "keeps the target's tags and copies none of the source's" do
+      source = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }).with_tags(order_id: 'o1')
+      target = TestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'L' }).with_tags(line_id: 'l1')
+      untagged = TestMessages::SystemUpdated.new(payload: { version: 'v1' })
+
+      expect(source.correlate(target).tags).to eq(line_id: 'l1')
+      expect(source.correlate(untagged).tags).to eq({})
+    end
+
     it 'sets causation_id to source message id' do
       source = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
       target = TestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'Label' })

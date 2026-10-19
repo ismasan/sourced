@@ -270,6 +270,62 @@ RSpec.describe Sourced::Router do
         Sourced::Router.new(store:, reactors: [RouterTestQueueWorker, rival])
       }.to raise_error(ArgumentError, /exclusive reactor/)
     end
+
+    it 'raises for two deciders handling the same command type' do
+      rival = Class.new(Sourced::Decider) do
+        consumer_group 'rival'
+        partition_by :device_id
+        command(RouterTestMessages::BindDevice) { |_context, _cmd| nil }
+      end
+
+      expect {
+        Sourced::Router.new(store:, reactors: [RouterTestDecider, rival])
+      }.to raise_error(ArgumentError, /and RouterTestDecider both handle: router_test.bind_device/)
+    end
+
+    it 'raises for two duck-typed reactors declaring the same handled command' do
+      handler = ->(group) {
+        Class.new do
+          define_singleton_method(:group_id) { group }
+          def self.partition_keys = [:n]
+          def self.handled_messages = [RouterQueueMessages::DoThing]
+          def self.handled_commands = [RouterQueueMessages::DoThing]
+          def self.handle_claim(_claim) = []
+        end
+      }
+
+      expect {
+        Sourced::Router.new(store:, reactors: [handler.('one'), handler.('two')])
+      }.to raise_error(ArgumentError, /both handle: router_q.do_thing/)
+    end
+
+    it 'allows two reactors handling the same messages when they declare no handled_commands' do
+      handler = ->(group) {
+        Class.new do
+          define_singleton_method(:group_id) { group }
+          def self.partition_keys = [:n]
+          def self.handled_messages = [RouterQueueMessages::DoThing]
+          def self.handle_claim(_claim) = []
+        end
+      }
+
+      expect {
+        Sourced::Router.new(store:, reactors: [handler.('one'), handler.('two')])
+      }.not_to raise_error
+    end
+
+    it 'allows two reactors handling the same event types' do
+      listener = Class.new do
+        def self.group_id = 'listener'
+        def self.partition_keys = [:device_id]
+        def self.handled_messages = [RouterTestMessages::DeviceRegistered, RouterTestMessages::DeviceBound]
+        def self.handle_claim(_claim) = []
+      end
+
+      expect {
+        Sourced::Router.new(store:, reactors: [RouterTestDecider, listener])
+      }.not_to raise_error
+    end
   end
 
   describe '#handle_next_for' do

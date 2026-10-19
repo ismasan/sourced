@@ -133,8 +133,16 @@ RSpec.describe Sourced::Store::MessageCodec do
         'correlation_id' => message.correlation_id,
         'created_at' => message.created_at.iso8601(6),
         'metadata' => {},
+        'tags' => {},
         'payload' => { 'name' => 'x', 'count' => 1 }
       )
+    end
+
+    it 'carries tags through' do
+      tagged = message.with_tags(order_id: 'o1')
+
+      expect(codec.encode(tagged)['tags']).to eq('order_id' => 'o1')
+      expect(round_trip(tagged).tags).to eq(order_id: 'o1')
     end
 
     it 'is carried through #decode, which builds the message from it' do

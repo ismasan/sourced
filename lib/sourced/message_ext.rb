@@ -19,8 +19,9 @@ module Sourced
   class Message
     # Build a {QueryCondition} for the intersection of this message's declared
     # attributes and the given key-value pairs. Attributes not declared on this
-    # message class are silently ignored. Returns an array with a single condition
-    # containing all matching attrs, or an empty array if none match.
+    # message class are ignored. A class that declares none of them can only carry
+    # them as {#tags}, so its condition uses all of them. Returns an array with a
+    # single condition, or an empty array if +attrs+ is empty.
     #
     # @param attrs [Hash{Symbol => String}] partition attribute values
     # @return [Array<QueryCondition>]
@@ -32,22 +33,21 @@ module Sourced
     def self.to_conditions(**attrs)
       supported = payload_attribute_names
       matched = attrs.select { |key, _| supported.include?(key) }
-                     .transform_values(&:to_s)
+      matched = attrs if matched.empty?
       return [] if matched.empty?
 
-      [QueryCondition.new(message_type: type, attrs: matched)]
+      [QueryCondition.new(message_type: type, attrs: matched.transform_values(&:to_s))]
     end
 
-    # Auto-extract key-value pairs from all top-level payload attributes.
+    # Key-value pairs from all top-level payload attributes and {#tags}.
     # Used by {Store#append} to index messages for querying.
     #
     # @return [Array<Array(String, String)>] pairs of [name, value], skipping nils
     def extracted_keys
-      return [] unless payload
+      pairs = payload ? payload.to_h.filter_map { |k, v| [k.to_s, v.to_s] unless v.nil? } : Plumb::BLANK_ARRAY
+      return pairs if tags.empty?
 
-      payload.to_h.filter_map { |k, v|
-        [k.to_s, v.to_s] unless v.nil?
-      }
+      (pairs + tags.map { |k, v| [k.to_s, v] }).uniq
     end
   end
 end

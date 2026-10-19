@@ -18,6 +18,7 @@ Sequel.migration do
       String :correlation_id
       String :payload, null: false
       String :metadata
+      String :tags
       String :created_at, null: false
 
       index :message_type, name: 'idx_<%= prefix %>_ccc_message_type'

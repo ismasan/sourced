@@ -44,6 +44,11 @@ module StoreTestMessages
     attribute :course_name, String
   end
 
+  # Declares no partition key: it reaches a partition only through tags.
+  NoteAdded = Sourced::Message.define('store_test.note.added') do
+    attribute :text, String
+  end
+
   # Native Ruby types, carried through the JSON payload column by the codec.
   Booking = Sourced::Message.define('store_test.booking') do
     attribute :booking_id, String
@@ -3183,6 +3188,102 @@ RSpec.describe Sourced::Store do
 
       expect(result).not_to be_nil
       expect(result.messages.size).to eq(1)
+    end
+  end
+
+  describe 'partition tags' do
+    let(:note_type) { StoreTestMessages::NoteAdded.type }
+    let(:handled_types) { [StoreTestMessages::DeviceRegistered.type, note_type] }
+
+    def note(text, **tags)
+      StoreTestMessages::NoteAdded.new(payload: { text: }).with_tags(**tags)
+    end
+
+    it 'round-trips tags on read, and stores none for an untagged message' do
+      tagged = note('hello', device_id: 'dev-1')
+      store.append([tagged, note('plain')])
+
+      read = store.read_all.messages
+      expect(read.map(&:id)).to eq([tagged.id, read.last.id])
+      expect(read.first.tags).to eq(device_id: 'dev-1')
+      expect(read.first.payload).to eq(tagged.payload)
+      expect(read.last.tags).to eq({})
+      expect(db[:sourced_messages].order(:position).select_map(:tags)).to eq(['{"device_id":"dev-1"}', nil])
+    end
+
+    it 'indexes tags as key pairs, read by #read' do
+      store.append([note('one', device_id: 'dev-1'), note('two', device_id: 'dev-2')])
+
+      messages, = store.read(StoreTestMessages::NoteAdded.to_conditions(device_id: 'dev-1'))
+      expect(messages.map { |m| m.payload.text }).to eq(['one'])
+    end
+
+    it 'indexes only __id for id-basis types' do
+      msg = note('one', device_id: 'dev-1')
+      store.append(msg, index_by: :id)
+
+      expect(db[:sourced_key_pairs].select_map(%i[name value])).to eq([['__id', msg.id]])
+    end
+
+    it 'reads tagged messages into a partition with #read_partition' do
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        note('one', device_id: 'dev-1'),
+        note('other', device_id: 'dev-2'),
+        note('untagged')
+      ])
+
+      result = store.read_partition({ device_id: 'dev-1' }, handled_types:)
+      expect(result.messages.map(&:type)).to eq([StoreTestMessages::DeviceRegistered.type, note_type])
+      expect(result.messages.last.tags).to eq(device_id: 'dev-1')
+    end
+
+    it 'guards tagged messages: a conflicting tagged append raises' do
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+      result = store.read_partition({ device_id: 'dev-1' }, handled_types:)
+
+      store.append(note('other partition', device_id: 'dev-2'))
+      expect { store.append(note('ok'), guard: result.guard) }.not_to raise_error
+
+      store.append(note('concurrent', device_id: 'dev-1'))
+      expect {
+        store.append(note('late'), guard: result.guard)
+      }.to raise_error(Sourced::ConcurrentAppendError)
+    end
+
+    it 'claims tagged messages into their partition (lazy discovery)' do
+      store.register_consumer_group('tags-lazy')
+      store.append([note('one', device_id: 'dev-1'), note('untagged')])
+
+      claim = store.claim_next('tags-lazy', partition_by: 'device_id', handled_types:, worker_id: 'w-1')
+      expect(claim.partition_value).to eq('device_id' => 'dev-1')
+      expect(claim.messages.map { |m| m.payload.text }).to eq(['one'])
+      expect(store.claim_next('tags-lazy', partition_by: 'device_id', handled_types:, worker_id: 'w-2')).to be_nil
+    end
+
+    it 'claims tagged messages into their partition (eager offsets), with a guard that covers them' do
+      store.register_consumer_group('tags-eager', partition_by: [:device_id], handled_types:)
+      store.append(note('one', device_id: 'dev-1'))
+      expect(db[:sourced_offsets].select_map(:partition_key)).to eq(['device_id:dev-1'])
+
+      claim = store.claim_next('tags-eager', partition_by: 'device_id', handled_types:, worker_id: 'w-1')
+      expect(claim.messages.map { |m| m.payload.text }).to eq(['one'])
+
+      store.append(note('two', device_id: 'dev-1'))
+      expect {
+        store.append(note('late'), guard: claim.guard)
+      }.to raise_error(Sourced::ConcurrentAppendError)
+    end
+
+    it 'keeps tags through scheduling' do
+      now = Time.now
+      store.append(note('later', device_id: 'dev-1').at(now + 2))
+
+      Timecop.freeze(now + 3) { store.update_schedule! }
+
+      messages, = store.read(StoreTestMessages::NoteAdded.to_conditions(device_id: 'dev-1'))
+      expect(messages.map { |m| m.payload.text }).to eq(['later'])
+      expect(messages.first.tags).to eq(device_id: 'dev-1')
     end
   end
 
