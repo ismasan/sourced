@@ -106,7 +106,7 @@ module MachineExternalEventsTest
     Done = State(:done)
 
     initial { command PlaceOrder => Placed }
-    state(Placed) { region :payment, PaymentMachine, on_done: { PaymentMachine::Captured => Done } }
+    state(Placed) { region :payment, PaymentMachine, on_final: { PaymentMachine::Captured => Done } }
     final Done
   end
 

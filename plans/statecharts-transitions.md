@@ -61,10 +61,9 @@ class TourBooking < Sourced::Machine
   end
 
   # A compound state: PlanningMachine's chart, entered at its start.
-  state Planning, PlanningMachine, on_done: {
-    PlanningMachine::Finalised => Booked,
-    PlanningMachine::Expired => Lapsed
-  } do
+  state Planning, PlanningMachine do
+    on_final PlanningMachine::Finalised => Booked
+    on_final PlanningMachine::Expired => Lapsed
     command Withdraw => Withdrawn
   end
 
@@ -96,7 +95,7 @@ class PlanningMachine < Sourced::Machine
     command Expire => Expired
   end
 
-  final Finalised                         # mapped by the mounting machine's on_done
+  final Finalised                         # mapped by the mounting machine's on_final
   final Expired
 end
 
@@ -165,7 +164,7 @@ end
 
 - **`always Target, if: guard`** is evaluated in order, as soon as the state is entered, within the same decision. The first match transitions. A guard is anything with `#call(context)` (a lambda, a module, an object), or a Symbol sent to the domain context. `to_h` renders a Symbol by name, a module or object by its (class) name, and a lambda as `guard`.
 - **A state with an unguarded `always`** is transient: it can't have `after` or accept commands. Checked at definition time.
-- **`done Target`** and **`on_done: { Final => Target }`** take handles. `done` accepts several guarded targets like `always`, for a guarded join (`done Confirmed, if: :all_confirmed?`, then `done Partial`).
+- **`done Target`** and **`on_final Final => Target`** (a region's `on_final:` keyword) take handles. `done` accepts several guarded targets like `always`, for a guarded join (`done Confirmed, if: :all_confirmed?`, then `done Partial`).
 - **Targets need no payload**, so escalation needs no event per level (gap 7).
 - **`MAX_JOINS`** still caps eventless steps per decision.
 
@@ -175,7 +174,7 @@ end
 - **Reachable targets:** any state in the declaring node's region or an ancestor region, as now, plus **descendants of the declaring node** (gap 6: a compound's command targeting its own sub-state). Sibling regions stay unreachable. Checked at definition time.
 - **The domain** is the least common compound ancestor of source and target. Exited: the active states below the domain, innermost first. Entered: the path from the domain down to the target, then default entry below it (each compound's start, each parallel state's regions at their initial positions), outermost first.
 - **Self-transitions:** a compound's own command targeting itself re-enters it (exit, entry, regions reset), as XState's `reenter: true`. A command inside it targeting its start doesn't touch the compound.
-- **Mounted machines target the mounting machine's states only through `on_done`**, so a machine stays mountable anywhere. Allowing direct references to ancestor handles is left open.
+- **Mounted machines target the mounting machine's states only through `on_final`**, so a machine stays mountable anywhere. Allowing direct references to ancestor handles is left open.
 
 ### History (gap 5)
 
@@ -196,7 +195,7 @@ Each machine with `partition_by` generates `<Machine>::Transitioned` (`"#{type_p
 
 ```ruby
 attribute <partition keys>
-attribute :trigger,       String          # command or event type, or 'done' / 'on_done' / 'always' / 'start' / 'stop'
+attribute :trigger,       String          # command or event type, or 'done' / 'on_final' / 'always' / 'start' / 'stop'
 attribute :source,        String          # path of the state that declared the transition
 attribute :target,        String          # path of the declared target (a history pseudo-target resolved)
 attribute :exited,        Array[String]   # paths, innermost first
@@ -204,7 +203,7 @@ attribute :entered,       Array[String]   # paths, outermost first
 attribute :configuration, JSONData        # machine.value after this transition, by path segment
 ```
 
-- **One `Transitioned` per transition.** A command handled by three regions appends three. A `done` join, an `on_done` escalation and each `always` step append one each. The decision is the macrostep; each event is a microstep.
+- **One `Transitioned` per transition.** A command handled by three regions appends three. A `done` join, an `on_final` escalation and each `always` step append one each. The decision is the macrostep; each event is a microstep.
 - **Paths** join state names and region names with dots, from the root: `reserving.flights.holding`. A compound state's sub-states follow it directly (`planning.itinerary.outline`); a parallel state's go through the region name.
 - **Replay doesn't re-run transition semantics.** Evolving a `Transitioned` sets the configuration from its payload, and applies `entered` / `exited` to per-region bookkeeping (entering event, visited set, last child for history). Entry/exit sets are computed once, at decide time. So history stays readable after the definition changes, as long as its paths still resolve (see Renames).
 - **Entry/exit actions and timers** run when the machine claims a `Transitioned`, from its `exited` and `entered`, skipped when replaying, as now. `entered_by` is the `Transitioned` event's id.
@@ -223,7 +222,7 @@ The parent evolves and claims these two, as it does the child's start and root f
 
 - **`machine.value`**: the configuration, with handles: `{ Planning => { Itinerary => Proposed } }`, or `{ Reserving => { hotel: Holding, flights: Holding, … } }`. Where a handle is placed more than once, the region name disambiguates, as now.
 - **`machine.in?(Proposed)`**, **`machine.in?(:flights, Holding)`**, and **`machine.in?('reserving.flights.holding')`**.
-- **`Machine.to_h`**: node ids are paths, which removes the `<type>/start` ids. Nodes gain history nodes where something targets a state's history (see Phase 8 in Progress) and `always: [{ target:, guard: }]`; mounts' `on_done` edges stay. `status.value` mirrors `machine.value` with paths.
+- **`Machine.to_h`**: node ids are paths, which removes the `<type>/start` ids. Nodes gain history nodes where something targets a state's history (see Phase 8 in Progress) and `always: [{ target:, guard: }]`; mounts' `on_final` edges stay. `status.value` mirrors `machine.value` with paths.
 - **Mermaid** ids are paths with `.` → `_`.
 - **Topology**: commands lead to the machine's `Transitioned` with target state names, instead of to state event types. Data events appear as now.
 - **`Sourced.load`** and **`Snapshot`** unchanged in shape.
@@ -267,7 +266,7 @@ Phases 1 to 3 replace the runtime's core and can't ship separately: the suite is
 
 ## Open
 
-- **Direct references to ancestor states from a mounted machine** (`Proposed` targeting `TourBooking::Cancelled`) instead of `on_done`. Simpler for machines that are only ever mounted in one place; couples them to it.
+- **Direct references to ancestor states from a mounted machine** (`Proposed` targeting `TourBooking::Cancelled`) instead of `on_final`. Simpler for machines that are only ever mounted in one place; couples them to it.
 - **One `Transitioned` per decision** (a list of transitions) instead of one per transition. Fewer events, but subscribers then see several moves at once.
 - **Storing the full configuration** in every `Transitioned`. Redundant with `entered` / `exited`, but makes any single event self-describing for UIs and children. Measure the payload on the acceptance examples.
 - **Guards as data for rendering.** Named guards (`if: :all_confirmed?`) render on the edge; lambdas render as `guard`.
@@ -316,7 +315,7 @@ end
 - **A `group_id` is needed** when `State` is called: a class name, or an explicit `consumer_group` for an anonymous machine.
 - **The constant is the user's.** `Captured = State(:captured)` names the class through the assignment; `State` doesn't `const_set`, which would warn on reassignment. The constant can be renamed freely: storage keeps the type, which comes from the state's name. Placing by Symbol (`state :outline`) generates the class and sets the constant (`Outline`), since nothing else names it.
 - **`State.|(other)`** builds `Targets`, overriding Plumb's `|` on message classes (which builds a `Plumb::Or`). `Captured | Declined | nil` works as now; `nil` still goes last.
-- **States don't take domain attributes** in this revision. If they do later (`State(:paid) { attribute :amount }`), `validate!` must reject them as targets of `done`, `on_done` and `always`, which have no data to build them from (gap 7).
+- **States don't take domain attributes** in this revision. If they do later (`State(:paid) { attribute :amount }`), `validate!` must reject them as targets of `done`, `on_final` and `always`, which have no data to build them from (gap 7).
 
 ### Mounted machines: the mounting machine's own classes
 
@@ -628,6 +627,7 @@ C1 comes first so the class-level `start` is free before C3 gives `start` a mean
   - **Mermaid** suffixes a handler's edges with `/ starts A | B` (`| nil` when optional), by the machines' short names. Data-only handlers still have no edge: those that start children are listed, with what `stops` names, in a `note right of` the state. A data-only start at an initial position, which has no state, isn't drawn.
   - **Specs:** `to_h` / Mermaid for every handler kind in `spec/machine/chart_spec.rb`; Topology for data-only commands, `on`, `children_done` and a mounted machine's handlers and `stops` in `spec/machine/topology_spec.rb`.
 - **Revision C5: done.** README's child machines section, CLAUDE.md's Machine bullet, the CHANGELOG's unreleased Machine entry and the children API's doc comments describe the new names. The README states the lifetime rule, the `starts:` count table and the transient-state pattern for a conditional state `start`.
+- **Revision: mounts' `on_done` → `on_final`.** A mounted machine's root finals map onto the parent's states with `on_final`: in a compound state's block (`state X, M do on_final M::Final => Target end`, one line per mapping or one Hash; also `started X, M`), replacing `state`'s `on_done:` keyword, and as `region :x, M, on_final: { … }`. The move's `trigger` is `'on_final'`, `to_h` mounts list `on_final:`, Mermaid labels the edges `on_final`; the eventless step is `mount_final_step`. `on_final` in a state that mounts no machine, or mapping a final twice, raises `DefinitionError`. Why: `done` is the state's completion join and `start … on_done` an invoked child finishing (SCXML's `done.state` / `done.invoke`, XState's `onDone`), both unchanged; a mount's final mapping is an exit from the submachine, like UML submachine exit points. Earlier entries above use the name of their time.
 - **Open:**
   - A handler in a machine mounted twice can't tell which placement it runs in, so both copies decide alike on the same command and state. Expose the placement (its path) to handlers?
   - Phase 11 (docs, examples).

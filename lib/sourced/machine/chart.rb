@@ -27,7 +27,7 @@ module Sourced
     #   +children_done+) lists the children its +starts:+ declares as +starts+
     #   (+group_id+s), +starts_optional+ when it may start none; a state
     #   lists the children it +stops+. +mounts+ lists the machines a state
-    #   mounts (as regions, or as a compound state's), with +on_done+ by
+    #   mounts (as regions, or as a compound state's), with +on_final+ by
     #   their root final.
     # * +entry+ and +exit+ count the state's actions; +after+ lists its
     #   timers' delays in seconds.
@@ -114,11 +114,11 @@ module Sourced
             { id: join.machine.group_id, targets: targets(node, join.definition.state_targets), **starts(join.definition) }
           end,
           invoke: node.invokes.map do |spec|
-            { id: spec.machine.group_id, src: spec.machine.name, on_done: on_done(node, spec.machine, spec.on_done) }
+            { id: spec.machine.group_id, src: spec.machine.name, on_done: finals_map(node, spec.machine, spec.on_done) }
           end,
           stops: node.stops.map(&:group_id),
           mounts: node.regions.select(&:mount).map do |region|
-            { region: region.name.to_s, src: region.machine.name, on_done: on_done(node, region.machine, region.on_done, region) }
+            { region: region.name.to_s, src: region.machine.name, on_final: finals_map(node, region.machine, region.on_final, region) }
           end,
           states: (compound ? region(compound)[:states] : node.regions.to_h { |child| [child.name.to_s, region(child)] })
             .merge(history_nodes(node)),
@@ -223,7 +223,7 @@ module Sourced
       def position_id(node) = node.initial? && !initial_node?(node.region) ? nil : node.path
 
       # A mounted machine's or child's finals, by name, => the paths they map to.
-      def on_done(node, machine, map, region = nil)
+      def finals_map(node, machine, map, region = nil)
         map.to_h do |final, target|
           from = region ? region.nodes.fetch(final).path : final.state_name.to_s
           [from, target_id(node, target)]
@@ -253,7 +253,7 @@ module Sourced
         @tree.all_nodes.each_with_object(Hash.new { |h, k| h[k] = [] }) do |node, found|
           definitions = node.commands.values + node.ons.values + node.children_joins.map(&:definition)
           targets = definitions.flat_map(&:state_targets) + (node.always + node.dones).map(&:target) +
-                    node.invokes.flat_map { |spec| spec.on_done.values } + node.regions.flat_map { |region| region.on_done.values }
+                    node.invokes.flat_map { |spec| spec.on_done.values } + node.regions.flat_map { |region| region.on_final.values }
           targets.grep(History).each do |history|
             list = found[@tree.resolve(node, history).path]
             list << history unless list.include?(history)

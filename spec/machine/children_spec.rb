@@ -202,7 +202,7 @@ module MachineChildrenTest
     Preparing = State(:preparing)
     Shipped = State(:shipped)
 
-    started Preparing, PackingMachine, on_done: { PackingMachine::Packed => Shipped }
+    started(Preparing, PackingMachine) { on_final PackingMachine::Packed => Shipped }
     final Shipped
   end
 
@@ -470,7 +470,7 @@ module MachineChildrenTest
           .then(started(**keys))
       end
 
-      it 'runs the nested entry actions, and finishes through on_done' do
+      it 'runs the nested entry actions, and finishes through on_final' do
         run(router, ShipParcel.new(payload: keys))
 
         expect(parcel.value).to eq(ParcelMachine::Preparing => PackingMachine::Packing)
@@ -483,7 +483,7 @@ module MachineChildrenTest
         expect(moves(ParcelMachine)).to eq([
                                              { trigger: 'machine_children_test.pack_parcel', source: 'preparing.packing', target: 'preparing.packed',
                                                exited: ['preparing.packing'], entered: ['preparing.packed'] },
-                                             { trigger: 'on_done', source: 'preparing.packed', target: 'shipped',
+                                             { trigger: 'on_final', source: 'preparing.packed', target: 'shipped',
                                                exited: %w[preparing.packed preparing], entered: ['shipped'] }
                                            ])
         expect(shipping.children[ParcelMachine].map(&:state)).to eq([ParcelMachine::Shipped])

@@ -729,7 +729,7 @@ order.machine.value
   target: 'placed.payment.paying', exited: [], entered: ['placed.payment.paying'] }
 ```
 
-`trigger` is the command or event type that moved the machine, or `'always'`, `'done'`, `'on_done'`, `'start'`, `'stop'`, `'children_done <child group_id>'`. `source` and `target` are paths: state and region names joined with dots from the root, a compound state's sub-states directly under it (`working.progressed`). `exited` (innermost first) and `entered` (outermost first) are every state the move left and entered. Loading a machine replays these paths; transition rules aren't re-run.
+`trigger` is the command or event type that moved the machine, or `'always'`, `'done'`, `'on_final'`, `'start'`, `'stop'`, `'children_done <child group_id>'`. `source` and `target` are paths: state and region names joined with dots from the root, a compound state's sub-states directly under it (`working.progressed`). `exited` (innermost first) and `entered` (outermost first) are every state the move left and entered. Loading a machine replays these paths; transition rules aren't re-run.
 
 Command forms:
 
@@ -760,7 +760,7 @@ How it runs:
   end
   ```
 - **`on Event => Target`** moves the machine when it claims an event another reactor appended, while the state is active. It's decided like a command (same targets, `to`, `nil`; the block gets `(context, event)`), under the claim's guard, and never while replaying. The event must carry the machine's partition keys.
-- **Eventless steps** (`always`, mounted machines' `on_done`, `done`, `children_done`, starting states' children) run after every decision until none applies, each appending its own state event, all in the decision's transaction. Guards see the context with the decision's events applied.
+- **Eventless steps** (`always`, mounted machines' `on_final`, `done`, `children_done`, starting states' children) run after every decision until none applies, each appending its own state event, all in the decision's transaction. Guards see the context with the decision's events applied.
 - **Entry and exit actions are reactions**, run when the machine claims the state event, after the deciding transaction committed, and see the latest state. Leaving a state exits its active regions first. A transient state's entry actions run after the machine has already left it. They're skipped while replaying.
 - **`after(delay)`** blocks dispatch commands delivered that long after the state was entered. The delay is seconds (`after(3600)`) or a duration string, as `Message#at` takes it (`after('1h')`, `after('1h30m')`, `after('P1D')`). A timer command delivered after the machine has left that state entry is refused, even where the command is accepted, so timers never need cancelling.
 - **History**: `Working.history` targets a state with regions at the states its regions were last in (`Working.history(deep: true)` restores everything below it); regions with no history take their default entry. History is rebuilt from `exited` on replay.
@@ -885,7 +885,7 @@ class OrderMachine < Sourced::Machine
   partition_by :order_id
   # ...
   state Placed do
-    region :payment, PaymentMachine, on_done: { PaymentMachine::Expired => Cancelled }
+    region :payment, PaymentMachine, on_final: { PaymentMachine::Expired => Cancelled }
     region :shipping do # inline and composed regions mix
       # ...
     end
@@ -909,7 +909,8 @@ end
 
 class OrderMachine < Sourced::Machine
   # ...
-  state Working, ThingMachine, on_done: { ThingMachine::Done => Ready } do
+  state Working, ThingMachine do
+    on_final ThingMachine::Done => Ready
     command Cancel => Cancelled # the compound state's own commands
   end
 end
@@ -923,7 +924,7 @@ Rules for composed machines:
 
 - **Events**: the mounting machine generates its own class for each of the composed machine's states, with its partition keys: `OrderMachine::Mounted::PaymentMachine::Captured`, type `order_machine.runtime.mounted.payment_machine.captured`. That's what it appends while `PaymentMachine` runs inside it, so a machine never reads another context's events: `PaymentMachine` standalone, as a child, or inside another machine appends its own types. `OrderMachine.state_class(PaymentMachine::Captured)` returns the class; handlers, `to`, `value` and `in?` use the composed machine's own handles. A machine can be composed several times (two regions of the same machine share these classes; paths tell them apart).
 - **Context**: the composed machine's projection is built from the parent's context, so its `evolve` blocks update the same object, and its handlers receive it. The parent's context must respond to what they call.
-- **Escalation**: a composed machine's targets are its own states. It reaches the parent through its root finals, which `on_done` maps onto the parent's, in the deciding decision. When a decision both makes a region reach a mapped final and completes the parent's `done` join, `on_done` wins.
+- **Escalation**: a composed machine's targets are its own states. It reaches the parent through its root finals, which `on_final` maps onto the parent's, in the deciding decision: the `on_final:` keyword for a region, `on_final Final => Target` in a compound state's block (one line per mapping, or one Hash). Unmapped finals leave the machine there. When a decision both makes a region reach a mapped final and completes the parent's `done` join, `on_final` wins. (`done` is the state's own completion, and `start … on_done` a child finishing; `on_final` is an exit from the mounted machine.)
 - **Handlers run on the parent's instance**: `event`, `dispatch` and `machine` are the parent's, and partition keys are the parent's, so its events and commands must declare them. It may start children of its own (a machine with children can only be composed once).
 - **Not allowed**: reactions and sync blocks of its own (they can't run on the parent's instance; declare them on the parent).
 

@@ -70,7 +70,8 @@ module MachineCompoundTest
       end
     end
 
-    state Thing, ThingMachine, on_done: { ThingMachine::Completed => Ready } do
+    state Thing, ThingMachine do
+      on_final ThingMachine::Completed => Ready
       entry { |_context, _evt| dispatch NotifyCompound }
       exit { |_context, _evt| dispatch NotifyLeft }
       command RestartThing => Thing
@@ -107,8 +108,8 @@ module MachineCompoundTest
     Ready = State(:ready)
 
     initial { command StartThing => First }
-    state First, ThingMachine, on_done: { ThingMachine::Completed => Second }
-    state Second, ThingMachine, on_done: { ThingMachine::Completed => Ready }
+    state(First, ThingMachine) { on_final ThingMachine::Completed => Second }
+    state(Second, ThingMachine) { on_final ThingMachine::Completed => Ready }
     final Ready
   end
 
@@ -150,7 +151,8 @@ module MachineCompoundTest
     Itinerary = State(:itinerary)
     Finalised = State(:finalised)
 
-    started Itinerary, OutlineMachine, on_done: { OutlineMachine::Agreed => Finalised } do
+    started Itinerary, OutlineMachine do
+      on_final OutlineMachine::Agreed => Finalised
       entry { |_context, _evt| dispatch NotifyItinerary }
       exit { |_context, _evt| dispatch LeftItinerary }
       after(60) { |_context, _evt| dispatch RemindItinerary }
@@ -168,7 +170,8 @@ module MachineCompoundTest
 
     initial { command StartPlanning => Planning }
 
-    state Planning, ItineraryMachine, on_done: { ItineraryMachine::Finalised => Done } do
+    state Planning, ItineraryMachine do
+      on_final ItineraryMachine::Finalised => Done
       entry { |_context, _evt| dispatch NotifyPlanning }
       exit { |_context, _evt| dispatch LeftPlanning }
     end
@@ -289,7 +292,7 @@ RSpec.describe 'Sourced::Machine compound states' do
       expect(summary(events)).to eq(moves(
         M::OrderMachine,
         ['machine_compound_test.finish', { from: 'thing.progressed', to: 'thing.completed', exited: %w[thing.progressed] }],
-        ['on_done', { from: 'thing.completed', to: 'ready', exited: %w[thing.completed thing] }]
+        ['on_final', { from: 'thing.completed', to: 'ready', exited: %w[thing.completed thing] }]
       ))
     end
 
@@ -347,14 +350,14 @@ RSpec.describe 'Sourced::Machine compound states' do
       expect(instance.handles_command?(remind_outline)).to be(false)
     end
 
-    it 'escalates through on_done at each level, in the deciding decision' do
+    it 'escalates through on_final at each level, in the deciding decision' do
       events = planning(msg(M::Propose)).decide(msg(M::Agree))
 
       expect(summary(events)).to eq(moves(
         M::TripPlanMachine,
         ['machine_compound_test.agree', { from: 'planning.itinerary.proposed', to: 'planning.itinerary.agreed', exited: %w[planning.itinerary.proposed] }],
-        ['on_done', { from: 'planning.itinerary.agreed', to: 'planning.finalised', exited: %w[planning.itinerary.agreed planning.itinerary] }],
-        ['on_done', { from: 'planning.finalised', to: 'done', exited: %w[planning.finalised planning] }]
+        ['on_final', { from: 'planning.itinerary.agreed', to: 'planning.finalised', exited: %w[planning.itinerary.agreed planning.itinerary] }],
+        ['on_final', { from: 'planning.finalised', to: 'done', exited: %w[planning.finalised planning] }]
       ))
     end
 
@@ -424,7 +427,7 @@ RSpec.describe 'Sourced::Machine compound states' do
       expect(compound[:states].keys).to include('begun', 'progressed', 'completed')
       expect(compound[:initial]).to eq('thing.begun')
       expect(compound[:mounts]).to eq([{
-        region: 'thing', src: M::ThingMachine.name, on_done: { 'thing.completed' => 'ready' }
+        region: 'thing', src: M::ThingMachine.name, on_final: { 'thing.completed' => 'ready' }
       }])
     end
 
@@ -446,7 +449,7 @@ RSpec.describe 'Sourced::Machine compound states' do
       expect(mermaid).to include('state "thing" as thing {')
       expect(mermaid).to include('[*] --> thing_begun')
       expect(mermaid).to include('thing_begun --> thing_progressed : Progress')
-      expect(mermaid).to include('thing_completed --> ready : on_done')
+      expect(mermaid).to include('thing_completed --> ready : on_final')
     end
 
     it 'builds a topology' do
@@ -491,11 +494,35 @@ RSpec.describe 'Sourced::Machine compound states' do
       expect { machine { state :thing, no_start } }.to raise_error(Sourced::Machine::DefinitionError, /has no start state/)
     end
 
-    it 'rejects regions in a compound state, and on_done without a machine' do
+    it 'rejects regions in a compound state, and on_final without a machine' do
       expect { machine { state(:thing, M::ThingMachine) { region(:x) { initial } } } }
         .to raise_error(Sourced::Machine::DefinitionError, /compound state, so it can't have regions/)
-      expect { machine { state :placed, on_done: { M::ThingMachine::Completed => :ready } } }
-        .to raise_error(Sourced::Machine::DefinitionError, /on_done is for a compound state/)
+      expect { machine { state(:placed) { on_final M::ThingMachine::Completed => :ready } } }
+        .to raise_error(Sourced::Machine::DefinitionError, /Placed mounts no machine, so no on_final; use done/)
+    end
+
+    it 'maps each final once, over one or several on_final lines' do
+      mapped = machine do
+        state :thing, M::ThingMachine do
+          on_final M::ThingMachine::Completed => :ready
+          on_final M::ThingMachine::Aborted => :cancelled
+        end
+        final :ready
+        final :cancelled
+      end
+      expect(mapped.to_h.dig(:states, 'thing', :mounts))
+        .to eq([{ region: 'thing', src: M::ThingMachine.name, on_final: { 'thing.completed' => 'ready', 'thing.aborted' => 'cancelled' } }])
+
+      expect do
+        machine do
+          state :thing, M::ThingMachine do
+            on_final M::ThingMachine::Completed => :ready
+            on_final M::ThingMachine::Completed => :cancelled
+          end
+          final :ready
+          final :cancelled
+        end
+      end.to raise_error(Sourced::Machine::DefinitionError, /maps on_final .*Completed twice/)
     end
   end
 end
