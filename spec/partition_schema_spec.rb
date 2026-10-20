@@ -140,22 +140,25 @@ RSpec.describe Sourced::PartitionSchema do
       expect { described_class.check!(PartitionSchemaTest::Orders) }.not_to raise_error
     end
 
-    it 'allows messages declaring none, some or optional keys: they may come from tags' do
+    it 'requires commands to declare every key' do
+      reactor = decider { command(PartitionSchemaTest::Unkeyed) { |*| } }
+      expect { described_class.check!(reactor) }
+        .to raise_error(Sourced::DefinitionError, /command PartitionSchemaTest::Unkeyed must declare order_id/)
+    end
+
+    it 'requires commands to declare keys as required attributes' do
+      reactor = decider { command(PartitionSchemaTest::OptionalOrder) { |*| } }
+      expect { described_class.check!(reactor) }
+        .to raise_error(Sourced::DefinitionError, /OptionalOrder must declare order_id/)
+    end
+
+    it 'requires reactions to declare every key' do
       reactor = decider do
-        command(PartitionSchemaTest::Unkeyed) { |*| }
-        command(PartitionSchemaTest::OptionalOrder) { |*| }
+        command(PartitionSchemaTest::PlaceOrder) { |*| }
         reaction(PartitionSchemaTest::Unkeyed) { |*| }
       end
-      expect { described_class.check!(reactor) }.not_to raise_error
-
-      projector = Class.new(Sourced::Projector::StateStored) do
-        consumer_group 'partition-schema-projector'
-        partition_by :order_id, item_id: Sourced::Types::Integer
-        context { {} }
-        evolve(PartitionSchemaTest::OrderNoted) { |*| }
-        evolve(PartitionSchemaTest::Unkeyed) { |*| }
-      end
-      expect { described_class.check!(projector) }.not_to raise_error
+      expect { described_class.check!(reactor) }
+        .to raise_error(Sourced::DefinitionError, /reaction PartitionSchemaTest::Unkeyed must declare order_id/)
     end
 
     it 'requires the schema type, or a stricter one' do
@@ -164,6 +167,17 @@ RSpec.describe Sourced::PartitionSchema do
         .to raise_error(Sourced::DefinitionError, /IntegerOrder declares order_id as Integer, but .* partitions by order_id as Sourced::Types::String/)
 
       expect { described_class.check!(decider { command(PartitionSchemaTest::PresentOrder) { |*| } }) }.not_to raise_error
+    end
+
+    it 'allows evolved events with some of the keys' do
+      reactor = Class.new(Sourced::Projector::StateStored) do
+        consumer_group 'partition-schema-projector'
+        partition_by :order_id, item_id: Sourced::Types::Integer
+        context { {} }
+        evolve(PartitionSchemaTest::OrderNoted) { |*| }
+        evolve(PartitionSchemaTest::Orders::ItemAdded) { |*| }
+      end
+      expect { described_class.check!(reactor) }.not_to raise_error
     end
 
     it 'checks the types of the keys an evolved event declares' do
@@ -176,6 +190,26 @@ RSpec.describe Sourced::PartitionSchema do
       end
       expect { described_class.check!(reactor) }
         .to raise_error(Sourced::DefinitionError, /message PartitionSchemaTest::IntegerOrder declares order_id as Integer/)
+    end
+
+    it 'requires evolved events to declare a key' do
+      reactor = decider do
+        command(PartitionSchemaTest::PlaceOrder) { |*| }
+        evolve(PartitionSchemaTest::Unkeyed) { |*| }
+      end
+      expect { described_class.check!(reactor) }
+        .to raise_error(Sourced::DefinitionError, /message PartitionSchemaTest::Unkeyed declares none of the partition keys order_id/)
+    end
+
+    it 'requires a message declaring every key' do
+      reactor = Class.new(Sourced::Projector::StateStored) do
+        consumer_group 'partition-schema-projector'
+        partition_by :order_id, :item_id
+        context { {} }
+        evolve(PartitionSchemaTest::OrderNoted) { |*| }
+      end
+      expect { described_class.check!(reactor) }
+        .to raise_error(Sourced::DefinitionError, /no handled message declares every partition key order_id, item_id/)
     end
 
     it 'skips id-partitioned reactors and reactors without a schema' do

@@ -1196,9 +1196,11 @@ module MachineChildrenTest
         end.to raise_error(Sourced::Machine::DefinitionError, /must be a final state of the root region/)
       end
 
-      it 'accepts reactions to types with some of the partition keys: the rest may be tags' do
+      it 'requires reactions to use types with all partition keys' do
         m = machine(:order_id, :line_id) { reaction(OrderPlaced) { |_s, _e| nil } }
-        expect { m.validate! }.not_to raise_error
+        expect do
+          m.validate!
+        end.to raise_error(Sourced::Machine::DefinitionError, /reaction .*OrderPlaced must declare line_id/)
       end
     end
   end
