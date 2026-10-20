@@ -33,7 +33,7 @@ module Sourced
       return unless reactor.respond_to?(:partition_schema)
 
       schema = reactor.partition_schema.to_h.transform_keys(&:to_sym)
-      return if schema.empty? || schema.keys == [:__id]
+      return if schema.empty? || IdPartition.keys?(schema.keys)
 
       full = FULL_ROLES.each_with_object({}) do |(method, role), roles|
         next unless reactor.respond_to?(method)

@@ -376,7 +376,7 @@ RSpec.describe 'Sourced::Machine regions' do
     end
 
     it 'appends the join under the guard, with the transition that completes it' do
-      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 3)
+      guard = Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 3)
       history = Sourced::ReadResult.new(messages: [*history_placed, *history_charging, *history_packed, dispatched], guard:)
       command = msg(CapturePayment)
 
@@ -392,7 +392,7 @@ RSpec.describe 'Sourced::Machine regions' do
     it "doesn't run actions while replaying" do
       history = Sourced::ReadResult.new(
         messages: [*history_placed, *history_charging, *history_packed, dispatched],
-        guard: Sourced::ConsistencyGuard.new(conditions: [], last_position: 3)
+        guard: Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 3)
       )
 
       expect(M.handle_batch({ order_id: 'o1' }, [captured], history:, replaying: true))

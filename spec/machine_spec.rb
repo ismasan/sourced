@@ -653,7 +653,7 @@ RSpec.describe Sourced::Machine do
     end
 
     it 'skips them while replaying' do
-      history = Sourced::ReadResult.new(messages: [opened], guard: Sourced::ConsistencyGuard.new(conditions: [], last_position: 0))
+      history = Sourced::ReadResult.new(messages: [opened], guard: Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 0))
 
       pairs = CartMachine.handle_batch({ cart_id: 'c1' }, [ordered], history:, replaying: true)
       expect(pairs).to eq([[Sourced::Actions::OK, ordered]])
@@ -730,11 +730,11 @@ RSpec.describe Sourced::Machine do
       claimed = Sourced::PositionedMessage.new(opened, 1)
       claim = Sourced::ClaimResult.new(
         offset_id: 1, key_pair_ids: [], partition_key: 'cart_id:c1', partition_value: { 'cart_id' => 'c1' },
-        messages: [claimed], replaying: false, guard: Sourced::ConsistencyGuard.new(conditions: [], last_position: 2)
+        messages: [claimed], replaying: false, guard: Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 2)
       )
       history = Sourced::ReadResult.new(
         messages: [claimed, Sourced::PositionedMessage.new(ordered, 2)],
-        guard: Sourced::ConsistencyGuard.new(conditions: [], last_position: 2)
+        guard: Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 2)
       )
 
       expect(TimerMachine.handle_claim(claim, history:)).to eq([[[], claimed]])
