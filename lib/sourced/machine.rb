@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'fugit'
+require 'sourced/machine/definition'
 
 module Sourced
   # Reactor base class for state machines: Sourced's take on statecharts.
@@ -68,9 +69,10 @@ module Sourced
     include Sourced::React
     include Sourced::Sync
     extend Sourced::Consumer
+    extend Definition
 
     # The machine's transitions, its children's starts and finishes, and the
-    # evolve types of the machines mounted in it are evolved too, alongside the
+    # evolve types of its parts are evolved too, alongside the
     # projection's evolve types. They're the machine's own, not its
     # projection's (which has no handlers for them), so adopting a projection
     # with +evolve SomeProjection+ keeps them. Prepended after Sourced::Evolve's
@@ -81,19 +83,18 @@ module Sourced
         return @__evolve_types if @__evolve_types
 
         tree = self.tree
-        mounted = tree.mounted_machines.flat_map { |machine| machine.projection_class.handled_messages }
-        (super + __transition_classes + tree.child_events.keys + mounted + handled_events).uniq
+        parts = tree.mounted_machines.flat_map { |part| part.projection_class.handled_messages }
+        (super + __transition_classes + tree.child_events + parts + handled_events).uniq
       end
     end
     singleton_class.prepend EvolveTypes
 
     # What the machine evolves and reacts to is fixed by {Machine.validate!}
-    # (see {EvolveTypes}): declaring more afterwards would go unread. A mounted
-    # machine is locked by the machine that mounts it, which reads its types.
+    # (see {EvolveTypes}): declaring more afterwards would go unread.
     module DefinitionLock
       %i[context evolve before_evolve reaction].each do |dsl|
         define_method(dsl) do |*args, &block|
-          raise DefinitionError, "#{self}: #{dsl} declared after the machine was validated" if @validated || @__locked
+          raise DefinitionError, "#{self}: #{dsl} declared after the machine was validated" if @validated
 
           super(*args, &block)
         end
@@ -145,21 +146,16 @@ module Sourced
     # A state: a position in a machine's chart, and the event recording
     # a transition to it. {Machine.State} generates one subclass per name,
     # the state's *handle*: the tree places it (once per placement of its
-    # machine, so a machine mounted twice has each of its states at two
-    # paths), transitions target it, and the machine appends it when it runs
-    # as a top machine. A machine that mounts another generates its own class
-    # for each of the mounted machine's handles, with its own partition keys
-    # and type (see {Machine.state_class}). Positions are the paths in
-    # the payload, never the class.
+    # definition, so a part mounted twice has each of its states at two
+    # paths), transitions target it, and the machine appends it. A part's
+    # states are its owner's: typed by the owner's prefix, keyed by its
+    # partition keys. Positions are the paths in the payload, never the class.
     class State < Sourced::Event
-      # @return [Class<State>] the handle this class records: itself, for a handle
-      def self.state = @state
+      # @return [Class<State>] itself: a handle, like a {History}'s +state+
+      def self.state = self
 
-      # @return [Class<Machine>] the machine that appends this class
-      def self.owner = @owner
-
-      # @return [Class<Machine>] the machine that declares the handle
-      def self.machine = state.owner
+      # @return [Class<Machine>, Class<Part>] the machine or part that declares the state
+      def self.machine = @machine
 
       # @return [Symbol] unique within {.machine}
       def self.state_name = @state_name
@@ -177,31 +173,30 @@ module Sourced
       def self.to_s = name || (state ? "#{machine}:#{state_name}" : super)
       def self.inspect = to_s
 
-      # Generate a state class: +owner+'s partition keys and the transition
+      # Generate a state class: +machine+'s partition keys and the transition
       # attributes. A type can be taken over only by a class for the same
       # machine (a reloaded or redefined one); any other clash raises, since
       # the registry would silently replace it.
       # @api private
-      def self.__generate(type, owner:, state_name:, state: nil)
+      def self.__generate(type, machine:, state_name:)
         existing = Sourced::Message.registry[type]
-        unless existing.nil? || (Class === existing && existing < State && existing.owner.group_id == owner.group_id)
-          raise DefinitionError, "#{owner}: message type #{type.inspect} is already #{existing}'s"
+        unless existing.nil? || (Class === existing && existing < State && existing.machine.__type_owner_key == machine.__type_owner_key)
+          raise DefinitionError, "#{machine}: message type #{type.inspect} is already #{existing}'s"
         end
 
-        schema = owner.partition_schema
+        schema = machine.partition_schema
         klass = define(type) do
           schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
           Machine.__transition_attributes(self)
         end
-        klass.instance_variable_set(:@owner, owner)
-        klass.instance_variable_set(:@state, state || klass)
+        klass.instance_variable_set(:@machine, machine)
         klass.instance_variable_set(:@state_name, state_name)
         klass
       end
     end
 
-    # @return [Boolean] whether +value+ is a state handle (not a class a mounting machine generated for one)
-    def self.handle?(value) = Class === value && value < State && value.state.equal?(value)
+    # @return [Boolean] whether +value+ is a state handle
+    def self.handle?(value) = Class === value && value < State
 
     # The states a transition may go to; +nil+ means it may stay.
     Targets = Data.define(:members) do
@@ -309,31 +304,33 @@ module Sourced
     end
 
     # A child machine the parent tracks: started by handlers that declare it in
-    # +starts:+ (+kind+ +:spawn+), or by a state ({NodeBuilder#start},
-    # +kind+ +:invoke+). +node+, +payload+ and +on_done+ are for a state's
-    # child; +stop_on+, the placed states whose +stops+ name it, for
-    # handlers' (filled by the {Tree}).
+    # +starts:+ (+kind+ +:spawn+, one spec per machine), or by a state
+    # ({NodeBuilder#start}, +kind+ +:invoke+, one spec per placement).
+    # +node+ (the state; a {PlacedNode} in the {Tree}'s), +payload+ and
+    # +on_done+ are for a state's child; +stop_on+, the placed states whose
+    # +stops+ name it, for handlers' (filled by the {Tree}).
     ChildSpec = Data.define(:machine, :kind, :stop_on, :node, :payload, :on_done) do
       def invoke? = kind == :invoke
     end
 
     # A child as its parent knows it: its own keys (beyond the parent's), the
     # state it started at, or the final one it finished at, and for a
-    # child a state started, the parent state entry it was started for.
-    ChildRef = Data.define(:keys, :state, :final, :entry_id) do
+    # child a state started, the path of that state (+at+, from its
+    # +Started+) and the entry it was started for (nil +at+: a handler's).
+    ChildRef = Data.define(:keys, :state, :final, :at, :entry_id) do
       def final? = final
     end
 
     # A join over children: once every child of +machine+ is final.
     ChildrenJoin = Data.define(:machine, :definition)
 
-    # A region whose states are another machine's, declared with
-    # +region :name, SomeMachine+ or, for a compound state,
-    # +state Handle, SomeMachine+. Its definition isn't copied: the tree
-    # places the machine's root region under the state (see {Tree}).
-    # +on_final+ maps the machine's root final states onto the parent's
-    # (filled while the machine is defined). A compound region starts at the
-    # machine's +started+ state; any other at its initial position.
+    # A region whose states are a part's ({Part}), declared with
+    # +region :name, SomePart+ or, for a compound state,
+    # +state Handle, SomePart+. Its definition isn't copied: the tree
+    # places the part's root region under the state (see {Tree}).
+    # +on_final+ maps the part's root final states onto the parent's
+    # (filled while the part is defined). A compound region starts at the
+    # part's +started+ state; any other at its initial position.
     RegionMount = Data.define(:name, :machine, :on_final, :compound) do
       def compound? = compound
     end
@@ -508,29 +505,28 @@ module Sourced
       # regions is parallel: all of its regions are active at once.
       #
       # With a block, the region's states are declared inline. With a
-      # machine, they're that machine's: it runs as this region, in this
-      # machine's partition, decided with it, its context this machine's (its
-      # +evolve+ blocks apply to it too). It escalates through its root final
-      # states, which +on_final+ maps onto ours.
+      # part ({Part}), they're that part's: its states are ours, its context
+      # ours (its +evolve+ blocks apply to it too). It escalates through its
+      # root final states, which +on_final+ maps onto ours.
       #
-      #   region :payment, PaymentMachine, on_final: { PaymentMachine::Expired => Cancelled }
+      #   region :payment, PaymentPart, on_final: { PaymentPart::Expired => Cancelled }
       #
       # @param name [Symbol] unique within the machine
-      # @param machine [Class<Machine>, nil]
+      # @param machine [Class<Part>, nil]
       # @param on_final [Hash{State => State}] the machine's root final => our state
       def region(name, machine = nil, on_final: {}, &block)
         raise DefinitionError, "#{@machine}: the initial position can't have regions" if @node.initial?
         raise DefinitionError, "#{@machine}: final state #{@node.key} can't have regions" if @node.final?
-        if @node.regions.any? { |r| r.is_a?(RegionMount) && r.compound? }
-          raise DefinitionError, "#{@machine}: #{@node.key} is a machine's compound state, so it can't have regions"
+        if @node.regions.any? { |r| RegionMount === r && r.compound? }
+          raise DefinitionError, "#{@machine}: #{@node.key} is a part's compound state, so it can't have regions"
         end
 
         if machine
-          raise DefinitionError, "#{@machine}: region #{name.inspect} takes a machine or a block, not both" if block
+          raise DefinitionError, "#{@machine}: region #{name.inspect} takes a part or a block, not both" if block
 
           @machine.send(:__mount_region, @node, name.to_sym, machine, on_final)
         else
-          raise DefinitionError, "#{@machine}: region #{name.inspect}: on_final is for a mounted machine" if on_final.any?
+          raise DefinitionError, "#{@machine}: region #{name.inspect}: on_final is for a mounted part" if on_final.any?
 
           @machine.send(:__define_region, @node, name.to_sym, &block)
         end
@@ -583,14 +579,15 @@ module Sourced
       # @param mapping [Hash{State => State}] the machine's root final => our state
       def on_final(mapping)
         mount = @node.regions.find { |region| RegionMount === region && region.compound? }
-        raise DefinitionError, "#{@machine}: #{@node.label} mounts no machine, so no on_final; use done" unless mount
+        raise DefinitionError, "#{@machine}: #{@node.label} mounts no part, so no on_final; use done" unless mount
 
         @machine.send(:__map_finals, mount, mapping)
       end
 
       # Run a child machine while this state is active: started in the
       # decision that enters the state, sent its +Stop+ when the state
-      # is left, and its final states mapped onto ours.
+      # is left, and its final states mapped onto ours. Each placement of
+      # the state (a part mounted twice) starts, maps and stops its own.
       #
       #   state AwaitingPayment do
       #     start PaymentMachine do
@@ -612,9 +609,10 @@ module Sourced
         @machine.send(:__define_invoke, child, node: @node, payload: builder.payload_block, on_done: builder.on_done_pairs)
       end
 
-      # Join over started children: once every child of +Child+ is at a final
-      # state (and at least one was started), the machine moves to the
-      # declared state, as a command handler would.
+      # Join over started children: once every child of +Child+ its handlers
+      # started (+starts:+; not a state's) is at a final state, and at least
+      # one was started, the machine moves to the declared state, as a command
+      # handler would.
       #
       #   children_done LineMachine => LinesDone | LinesPartiallyFailed do |order|
       #     to(machine.children(LineMachine).all? { |line| line.state == LineMachine::Picked } ? LinesDone : LinesPartiallyFailed)
@@ -640,8 +638,9 @@ module Sourced
         @node.children_joins << ChildrenJoin.new(machine: child, definition:)
       end
 
-      # Stop every running child of +child+ when this state is entered,
-      # sending each its +Stop+. Some handler must declare +starts: child+.
+      # Stop every running child of +child+ handlers started when this state
+      # is entered, sending each its +Stop+. Some handler must declare
+      # +starts: child+. A state's children stop when it's left.
       # @param child [Class<Machine>]
       def stops(child)
         raise DefinitionError, "#{@machine}: the initial position is never entered, so it stops no children" if @node.initial?
@@ -723,7 +722,7 @@ module Sourced
       def final? = @runtime.current_node(@runtime.root).final?
 
       # @overload children(child)
-      #   @return [Array<ChildRef>] the children of machine +child+, started by a handler or a state
+      #   @return [Array<ChildRef>] the children of machine +child+, started by handlers or by any state (see {ChildRef#at})
       # @overload children
       #   @return [Hash{Class<Machine> => Array<ChildRef>}] every child, by machine
       def children(child = nil) = child ? @runtime.children(child) : @runtime.all_children
@@ -767,12 +766,12 @@ module Sourced
         @children = {}
       end
 
-      # Record a child's start or finish. A state's child keeps the entry
-      # it was first started for.
-      def track_child(spec, keys, state:, final:, entry_id:)
-        refs = (@children[spec.machine] ||= {})
+      # Record a child's start or finish. A state's child keeps the
+      # placement and entry it was first started for.
+      def track_child(child, keys, state:, final:, at:, entry_id:)
+        refs = (@children[child] ||= {})
         known = refs[keys]
-        refs[keys] = ChildRef.new(keys:, state:, final:, entry_id: known ? known.entry_id : entry_id)
+        refs[keys] = known ? known.with(state:, final:) : ChildRef.new(keys:, state:, final:, at:, entry_id:)
       end
 
       def children(child) = (@children[child] || {}).values
@@ -924,104 +923,22 @@ module Sourced
     end
 
     class << self
-      # The root region: the machine's top-level states.
-      # @return [Region]
-      def root = @root ||= Region.new(:root, nil)
-
-      # @return [Hash{Symbol => State}] the states this machine declares, by name
-      def declared_states = @declared_states ||= {}
-
-      # @return [Hash{State => Node}] the states this machine places, in any of its regions
-      def nodes = @nodes ||= {}
-
-      # @return [Hash{Symbol => Region}] every region but the root, declared inline
-      def regions = @regions ||= {}
-
-      # @return [Hash{Symbol => RegionMount}] regions that are other machines
-      def mounts = @mounts ||= {}
-
-      # The children this machine's own handlers or states start, as
-      # declared (the {Tree} merges mounted machines', and fills
-      # +stop_on+).
-      # @return [Hash{Class<Machine> => ChildSpec}]
-      def children_specs = @children_specs ||= {}
-
-      # This machine and the children it starts, including mounted machines',
+      # This machine and the children it starts, including its parts',
       # so {Sourced.register} registers them with it (see {Config.register}).
       # @return [Array<Class>]
-      def to_sourced_reactors = [self, *tree.children_specs.keys]
+      def to_sourced_reactors = [self, *tree.children]
 
       # @param klass [Class]
       def child_event?(klass) = tree.child_event?(klass)
-
-      # The state a parent starts this machine at, with +Started+.
-      # @return [State, nil]
-      attr_reader :start_state
 
       # The final state this machine's +Stop+ moves it to.
       # @return [State, nil]
       attr_reader :stop_state
 
-      # Declare a state: a handle naming a position in this machine's
-      # chart, and the event recording a transition to it, of type
-      # +<type_prefix>.runtime.<name>+. Place it with {.state}, {.final}
-      # or {.started}.
-      #
-      #   Placed = State(:placed)
-      #
-      # Declare +partition_by+ and +consumer_group+ first: the class takes the
-      # partition keys, and its type the prefix.
-      #
-      # @param name [Symbol]
-      # @return [Class<State>] the same handle for the same name
-      def State(name)
-        name = name.to_sym
-        raise DefinitionError, "#{self}: a state can't be named #{INITIAL.inspect}" if name == INITIAL
-        if name.to_s.include?('.')
-          raise DefinitionError, "#{self}: state names can't contain dots, got #{name.inspect}"
-        end
-
-        declared_states[name] ||= begin
-          raise DefinitionError, 'a machine needs a name or a consumer_group before its states' unless group_id
-          if @validated
-            raise DefinitionError, "#{self}: state #{name.inspect} declared after the machine was validated"
-          end
-
-          State.__generate("#{type_prefix}.runtime.#{name}", owner: self, state_name: name)
-                    .tap { |klass| __transition_classes << klass }
-        end
-      end
-
-      # The class this machine appends for +handle+: the handle itself for one
-      # of its own states, or the class it generated for a mounted
-      # machine's.
-      #
-      # @param handle [Class<State>]
-      # @return [Class<State>]
-      def state_class(handle)
-        handle = handle.state
-        return handle if handle.machine.equal?(self)
-
-        __mounted_classes.fetch(handle) do
-          raise Error, "#{self} doesn't mount #{handle.machine}, so it has no class for #{handle}"
-        end
-      end
-
-      # Every state class this machine appends, and its +Started+ for a
-      # child: what a projection subscribes to for every move.
+      # Every state class this machine appends (its own and its parts'), and
+      # its +Started+ for a child: what a projection subscribes to for every move.
       # @return [Array<Class>]
       def transition_classes = __transition_classes
-
-      # Declare where a parent starts this machine (with +Started+), without a
-      # command. With a machine, the start is a compound state, entered at
-      # that machine's own start.
-      # @param handle [State, Symbol]
-      def started(handle, machine = nil, &block)
-        raise DefinitionError, "#{self}: started is declared twice" if @start_state
-
-        @start_state = __handle(handle)
-        state(@start_state, machine, &block)
-      end
 
       # Declare what this machine becomes when its parent stops it. Generates a
       # +Stop+ command (+self::Stop+, keyed by this machine's partition keys),
@@ -1094,33 +1011,6 @@ module Sourced
       # derived from +group_id+: +Shop::OrderMachine+ => +shop.order_machine+.
       def type_prefix = message_prefix
 
-      # The machine's position before its first state.
-      def initial(&block) = __define_node(root, INITIAL, final: false, &block)
-
-      # Place a state, and declare the commands it accepts.
-      #
-      # With a machine, the state is compound: its sub-states are that
-      # machine's states, entered at its +started+ state:
-      #
-      #   state Planning, PlanningMachine do
-      #     on_final PlanningMachine::Finalised => Reserving
-      #   end
-      #
-      # The block declares the compound state's own commands and actions.
-      # The machine runs in this machine's partition and instance, its context
-      # this machine's; it escalates through its root finals, which +on_final+
-      # maps onto our states.
-      #
-      # @param handle [State, Symbol] one of this machine's states; a Symbol declares it
-      # @param machine [Class<Machine>, nil] a machine with +started+, for a compound state
-      def state(handle, machine = nil, &block)
-        __define_state(root, handle, machine, &block)
-      end
-
-      # Place a final state. It accepts no commands.
-      # @param handle [State, Symbol]
-      def final(handle, &block) = __define_node(root, __handle(handle), final: true, &block)
-
       # The machine's definition placed into one tree (see {Tree}), which the
       # runtime, routing and rendering work on. Built once the machine is
       # validated; before that (while the class body runs), built on each call.
@@ -1152,7 +1042,7 @@ module Sourced
       # and exit actions for, children's starts and finishes (which joins
       # decide on), and any events with a +reaction+.
       def handled_messages
-        (handled_commands + handled_events + __transition_classes + tree.child_events.keys + handled_messages_for_react).uniq
+        (handled_commands + handled_events + __transition_classes + tree.child_events + handled_messages_for_react).uniq
       end
 
       # Check the definition. Memoised; runs before the first instance is built,
@@ -1171,7 +1061,7 @@ module Sourced
         tree = Tree.new(self)
         __validate!(tree)
         # Children are started from here, so they must be valid too.
-        tree.children_specs.each_value { |spec| spec.machine.validate! }
+        tree.children.each(&:validate!)
         @tree = tree
         tree.mounted_machines.each(&:__lock!)
         # What the runtime reads per message, fixed now that the definition is.
@@ -1179,8 +1069,8 @@ module Sourced
         @__handled_events = handled_events.freeze
         @__evolve_types = handled_messages_for_evolve.freeze
         @__start_paths = __start_paths.freeze if start_state
-        __transition_classes.freeze
-        @__transition_set = __transition_classes.to_set.freeze
+        @__transition_classes = __transition_classes.freeze
+        @__transition_set = @__transition_classes.to_set.freeze
         @__command_set = @__handled_commands.to_set.freeze
         @__event_set = @__handled_events.to_set.freeze
         @__region_projection_classes = __region_projection_classes.freeze
@@ -1231,9 +1121,13 @@ module Sourced
         Snapshot.new(value: instance.machine.value, context: instance.context, children: instance.machine.children)
       end
 
-      # The events that move this machine: its state classes, and for a child, +Started+.
+      # The events that move this machine: its states, its parts', and for a
+      # child, +Started+. Fixed by {.validate!}; computed on each call before it.
       # @api private
-      def __transition_classes = @__transition_classes ||= []
+      def __transition_classes
+        @__transition_classes ||
+          [*declared_states.values, *tree.mounted_machines.flat_map { |part| part.declared_states.values }, *@__started_class]
+      end
 
       # Membership for the runtime, by message class: Sets fixed by {.validate!}.
       # @api private
@@ -1260,20 +1154,12 @@ module Sourced
         }.select { |_, present| present }.keys
       end
 
-      # The projections of the machines mounted as regions that evolve anything.
+      # The projections of the parts that evolve anything.
       # @api private
       def __region_projection_classes
         @__region_projection_classes ||
           tree.mounted_machines.map(&:projection_class).reject { |klass| klass.handled_messages.empty? }
       end
-
-      # @api private
-      # @return [Hash{Class<State> => Class<State>}] mounted machines' handles => our classes for them
-      def __mounted_classes = @__mounted_classes ||= {}
-
-      # Lock the definition DSL ({DefinitionLock}) once a mounting machine has read it.
-      # @api private
-      def __lock! = @__locked = true
 
       # What a parent's +Started+ enters: this machine's start, and its default configuration.
       # @api private
@@ -1284,42 +1170,22 @@ module Sourced
       # @return [Class, nil] +Finished+, for a machine with +stopped+
       def __finished_class = @__finished_class
 
+      # What tells a state class's owner apart from a redefinition of it (see {State.__generate}).
+      # @api private
+      def __type_owner_key = group_id
+
       private
+
+      def __state_type(name)
+        raise DefinitionError, 'a machine needs a name or a consumer_group before its states' unless group_id
+
+        "#{type_prefix}.runtime.#{name}"
+      end
 
       def __check_declared_first!(what)
         return if declared_states.empty? && mounts.empty?
 
         raise DefinitionError, "#{self}: declare #{what} before states and mounts"
-      end
-
-      # Generate our class for each state of +machine+, and of the machines
-      # it mounts, all the way down: the events we append while it runs in our
-      # partition. A machine without partition keys is never a top machine, so
-      # it generates none; whichever machine mounts it does.
-      def __generate_mounted(machine)
-        return if partition_keys.empty?
-
-        machine.declared_states.each_value do |handle|
-          next if __mounted_classes.key?(handle)
-
-          type = "#{type_prefix}.runtime.mounted.#{machine.type_prefix}.#{handle.state_name}"
-          klass = State.__generate(type, owner: self, state: handle, state_name: handle.state_name)
-          __mounted_classes[handle] = klass
-          __transition_classes << klass
-          __name_mounted(klass, handle)
-        end
-        machine.mounts.each_value { |mount| __generate_mounted(mount.machine) }
-      end
-
-      # +Mounted::<mounted machine's name>::<handle's constant>+, under this machine.
-      def __name_mounted(klass, handle)
-        return unless name && handle.machine.name && handle.name
-
-        namespace = ['Mounted', *handle.machine.name.split('::')].reduce(self) do |mod, segment|
-          mod.const_defined?(segment, false) ? mod.const_get(segment, false) : mod.const_set(segment, Module.new)
-        end
-        constant = handle.name.split('::').last
-        namespace.const_set(constant, klass) unless namespace.const_defined?(constant, false)
       end
 
       def __define_child_messages
@@ -1328,244 +1194,15 @@ module Sourced
           schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
           Machine.__transition_attributes(self)
           attribute :input, Sourced::Types::Hash.default { {} }
+          # The parent's state that started it, for the parent to tell placements apart.
+          attribute :parent_state, (Sourced::Types::String | Sourced::Types::Nil).default(nil)
         end)
-        __transition_classes << (@__started_class = self::Started)
+        @__started_class = self::Started
         @__finished_class = const_set(:Finished, ChildEvent.define("#{type_prefix}.runtime.child.finished") do
           schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
           attribute :final, String
         end)
       end
-
-      def __define_state(region, handle, machine, &block)
-        handle = __handle(handle)
-        return __define_node(region, handle, final: false, &block) if machine.nil?
-
-        unless machine.is_a?(Class) && machine < Machine
-          raise DefinitionError, "#{self}: state #{handle}: #{machine.inspect} isn't a Sourced::Machine"
-        end
-        raise DefinitionError, "#{self}: state #{handle}: #{machine} has no start state" unless machine.start_state
-
-        # Named after its state, so one machine can be several compound states.
-        mount = __mount(handle.state_name, machine, compound: true)
-        __define_node(region, handle, final: false, mount:, &block)
-      end
-
-      def __define_node(region, key, final:, mount: nil, &block)
-        key = __handle(key) unless key == INITIAL
-        if region.nodes.key?(key) || nodes.key?(key)
-          raise DefinitionError, "#{self}: #{key == INITIAL ? "#{region.label}'s initial position" : key} is placed twice"
-        end
-
-        node = Node.new(key, final:, region:)
-        region.nodes[key] = node
-        nodes[key] = node unless key == INITIAL
-        node.regions << mount if mount
-        NodeBuilder.new(self, node).instance_eval(&block) if block
-        node
-      end
-
-      def __define_region(node, name, &block)
-        raise DefinitionError, "#{self}: region #{name.inspect} is declared twice" if regions.key?(name) || mounts.key?(name)
-
-        region = Region.new(name, node)
-        regions[name] = region
-        node.regions << region
-        RegionBuilder.new(self, region).instance_eval(&block) if block
-        region
-      end
-
-      def __mount_region(node, name, machine, on_final)
-        unless machine.is_a?(Class) && machine < Machine
-          raise DefinitionError, "#{self}: region #{name.inspect}: #{machine.inspect} isn't a Sourced::Machine"
-        end
-
-        mount = __mount(name, machine, compound: false)
-        __map_finals(mount, on_final) if on_final.any?
-        node.regions << mount
-        mount
-      end
-
-      # Record a mount of +machine+ under +name+, unique among this machine's regions.
-      def __mount(name, machine, compound:)
-        raise DefinitionError, "#{self}: region #{name.inspect} is declared twice" if regions.key?(name) || mounts.key?(name)
-        raise DefinitionError, "#{self}: region #{name.inspect}: a machine can't be its own region" if machine <= self
-        # Reactions are methods, and sync blocks the machine's own: neither can
-        # run on this machine's instance. What every machine inherits is ours too.
-        if (machine.handled_messages_for_react - Machine.handled_messages_for_react).any? ||
-           (machine.sync_blocks - Machine.sync_blocks).any? ||
-           (machine.after_sync_blocks - Machine.after_sync_blocks).any?
-          raise DefinitionError,
-                "#{self}: region #{name.inspect}: #{machine} declares reactions or sync blocks, " \
-                "which it can't run as a region; declare them on #{self}"
-        end
-
-        mounts[name] = RegionMount.new(name:, machine:, on_final: {}, compound:).tap { __generate_mounted(machine) }
-      end
-
-      # Add +mapping+ (the mounted machine's root final => our target) to +mount+.
-      def __map_finals(mount, mapping)
-        unless Hash === mapping && mapping.any?
-          raise DefinitionError, "#{self}: region #{mount.name.inspect}: on_final takes { Final => target }, got #{mapping.inspect}"
-        end
-
-        mapping.each do |final, target|
-          final = mount.machine.send(:__handle, final, declare: false)
-          raise DefinitionError, "#{self}: region #{mount.name.inspect} maps on_final #{final} twice" if mount.on_final.key?(final)
-
-          mount.on_final[final] = __own_target(target)
-        end
-      end
-
-      def __define_invoke(child, node:, payload:, on_done:)
-        __check_child_machine!(child)
-        if (known = children_specs[child])
-          raise DefinitionError, "#{self}: #{child} is started by a state twice" if known.invoke?
-
-          raise DefinitionError, "#{self}: #{child} is started by handlers, so a state can't start it too"
-        end
-
-        on_done = on_done.each_with_object({}) do |(final, target), mapped|
-          final = child.send(:__handle, final, declare: false)
-          raise DefinitionError, "#{self}: start #{child} maps on_done #{final} twice" if mapped.key?(final)
-
-          mapped[final] = __own_target(target)
-        end
-        spec = ChildSpec.new(machine: child, kind: :invoke, stop_on: NONE, node:, payload:, on_done:)
-        children_specs[child] = spec
-        node.invokes << spec
-        spec
-      end
-
-      # A child a handler's +starts:+ names: one spec however many handlers start it.
-      def __define_started(child)
-        __check_child_machine!(child)
-        case children_specs[child]
-        in nil
-          children_specs[child] = ChildSpec.new(machine: child, kind: :spawn, stop_on: NONE, node: nil, payload: nil, on_done: {})
-        in ChildSpec => spec if spec.invoke?
-          raise DefinitionError, "#{self}: #{child} is started by a state, so handlers can't start it too"
-        else
-          nil
-        end
-      end
-
-      def __check_child_machine!(child)
-        raise DefinitionError, "#{self}: #{child.inspect} isn't a Sourced::Machine" unless Class === child && child < Machine
-        raise DefinitionError, "#{self}: #{child} has no start state" unless child.start_state
-        raise DefinitionError, "#{self}: #{child} has no stopped state" unless child.stop_state
-      end
-
-      # A handler's +starts:+, as a list of machines (+nil+ among them: optional).
-      # @param label [String] the handler, for errors
-      # @return [Array<Class<Machine>, nil>]
-      def __starts(starts, block, label)
-        members =
-          case starts
-          in nil then return NONE
-          in Starts then starts.members
-          in Class if starts < Machine then [starts]
-          else
-            raise DefinitionError, "#{self}: #{label}: starts: takes a machine or a union of them (A | B, A | nil), got #{starts.inspect}"
-          end
-        members.compact.each { |child| __define_started(child) }
-        if block.nil? && members.size > 1
-          reason = members.include?(nil) ? 'nothing decides whether to start one' : 'nothing chooses which to start'
-          raise DefinitionError, "#{self}: #{label} starts: #{starts} needs a block: #{reason}"
-        end
-
-        members
-      end
-
-      # An +always+ or +done+ of +node+, after +declared+ (its siblings so far).
-      def __eventless(node, kind, target, guard, declared)
-        unless guard in nil | Symbol | GuardInterface
-          raise DefinitionError, "#{self}: #{node.label}'s #{kind}: if: takes a Symbol or a #call(context), got #{guard.inspect}"
-        end
-
-        eventless = Eventless.build(kind == 'done' ? __own_target(target) : __target(target), guard)
-        if declared.any? { |other| !other.guarded? }
-          raise DefinitionError, "#{self}: #{node.label}'s #{kind} #{eventless.target} is unreachable, after an unguarded #{kind}"
-        end
-
-        eventless
-      end
-
-      # One of this machine's states. A Symbol names one, declaring it
-      # unless +declare+ is false.
-      def __handle(target, declare: true)
-        case target
-        in Class if Machine.handle?(target) && target.machine == self then target
-        in Class if Machine.handle?(target)
-          raise DefinitionError, "#{self}: #{target} is #{target.machine}'s state, not #{self}'s"
-        in Symbol | String if declare then __name_declared(State(target))
-        in Symbol | String
-          declared_states.fetch(target.to_sym) { raise DefinitionError, "#{self} has no state #{target.inspect}" }
-        else
-          raise DefinitionError, "#{self}: states are State handles or Symbols, got #{target.inspect}"
-        end
-      end
-
-      # A state declared by Symbol has no constant of its own: set one
-      # (+:awaiting_payment+ => +AwaitingPayment+), unless that name is taken.
-      def __name_declared(handle)
-        return handle if handle.name
-
-        constant = handle.state_name.to_s.split('_').map(&:capitalize).join.to_sym
-        # Left for stopped's messages: such a handle stays anonymous.
-        return handle if CHILD_MESSAGES.include?(constant)
-
-        const_set(constant, handle) unless const_defined?(constant, false)
-        handle
-      end
-
-      # @param what [String] the macro declaring it, for errors: +command+ or +on+
-      def __command_definition(declaration, block, what: 'command', starts: nil)
-        command_class, targets =
-          case declaration
-          in Hash if declaration.size == 1
-            [declaration.keys.first, __flatten_targets(declaration.values.first)]
-          in Class
-            [declaration, [nil]]
-          else
-            raise DefinitionError, "#{self}: invalid #{what} declaration #{declaration.inspect}"
-          end
-
-        unless command_class in Class and command_class < Sourced::Message
-          raise DefinitionError, "#{self}: #{what} takes a message class, got #{command_class.inspect}"
-        end
-        starts = __starts(starts, block, "#{what} #{command_class}")
-        if block.nil? && (targets.size > 1 || (targets == [nil] && starts.empty?))
-          raise DefinitionError,
-                "#{self}: #{command_class} => #{targets.map { |t| t || 'nil' }.join(' | ')} " \
-                'needs a block to choose where to go'
-        end
-
-        CommandDef.new(command_class:, targets: targets.uniq, block:, starts:)
-      end
-
-      # @return [Array<State, nil>]
-      def __flatten_targets(target)
-        case target
-        in nil then [nil]
-        in Targets then target.members.map { |member| member && __target(member) }
-        in Array then target.flat_map { |member| __flatten_targets(member) }
-        else [__target(target)]
-        end
-      end
-
-      # Where a transition may go: one of our states, or one of a mounted
-      # machine's, below the state that declares it (checked on validation),
-      # or a {History} of one.
-      def __target(target, declare: true)
-        case target
-        in History then target
-        in Class if Machine.handle?(target) then target
-        else __handle(target, declare:)
-        end
-      end
-
-      # One of our states, or a {History} of one.
-      def __own_target(target) = (target in History) ? target : __handle(target)
 
       # @param node [PlacedNode]
       def __check_target!(tree, node, target)
@@ -1575,12 +1212,11 @@ module Sourced
 
         raise DefinitionError,
               "#{self}: #{node.label} targets #{handle}, another machine's state that isn't below it; " \
-              'a mounted machine reaches ours through on_final'
+              'a part reaches ours through on_final'
       end
 
       def __validate!(tree)
-        machines = [self, *tree.mounted_machines]
-        machines.each do |machine|
+        [self, *tree.mounted_machines].each do |machine|
           unplaced = machine.declared_states.values.reject { |handle| machine.nodes.key?(handle) }
           raise DefinitionError, "#{machine}: #{unplaced.join(', ')} declared but never placed" if unplaced.any?
         end
@@ -1606,19 +1242,31 @@ module Sourced
           node.children_joins.each { |join| __check_children_join!(tree, node, join) }
           node.invokes.each { |spec| __check_invoke!(tree, node, spec) }
           node.stops.each do |child|
-            spec = tree.children_specs[child]
-            next if spec && !spec.invoke?
+            next if tree.spawned(child)
 
             raise DefinitionError, "#{self}: #{node.label} stops #{child}, but no handler declares starts: #{child}"
           end
         end
 
         tree.all_regions.each { |region| __check_mount!(tree, region) if region.mount }
-        tree.children_specs.each_value { |spec| __check_child!(tree, spec) }
+        tree.children.each { |child| __check_child!(child) }
+        __check_part_evolves!(tree)
         PartitionSchema.check!(self, error: DefinitionError)
       end
 
-      # A mounted machine escalates through its root finals, mapped onto the
+      # A part's evolve blocks are ours: one per message class, across us and our parts.
+      def __check_part_evolves!(tree)
+        evolved = projection_class.handled_messages.to_h { |klass| [klass, self] }
+        tree.mounted_machines.each do |part|
+          part.projection_class.handled_messages.each do |klass|
+            raise DefinitionError, "#{self}: #{klass} is evolved by both #{evolved[klass]} and #{part}" if evolved.key?(klass)
+
+            evolved[klass] = part
+          end
+        end
+      end
+
+      # A part escalates through its root finals, mapped onto the
       # states reachable from the state that mounts it.
       # @param region [PlacedRegion]
       def __check_mount!(tree, region)
@@ -1642,8 +1290,7 @@ module Sourced
         raise DefinitionError, "#{self}: #{what} #{handle} isn't a final state of #{machine}'s root region"
       end
 
-      def __check_child!(tree, spec)
-        child = spec.machine
+      def __check_child!(child)
         missing = partition_keys - child.partition_keys
         unless missing.empty?
           raise DefinitionError, "#{self}: child #{child} must partition by our keys too, missing #{missing.join(', ')}"
@@ -1651,8 +1298,7 @@ module Sourced
       end
 
       def __check_children_join!(tree, node, join)
-        spec = tree.children_specs[join.machine]
-        unless spec && !spec.invoke?
+        unless tree.spawned(join.machine)
           raise DefinitionError, "#{self}: #{join.definition.command_class}: no handler declares starts: #{join.machine}"
         end
 
@@ -1847,7 +1493,7 @@ module Sourced
     end
 
     # What the current configuration decides without a command, until nothing
-    # is left: +always+, mounted machines' +on_final+, +done+ joins,
+    # is left: +always+, mounted parts' +on_final+, +done+ joins,
     # +children_done+ joins, starting states' children, and mapping their
     # results.
     # @api private
@@ -1907,14 +1553,14 @@ module Sourced
           message.payload.exited.each do |path|
             left = tree.node_at(path, message)
             left.exits.each { |blk| instance_exec(context, message, &blk) }
-            left.invokes.each { |spec| stop_children(spec) }
+            left.invokes.each { |spec| stop_children(spec.machine, at: left.path) }
           end
           entered = message.payload.entered.map { |path| tree.node_at(path, message) }
           entered.each do |node|
             node.entries.each { |blk| instance_exec(context, message, &blk) }
             start_timers(node, message)
           end
-          entered.flat_map(&:stops).uniq.each { |child| stop_children(tree.children_specs.fetch(child)) }
+          entered.flat_map(&:stops).uniq.each { |child| stop_children(child, at: nil) }
         end
 
         method_name = self.class.reaction_handlers[message.class]
@@ -1958,12 +1604,11 @@ module Sourced
       transition(source, self.class.tree.resolve(from, target), trigger:, history:)
     end
 
-    # Move from +source+ to +target+: append our class for +target+'s
-    # state, and a +Finished+ when it reaches one of a child machine's
-    # root finals.
+    # Move from +source+ to +target+: append +target+'s state, and a
+    # +Finished+ when it reaches one of a child machine's root finals.
     def transition(source, target, trigger:, history: nil)
       exited, entered = @runtime.transition_sets(source, target, history:)
-      klass = self.class.state_class(target.key)
+      klass = target.key
       __append(klass.new(payload: with_partition_keys(klass, {
         trigger:, source: source.path, target: target.path,
         exited: exited.map(&:path), entered: entered.map(&:path)
@@ -1982,7 +1627,7 @@ module Sourced
     end
 
     # +always+ first: a transient state resolves before anything that
-    # depends on where its region ends up (a mounted machine's escalation, a join).
+    # depends on where its region ends up (a mounted part's escalation, a join).
     # Only the steps the definition can take ({.__eventless_steps}), over the
     # active states of each pass.
     def append_eventless
@@ -1996,7 +1641,7 @@ module Sourced
       raise Error, "#{self.class}: more than #{MAX_JOINS} joins in one decision"
     end
 
-    # A mounted machine at one of its root finals that +on_final+ maps: move to
+    # A mounted part at one of its root finals that +on_final+ maps: move to
     # the mapped state. Before +done+ joins, so a region's escalation
     # (ex. a payment expiring) wins over completing its state.
     def mount_final_step(active)
@@ -2014,8 +1659,8 @@ module Sourced
       false
     end
 
-    # The projections of the machines mounted as regions, built from our
-    # context: their +evolve+ blocks apply to the same object as ours.
+    # The projections of our parts, built from our context: their +evolve+
+    # blocks apply to the same object as ours.
     def __region_projections
       @__region_projections ||= self.class.__region_projection_classes.map { |klass| klass.new(projection.context) }
     end
@@ -2050,7 +1695,7 @@ module Sourced
     def children_join_step(active)
       active.each do |node|
         node.children_joins.each do |join|
-          refs = @runtime.children(join.machine)
+          refs = @runtime.children(join.machine).select { |ref| ref.at.nil? }
           next if refs.empty? || !refs.all?(&:final?)
 
           run_handler(node, join.definition, nil)
@@ -2067,7 +1712,7 @@ module Sourced
       active.each do |node|
         node.invokes.each do |spec|
           entered_by = @runtime.entered_by(node.region)
-          ref = @runtime.children(spec.machine).find { |child| child.entry_id == entered_by.id }
+          ref = @runtime.children(spec.machine).find { |child| child.at == node.path && child.entry_id == entered_by.id }
           if ref.nil?
             start_child(spec, spec.payload.call(context, entered_by).to_h)
             return true
@@ -2132,41 +1777,53 @@ module Sourced
       end
 
       @handler[:started] += 1
-      start_child(self.class.tree.children_specs.fetch(child), payload)
+      start_child(self.class.tree.spawned(child), payload)
     end
 
+    # A state's child's +Started+ names the placement that started it
+    # (+parent_state+), which its +Finished+ maps back to through its keys.
     def start_child(spec, payload)
       child = spec.machine
       klass = child::Started
       own = payload.to_h.slice(*child.partition_keys)
       paths = child.__start_paths
-      __append(klass.new(payload: with_partition_keys(klass, {
-        **own, input: payload.to_h.except(*child.partition_keys),
+      started = klass.new(payload: with_partition_keys(klass, {
+        **own, input: payload.to_h.except(*child.partition_keys), parent_state: spec.invoke? ? spec.node.path : nil,
         trigger: 'start', source: INITIAL.to_s, target: paths.first, exited: [], entered: paths
-      })))
+      }))
+      if spec.invoke? && (known = @runtime.children(child).find { |ref| ref.keys == child_keys(child, started) })
+        raise StartError,
+              "#{self.class}: #{spec.node.path} starts #{child} #{known.keys}, already started by #{known.at || 'a handler'}: " \
+              "each start needs a child of its own"
+      end
+
+      __append(started)
     end
 
+    def child_keys(child, msg) = msg.payload.to_h.slice(*(child.partition_keys - self.class.partition_keys))
+
     def track_child(msg)
-      self.class.tree.child_events.fetch(msg.class, NONE).each do |spec|
-        child = spec.machine
-        keys = msg.payload.to_h.slice(*(child.partition_keys - self.class.partition_keys))
-        if msg.instance_of?(child::Started)
-          entry_id = spec.invoke? ? invoking_entry(spec) : nil
-          @runtime.track_child(spec, keys, state: child.start_state, final: false, entry_id:)
-        else
-          handle = child.declared_states.fetch(msg.payload.final.to_sym)
-          @runtime.track_child(spec, keys, state: handle, final: true, entry_id: nil)
-        end
+      child = self.class.tree.child_for(msg.class)
+      return unless child
+
+      keys = child_keys(child, msg)
+      if msg.instance_of?(child::Started)
+        at = msg.payload.parent_state
+        @runtime.track_child(child, keys, state: child.start_state, final: false, at:, entry_id: at && invoking_entry(at, msg))
+      else
+        handle = child.declared_states.fetch(msg.payload.final.to_sym)
+        @runtime.track_child(child, keys, state: handle, final: true, at: nil, entry_id: nil)
       end
     end
 
-    def invoking_entry(spec)
-      node = self.class.tree.placed(spec.node).find { |placed| @runtime.active_node?(placed) }
-      node && @runtime.entered_by(node.region)&.id
+    def invoking_entry(path, msg)
+      node = self.class.tree.node_at(path, msg)
+      @runtime.active_node?(node) ? @runtime.entered_by(node.region)&.id : nil
     end
 
-    def stop_children(spec)
-      @runtime.children(spec.machine).reject(&:final?).each { |child| dispatch(spec.machine::Stop, child.keys) }
+    # Stop the running children of +child+ the placed state at +at+ started, or handlers' (+at+ nil).
+    def stop_children(child, at:)
+      @runtime.children(child).each { |ref| dispatch(child::Stop, ref.keys) if ref.at == at && !ref.final? }
     end
 
     def stop_command?(command) = self.class.stop_state && command.instance_of?(self.class::Stop)
@@ -2234,3 +1891,4 @@ end
 require 'sourced/machine/tree'
 require 'sourced/machine/chart'
 require 'sourced/machine/mermaid'
+require 'sourced/machine/part'

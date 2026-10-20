@@ -4,32 +4,6 @@ require 'spec_helper'
 require 'sequel'
 
 module MachineTagsTest
-  # Mounted only, with messages of its own: none declares a mounter's partition keys.
-  class NoteMachine < Sourced::Machine
-    AddNote = Command(:add_note) { attribute :text, String }
-    Close = Command(:close)
-    Notify = Command(:notify)
-    NoteAdded = Event(:note_added) { attribute :text, String }
-
-    Open = State(:open)
-    Closed = State(:closed)
-
-    evolve(NoteAdded) { |context, evt| context[:notes] << evt.payload.text }
-
-    initial do
-      command AddNote => Open do |_context, cmd|
-        event NoteAdded, text: cmd.payload.text
-      end
-    end
-
-    state Open do
-      entry { |_context, _evt| dispatch Notify }
-      command Close => Closed
-    end
-
-    final Closed
-  end
-
   class OrderNotes < Sourced::Machine
     partition_by :order_id
 
@@ -39,22 +13,38 @@ module MachineTagsTest
 
     context { { notes: [] } }
 
+    # A part with messages of its own: they declare the owner's keys.
+    class NoteMachine < Sourced::Machine::Part
+      part_of OrderNotes
+
+      AddNote = Command(:add_note) { attribute :text, String }
+      Close = Command(:close)
+      Notify = Command(:notify)
+      NoteAdded = Event(:note_added) { attribute :text, String }
+
+      Open = State(:open)
+      Closed = State(:closed)
+
+      evolve(NoteAdded) { |context, evt| context[:notes] << evt.payload.text }
+
+      initial do
+        command AddNote => Open do |_context, cmd|
+          event NoteAdded, text: cmd.payload.text
+        end
+      end
+
+      state Open do
+        entry { |_context, _evt| dispatch Notify }
+        command Close => Closed
+      end
+
+      final Closed
+    end
+
     initial { command PlaceOrder => Placed }
     state(Placed) { region :notes, NoteMachine }
 
     reaction(NoteMachine::NoteAdded) { |_context, _evt| dispatch Acknowledge }
-  end
-
-  class TicketNotes < Sourced::Machine
-    partition_by :tenant_id, :ticket_id
-
-    OpenTicket = Command(:open_ticket)
-    Opened = State(:opened)
-
-    context { { notes: [] } }
-
-    initial { command OpenTicket => Opened }
-    state(Opened) { region :notes, NoteMachine }
   end
 
   class LineMachine < Sourced::Machine
@@ -96,7 +86,7 @@ end
 
 RSpec.describe 'Sourced::Machine tags' do
   let(:mod) { MachineTagsTest }
-  let(:notes) { mod::NoteMachine }
+  let(:notes) { mod::OrderNotes::NoteMachine }
   let(:store) { Sourced::Store.new(Sequel.sqlite).tap(&:install!) }
 
   def run(router, *messages)
@@ -107,31 +97,33 @@ RSpec.describe 'Sourced::Machine tags' do
   def log = store.read_all(limit: 100).messages
   def of(klass) = log.select { |m| m.instance_of?(klass) }
 
-  describe 'a mounted machine with its own messages' do
+  describe 'a part with its own messages' do
     let(:router) { Sourced::Router.new(store:, reactors: [mod::OrderNotes]).setup! }
     let(:tags) { { order_id: 'o1' } }
 
     before do
-      run(router, mod::OrderNotes::PlaceOrder.new(payload: tags), notes::AddNote.new(payload: { text: 'hi' }).with_tags(**tags))
+      run(router, mod::OrderNotes::PlaceOrder.new(payload: tags), notes::AddNote.new(payload: { **tags, text: 'hi' }))
     end
 
-    it "declares none of the mounter's keys" do
-      expect(notes::AddNote.payload_attribute_names).to eq([:text])
-      expect(notes::NoteAdded.payload_attribute_names).to eq([:text])
+    it "declares the owner's keys first" do
+      expect(notes::AddNote.payload_attribute_names).to eq(%i[order_id text])
+      expect(notes::NoteAdded.payload_attribute_names).to eq(%i[order_id text])
+      expect(notes::AddNote.type).to eq('machine_tags_test.order_notes.note.add_note')
     end
 
-    it "decides a command tagged with the mounter's keys, through a worker" do
+    it "decides a command carrying the owner's keys, through a worker" do
       snapshot = mod::OrderNotes.load(store:, order_id: 'o1')
       expect(snapshot.value).to eq(mod::OrderNotes::Placed => { notes: notes::Open })
       expect(snapshot.context[:notes]).to eq(['hi'])
     end
 
-    it "tags its data events, transitions and dispatched commands with the mounter's partition" do
-      [notes::NoteAdded, mod::OrderNotes.state_class(notes::Open), notes::Notify, mod::OrderNotes::Acknowledge].each do |klass|
+    it "tags its data events, transitions and dispatched commands with the owner's partition" do
+      [notes::NoteAdded, notes::Open, notes::Notify, mod::OrderNotes::Acknowledge].each do |klass|
         expect(of(klass).map(&:tags)).to eq([tags]), klass.name
       end
       expect(of(mod::OrderNotes::Acknowledge).first.payload.order_id).to eq('o1')
-      expect(of(notes::NoteAdded).first.payload.to_h).to eq(text: 'hi')
+      expect(of(notes::Notify).first.payload.order_id).to eq('o1')
+      expect(of(notes::NoteAdded).first.payload.to_h).to eq(order_id: 'o1', text: 'hi')
     end
 
     it 'leaves other partitions alone' do
@@ -153,37 +145,12 @@ RSpec.describe 'Sourced::Machine tags' do
       expect(instance.context[:notes]).to eq(['hi'])
     end
 
-    it 'decides a tagged command through Sourced.handle!, tagging what it appends' do
-      result = Sourced.handle!(mod::OrderNotes, notes::Close.new.with_tags(**tags), store:)
+    it 'decides a command through Sourced.handle!, tagging what it appends' do
+      result = Sourced.handle!(mod::OrderNotes, notes::Close.new(payload: tags), store:)
 
-      expect(result.events.map(&:class)).to eq([mod::OrderNotes.state_class(notes::Closed)])
+      expect(result.events.map(&:class)).to eq([notes::Closed])
       expect(result.events.map(&:tags)).to eq([tags])
       expect(mod::OrderNotes.load(store:, order_id: 'o1').value).to eq(mod::OrderNotes::Placed => { notes: notes::Closed })
-    end
-
-    it 'raises on an untagged command through Sourced.handle!' do
-      expect { Sourced.handle!(mod::OrderNotes, notes::Close.new, store:) }
-        .to raise_error(Sourced::MissingPartitionKeyError, /order_id/)
-    end
-  end
-
-  describe 'the same machine under a mounter with other keys' do
-    let(:router) { Sourced::Router.new(store:, reactors: [mod::TicketNotes]).setup! }
-    let(:tags) { { tenant_id: 't1', ticket_id: 'k1' } }
-
-    it 'tags with that partition, and reads only it' do
-      run(
-        router,
-        mod::TicketNotes::OpenTicket.new(payload: tags),
-        mod::TicketNotes::OpenTicket.new(payload: { tenant_id: 't1', ticket_id: 'k2' }),
-        notes::AddNote.new(payload: { text: 'hi' }).with_tags(**tags)
-      )
-
-      expect(of(notes::NoteAdded).map(&:tags)).to eq([tags])
-      expect(of(mod::TicketNotes.state_class(notes::Open)).map(&:tags)).to eq([tags])
-      expect(mod::TicketNotes.load(store:, **tags).value).to eq(mod::TicketNotes::Opened => { notes: notes::Open })
-      expect(mod::TicketNotes.load(store:, **tags).context[:notes]).to eq(['hi'])
-      expect(mod::TicketNotes.load(store:, tenant_id: 't1', ticket_id: 'k2').value).to eq(mod::TicketNotes::Opened => { notes: :initial })
     end
   end
 

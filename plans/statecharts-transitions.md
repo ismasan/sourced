@@ -319,6 +319,8 @@ end
 
 ### Mounted machines: the mounting machine's own classes
 
+> Superseded: only parts mount now, and a part's states are its owner's classes; `Mounted::` classes and `state_class` are gone. See `plans/machine-parts.md`.
+
 A mounted machine runs in its top machine's partition. If it appended its own classes there, they would be shared with every other context it runs in:		
 
 - `OrderMachine` and `BillingMachine` both mounting `PaymentMachine` on the same `order_id`;
@@ -535,6 +537,8 @@ end
 - **The machine-level `spawns` goes.** Each machine records a `ChildSpec` per child as its handlers declare `starts:` (each machine once, whatever number of handlers start it) and its states `start`; the `Tree` merges them and fills a handler-started child's `stop_on` from the placed states whose `stops` name it. Mounted machines' declarations contribute to the top machine's, as `spawns` / `invoke` in a mounted machine do now, and a machine that starts children can still be mounted only once.
 - **One machine, one role:** a machine started by handlers can't also be started by a state, and a state-level `start` of a machine appears once in the tree. Same constraint as today.
 - If one machine is ever wanted in two roles, `as:` comes back as an option, stored in `Started`'s payload so tracking can tell the groups apart.
+
+> Superseded: state-started children are tracked per placement (`Started` carries `parent_state`), so a machine can be started by handlers and by several states, and a part that starts children can be mounted twice. See `plans/machine-parts.md` §8.
 
 ### `stops` on states
 

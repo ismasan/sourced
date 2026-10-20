@@ -212,7 +212,7 @@ module MachineAcceptanceHoliday
   #   planning.itinerary and planning.itinerary.outlining in one transition.
   # - Gap 2, exits below the domain only: ReviseItinerary from quoted re-enters
   #   outlining without leaving planning or the itinerary.
-  # - Gap 3, one machine mounted twice: FlightLeg as :outbound and :return. Both
+  # - Gap 3, one part mounted twice: FlightLeg as :outbound and :return. Both
   #   take the same commands and airline events (a booking's seats are held,
   #   ticketed and released together); only :outbound maps Released.
   # - Gap 4, `always` and guarded `done`: pricing is transient, and reserving
@@ -283,8 +283,16 @@ module MachineAcceptanceHoliday
     def self.call(tour) = tour.stops.empty?
   end
 
-  # Mounted only: the tour's context and partition. Outlined, priced, then quoted.
-  class ItineraryMachine < Sourced::Machine
+  # The owner of the parts below, which take its partition and context.
+  class TourBooking < Sourced::Machine
+    partition_by :booking_id
+  end
+
+  # Part of TourBooking: outlined, priced, then quoted.
+  class ItineraryMachine < Sourced::Machine::Part
+    part_of TourBooking
+    part_prefix 'itinerary'
+
     Outlining = State(:outlining)
     Pricing = State(:pricing)
     AwaitingSignOff = State(:awaiting_sign_off)
@@ -320,8 +328,11 @@ module MachineAcceptanceHoliday
     final Accepted
   end
 
-  # Mounted only: its start is itself a compound state.
-  class PlanningMachine < Sourced::Machine
+  # Part of TourBooking: its start is itself a compound state.
+  class PlanningMachine < Sourced::Machine::Part
+    part_of TourBooking
+    part_prefix 'planning'
+
     Itinerary = State(:itinerary)
     Agreed = State(:agreed)
 
@@ -333,8 +344,11 @@ module MachineAcceptanceHoliday
     final Agreed
   end
 
-  # Mounted twice by TourBooking, as :outbound and :return.
-  class FlightLeg < Sourced::Machine
+  # Part of TourBooking, mounted twice, as :outbound and :return.
+  class FlightLeg < Sourced::Machine::Part
+    part_of TourBooking
+    part_prefix 'flight_leg'
+
     SeatsHeld = State(:seats_held)
     Ticketed = State(:ticketed)
     Released = State(:released)
@@ -394,9 +408,7 @@ module MachineAcceptanceHoliday
     end
   end
 
-  class TourBooking < Sourced::Machine
-    partition_by :booking_id
-
+  class TourBooking
     Planning = State(:planning)
     OnHold = State(:on_hold)
     Reserving = State(:reserving)

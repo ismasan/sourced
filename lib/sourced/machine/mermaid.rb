@@ -19,7 +19,7 @@ module Sourced
     # state of its own, it starts from the composite state that contains the
     # region. A child's +started+ state is entered from the diagram's
     # start. A compound state (a machine's) is a composite state entered
-    # at its machine's start. A mounted machine's +on_final+ mappings are drawn
+    # at its machine's start. A mounted part's +on_final+ mappings are drawn
     # from its finals, labelled +on_final+. A transition to a state's
     # history goes to the state, its label suffixed +(H)+ (+(H*)+ for deep).
     #
@@ -61,7 +61,7 @@ module Sourced
             end
           end
         end
-        # A mounted machine's root final escalates from the final itself.
+        # A mounted part's root final escalates from the final itself.
         @tree.all_regions.each do |region|
           region.on_final.each { |final, target| edge(region.nodes.fetch(final), target, 'on_final', from: region.parent) }
         end

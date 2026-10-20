@@ -225,9 +225,8 @@ RSpec.describe Sourced::Machine do
 
     it 'are their own handles' do
       expect(CartMachine::Open).to have_attributes(
-        state: CartMachine::Open, machine: CartMachine, owner: CartMachine, state_name: :open
+        state: CartMachine::Open, machine: CartMachine, state_name: :open
       )
-      expect(CartMachine.state_class(CartMachine::Open)).to equal(CartMachine::Open)
       expect(CartMachine.transition_classes)
         .to eq([CartMachine::Open, CartMachine::Rejected, CartMachine::Ordered, CartMachine::Paid])
     end
@@ -300,20 +299,19 @@ RSpec.describe Sourced::Machine do
       expect(m.handled_messages_for_evolve).not_to include(late)
     end
 
-    it 'locks a mounted machine once the machine that mounts it is validated' do
-      mounted = Class.new(Sourced::Machine) do
-        def self.name = 'MachineTest::LockedRegion'
+    it 'locks a part once its owner is validated' do
+      parent = machine { initial { command Ping => :pinged } }
+      part = Class.new(Sourced::Machine::Part) do
+        part_of parent
+        part_prefix 'locked_region'
         started :waiting
       end
-      parent = machine do
-        initial { command Ping => :pinged }
-        state(:pinged) { region :sub, mounted }
-      end
+      parent.state(:pinged) { region :sub, part }
       parent.validate!
 
       late = Sourced::Event.define('machine_test.late_mounted') { attribute :cart_id, String }
-      expect { mounted.evolve(late) { |_s, _e| nil } }
-        .to raise_error(Sourced::Machine::DefinitionError, /declared after the machine was validated/)
+      expect { part.evolve(late) { |_s, _e| nil } }
+        .to raise_error(Sourced::Machine::DefinitionError, /evolve declared after .* was validated/)
     end
 
     it 'reject names with dots' do

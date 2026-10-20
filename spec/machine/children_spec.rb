@@ -39,7 +39,6 @@ module MachineChildrenTest
 
   # Parcels
   ShipParcel = command(:ship_parcel, PARCEL)
-  PackParcel = command(:pack_parcel, PARCEL)
   PrintLabel = command(:print_label, PARCEL)
 
   # Declared starts
@@ -183,20 +182,25 @@ module MachineChildrenTest
   end
 
   # A parcel starts in a compound state: Preparing, entered at Packing.
-  class PackingMachine < Sourced::Machine
-    Packing = State(:packing)
-    Packed = State(:packed)
-
-    started Packing do
-      entry { |_parcel, _evt| dispatch PrintLabel }
-      command PackParcel => Packed
-    end
-
-    final Packed
-  end
-
   class ParcelMachine < Sourced::Machine
     partition_by :order_id, :parcel_id
+
+    class PackingMachine < Sourced::Machine::Part
+      part_of ParcelMachine
+
+      Pack = Command(:pack)
+
+      Packing = State(:packing)
+      Packed = State(:packed)
+
+      started Packing do
+        entry { |_parcel, _evt| dispatch PrintLabel }
+        command Pack => Packed
+      end
+
+      final Packed
+    end
+
     stopped :cancelled
 
     Preparing = State(:preparing)
@@ -219,6 +223,52 @@ module MachineChildrenTest
     final Shipped
   end
 
+  OpenBackup = command(:open_backup, ORDER)
+  CloseBackup = command(:close_backup, ORDER)
+
+  # One part, whose state starts a payment, mounted twice: a primary
+  # provider, and a backup one opened and closed on its own.
+  class ProvidersMachine < Sourced::Machine
+    partition_by :order_id
+
+    Placed = State(:placed)
+
+    class ProviderMachine < Sourced::Machine::Part
+      part_of ProvidersMachine
+
+      Charge = Command(:charge)
+
+      initial { command Charge => :charging }
+      state :charging do
+        start PaymentMachine do
+          payload { |_order, state| { payment_id: "pay-#{state.payload.target}" } }
+          on_done PaymentMachine::Captured => :paid
+          on_done PaymentMachine::Declined => :declined
+        end
+      end
+      final :paid
+      final :declined
+    end
+
+    initial do
+      command PlaceOrder => Placed do |_order, cmd|
+        event OrderPlaced, cmd.payload.to_h
+      end
+    end
+
+    state Placed do
+      region :primary, ProviderMachine
+      region :backup do
+        initial { command OpenBackup => :open }
+        state :open do
+          region :provider, ProviderMachine
+          command CloseBackup => :closed
+        end
+        state :closed
+      end
+    end
+  end
+
   RSpec.describe 'Sourced::Machine children' do
     include Sourced::Testing::RSpec
     include MachineHelpers
@@ -231,7 +281,7 @@ module MachineChildrenTest
     end
 
     def log = store.read_all(limit: 200).messages
-    def transitions(machine) = log.select { |m| Sourced::Machine::State === m && m.class.owner.equal?(machine) }
+    def transitions(machine) = log.select { |m| Sourced::Machine::State === m && machine.transition_classes.include?(m.class) }
 
     def moves(machine) = transitions(machine).map do |m|
       m.payload.to_h.slice(:trigger, :source, :target, :exited, :entered)
@@ -450,6 +500,90 @@ module MachineChildrenTest
       end
     end
 
+    describe 'a part whose state starts a child, mounted twice' do
+      let(:router) { Sourced::Router.new(store:, reactors: [ProvidersMachine, PaymentMachine]).setup! }
+      let(:provider) { ProvidersMachine::ProviderMachine }
+      let(:primary) { 'placed.primary.charging' }
+      let(:backup) { 'placed.backup.open.provider.charging' }
+
+      def providers = ProvidersMachine.load(store:, order_id: 'o1')
+      def payments = providers.children[PaymentMachine].to_h { |ref| [ref.at, ref.state] }
+      def gateway(command, at) = command.new(payload: { order_id: 'o1', payment_id: "pay-#{at}" })
+
+      before do
+        run(router, PlaceOrder.new(payload: { order_id: 'o1', currency: 'EUR', total: '100' }))
+        run(router, OpenBackup.new(payload: { order_id: 'o1' }))
+        run(router, provider::Charge.new(payload: { order_id: 'o1' }))
+      end
+
+      it 'starts a child per placement, each in its own partition, naming the placement in Started' do
+        expect(log.grep(PaymentMachine::Started).map { |m| [m.payload.parent_state, m.payload.payment_id] })
+          .to eq([[primary, "pay-#{primary}"], [backup, "pay-#{backup}"]])
+        expect(log.grep(ChargeCard).map { |m| m.payload.payment_id }).to contain_exactly("pay-#{primary}", "pay-#{backup}")
+        expect(payments).to eq(primary => PaymentMachine::Requested, backup => PaymentMachine::Requested)
+      end
+
+      it "maps a child's finish onto its own placement only" do
+        run(router, gateway(GatewayCaptured, backup))
+
+        expect(providers.value).to eq(
+          ProvidersMachine::Placed => {
+            primary: provider::Charging, backup: { ProvidersMachine::Open => { provider: provider::Paid } }
+          }
+        )
+        expect(moves(ProvidersMachine).last)
+          .to eq(trigger: PaymentMachine::Finished.type, source: backup, target: 'placed.backup.open.provider.paid',
+                 exited: [backup], entered: ['placed.backup.open.provider.paid'])
+
+        run(router, gateway(GatewayDeclined, primary))
+        expect(providers.value[ProvidersMachine::Placed][:primary]).to eq(provider::Declined)
+        expect(payments).to eq(primary => PaymentMachine::Declined, backup => PaymentMachine::Captured)
+      end
+
+      it 'stops only the child of the placement it leaves' do
+        run(router, CloseBackup.new(payload: { order_id: 'o1' }))
+
+        expect(log.grep(PaymentMachine::Stop).map { |m| m.payload.payment_id }).to eq(["pay-#{backup}"])
+        expect(payments).to eq(primary => PaymentMachine::Requested, backup => PaymentMachine::Voided)
+
+        run(router, gateway(GatewayCaptured, primary))
+        expect(providers.value[ProvidersMachine::Placed][:primary]).to eq(provider::Paid)
+      end
+
+      it 'decides a child finishing for its placement alone' do
+        started = lambda do |at|
+          PaymentMachine::Started.new(payload: {
+            order_id: 'o1', payment_id: "pay-#{at}", parent_state: at,
+            trigger: 'start', source: 'initial', target: 'requested', exited: [], entered: ['requested']
+          })
+        end
+
+        with_reactor(ProvidersMachine, order_id: 'o1')
+          .given(moved(ProvidersMachine, PlaceOrder.type, from: 'initial', to: 'placed', order_id: 'o1'))
+          .given(moved(ProvidersMachine, OpenBackup.type, from: 'placed.backup.initial', to: 'placed.backup.open', order_id: 'o1'))
+          .given(moved(ProvidersMachine, provider::Charge.type, from: 'placed.primary.initial', to: primary, order_id: 'o1'))
+          .given(started.(primary))
+          .given(moved(ProvidersMachine, provider::Charge.type, from: 'placed.backup.open.provider.initial', to: backup, order_id: 'o1'))
+          .given(started.(backup))
+          .when(PaymentMachine::Finished, order_id: 'o1', payment_id: "pay-#{primary}", final: 'captured')
+          .then(moved(ProvidersMachine, PaymentMachine::Finished.type, from: primary, to: 'placed.primary.paid', exited: [primary],
+                                                                       order_id: 'o1'))
+      end
+
+      it "rebuilds each placement's children on load, and lists one child spec per placement" do
+        instance, = Sourced.load(ProvidersMachine, store:, order_id: 'o1')
+
+        expect(instance.machine.children(PaymentMachine).map { |ref| [ref.at, ref.keys] })
+          .to eq([[primary, { payment_id: "pay-#{primary}" }], [backup, { payment_id: "pay-#{backup}" }]])
+        expect(instance.machine.children(PaymentMachine).map(&:entry_id))
+          .to eq(transitions(ProvidersMachine).select { |m| m.payload.target.end_with?('charging') }.map(&:id))
+
+        children = instance.to_h[:children]
+        expect(children.map { |c| [c[:kind], c[:state], c[:status][:instances].map { |i| i[:keys]['payment_id'] }] })
+          .to eq([['invoke', primary, ["pay-#{primary}"]], ['invoke', backup, ["pay-#{backup}"]]])
+      end
+    end
+
     describe 'a child starting in a compound state' do
       let(:router) { Sourced::Router.new(store:, reactors: [ShippingMachine, ParcelMachine]).setup! }
       let(:keys) { { order_id: 'o1', parcel_id: 'p1' } }
@@ -473,15 +607,15 @@ module MachineChildrenTest
       it 'runs the nested entry actions, and finishes through on_final' do
         run(router, ShipParcel.new(payload: keys))
 
-        expect(parcel.value).to eq(ParcelMachine::Preparing => PackingMachine::Packing)
+        expect(parcel.value).to eq(ParcelMachine::Preparing => ParcelMachine::PackingMachine::Packing)
         expect(log.grep(PrintLabel).map { |m| m.payload.to_h }).to eq([keys])
         expect(shipping.children[ParcelMachine].map(&:state)).to eq([ParcelMachine::Preparing])
 
-        run(router, PackParcel.new(payload: keys))
+        run(router, ParcelMachine::PackingMachine::Pack.new(payload: keys))
 
         expect(parcel.value).to eq(ParcelMachine::Shipped)
         expect(moves(ParcelMachine)).to eq([
-                                             { trigger: 'machine_children_test.pack_parcel', source: 'preparing.packing', target: 'preparing.packed',
+                                             { trigger: 'machine_children_test.parcel_machine.packing.pack', source: 'preparing.packing', target: 'preparing.packed',
                                                exited: ['preparing.packing'], entered: ['preparing.packed'] },
                                              { trigger: 'on_final', source: 'preparing.packed', target: 'shipped',
                                                exited: %w[preparing.packed preparing], entered: ['shipped'] }
@@ -712,22 +846,68 @@ module MachineChildrenTest
         expect(instance.machine.children(child).map(&:state)).to eq([child::Auditing])
       end
 
-      it 'keeps one spec per machine, in one role' do
+      it 'keeps one spec per machine for handlers, and one per placement for states' do
         parent = machine do
           initial do
             command AddLine, starts: LineItemMachine
             command(StartLines, starts: LineItemMachine | nil) { |_order, _cmd| nil }
           end
+          state(:awaiting) { start(LineItemMachine) { payload { |_, _| { line_id: 'l1' } } } }
+          state(:other) { start(LineItemMachine) { payload { |_, _| { line_id: 'l2' } } } }
         end
-        expect(parent.tree.children_specs.keys).to eq([LineItemMachine])
+        expect(parent.tree.children).to eq([LineItemMachine])
+        expect(parent.tree.children_specs.map { |spec| [spec.kind, spec.node&.path] })
+          .to eq([[:spawn, nil], [:invoke, 'awaiting'], [:invoke, 'other']])
+      end
 
-        expect do
+      describe 'a child started by handlers and by a state' do
+        let(:parent) do
           machine do
-            initial { command RequestPayment => :awaiting }
-            state(:awaiting) { start(LineItemMachine) { payload { |_, _| { line_id: 'l1' } } } }
-            state(:other) { command AddLine, starts: LineItemMachine }
+            initial { command RequestPayment => :placed }
+            state :placed do
+              start(LineItemMachine) { payload { |_, _| { line_id: 'by-state', sku: 'S' } } }
+              command AddLine, starts: LineItemMachine
+              children_done LineItemMachine => :done
+            end
+            final(:done) { stops LineItemMachine }
           end
-        end.to raise_error(Sourced::Machine::DefinitionError, /LineItemMachine is started by a state, so handlers can't start it too/)
+        end
+
+        def finished(line_id) = LineItemMachine::Finished.new(payload: { order_id: 'o1', line_id:, final: 'picked' })
+
+        it 'lists every child, joins over and stops only the handlers\', and stops the state\'s on leaving it' do
+          instance = parent.new(order_id: 'o1')
+          instance.evolve(instance.decide(RequestPayment.new(payload: { order_id: 'o1' })))
+          instance.evolve(instance.decide(AddLine.new(payload: { order_id: 'o1', line_id: 'l1', sku: 'A1' })))
+          instance.evolve(instance.decide(AddLine.new(payload: { order_id: 'o1', line_id: 'l2', sku: 'B2' })))
+          expect(instance.machine.children(LineItemMachine).map { |ref| [ref.keys[:line_id], ref.at] })
+            .to eq([['by-state', 'placed'], ['l1', nil], ['l2', nil]])
+
+          instance.evolve([finished('l1')])
+          expect(instance.__decide_eventless).to be_empty
+
+          instance.evolve([finished('l2')])
+          done = instance.__decide_eventless
+          expect(done.map { |evt| evt.payload.target }).to eq(['done'])
+          instance.evolve(done)
+          expect(instance.__react(done.first).map { |cmd| [cmd.class, cmd.payload.line_id] })
+            .to eq([[LineItemMachine::Stop, 'by-state']])
+        end
+      end
+
+      it 'refuses to start one child partition from two placements' do
+        parent = machine do
+          initial { command RequestPayment => :placed }
+          state :placed do
+            region(:a) { initial { command AddLine => :one }; state(:one) { start(LineItemMachine) { payload { |_, _| { line_id: 'l1' } } } } }
+            region(:b) { initial { command AddLine => :two }; state(:two) { start(LineItemMachine) { payload { |_, _| { line_id: 'l1' } } } } }
+          end
+        end
+        instance = parent.new(order_id: 'o1')
+        instance.evolve(instance.decide(RequestPayment.new(payload: { order_id: 'o1' })))
+
+        expect { instance.decide(AddLine.new(payload: { order_id: 'o1', line_id: 'x', sku: 'x' })) }
+          .to raise_error(Sourced::Machine::StartError, /placed.b.two starts .*LineItemMachine \{line_id: "l1"\}, already started by placed.a.one/)
       end
 
       it 'stops started children where a state stops them' do
@@ -736,7 +916,7 @@ module MachineChildrenTest
           state(:placed) { stops LineItemMachine }
         end
 
-        expect(parent.tree.children_specs.fetch(LineItemMachine).stop_on.map(&:path)).to eq(['placed'])
+        expect(parent.tree.spawned(LineItemMachine).stop_on.map(&:path)).to eq(['placed'])
       end
     end
 
@@ -759,12 +939,12 @@ module MachineChildrenTest
         expect(ParcelMachine.to_sourced_reactors).to eq([ParcelMachine])
       end
 
-      it 'registers a machine with its children, not the machines it mounts' do
+      it 'registers a machine with its children, not its parts' do
         node = Sourced::Config.register(config, ShippingMachine)
 
         expect(node.path).to eq(Sourced::Config.reactor_key(ShippingMachine))
         expect(registered?(ParcelMachine)).to be(true)
-        expect(registered?(PackingMachine)).to be(false)
+        expect(ParcelMachine.to_sourced_reactors).not_to include(ParcelMachine::PackingMachine)
       end
 
       it "registers children's children" do
@@ -919,8 +1099,8 @@ module MachineChildrenTest
         end.to raise_error(Sourced::Machine::DefinitionError, /PaymentMachine maps on_done .*Captured twice/)
         expect { machine { initial { start(PaymentMachine) { payload { {} } } } } }
           .to raise_error(Sourced::Machine::DefinitionError, /can't start children/)
-        expect { machine { state(:a) { start(PaymentMachine) { payload { {} } } }; state(:b) { start(PaymentMachine) { payload { {} } } } } }
-          .to raise_error(Sourced::Machine::DefinitionError, /PaymentMachine is started by a state twice/)
+        expect { machine { state(:a) { start(PaymentMachine) { payload { {} } }; start(PaymentMachine) { payload { {} } } } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /::A starts .*PaymentMachine twice/)
       end
 
       it 'checks stops, on_done and children_done' do

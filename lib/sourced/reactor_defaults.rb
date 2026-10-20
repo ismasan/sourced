@@ -18,7 +18,11 @@ module Sourced
     #
     # @param reactor [Class] a reactor class
     # @return [Class] the same reactor
+    # @raise [ArgumentError] if +reactor+ doesn't implement {Config::ReactorInterface}
     def apply(reactor)
+      result = Config::ReactorInterface.resolve(reactor)
+      raise ArgumentError, "#{reactor.inspect} isn't a reactor: #{result.errors}" unless result.valid?
+
       Defaults.instance_methods(false).each do |name|
         next if reactor.respond_to?(name)
 

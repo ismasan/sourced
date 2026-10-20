@@ -165,8 +165,8 @@ module Sourced
       nodes + event_nodes.values
     end
 
-    # A machine's commands produce the classes of the states they move
-    # to (see {Machine.state_class}), the +Started+ of the children their
+    # A machine's commands (its parts' too) produce the states they move
+    # to (a part's states are its owner's), the +Started+ of the children their
     # +starts:+ declare, and what their blocks emit (+event+). Entry, exit and
     # +after+ actions, joins, and starting and stopping children are automations.
     # What runs on entering a state consumes its class; what runs on
@@ -176,15 +176,14 @@ module Sourced
     def self.add_machine(machine, analyzer, nodes, command_ids, event_nodes)
       machine.validate!
       group_id = machine.group_id
-      type_of = ->(handle) { machine.state_class(handle).type }
       produced = Hash.new { |h, k| h[k] = [] }
 
       machine.all_nodes.each do |node|
         node.commands.each_value do |definition|
-          produced[definition.command_class] |= machine_block_produces(machine, analyzer, definition)
+          produced[definition.command_class] |= machine_block_produces(machine, analyzer, definition, node.machine)
         end
       end
-      produced[machine::Stop] |= [type_of.call(machine.stop_state), machine::Finished.type] if machine.stop_state
+      produced[machine::Stop] |= [machine.stop_state.type, machine::Finished.type] if machine.stop_state
 
       produced.each do |cmd_class, types|
         if (existing = command_ids[cmd_class.type])
@@ -204,8 +203,9 @@ module Sourced
         nodes << AutomationNode.new(type: 'automation', id: "#{id}-#{group_id}-aut", name:, group_id:, consumes:, produces:)
       end
 
-      dispatched_by = lambda do |blocks|
-        blocks.flat_map { |blk| resolve_refs(analyzer.calls_in_block(blk, :dispatch), machine) }.uniq
+      # Constants in a block resolve where it's declared: the machine, or a part.
+      dispatched_by = lambda do |blocks, scope|
+        blocks.flat_map { |blk| resolve_refs(analyzer.calls_in_block(blk, :dispatch), scope) }.uniq
       end
       transitions = machine_transitions(machine)
 
@@ -214,28 +214,28 @@ module Sourced
         node.ons.each_value do |definition|
           event_class = definition.command_class
           automation.call("#{node.path}-on-#{event_class.type}", "on(#{node.path}, #{event_class.name.split('::').last})",
-                          [event_class.type], machine_block_produces(machine, analyzer, definition))
+                          [event_class.type], machine_block_produces(machine, analyzer, definition, node.machine))
         end
 
         next if node.initial?
 
-        entering = [type_of.call(node.key)]
-        leaving = transitions.select { |source, target| exits?(source, target, node) }.map { |_, target| type_of.call(target.key) }.uniq
-        entry_dispatched = dispatched_by.call(node.entries + node.afters.map(&:block))
+        entering = [node.key.type]
+        leaving = transitions.select { |source, target| exits?(source, target, node) }.map { |_, target| target.key.type }.uniq
+        entry_dispatched = dispatched_by.call(node.entries + node.afters.map(&:block), node.machine)
         automation.call(node.path, "actions(#{node.path})", entering, entry_dispatched) if entry_dispatched.any?
-        exit_dispatched = dispatched_by.call(node.exits)
+        exit_dispatched = dispatched_by.call(node.exits, node.machine)
         automation.call("#{node.path}-exit", "exit(#{node.path})", leaving, exit_dispatched) if exit_dispatched.any?
 
         if node.dones.any?
-          finals = node.regions.flat_map { |region| region.nodes.each_value.select(&:final?).map { type_of.call(it.key) } }
+          finals = node.regions.flat_map { |region| region.nodes.each_value.select(&:final?).map { it.key.type } }
           joined = eventless_closure(machine, node.dones.map(&:target))
-          automation.call("#{node.path}-done", "done(#{node.path})", finals.uniq, joined.map(&type_of))
+          automation.call("#{node.path}-done", "done(#{node.path})", finals.uniq, joined.map(&:type))
         end
 
         node.children_joins.each do |join|
           child = join.machine
           automation.call("#{node.path}-children-done-#{child.group_id}", "children_done(#{child.group_id})", [child::Finished.type],
-                          machine_block_produces(machine, analyzer, join.definition))
+                          machine_block_produces(machine, analyzer, join.definition, node.machine))
         end
 
         node.invokes.each do |spec|
@@ -245,22 +245,22 @@ module Sourced
                           leaving, [spec.machine::Stop.type])
           if spec.on_done.any?
             automation.call("#{node.path}-on-done-#{spec.machine.group_id}", "on_done(#{spec.machine.group_id})", [spec.machine::Finished.type],
-                            eventless_closure(machine, spec.on_done.values.uniq).map(&type_of))
+                            eventless_closure(machine, spec.on_done.values.uniq).map(&:type))
           end
         end
       end
 
-      machine.tree.children_specs.each_value do |spec|
+      machine.tree.children_specs.each do |spec|
         next if spec.invoke? || spec.stop_on.empty?
 
         automation.call("stop-#{spec.machine.group_id}", "stop(#{spec.machine.name})",
-                        spec.stop_on.map { |node| type_of.call(node.key) }.uniq, [spec.machine::Stop.type])
+                        spec.stop_on.map { |node| node.key.type }.uniq, [spec.machine::Stop.type])
       end
     end
 
     # Every transition the definition declares, as +[source, target]+ placed
     # nodes: commands, +children_done+, +always+, +done+, state-started and
-    # mounted machines' +on_final+, and +stopped+ (from each top-level state).
+    # mounted parts' +on_final+, and +stopped+ (from each top-level state).
     # @api private
     def self.machine_transitions(machine)
       tree = machine.tree
@@ -304,19 +304,20 @@ module Sourced
     end
 
     # @api private
-    def self.machine_block_produces(machine, analyzer, definition)
+    # @param scope [Class<Machine>, Class<Machine::Part>] where the block is declared, which its constants resolve in
+    def self.machine_block_produces(machine, analyzer, definition, scope)
       reached = eventless_closure(machine, definition.state_targets)
-      types = reached.map { |handle| machine.state_class(handle).type }
+      types = reached.map(&:type)
       # Reaching a root final finishes a child machine.
       if machine.__finished_class && reached.any? { |handle| machine.root.nodes[handle]&.final? }
         types << machine.__finished_class.type
       end
-      types += resolve_refs(analyzer.calls_in_block(definition.block, :event), machine)
+      types += resolve_refs(analyzer.calls_in_block(definition.block, :event), scope)
       types += definition.started_machines.map { |child| child::Started.type }
       types.uniq
     end
 
-    # +handles+, and every state their +always+ or a mounted machine's
+    # +handles+, and every state their +always+ or a mounted part's
     # +on_final+ can move on to, through the states entering them enters
     # (compound starts), each once.
     # @api private
@@ -331,7 +332,7 @@ module Sourced
         reached << handle
         tree.placements(handle).flat_map { |placed| tree.default_entry(placed) }.each do |entered|
           pending.concat(entered.always.map { |eventless| tree.resolve(entered, eventless.target).key })
-          # A mounted machine's mapped final escalates in the same decision.
+          # A mounted part's mapped final escalates in the same decision.
           mapped = entered.region.on_final[entered.key]
           pending << tree.resolve(entered.region.parent, mapped).key if mapped
         end
@@ -413,7 +414,7 @@ module Sourced
         return reactor.const_get(const_name, false)
       end
 
-      parts = reactor.name.split('::')
+      parts = reactor.name.to_s.split('::')
       while parts.length > 1
         parts.pop
         begin
