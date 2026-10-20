@@ -1872,7 +1872,8 @@ module Sourced
     end
 
     # Produce a data event from within a command handler and apply it
-    # immediately. Partition keys the event declares are filled in.
+    # immediately. Partition keys the event declares are filled in, and it's
+    # tagged with the partition (see #partition_tags).
     #
     # @param event_class [Class, Symbol]
     # @param payload [Hash]
@@ -1918,7 +1919,7 @@ module Sourced
 
         method_name = self.class.reaction_handlers[message.class]
         method_name ? Array(send(method_name, context, message)).compact : EMPTY_ARRAY
-      end
+      end.map { |message| message.with_tags(**partition_tags) }
     end
 
     private
@@ -1944,6 +1945,7 @@ module Sourced
     def __append(evt)
       raise InvalidEventError, "#{self.class}: invalid #{evt.class}: #{evt.errors.inspect}" unless evt.valid?
 
+      evt = evt.with_tags(**partition_tags)
       @uncommitted_events << evt
       evolve([evt])
       evt
@@ -2208,6 +2210,17 @@ module Sourced
     def dispatch(message_class, payload = {})
       message_class = self.class[message_class] if message_class.is_a?(Symbol)
       super(message_class, with_partition_keys(message_class, payload))
+    end
+
+    # Everything the machine appends carries its partition as tags, so a
+    # message needn't declare the keys to be read into it.
+    def partition_tags
+      @partition_tags ||= self.class.partition_keys.to_h do |key|
+        value = partition_values[key]
+        raise Error, "#{self.class}: no value for partition key #{key} in #{partition_values.inspect}" if value.nil?
+
+        [key, value]
+      end
     end
 
     def with_partition_keys(message_class, payload)

@@ -64,6 +64,8 @@ module Sourced
             actual = actual_messages[idx]
             @mismatching[idx] << "expected a #{expected.class}, got #{actual.class}" unless actual.class == expected.class
             @mismatching[idx] << "expected payload #{expected.payload.to_h.inspect}, got #{actual.payload.to_h.inspect}" unless expected.payload == actual.payload
+            # Tags are asserted when the expected message has some.
+            @mismatching[idx] << "expected tags #{expected.tags.inspect}, got #{actual.tags.inspect}" unless expected.tags.empty? || expected.tags == actual.tags
           end
 
           return false if @mismatching.any?
