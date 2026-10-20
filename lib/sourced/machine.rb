@@ -1518,8 +1518,8 @@ module Sourced
     end
 
     # Produce a data event from within a command handler and apply it
-    # immediately. Partition keys the event declares are filled in, and it's
-    # tagged with the partition (see #partition_tags).
+    # immediately. Its partition keys are filled in: it must declare all of
+    # them (see #__append).
     #
     # @param event_class [Class, Symbol]
     # @param payload [Hash]
@@ -1565,7 +1565,7 @@ module Sourced
 
         method_name = self.class.reaction_handlers[message.class]
         method_name ? Array(send(method_name, context, message)).compact : EMPTY_ARRAY
-      end.map { |message| message.with_tags(**partition_tags) }
+      end
     end
 
     private
@@ -1591,7 +1591,7 @@ module Sourced
     def __append(evt)
       raise InvalidEventError, "#{self.class}: invalid #{evt.class}: #{evt.errors.inspect}" unless evt.valid?
 
-      evt = evt.with_tags(**partition_tags)
+      check_partition!(evt)
       @uncommitted_events << evt
       evolve([evt])
       evt
@@ -1869,14 +1869,19 @@ module Sourced
       super(message_class, with_partition_keys(message_class, payload))
     end
 
-    # Everything the machine appends carries its partition as tags, so a
-    # message needn't declare the keys to be read into it.
-    def partition_tags
-      @partition_tags ||= self.class.partition_keys.to_h do |key|
-        value = partition_values[key]
-        raise Error, "#{self.class}: no value for partition key #{key} in #{partition_values.inspect}" if value.nil?
+    # What the machine appends belongs to its partition: it declares every
+    # partition key, with this partition's value. An event declaring only some
+    # keys would be read into every partition sharing them.
+    def check_partition!(evt)
+      names = evt.class.payload_attribute_names
+      self.class.partition_keys.each do |key|
+        unless names.include?(key)
+          raise InvalidEventError, "#{self.class}: #{evt.class} doesn't declare partition key #{key}, so it can't be appended to a #{self.class} partition"
+        end
+        next if evt.payload[key].to_s == partition_values[key].to_s
 
-        [key, value]
+        raise InvalidEventError,
+              "#{self.class}: #{evt.class} has #{key} #{evt.payload[key].inspect}, but is appended to the partition where #{key} is #{partition_values[key].inspect}"
       end
     end
 
