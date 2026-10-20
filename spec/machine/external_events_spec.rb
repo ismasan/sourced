@@ -242,12 +242,12 @@ RSpec.describe 'Sourced::Machine external events' do
       expect(MX::OrderMachine.handled_commands).not_to include(MX::PaymentCaptured)
     end
 
-    it 'requires events with the partition keys' do
+    it 'accepts events without the partition keys: they may be tags' do
       unkeyed = machine do
         initial { on MX::Unkeyed => :done }
         final :done
       end
-      expect { unkeyed.validate! }.to raise_error(Sourced::Machine::DefinitionError, /on event .*Unkeyed must declare order_id/)
+      expect { unkeyed.validate! }.not_to raise_error
     end
 
     it "rejects commands, state classes and children's messages" do

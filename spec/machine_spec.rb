@@ -834,13 +834,12 @@ RSpec.describe Sourced::Machine do
       end.to raise_error(Sourced::Machine::DefinitionError, /a machine needs a name or a consumer_group/)
     end
 
-    it 'requires commands to declare the partition keys' do
+    it 'accepts commands without the partition keys: they may be tags' do
       m = machine do
         initial { command Unkeyed => :open }
         state :open
       end
-      expect { m.validate! }
-        .to raise_error(Sourced::Machine::DefinitionError, /command MachineTest::Unkeyed must declare cart_id/)
+      expect { m.validate! }.not_to raise_error
     end
 
     it 'requires declared states to be placed' do

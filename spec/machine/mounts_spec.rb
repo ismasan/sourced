@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'sequel'
 require_relative '../support/machine_helpers'
 
 module MachineMountsTest
@@ -323,6 +324,11 @@ RSpec.describe 'Sourced::Machine region mounts' do
   describe 'the same machine mounted twice' do
     let(:machine) { MM::TwicePaidOrder }
     let(:authorizing) { MM::PaymentMachine::Authorizing }
+
+    it 'is one consumer group: it registers with a router' do
+      router = Sourced::Router.new(store: Sourced::Store.new(Sequel.sqlite).tap(&:install!), reactors: [machine]).setup!
+      expect(router.reactors).to eq([machine])
+    end
 
     it 'places its states at two paths' do
       expect(machine.tree.placements(authorizing).map(&:path))

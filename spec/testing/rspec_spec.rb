@@ -195,6 +195,19 @@ RSpec.describe Sourced::Testing::RSpec do
         .then(GWTTestMessages::DeviceBound, device_id: 'd1', asset_id: 'a1')
     end
 
+    it 'then compares tags when the expected message has some' do
+      gwt = lambda do
+        with_reactor(GWTTestSimpleDecider, device_id: 'd1')
+          .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+          .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
+      end
+      bound = GWTTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
+
+      gwt.().then(bound)
+      expect { gwt.().then(bound.with_tags(asset_id: 'a1')) }
+        .to raise_error(RSpec::Expectations::ExpectationNotMetError, /expected tags \{asset_id: "a1"\}, got \{\}/)
+    end
+
     it 'no given + when command → then exception (invariant violation)' do
       with_reactor(GWTTestDecider, device_id: 'd1')
         .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
