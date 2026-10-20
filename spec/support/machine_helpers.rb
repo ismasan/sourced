@@ -8,7 +8,7 @@ module MachineHelpers
   # a decision would build it. +exited+ defaults to none, +entered+ to the
   # target alone.
   def moved(machine, trigger, from:, to:, exited: [], entered: [to], **keys)
-    klass = machine.state_class(machine.tree.node_at(to).key)
+    klass = machine.tree.node_at(to).key
     klass.new(payload: { **keys, trigger:, source: from, target: to, exited:, entered: })
   end
 end

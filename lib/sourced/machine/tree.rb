@@ -3,20 +3,23 @@
 module Sourced
   class Machine
     # A machine's definition placed into one tree: its regions and states,
-    # and those of the machines it mounts, each knowing where it sits. A
+    # and those of the parts it mounts, each knowing where it sits. A
     # {Region} or {Node} is a definition, owned by the machine that declares
     # it; a {PlacedRegion} or {PlacedNode} is that definition at a position in
-    # the tree, with its own parent links and path. A machine mounted twice is
+    # the tree, with its own parent links and path. A part mounted twice is
     # placed twice: its states are one set of handles at two sets of paths.
     # The runtime, routing, validation and rendering work on the placed tree.
     #
     # Placed objects are built once per tree and compared by identity: the
     # runtime keys positions by placed region, and compares placed nodes.
     class Tree
-      attr_reader :root, :all_nodes, :all_regions, :children_specs, :child_events
+      # +children_specs+: one {ChildSpec} per machine its handlers start
+      # (+starts:+), and one per placed state that starts a child (its
+      # +node+ the {PlacedNode}), in tree order. +children+: their machines, once each.
+      attr_reader :root, :all_nodes, :all_regions, :children_specs, :children
 
       # @param machine [Class<Machine>]
-      # @raise [DefinitionError] if regions or children clash across machines
+      # @raise [DefinitionError] if two states are placed at one path
       def initialize(machine)
         @top = machine
         @placed = {}
@@ -25,9 +28,10 @@ module Sourced
         @region_paths = {}
         @all_nodes = []
         @all_regions = []
-        @children_specs = {}
+        @children_specs = []
+        @spawns = {}
+        @children = []
         @child_events = {}
-        @owners = {}
         @machines = []
         @resolved = {}
         @root = place_machine(machine, :root, nil, nil)
@@ -70,13 +74,19 @@ module Sourced
       # @param klass [Class]
       def child_event?(klass) = @child_events.key?(klass)
 
+      # @param klass [Class] a child's +Started+ or +Finished+
+      # @return [Class<Machine>, nil] the child machine
+      def child_for(klass) = @child_events[klass]
+
+      # @return [Array<Class>] the children's +Started+ and +Finished+
+      def child_events = @child_events.keys
+
+      # @param child [Class<Machine>]
+      # @return [ChildSpec, nil] the spec of +child+ when handlers start it (+starts:+)
+      def spawned(child) = @spawns[child]
+
       # @return [Array<Class<Machine>>] the machines mounted, in tree order, once each
       def mounted_machines = @machines.drop(1).uniq
-
-      # The machine that declares a child (the first, for a child several start).
-      # @param spec [ChildSpec]
-      # @return [Class<Machine>]
-      def owner(spec) = @owners.fetch(spec.machine)
 
       # Where a transition declared on +node+ to +handle+ goes: the placement of
       # +handle+ in +node+'s region or the nearest ancestor region that has one,
@@ -135,12 +145,8 @@ module Sourced
       end
 
       def place_machine(machine, name, parent, mount)
-        if @machines.include?(machine) && machine.children_specs.any?
-          raise DefinitionError, "#{@top}: #{machine} is mounted twice, and declares children, which would be shared"
-        end
-
         @machines << machine
-        machine.children_specs.each_value { |spec| add_child(machine, spec) }
+        machine.children_specs.each_value { |spec| add_child(spec) unless @spawns.key?(spec.machine) }
         place_region(machine.root, name, parent, machine, mount)
       end
 
@@ -171,6 +177,7 @@ module Sourced
           @paths[placed.path] = placed
         end
         region.nodes[node.key] = placed
+        placed.invokes.each { |spec| add_child(spec) }
         node.regions.each do |child|
           placed.regions <<
             case child
@@ -180,29 +187,22 @@ module Sourced
         end
       end
 
-      # One spec per child machine: several machines' handlers may start it,
-      # but a state's child is started in one place only.
-      def add_child(machine, spec)
-        if (known = @children_specs[spec.machine])
-          return unless known.invoke? || spec.invoke?
-
-          raise DefinitionError,
-                "#{@top}: #{spec.machine} is a child of #{@owners[spec.machine]} and #{machine}, " \
-                "and a state's child can't be started anywhere else"
-        end
-
-        @children_specs[spec.machine] = spec
-        @owners[spec.machine] = machine
+      # Handlers' starts of one machine share a spec, however many machines
+      # declare them; each placement of a state that starts a child has its own.
+      def add_child(spec)
+        @children_specs << spec
+        @spawns[spec.machine] = spec unless spec.invoke?
+        @children << spec.machine unless @children.include?(spec.machine)
       end
 
-      # Started children are stopped where a placed state +stops+ them.
+      # Handlers' children are stopped where a placed state +stops+ them.
       def finish_children
-        @children_specs.transform_values! do |spec|
-          spec.invoke? ? spec : spec.with(stop_on: @all_nodes.select { |node| node.stops.include?(spec.machine) })
+        @children_specs.map! do |spec|
+          next spec if spec.invoke?
+
+          @spawns[spec.machine] = spec.with(stop_on: @all_nodes.select { |node| node.stops.include?(spec.machine) })
         end
-        @children_specs.each_value do |spec|
-          [spec.machine::Started, spec.machine::Finished].each { |klass| (@child_events[klass] ||= []) << spec }
-        end
+        @children.each { |child| [child::Started, child::Finished].each { |klass| @child_events[klass] = child } }
       end
     end
 
@@ -214,7 +214,7 @@ module Sourced
       # @param name [Symbol]
       # @param parent [PlacedNode, nil] nil for the tree's root
       # @param machine [Class<Machine>] the machine whose definition this is
-      # @param mount [RegionMount, nil] when the region is a mounted machine's root
+      # @param mount [RegionMount, nil] when the region is a mounted part's root
       def initialize(region, name, parent, machine, mount)
         @region = region
         @name = name
@@ -233,7 +233,7 @@ module Sourced
       # @return [PlacedNode, nil] where a compound region starts
       def start_node = compound? ? nodes.fetch(machine.start_state) : nil
 
-      # @return [Hash{State => State}] a mounted machine's root finals => the parent's states
+      # @return [Hash{State => State}] a mounted part's root finals => the parent's states
       def on_final = mount ? mount.on_final : NONE_MAP
 
       # The region's position before its first state, declared or not.
@@ -265,7 +265,7 @@ module Sourced
     # A {Node} at its position in a {Tree}: the definition's commands and
     # actions, the tree's structure.
     class PlacedNode
-      attr_reader :node, :region, :regions
+      attr_reader :node, :region, :regions, :invokes
 
       # @param node [Node] the definition
       # @param region [PlacedRegion]
@@ -273,6 +273,8 @@ module Sourced
         @node = node
         @region = region
         @regions = []
+        # The children this placement starts: its own specs, so each placement's are told apart.
+        @invokes = node.invokes.map { |spec| spec.with(node: self) }.freeze
       end
 
       # @return [Class<Machine>] the machine whose definition this is
@@ -286,7 +288,6 @@ module Sourced
       def entries = node.entries
       def exits = node.exits
       def afters = node.afters
-      def invokes = node.invokes
       def stops = node.stops
       def children_joins = node.children_joins
       def always = node.always

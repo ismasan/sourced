@@ -130,17 +130,20 @@ module MachineTopologyTest
                                          consumes: [invoking.call(:waiting)], produces: [leg('child.started')])
       end
 
-      it "produces the Started of the children every kind of handler starts, mounted machines' too" do
-        lines = Class.new(Sourced::Machine) do
-          def self.name = 'MachineTopologyTest::Lines'
-          initial { command AddLeg, starts: LegMachine }
-          final(:closed) { stops LegMachine }
-        end
+      it "produces the Started of the children every kind of handler starts, parts' too" do
         machine = Class.new(Sourced::Machine) do
           def self.name = 'MachineTopologyTest::Starting'
           partition_by :trip_id
 
           initial { command Open => :opened }
+        end
+        lines = Class.new(Sourced::Machine::Part) do
+          part_of machine
+          part_prefix 'lines'
+          initial { command AddLeg, starts: LegMachine }
+          final(:closed) { stops LegMachine }
+        end
+        machine.class_exec do
           state :opened do
             region :lines, lines
             on(Settled => :settled, starts: LegMachine) { |_s, _evt| start LegMachine, leg_id: 'l1' }
@@ -163,29 +166,32 @@ module MachineTopologyTest
           consumes: [leg('child.finished')], produces: [starting.call(:done), started]
         )
         expect(find.call('automation', 'stop(MachineTopologyTest::LegMachine)')).to have_attributes(
-          consumes: [t('starting.runtime.mounted.machine_topology_test.lines.closed')], produces: [leg('child.stop')]
+          consumes: [t('starting.runtime.lines.closed')], produces: [leg('child.stop')]
         )
       end
 
-      it "follows a mounted machine's on_final from the command that reaches its final" do
-        inner = Class.new(Sourced::Machine) do
-          def self.name = 'MachineTopologyTest::Inner'
+      it "follows a part's on_final from the command that reaches its final" do
+        outer = Class.new(Sourced::Machine) do
+          def self.name = 'MachineTopologyTest::Outer'
+          partition_by :trip_id
+          initial { command Open => :busy }
+        end
+        inner = Class.new(Sourced::Machine::Part) do
+          part_of outer
+          part_prefix 'inner'
           started :working do
             command Confirm => :finished
           end
           final :finished
         end
-        outer = Class.new(Sourced::Machine) do
-          def self.name = 'MachineTopologyTest::Outer'
-          partition_by :trip_id
-          initial { command Open => :busy }
+        outer.class_exec do
           state(:busy, inner) { on_final inner.declared_states.fetch(:finished) => :done }
           final :done
         end
         nodes = Sourced::Topology.build([outer])
         confirm = nodes.find { |n| n.type == 'command' && n.id == t(:confirm) }
 
-        expect(confirm.produces).to eq([t('outer.runtime.mounted.machine_topology_test.inner.finished'), t('outer.runtime.done')])
+        expect(confirm.produces).to eq([t('outer.runtime.inner.finished'), t('outer.runtime.done')])
       end
 
       it 'includes state classes, child events and data events' do

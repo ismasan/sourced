@@ -140,47 +140,55 @@ module MachineChartTest
     final(:cancelled) { stops LegMachine }
   end
 
-  # Mounted twice, as two regions: one handle per state, at two paths.
-  class SupplierMachine < Sourced::Machine
-    Holding = State(:holding)
-    Held = State(:held)
-
-    initial { command RequestHold => Holding }
-    state Holding do
-      command ConfirmHold => Held
-    end
-    final Held
-  end
-
-  class OutlineMachine < Sourced::Machine
-    Outline = State(:outline)
-    Agreed = State(:agreed)
-
-    started Outline do
-      command Agree => Agreed
-    end
-    state Agreed do
-      command Revise => Outline
-    end
-  end
-
-  # Starts at a compound state of its own.
-  class PlanningMachine < Sourced::Machine
-    Itinerary = State(:itinerary)
-    Finalised = State(:finalised)
-
-    started Itinerary, OutlineMachine do
-      command Finalise => Finalised
-    end
-    final Finalised
-  end
-
   class TourMachine < Sourced::Machine
     partition_by :trip_id
 
     Planning = State(:planning)
     Reserving = State(:reserving)
     Confirmed = State(:confirmed)
+
+    # Mounted twice, as two regions: one handle per state, at two paths.
+    class SupplierMachine < Sourced::Machine::Part
+      part_of TourMachine
+
+      Holding = State(:holding)
+      Held = State(:held)
+
+      initial { command RequestHold => Holding }
+      state Holding do
+        command ConfirmHold => Held
+      end
+      final Held
+    end
+
+    # Starts at a compound state of its own.
+    class PlanningMachine < Sourced::Machine::Part
+      part_of TourMachine
+
+      Itinerary = State(:itinerary)
+      Finalised = State(:finalised)
+    end
+
+    class OutlineMachine < Sourced::Machine::Part
+      part_of PlanningMachine
+
+      Outline = State(:outline)
+      Agreed = State(:agreed)
+
+      started Outline do
+        command Agree => Agreed
+      end
+      state Agreed do
+        command Revise => Outline
+      end
+    end
+
+    class PlanningMachine
+      started Itinerary, OutlineMachine do
+        command Finalise => Finalised
+      end
+      final Finalised
+    end
 
     initial { command Open => Planning }
     state(Planning, PlanningMachine) { on_final PlanningMachine::Finalised => Reserving }
@@ -288,18 +296,18 @@ module MachineChartTest
         expect(chart[:states].keys).to eq(%w[added confirmed dropped])
       end
 
-      it 'places a machine mounted twice at two paths' do
+      it 'places a part mounted twice at two paths' do
         reserving = TourMachine.to_h[:states]['reserving']
         expect(reserving).to include(type: 'parallel', mounts: [
-          { region: 'hotel', src: 'MachineChartTest::SupplierMachine', on_final: {} },
-          { region: 'flights', src: 'MachineChartTest::SupplierMachine', on_final: { 'reserving.flights.held' => 'confirmed' } }
+          { region: 'hotel', src: 'MachineChartTest::TourMachine::SupplierMachine', on_final: {} },
+          { region: 'flights', src: 'MachineChartTest::TourMachine::SupplierMachine', on_final: { 'reserving.flights.held' => 'confirmed' } }
         ])
         hotel, flights = reserving[:states].values_at('hotel', 'flights')
         expect(hotel).to include(id: 'reserving.hotel', initial: 'reserving.hotel.initial')
         expect(flights).to include(id: 'reserving.flights', initial: 'reserving.flights.initial')
         expect(hotel[:states].keys).to eq(%w[initial holding held])
         expect(flights[:states].keys).to eq(%w[initial holding held])
-        expect(hotel[:states]['holding']).to include(id: 'reserving.hotel.holding', machine: 'MachineChartTest::SupplierMachine')
+        expect(hotel[:states]['holding']).to include(id: 'reserving.hotel.holding', machine: 'MachineChartTest::TourMachine::SupplierMachine')
         expect(hotel[:states]['holding'][:on][t(:confirm_hold)][:targets]).to eq(['reserving.hotel.held'])
         expect(flights[:states]['holding'][:on][t(:confirm_hold)][:targets]).to eq(['reserving.flights.held'])
       end
@@ -307,16 +315,16 @@ module MachineChartTest
       it 'nests a compound start in a compound state' do
         planning = TourMachine.to_h[:states]['planning']
         expect(planning).to include(id: 'planning', type: 'compound', initial: 'planning.itinerary',
-                                    mounts: [{ region: 'planning', src: 'MachineChartTest::PlanningMachine',
+                                    mounts: [{ region: 'planning', src: 'MachineChartTest::TourMachine::PlanningMachine',
                                                on_final: { 'planning.finalised' => 'reserving' } }])
         expect(planning[:states].keys).to eq(%w[itinerary finalised])
 
         itinerary = planning[:states]['itinerary']
         expect(itinerary).to include(id: 'planning.itinerary', type: 'compound', initial: 'planning.itinerary.outline',
-                                     machine: 'MachineChartTest::PlanningMachine')
+                                     machine: 'MachineChartTest::TourMachine::PlanningMachine')
         expect(itinerary[:on][t(:finalise)][:targets]).to eq(['planning.finalised'])
         expect(itinerary[:states].keys).to eq(%w[outline agreed])
-        expect(itinerary[:states]['agreed']).to include(id: 'planning.itinerary.agreed', machine: 'MachineChartTest::OutlineMachine')
+        expect(itinerary[:states]['agreed']).to include(id: 'planning.itinerary.agreed', machine: 'MachineChartTest::TourMachine::OutlineMachine')
         expect(itinerary[:states]['agreed'][:on][t(:revise)][:targets]).to eq(['planning.itinerary.outline'])
       end
 
@@ -434,7 +442,7 @@ module MachineChartTest
         expect(tour.to_h[:status][:value]).to eq('planning' => { 'planning.itinerary' => 'planning.itinerary.agreed' })
       end
 
-      it 'fills in each placement of a machine mounted twice' do
+      it 'fills in each placement of a part mounted twice' do
         tour = TourMachine.new(trip_id: 't1')
         [Open, Finalise, RequestHold].each { |klass| tour.decide(message(klass)) }
         expect(tour.to_h[:status][:value]).to eq(
@@ -509,7 +517,7 @@ module MachineChartTest
         MERMAID
       end
 
-      it 'draws a machine mounted twice once per region, and a nested compound start' do
+      it 'draws a part mounted twice once per region, and a nested compound start' do
         expect(TourMachine.to_mermaid).to eq(<<~MERMAID.chomp)
           stateDiagram-v2
             state "planning" as planning {

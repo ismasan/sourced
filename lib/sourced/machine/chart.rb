@@ -13,9 +13,9 @@ module Sourced
     #   id +"<region path>.initial"+), since it accepts commands. A machine with
     #   a +started+ state and no +initial+ block has none: it starts there.
     # * A state with regions is +type: 'parallel'+, its +states+ the regions.
-    # * A compound state (a machine's, see {Machine.state}) is
-    #   +type: 'compound'+, its +states+ the machine's states, its +initial+
-    #   the machine's start.
+    # * A compound state (a part's, see {Machine.state}) is
+    #   +type: 'compound'+, its +states+ the part's states, its +initial+
+    #   the part's start.
     # * Each command is one transition, listing every state it may move
     #   to as +targets+ (empty for a data-only command). Transitions are listed
     #   on the state that takes them, targets in any region.
@@ -26,7 +26,7 @@ module Sourced
     #   state) and +stop+ (its +Stop+). A handler (+on+ entries,
     #   +children_done+) lists the children its +starts:+ declares as +starts+
     #   (+group_id+s), +starts_optional+ when it may start none; a state
-    #   lists the children it +stops+. +mounts+ lists the machines a state
+    #   lists the children it +stops+. +mounts+ lists the parts a state
     #   mounts (as regions, or as a compound state's), with +on_final+ by
     #   their root final.
     # * +entry+ and +exit+ count the state's actions; +after+ lists its
@@ -67,7 +67,7 @@ module Sourced
           partition_by: @machine.partition_keys.map(&:to_s),
           start: @machine.start_state && root_id(@machine.start_state),
           stop: stop,
-          children: @tree.children_specs.values.map { |spec| child(spec) },
+          children: @tree.children_specs.map { |spec| child(spec) },
           status: @runtime && region_status(@tree.root).merge(value: value(@tree.root))
         )
       end
@@ -186,10 +186,16 @@ module Sourced
           id: spec.machine.group_id,
           machine: spec.machine.name,
           kind: spec.kind.to_s,
-          state: spec.node && @tree.placed(spec.node).first.path,
+          state: spec.node&.path,
           stop_on: spec.stop_on.map(&:path),
-          status: @runtime && { instances: @runtime.children(spec.machine).map { |ref| child_ref(ref) } }
+          status: @runtime && { instances: child_refs(spec).map { |ref| child_ref(ref) } }
         }
+      end
+
+      # A state's spec lists the children its placement started; a handlers' one, theirs.
+      def child_refs(spec)
+        at = spec.node&.path
+        @runtime.children(spec.machine).select { |ref| ref.at == at }
       end
 
       def child_ref(ref)
@@ -222,7 +228,7 @@ module Sourced
       # A child machine that hasn't started has no node for its position.
       def position_id(node) = node.initial? && !initial_node?(node.region) ? nil : node.path
 
-      # A mounted machine's or child's finals, by name, => the paths they map to.
+      # A mounted part's or child's finals, by name, => the paths they map to.
       def finals_map(node, machine, map, region = nil)
         map.to_h do |final, target|
           from = region ? region.nodes.fetch(final).path : final.state_name.to_s

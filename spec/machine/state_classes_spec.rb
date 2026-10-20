@@ -4,329 +4,165 @@ require 'spec_helper'
 require 'sequel'
 
 module MachineStateClassesTest
-  def self.command(name, *attrs) = Sourced::Command.define("machine_state_classes_test.#{name}") { ([:order_id] + attrs).each { |a| attribute a, String } }
-
-  PlaceOrder = command(:place_order)
-  OpenAccount = command(:open_account)
-  StartPayment = command(:start_payment)
-  Capture = command(:capture)
-  Review = command(:review)
-  StartCharge = command(:start_charge)
-  Charge = command(:charge, :charge_id)
-  Noted = Sourced::Event.define('machine_state_classes_test.noted') { attribute :order_id, String }
-  Settled = Sourced::Event.define('machine_state_classes_test.settled') { %i[order_id charge_id].each { |a| attribute a, String } }
-
-  # Mounted in two machines, and run standalone.
-  class PaymentMachine < Sourced::Machine
+  class OrderMachine < Sourced::Machine
     partition_by :order_id
 
-    Authorizing = State(:authorizing)
-    Captured = State(:captured)
+    PlaceOrder = Command(:place_order)
+    Placed = State(:placed)
 
-    initial { command StartPayment => Authorizing }
-    state(Authorizing) { command Capture => Captured }
-    final Captured
-  end
+    class PaymentMachine < Sourced::Machine::Part
+      part_of OrderMachine
 
-  # Only ever mounted: no partition keys, so its classes are only handles.
-  class ReviewMachine < Sourced::Machine
-    Reviewed = State(:reviewed)
+      StartPayment = Command(:start_payment)
+      Capture = Command(:capture)
 
-    initial { command Review => Reviewed }
-    final Reviewed
-  end
+      Authorizing = State(:authorizing)
+      Captured = State(:captured)
 
-  # Mounts PaymentMachine, and ReviewMachine through it: generated all the way down.
-  class CheckoutMachine < Sourced::Machine
-    Paying = State(:paying)
+      initial { command StartPayment => Authorizing }
+      state(Authorizing) { command Capture => Captured }
+      final Captured
+    end
 
-    initial { command StartPayment => Paying }
-    state(Paying) do
+    class ReviewMachine < Sourced::Machine::Part
+      part_of OrderMachine
+
+      Review = Command(:review)
+      Reviewed = State(:reviewed)
+
+      initial { command Review => Reviewed }
+      final Reviewed
+    end
+
+    initial { command PlaceOrder => Placed }
+    state(Placed) do
       region :payment, PaymentMachine
       region :review, ReviewMachine
     end
   end
 
-  class OrderMachine < Sourced::Machine
+  # One part mounted twice: its states are shared, its placements told apart by path.
+  class SplitMachine < Sourced::Machine
     partition_by :order_id
 
-    Placed = State(:placed)
+    Open = Command(:open)
+    Opened = State(:opened)
 
-    initial { command PlaceOrder => Placed }
-    state(Placed) { region :payment, PaymentMachine }
+    class LegMachine < Sourced::Machine::Part
+      part_of SplitMachine
+
+      Finish = Command(:finish)
+      Done = State(:done)
+
+      initial { command Finish => Done }
+      final Done
+    end
+
+    initial { command Open => Opened }
+    state(Opened) do
+      region :left, LegMachine
+      region :right, LegMachine
+    end
   end
 
-  class BillingMachine < Sourced::Machine
-    partition_by :order_id
-
-    Open = State(:open)
-
-    initial { command OpenAccount => Open }
-    state(Open) { region :payment, PaymentMachine }
-  end
-
-  class StoreMachine < Sourced::Machine
-    partition_by :order_id
-
-    Shopping = State(:shopping)
-
-    initial { command PlaceOrder => Shopping }
-    state(Shopping) { region :checkout, CheckoutMachine }
-  end
-
-  # A child, and a compound state of the same parent.
+  # A machine with its own partition: started as a child, never mounted.
   class ChargeMachine < Sourced::Machine
     partition_by :order_id, :charge_id
 
     Requested = State(:requested)
     Charged = State(:charged)
 
-    started(Requested) { command Charge => Charged }
+    started(Requested) {}
     final Charged
     stopped :cancelled
   end
-
-  # Handles no commands: an event moves it, so several registered machines can mount it.
-  class AuditMachine < Sourced::Machine
-    partition_by :order_id
-
-    Audited = State(:audited)
-
-    initial { on Noted => Audited }
-    final Audited
-  end
-
-  class AuditedOrderMachine < Sourced::Machine
-    partition_by :order_id
-
-    Placed = State(:placed)
-
-    initial { command PlaceOrder => Placed }
-    state(Placed) { region :audit, AuditMachine }
-  end
-
-  class AuditedBillingMachine < Sourced::Machine
-    partition_by :order_id
-
-    Open = State(:open)
-
-    initial { command OpenAccount => Open }
-    state(Open) { region :audit, AuditMachine }
-  end
-
-  # ChargeMachine without commands, for a parent that starts and mounts it.
-  class SettlementMachine < Sourced::Machine
-    partition_by :order_id, :charge_id
-
-    Requested = State(:requested)
-    Done = State(:done)
-
-    started(Requested) { on Settled => Done }
-    final Done
-    stopped :cancelled
-  end
-
-  class SettlingShopMachine < Sourced::Machine
-    partition_by :order_id
-
-    Placed = State(:placed)
-    Charging = State(:charging)
-
-    initial do
-      command PlaceOrder => Placed, starts: SettlementMachine do |_context, _cmd|
-        start SettlementMachine, charge_id: 'ch1'
-      end
-    end
-    state(Placed) { command StartCharge => Charging }
-    state Charging, SettlementMachine
-  end
-
-  class ShopMachine < Sourced::Machine
-    partition_by :order_id
-
-    Placed = State(:placed)
-    Charging = State(:charging)
-
-    initial do
-      command PlaceOrder => Placed, starts: ChargeMachine do |_context, _cmd|
-        start ChargeMachine, charge_id: 'ch1'
-      end
-    end
-    state(Placed) { command StartCharge => Charging }
-    state Charging, ChargeMachine
-  end
 end
 
-RSpec.describe 'Sourced::Machine state classes of mounted machines' do
+RSpec.describe 'Sourced::Machine state classes of parts' do
   let(:mod) { MachineStateClassesTest }
+  let(:order) { mod::OrderMachine }
+  let(:payment) { order::PaymentMachine }
 
-  describe 'generated by the mounting machine' do
-    let(:generated) { mod::OrderMachine.state_class(mod::PaymentMachine::Authorizing) }
-
-    it 'has its own type, under runtime.mounted and the mounted machine prefix' do
-      expect(generated.type).to eq(
-        'machine_state_classes_test.order_machine.runtime.mounted.machine_state_classes_test.payment_machine.authorizing'
-      )
-      expect(Sourced::Message.registry[generated.type]).to equal(generated)
+  describe "a part's states" do
+    it "are typed under the owner's runtime prefix and the part's" do
+      expect(payment::Authorizing.type).to eq('machine_state_classes_test.order_machine.runtime.payment.authorizing')
+      expect(order::ReviewMachine::Reviewed.type).to eq('machine_state_classes_test.order_machine.runtime.review.reviewed')
+      expect(Sourced::Message.registry[payment::Authorizing.type]).to equal(payment::Authorizing)
     end
 
-    it "takes the mounting machine's partition keys, and points back to its handle" do
-      expect(generated.payload_attribute_names).to contain_exactly(:order_id, :trigger, :source, :target, :exited, :entered)
-      expect(generated).to have_attributes(
-        state: mod::PaymentMachine::Authorizing, machine: mod::PaymentMachine,
-        owner: mod::OrderMachine, state_name: :authorizing
-      )
-      expect(generated).to be < Sourced::Machine::State
-      expect(generated).not_to be <= mod::PaymentMachine::Authorizing
+    it "take the owner's partition keys, and are their own handles" do
+      expect(payment::Authorizing.payload_attribute_names).to contain_exactly(:order_id, :trigger, :source, :target, :exited, :entered)
+      expect(payment::Authorizing).to have_attributes(state: payment::Authorizing, machine: payment, state_name: :authorizing)
+      expect(payment::Authorizing).to be < Sourced::Machine::State
+      expect(Sourced::Machine.handle?(payment::Authorizing)).to be(true)
     end
 
-    it 'is named under the mounting machine' do
-      expect(mod::OrderMachine::Mounted::MachineStateClassesTest::PaymentMachine::Authorizing).to equal(generated)
+    it "are the owner's transition classes" do
+      expect(order.transition_classes).to eq([
+        order::Placed, payment::Authorizing, payment::Captured, order::ReviewMachine::Reviewed
+      ])
+      expect(order.handled_messages).to include(payment::Authorizing, payment::Captured, order::ReviewMachine::Reviewed)
+      expect(order.handled_messages_for_evolve).to include(payment::Authorizing)
     end
 
-    it "is one class per mounting machine, leaving the mounted machine's own classes alone" do
-      billing = mod::BillingMachine.state_class(mod::PaymentMachine::Authorizing)
-      expect(billing).not_to equal(generated)
-      expect(billing.type).to start_with('machine_state_classes_test.billing_machine.runtime.mounted.')
-      expect(mod::PaymentMachine.state_class(mod::PaymentMachine::Authorizing)).to equal(mod::PaymentMachine::Authorizing)
-      expect(mod::PaymentMachine.transition_classes).to eq([mod::PaymentMachine::Authorizing, mod::PaymentMachine::Captured])
-    end
+    it 'are what the owner appends, evolves and claims' do
+      instance = order.new(order_id: 'o1')
+      instance.decide(order::PlaceOrder.new(payload: { order_id: 'o1' }))
+      events = instance.decide(payment::StartPayment.new(payload: { order_id: 'o1' }))
 
-    it 'is generated all the way down, and only by a machine with partition keys' do
-      expect(mod::StoreMachine.state_class(mod::ReviewMachine::Reviewed).type)
-        .to eq('machine_state_classes_test.store_machine.runtime.mounted.machine_state_classes_test.review_machine.reviewed')
-      expect(mod::StoreMachine.state_class(mod::PaymentMachine::Captured).owner).to eq(mod::StoreMachine)
-      expect(mod::CheckoutMachine.__mounted_classes).to be_empty
-      expect(mod::ReviewMachine::Reviewed.payload_attribute_names).not_to include(:order_id)
-    end
-
-    it 'is what the mounting machine appends, evolves and claims' do
-      instance = mod::OrderMachine.new(order_id: 'o1')
-      instance.decide(mod::PlaceOrder.new(payload: { order_id: 'o1' }))
-      events = instance.decide(mod::StartPayment.new(payload: { order_id: 'o1' }))
-
-      expect(events.map(&:class)).to eq([generated])
+      expect(events.map(&:class)).to eq([payment::Authorizing])
+      expect(payment::Authorizing === events.last).to be(true)
       expect(events.last.payload.target).to eq('placed.payment.authorizing')
-      expect(instance.machine.value).to eq(mod::OrderMachine::Placed => { payment: mod::PaymentMachine::Authorizing })
-      expect(mod::OrderMachine.handled_messages).to include(generated)
-      expect(mod::OrderMachine.handled_messages).not_to include(mod::PaymentMachine::Authorizing)
-    end
-
-    it "raises for a handle of a machine it doesn't mount" do
-      expect { mod::OrderMachine.state_class(mod::ChargeMachine::Charged) }
-        .to raise_error(Sourced::Machine::Error, /doesn't mount .*ChargeMachine/)
+      expect(instance.machine.value)
+        .to eq(order::Placed => { payment: payment::Authorizing, review: :initial })
     end
   end
 
-  describe 'on a store: each context sees only its own events' do
+  describe 'a part mounted twice' do
+    let(:split) { mod::SplitMachine }
+    let(:leg) { split::LegMachine }
+
+    it 'shares its state classes, placed at two paths' do
+      expect(split.transition_classes).to eq([split::Opened, leg::Done])
+      expect(split.tree.placements(leg::Done).map(&:path)).to eq(%w[opened.left.done opened.right.done])
+    end
+
+    it 'appends one class, its paths telling the placements apart' do
+      instance = split.new(order_id: 'o1')
+      instance.decide(split::Open.new(payload: { order_id: 'o1' }))
+      events = instance.decide(leg::Finish.new(payload: { order_id: 'o1' }))
+
+      expect(events.map(&:class)).to eq([leg::Done, leg::Done])
+      expect(events.map { |evt| evt.payload.target }).to eq(%w[opened.left.done opened.right.done])
+      expect(instance.machine.value).to eq(split::Opened => { left: leg::Done, right: leg::Done })
+    end
+  end
+
+  describe 'on a store' do
     let(:store) { Sourced::Store.new(Sequel.sqlite).tap(&:install!) }
+    let(:router) { Sourced::Router.new(store:, reactors: [order]).setup! }
 
-    def run(router, *messages)
-      store.append(messages)
-      router.drain
+    it "replays the owner from its parts' states" do
+      router
+      Sourced.handle!(order, order::PlaceOrder.new(payload: { order_id: 'o1' }), store:)
+      Sourced.handle!(order, payment::StartPayment.new(payload: { order_id: 'o1' }), store:)
+      Sourced.handle!(order, payment::Capture.new(payload: { order_id: 'o1' }), store:)
+
+      types = store.read_all(limit: 100).messages.map { |m| m.type.delete_prefix('machine_state_classes_test.order_machine.') }
+      expect(types).to include('runtime.payment.authorizing', 'runtime.payment.captured')
+      expect(order.load(store:, order_id: 'o1').value)
+        .to eq(order::Placed => { payment: payment::Captured, review: :initial })
+      expect(order.load(store:, order_id: 'o2').value).to eq(:initial)
     end
+  end
 
-    def types = store.read_all(limit: 100).messages.map { |m| m.type.delete_prefix('machine_state_classes_test.') }
-
-    # Every message class each reactor's handle_claim is given.
-    def spy_claims(*reactors)
-      reactors.to_h do |reactor|
-        claimed = []
-        allow(reactor).to receive(:handle_claim).and_wrap_original do |original, claim, **kw|
-          claimed.concat(claim.messages.map(&:class))
-          original.call(claim, **kw)
-        end
-        [reactor, claimed]
-      end
-    end
-
-    def foreign(claimed, reactor) = claimed.select { |klass| klass < Sourced::Machine::State && !klass.owner.equal?(reactor) }
-
-    def register(*reactors) = Sourced::Router.new(store:, reactors:)
-
-    def shared_commands(a, b) = /a command has one handler, but #{b} and #{a} both handle: #{Regexp.escape(a.handled_commands.map(&:type).intersection(b.handled_commands.map(&:type)).sort.join(', '))}/
-
-    describe 'a mounted machine handling commands' do
-      it "can't be mounted by two registered machines" do
-        expect { register(mod::OrderMachine, mod::BillingMachine) }
-          .to raise_error(ArgumentError, shared_commands(mod::OrderMachine, mod::BillingMachine))
-      end
-
-      it "can't run standalone and mounted" do
-        expect { register(mod::PaymentMachine, mod::OrderMachine) }
-          .to raise_error(ArgumentError, shared_commands(mod::PaymentMachine, mod::OrderMachine))
-      end
-
-      it "can't be started and mounted by one parent" do
-        expect { register(mod::ShopMachine, mod::ChargeMachine) }
-          .to raise_error(ArgumentError, shared_commands(mod::ShopMachine, mod::ChargeMachine))
-      end
-    end
-
-    it 'two machines mounting one machine on the same partition values' do
-      router = register(mod::AuditedOrderMachine, mod::AuditedBillingMachine).setup!
-      claims = spy_claims(mod::AuditedOrderMachine, mod::AuditedBillingMachine)
-
-      run(router, mod::PlaceOrder.new(payload: { order_id: 'o1' }), mod::Noted.new(payload: { order_id: 'o1' }))
-      run(router, mod::OpenAccount.new(payload: { order_id: 'o1' }))
-
-      expect(mod::AuditedOrderMachine.load(store:, order_id: 'o1').value)
-        .to eq(mod::AuditedOrderMachine::Placed => { audit: mod::AuditMachine::Audited })
-      expect(mod::AuditedBillingMachine.load(store:, order_id: 'o1').value)
-        .to eq(mod::AuditedBillingMachine::Open => { audit: :initial })
-      expect(types).to include('audited_order_machine.runtime.mounted.machine_state_classes_test.audit_machine.audited')
-      expect(types.grep(/audited_billing_machine.runtime.mounted/)).to be_empty
-
-      run(router, mod::Noted.new(payload: { order_id: 'o1' }))
-      expect(mod::AuditedBillingMachine.load(store:, order_id: 'o1').value)
-        .to eq(mod::AuditedBillingMachine::Open => { audit: mod::AuditMachine::Audited })
-      expect(types.grep(/runtime.mounted/)).to contain_exactly(
-        'audited_order_machine.runtime.mounted.machine_state_classes_test.audit_machine.audited',
-        'audited_billing_machine.runtime.mounted.machine_state_classes_test.audit_machine.audited'
-      )
-      claims.each { |reactor, claimed| expect(foreign(claimed, reactor)).to be_empty }
-    end
-
-    it 'a machine standalone and mounted' do
-      router = register(mod::AuditMachine, mod::AuditedOrderMachine).setup!
-      claims = spy_claims(mod::AuditMachine, mod::AuditedOrderMachine)
-
-      run(router, mod::PlaceOrder.new(payload: { order_id: 'o1' }))
-      expect(mod::AuditMachine.load(store:, order_id: 'o1').value).to eq(:initial)
-      expect(mod::AuditedOrderMachine.load(store:, order_id: 'o1').value).to eq(mod::AuditedOrderMachine::Placed => { audit: :initial })
-
-      run(router, mod::Noted.new(payload: { order_id: 'o1' }))
-      expect(mod::AuditMachine.load(store:, order_id: 'o1').value).to eq(mod::AuditMachine::Audited)
-      expect(mod::AuditedOrderMachine.load(store:, order_id: 'o1').value)
-        .to eq(mod::AuditedOrderMachine::Placed => { audit: mod::AuditMachine::Audited })
-      expect(types).to include('audit_machine.runtime.audited', 'audited_order_machine.runtime.mounted.machine_state_classes_test.audit_machine.audited')
-      claims.each { |reactor, claimed| expect(foreign(claimed, reactor)).to be_empty }
-    end
-
-    it 'a parent starting and mounting one machine' do
-      router = register(mod::SettlingShopMachine, mod::SettlementMachine).setup!
-      claims = spy_claims(mod::SettlingShopMachine, mod::SettlementMachine)
-      settled = -> { mod::Settled.new(payload: { order_id: 'o1', charge_id: 'ch1' }) }
-
-      run(router, mod::PlaceOrder.new(payload: { order_id: 'o1' }))
-      run(router, settled.())
-      shop = mod::SettlingShopMachine.load(store:, order_id: 'o1')
-      expect(shop.value).to eq(mod::SettlingShopMachine::Placed)
-      expect(shop.children[mod::SettlementMachine].map(&:state)).to eq([mod::SettlementMachine::Done])
-
-      run(router, mod::StartCharge.new(payload: { order_id: 'o1' }))
-      shop = mod::SettlingShopMachine.load(store:, order_id: 'o1')
-      expect(shop.value).to eq(mod::SettlingShopMachine::Charging => mod::SettlementMachine::Requested)
-      expect(store.read_all(limit: 100).messages.last.payload.entered).to eq(%w[charging charging.requested])
-
-      # The same event, now for the mounted copy: the finished child doesn't take it.
-      run(router, settled.())
-      shop = mod::SettlingShopMachine.load(store:, order_id: 'o1')
-      expect(shop.value).to eq(mod::SettlingShopMachine::Charging => mod::SettlementMachine::Done)
-      expect(shop.children[mod::SettlementMachine].map(&:state)).to eq([mod::SettlementMachine::Done])
-      expect(types.last).to eq('settling_shop_machine.runtime.mounted.machine_state_classes_test.settlement_machine.done')
-      expect(types.count('settlement_machine.runtime.child.finished')).to eq(1)
-      claims.each { |reactor, claimed| expect(foreign(claimed, reactor)).to be_empty }
+  describe 'machines, which have their own partition' do
+    it "can't be mounted as a region or a compound state" do
+      child = mod::ChargeMachine
+      expect { Class.new(Sourced::Machine) { partition_by :order_id; consumer_group 'sc_region'; state(:x) { region :charge, child } } }
+        .to raise_error(Sourced::Machine::DefinitionError, /can't mount MachineStateClassesTest::ChargeMachine, a Sourced::Machine/)
+      expect { Class.new(Sourced::Machine) { partition_by :order_id; consumer_group 'sc_compound'; state(:x, child) } }
+        .to raise_error(Sourced::Machine::DefinitionError, /can't mount MachineStateClassesTest::ChargeMachine.*child \(start, starts:\)/)
     end
   end
 end

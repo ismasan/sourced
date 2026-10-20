@@ -89,18 +89,20 @@ module MachineExternalEventsTest
     final Ready
   end
 
-  # Mounted: its `on` runs in the mounting machine's partition.
-  class PaymentMachine < Sourced::Machine
-    Authorizing = State(:authorizing)
-    Captured = State(:captured)
-
-    initial { on PaymentFailed => Authorizing }
-    state(Authorizing) { on PaymentCaptured => Captured }
-    final Captured
-  end
-
   class CheckoutMachine < Sourced::Machine
     partition_by :order_id
+
+    # A part: its `on` runs in its owner's partition.
+    class PaymentMachine < Sourced::Machine::Part
+      part_of CheckoutMachine
+
+      Authorizing = State(:authorizing)
+      Captured = State(:captured)
+
+      initial { on PaymentFailed => Authorizing }
+      state(Authorizing) { on PaymentCaptured => Captured }
+      final Captured
+    end
 
     Placed = State(:placed)
     Done = State(:done)
@@ -216,10 +218,12 @@ RSpec.describe 'Sourced::Machine external events' do
       ))
     end
 
-    it "runs a mounted machine's on in the mounting machine's partition, appending its classes" do
+    it "runs a part's on in its owner's partition, appending the part's states" do
       placed = history_of(MX::CheckoutMachine, msg(MX::PlaceOrder))
       failed = appended(MX::CheckoutMachine, placed, msg(MX::PaymentFailed))
-      expect(failed.map(&:class)).to eq([MX::CheckoutMachine.state_class(MX::PaymentMachine::Authorizing)])
+      expect(failed.map(&:class)).to eq([MX::CheckoutMachine::PaymentMachine::Authorizing])
+      expect(failed.first.type).to eq('machine_external_events_test.checkout_machine.runtime.payment.authorizing')
+      expect(failed.first.payload.order_id).to eq('o1')
 
       captured = appended(MX::CheckoutMachine, placed + failed, msg(MX::PaymentCaptured, amount: '1'))
       expect(captured.map { |e| e.payload.target }).to eq(%w[placed.payment.captured done])

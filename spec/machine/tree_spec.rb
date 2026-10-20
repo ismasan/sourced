@@ -11,33 +11,6 @@ module MachineTreeTest
   StartPlanning = command(:start_planning)
   Agree = command(:agree)
 
-  # Mounted twice, as two regions.
-  class HoldMachine < Sourced::Machine
-    Holding = State(:holding)
-    Held = State(:held)
-
-    initial { command Hold => Holding }
-    state(Holding) { command Hold => Held }
-    final Held
-  end
-
-  class OutlineMachine < Sourced::Machine
-    Outline = State(:outline)
-    Agreed = State(:agreed)
-
-    started(Outline) { command Agree => Agreed }
-    final Agreed
-  end
-
-  # Starts in a compound state.
-  class PlanningMachine < Sourced::Machine
-    Itinerary = State(:itinerary)
-    Finalised = State(:finalised)
-
-    started(Itinerary, OutlineMachine) { on_final OutlineMachine::Agreed => Finalised }
-    final Finalised
-  end
-
   class OrderMachine < Sourced::Machine
     partition_by :order_id
 
@@ -46,6 +19,41 @@ module MachineTreeTest
     PaymentCaptured = State(:captured)
     Planning = State(:planning)
     Completed = State(:completed)
+
+    # Mounted twice, as two regions.
+    class HoldMachine < Sourced::Machine::Part
+      part_of OrderMachine
+
+      Holding = State(:holding)
+      Held = State(:held)
+
+      initial { command Hold => Holding }
+      state(Holding) { command Hold => Held }
+      final Held
+    end
+
+    # Starts in a compound state.
+    class PlanningMachine < Sourced::Machine::Part
+      part_of OrderMachine
+
+      Itinerary = State(:itinerary)
+      Finalised = State(:finalised)
+    end
+
+    class OutlineMachine < Sourced::Machine::Part
+      part_of PlanningMachine
+
+      Outline = State(:outline)
+      Agreed = State(:agreed)
+
+      started(Outline) { command Agree => Agreed }
+      final Agreed
+    end
+
+    class PlanningMachine
+      started(Itinerary, OutlineMachine) { on_final OutlineMachine::Agreed => Finalised }
+      final Finalised
+    end
 
     initial do
       command PlaceOrder => Placed
@@ -112,15 +120,15 @@ RSpec.describe Sourced::Machine::Tree do
     expect { at('placed.nope') }.to raise_error(Sourced::Machine::Error, /no state at "placed.nope"/)
   end
 
-  describe 'a machine mounted twice' do
-    let(:holding) { MachineTreeTest::HoldMachine::Holding }
-    let(:held) { MachineTreeTest::HoldMachine::Held }
+  describe 'a part mounted twice' do
+    let(:holding) { MachineTreeTest::OrderMachine::HoldMachine::Holding }
+    let(:held) { MachineTreeTest::OrderMachine::HoldMachine::Held }
 
     it 'places each of its states at two paths' do
       expect(tree.placements(holding).map(&:path)).to eq(%w[placed.hotel.holding placed.car.holding])
-      expect(tree.placed(MachineTreeTest::HoldMachine.nodes[holding]).map(&:path))
+      expect(tree.placed(MachineTreeTest::OrderMachine::HoldMachine.nodes[holding]).map(&:path))
         .to eq(%w[placed.hotel.holding placed.car.holding])
-      expect(tree.mounted_machines.count(MachineTreeTest::HoldMachine)).to eq(1)
+      expect(tree.mounted_machines.count(MachineTreeTest::OrderMachine::HoldMachine)).to eq(1)
     end
 
     it 'resolves its targets within the same mount' do
@@ -137,9 +145,9 @@ RSpec.describe Sourced::Machine::Tree do
     end
 
     it "doesn't reach sibling regions, ambiguous descendants, or unplaced handles" do
-      expect { tree.resolve(at('placed.payment.started'), MachineTreeTest::HoldMachine::Holding) }
+      expect { tree.resolve(at('placed.payment.started'), MachineTreeTest::OrderMachine::HoldMachine::Holding) }
         .to raise_error(Sourced::Machine::DefinitionError, /can only reach region placed\.payment/)
-      expect { tree.resolve(at('placed'), MachineTreeTest::HoldMachine::Holding) }
+      expect { tree.resolve(at('placed'), MachineTreeTest::OrderMachine::HoldMachine::Holding) }
         .to raise_error(Sourced::Machine::DefinitionError, /below it 2 times \(placed\.hotel\.holding, placed\.car\.holding\)/)
       unplaced = Class.new(Sourced::Machine) { consumer_group 'machine_tree_test.unplaced' }.State(:nope)
       expect { tree.resolve(at('placed'), unplaced) }

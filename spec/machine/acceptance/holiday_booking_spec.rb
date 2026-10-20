@@ -9,7 +9,7 @@ require_relative 'support/holiday_booking'
 # two deep), `done` joins at two levels, a compound's self-transition that
 # restarts its regions, data-only commands, an optional transition (`| nil`)
 # and a checkout timer. Then a guided tour (see the support file's header):
-# nested compound starts, history, `always`, a machine mounted twice, `on`,
+# nested compound starts, history, `always`, a part mounted twice, `on`,
 # children started by handlers and by states, and timers left behind.
 module MachineAcceptanceHoliday
   Booking = HolidayBooking
@@ -203,7 +203,7 @@ module MachineAcceptanceHoliday
       trip = tour(*quoted)
       events = trip.decide(msg(ChangeDates, depart_on: Date.new(2027, 5, 1)))
 
-      expect(events.map(&:class)).to eq([DatesChanged, TourBooking.state_class(ItineraryMachine::Outlining)])
+      expect(events.map(&:class)).to eq([DatesChanged, ItineraryMachine::Outlining])
       expect(events.last.payload.to_h).to include(exited: %w[planning.itinerary.quoted planning.itinerary],
                                                   entered: %w[planning.itinerary planning.itinerary.outlining])
       expect(trip.__react(events.last).map(&:class)).to eq([ShareItinerary])
@@ -235,11 +235,13 @@ module MachineAcceptanceHoliday
       expect(trip.__react(events.last).map { |cmd| [cmd.class, cmd.payload.amount] }).to eq([[ChargeDeposit, 200]])
     end
 
-    it 'runs one flight leg machine as both legs, with one class for both' do
+    it 'runs one flight leg part as both legs, with one class for both' do
       trip = tour(*quoted, msg(AcceptQuote))
       held = trip.decide(msg(HoldSeats))
 
-      expect(held.map(&:class).uniq).to eq([TourBooking.state_class(FlightLeg::SeatsHeld)])
+      expect(held.map(&:class).uniq).to eq([FlightLeg::SeatsHeld])
+      expect(held.map(&:type).uniq).to eq(['machine_acceptance_holiday.tour_booking.runtime.flight_leg.seats_held'])
+      expect(held).to all(satisfy { |evt| FlightLeg::SeatsHeld === evt })
       expect(held.map { |e| e.payload.target }).to eq(%w[reserving.outbound.seats_held reserving.return.seats_held])
 
       # Only the outbound leg maps Released: losing the seats makes the tour unavailable.
