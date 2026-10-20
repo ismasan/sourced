@@ -1504,7 +1504,8 @@ module Sourced
       sql = <<~SQL
         SELECT DISTINCT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.tags, m.created_at
         FROM #{@messages_table} m
-        WHERE #{partition_filter_sql(key_pair_ids, attr_names, last_position, handled_types)}
+        WHERE m.position IN (#{partition_positions_sql(key_pair_ids, last_position)})
+          AND #{partition_filter_sql(key_pair_ids, attr_names, handled_types)}
         ORDER BY m.position ASC
       SQL
       sql += " LIMIT #{db.literal(limit)}" if limit
@@ -1512,22 +1513,31 @@ module Sourced
       db.fetch(sql).map { |row| deserialize(row) }
     end
 
-    # The WHERE clause, over messages +m+, of {#fetch_partition_messages}.
+    # Positions after +last_position+ indexed under any of the partition's
+    # key_pairs: the candidates {#partition_filter_sql} narrows down. Bounded by
+    # position in the (key_pair_id, message_position) index, so a read or claim
+    # costs the partition's messages, not the log's.
+    def partition_positions_sql(key_pair_ids, last_position)
+      kp_ids_list = key_pair_ids.map { |id| db.literal(id) }.join(', ')
+
+      <<~SQL
+        SELECT message_position FROM #{@message_key_pairs_table}
+        WHERE key_pair_id IN (#{kp_ids_list})
+          AND message_position > #{db.literal(last_position)}
+      SQL
+    end
+
+    # The WHERE clause, over candidate messages +m+ from {#partition_positions_sql},
+    # shared by {#fetch_partition_messages} and {#check_conflicts}.
     # A message qualifies when it matches as many of the partition's key_pairs as
     # it has attribute names in common with the partition.
-    def partition_filter_sql(key_pair_ids, attr_names, last_position, handled_types)
+    def partition_filter_sql(key_pair_ids, attr_names, handled_types)
       kp_ids_list = key_pair_ids.map { |id| db.literal(id) }.join(', ')
       names_list = attr_names.map { |n| db.literal(n.to_s) }.join(', ')
       types_list = handled_types.map { |t| db.literal(t) }.join(', ')
 
       <<~SQL
-        m.position > #{db.literal(last_position)}
-          AND m.message_type IN (#{types_list})
-          AND EXISTS (
-            SELECT 1 FROM #{@message_key_pairs_table} mkp
-            WHERE mkp.message_position = m.position
-              AND mkp.key_pair_id IN (#{kp_ids_list})
-          )
+        m.message_type IN (#{types_list})
           AND (
             SELECT COUNT(*) FROM #{@message_key_pairs_table} mkp
             WHERE mkp.message_position = m.position
@@ -1625,9 +1635,12 @@ module Sourced
         key_pair_ids = partition_key_pair_ids(attrs)
         return false if key_pair_ids.empty? || types.empty?
 
+        # Joined rather than IN, so the scan stops at the first match instead of
+        # collecting every candidate position first.
         sql = <<~SQL
-          SELECT 1 FROM #{@messages_table} m
-          WHERE #{partition_filter_sql(key_pair_ids, attrs.keys, last_position, types)}
+          SELECT 1 FROM (#{partition_positions_sql(key_pair_ids, last_position)}) pk
+          JOIN #{@messages_table} m ON m.position = pk.message_position
+          WHERE #{partition_filter_sql(key_pair_ids, attrs.keys, types)}
           LIMIT 1
         SQL
         !db.fetch(sql).first.nil?
