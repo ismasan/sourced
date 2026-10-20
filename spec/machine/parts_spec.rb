@@ -33,6 +33,7 @@ module MachinePartsTest
       Accept = Command(:accept) { attribute :by, String }
       Reject = Command(:reject)
       Accepted = Event(:accepted) { attribute :by, String }
+      Unread = Event(:unread)
 
       Queued = State(:queued)
       Approved = State(:approved)
@@ -250,6 +251,10 @@ RSpec.describe Sourced::Machine::Part do
   describe 'evolve' do
     it "evolves the owner's context" do
       expect(payroll.handled_messages_for_evolve).to include(pending::Accepted)
+    end
+
+    it "adds to the owner's evolve types only the events it evolves" do
+      expect(payroll.handled_messages_for_evolve).not_to include(pending::Unread)
     end
 
     it 'needs a block' do
