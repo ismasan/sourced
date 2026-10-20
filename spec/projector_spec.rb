@@ -211,7 +211,7 @@ RSpec.describe Sourced::Projector do
   end
 
   describe '.handle_batch (EventSourced)' do
-    let(:guard) { Sourced::ConsistencyGuard.new(conditions: [], last_position: 5) }
+    let(:guard) { Sourced::ConsistencyGuard.new(query: [], last_position: 5) }
 
     def make_history(messages)
       Sourced::ReadResult.new(messages: messages, guard: guard)
@@ -277,7 +277,7 @@ RSpec.describe Sourced::Projector do
   end
 
   describe '.handle_claim' do
-    let(:guard) { Sourced::ConsistencyGuard.new(conditions: [], last_position: 2) }
+    let(:guard) { Sourced::ConsistencyGuard.new(query: [], last_position: 2) }
 
     def make_claim(messages, replaying: false)
       Sourced::ClaimResult.new(
@@ -383,7 +383,7 @@ RSpec.describe Sourced::Projector do
   end
 
   describe 'EventSourced' do
-    let(:guard) { Sourced::ConsistencyGuard.new(conditions: [], last_position: 5) }
+    let(:guard) { Sourced::ConsistencyGuard.new(query: [], last_position: 5) }
 
     def make_claim(messages, replaying: false)
       Sourced::ClaimResult.new(
@@ -578,11 +578,11 @@ RSpec.describe Sourced::Projector do
   end
 
   describe '.context_for' do
-    it 'builds conditions from partition_keys × handled_messages_for_evolve' do
-      conditions = TestItemProjector.context_for(list_id: 'L1')
-      types = conditions.map(&:message_type).sort
-      expect(types).to include('projector_test.item.added')
-      expect(types).to include('projector_test.item.archived')
+    it 'builds a partition query over handled_messages_for_evolve' do
+      query = TestItemProjector.context_for(list_id: 'L1')
+      expect(query.attrs).to eq('list_id' => 'L1')
+      expect(query.types).to include('projector_test.item.added')
+      expect(query.types).to include('projector_test.item.archived')
     end
   end
 end

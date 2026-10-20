@@ -195,7 +195,7 @@ module Sourced
       # not collide with a payload attribute) and must be sole-owned, so it is only
       # allowed for exclusive reactors. This keeps id-indexing safe: a type is only
       # id-indexed when its lone exclusive owner is id-partitioned.
-      if partition_keys == [:__id] && !exclusive
+      if IdPartition.keys?(partition_keys) && !exclusive
         raise ArgumentError,
           "#{reactor_class} must declare `partition_by`. (Only an `exclusive` reactor may " \
           "be id-partitioned — one partition per message — whether by omitting " \
@@ -204,6 +204,7 @@ module Sourced
 
       handled_types = reactor_class.handled_messages.map(&:type).uniq
       validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
+      validate_command_ownership!(reactor_class)
 
       @reactors << reactor_class
       @groups[reactor_class] = { partition_by: partition_keys.map(&:to_s), exclusive:, handled_types: }
@@ -230,7 +231,7 @@ module Sourced
     # none (validated when the reactor is added).
     def effective_partition_keys(reactor)
       keys = Array(reactor.partition_keys)
-      keys.empty? ? [:__id] : keys
+      keys.empty? ? [IdPartition::KEY.to_sym] : keys
     end
 
     # Enforce that an exclusive reactor is the sole handler of its message types.
@@ -251,6 +252,29 @@ module Sourced
           Cannot register #{reactor_class}: exclusive reactor #{offender} requires sole ownership of its message types, but #{reactor_class} and #{existing} both handle: #{overlap.sort.join(', ')}
         MSG
       end
+    end
+
+    # A command has one handler: two reactors handling it would decide it twice.
+    # Events don't count, since any number of reactors may consume them.
+    def validate_command_ownership!(reactor_class)
+      commands = handled_command_types(reactor_class)
+      return if commands.empty?
+
+      @reactors.each do |existing|
+        overlap = commands & handled_command_types(existing)
+        next if overlap.empty?
+
+        raise ArgumentError, <<~MSG.strip
+          Cannot register #{reactor_class}: a command has one handler, but #{reactor_class} and #{existing} both handle: #{overlap.sort.join(', ')}
+        MSG
+      end
+    end
+
+    # The messages a reactor handles as commands: its +handled_commands+, if it has any.
+    def handled_command_types(reactor_class)
+      return Plumb::BLANK_ARRAY unless reactor_class.respond_to?(:handled_commands)
+
+      reactor_class.handled_commands.map(&:type).uniq
     end
 
     # Normalize a pair's +signals+ into an array, without Hash-splatting a single

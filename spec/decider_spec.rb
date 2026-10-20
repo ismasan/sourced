@@ -168,7 +168,7 @@ RSpec.describe Sourced::Decider do
       store.append(reg)
 
       history_msgs = [Sourced::PositionedMessage.new(reg, 1)]
-      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 1)
+      guard = Sourced::ConsistencyGuard.new(query: [], last_position: 1)
       history = Sourced::ReadResult.new(messages: history_msgs, guard: guard)
 
       cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
@@ -208,7 +208,7 @@ RSpec.describe Sourced::Decider do
       reg = DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       bound = DeciderTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
       history_msgs = [Sourced::PositionedMessage.new(reg, 1)]
-      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 2)
+      guard = Sourced::ConsistencyGuard.new(query: [], last_position: 2)
       history = Sourced::ReadResult.new(messages: history_msgs, guard: guard)
 
       bound_positioned = Sourced::PositionedMessage.new(bound, 2)
@@ -240,7 +240,7 @@ RSpec.describe Sourced::Decider do
       reg = DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       bound = DeciderTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
       history_msgs = [Sourced::PositionedMessage.new(reg, 1)]
-      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 2)
+      guard = Sourced::ConsistencyGuard.new(query: [], last_position: 2)
       history = Sourced::ReadResult.new(messages: history_msgs, guard: guard)
 
       bound_positioned = Sourced::PositionedMessage.new(bound, 2)
@@ -261,7 +261,7 @@ RSpec.describe Sourced::Decider do
     it 'includes after_sync actions in action pairs' do
       reg = DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       history_msgs = [Sourced::PositionedMessage.new(reg, 1)]
-      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 1)
+      guard = Sourced::ConsistencyGuard.new(query: [], last_position: 1)
       history = Sourced::ReadResult.new(messages: history_msgs, guard: guard)
 
       cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
@@ -282,7 +282,7 @@ RSpec.describe Sourced::Decider do
 
     it 'binds events: in sync hooks to the events the runner appended, correlated' do
       reg = DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
-      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 0)
+      guard = Sourced::ConsistencyGuard.new(query: [], last_position: 0)
       history = Sourced::ReadResult.new(messages: [], guard: guard)
 
       cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
@@ -321,7 +321,7 @@ RSpec.describe Sourced::Decider do
       reg = DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       reg_positioned = Sourced::PositionedMessage.new(reg, 1)
 
-      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 0)
+      guard = Sourced::ConsistencyGuard.new(query: [], last_position: 0)
       history = Sourced::ReadResult.new(messages: [], guard: guard)
 
       claim = Sourced::ClaimResult.new(
@@ -345,7 +345,7 @@ RSpec.describe Sourced::Decider do
       reg = DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       bound = DeciderTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
       history_msgs = [Sourced::PositionedMessage.new(reg, 1)]
-      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 2)
+      guard = Sourced::ConsistencyGuard.new(query: [], last_position: 2)
       history = Sourced::ReadResult.new(messages: history_msgs, guard: guard)
 
       bound_positioned = Sourced::PositionedMessage.new(bound, 2)
@@ -368,7 +368,7 @@ RSpec.describe Sourced::Decider do
     end
 
     it 'invariant violation propagates as error' do
-      guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 0)
+      guard = Sourced::ConsistencyGuard.new(query: [], last_position: 0)
       history = Sourced::ReadResult.new(messages: [], guard: guard)
 
       cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
@@ -388,7 +388,7 @@ RSpec.describe Sourced::Decider do
   end
 
   describe '#should_react?' do
-    let(:guard) { Sourced::ConsistencyGuard.new(conditions: [], last_position: 2) }
+    let(:guard) { Sourced::ConsistencyGuard.new(query: [], last_position: 2) }
 
     def bound_claim(replaying:)
       bound = Sourced::PositionedMessage.new(
@@ -437,7 +437,7 @@ RSpec.describe Sourced::Decider do
   end
 
   describe '.handle_claim history deduplication' do
-    let(:guard) { Sourced::ConsistencyGuard.new(conditions: [], last_position: 2) }
+    let(:guard) { Sourced::ConsistencyGuard.new(query: [], last_position: 2) }
 
     it 'evolves a claimed message once, even though the unbounded read includes it' do
       bound = Sourced::PositionedMessage.new(
@@ -479,14 +479,13 @@ RSpec.describe Sourced::Decider do
   end
 
   describe '.context_for' do
-    it 'builds conditions from partition_keys × handled_messages_for_evolve' do
-      conditions = TestDeviceDecider.context_for(device_id: 'd1')
+    it 'builds a partition query over handled_messages_for_evolve' do
+      query = TestDeviceDecider.context_for(device_id: 'd1')
 
-      # DeviceRegistered and DeviceBound both have device_id
-      types = conditions.map(&:message_type).uniq.sort
-      expect(types).to include('decider_test.device.registered')
-      expect(types).to include('decider_test.device.bound')
-      expect(conditions.all? { |c| c.attrs[:device_id] == 'd1' }).to be true
+      expect(query).to be_a(Sourced::PartitionQuery)
+      expect(query.attrs).to eq('device_id' => 'd1')
+      expect(query.types).to include('decider_test.device.registered')
+      expect(query.types).to include('decider_test.device.bound')
     end
   end
 

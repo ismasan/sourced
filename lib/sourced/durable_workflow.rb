@@ -81,8 +81,7 @@ module Sourced
 
       # Register all event classes so:
       #  - Router claims them on our consumer group (`handled_messages`).
-      #  - `context_for(workflow_id:)` builds OR conditions for the partition
-      #    read (one per event type, via `Message.to_conditions`).
+      #  - `context_for(workflow_id:)` reads them as the partition's history.
       [
         child::WorkflowStarted, child::ContextUpdated, child::WorkflowComplete,
         child::WorkflowFailed, child::StepStarted, child::StepFailed,

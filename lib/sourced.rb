@@ -23,6 +23,10 @@ module Sourced
   # consumer group isn't in the store, which registers groups when Sourced starts.
   ConsumerGroupNotRegisteredError = Class.new(Error)
 
+  # Raised by {.handle!} when a valid command has no value for one of the
+  # reactor's partition keys, in its payload or its tags.
+  MissingPartitionKeyError = Class.new(Error)
+
   # Default logger for components built outside a configured system, ex. in specs.
   NULL_LOGGER = Logger.new(nil)
 
@@ -144,6 +148,13 @@ module Sourced
       return HandleResult.new(command: command, reactor: reactor_class.new(values), events: [])
     end
 
+    missing = reactor_class.partition_keys - partition_attrs.keys
+    if missing.any?
+      raise MissingPartitionKeyError,
+            "#{command.type} has no value for #{reactor_class}'s partition keys #{missing.inspect} " \
+            'in its payload or tags'
+    end
+
     store ||= self.store
     needs_history = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
     if needs_history
@@ -194,10 +205,12 @@ module Sourced
     [instance, read_result]
   end
 
+  # Partition values from the command's payload, or else its tags.
   private_class_method def self.extract_partition_attrs(command, reactor_class)
     reactor_class.partition_keys.each_with_object({}) do |key, h|
       value = command.payload&.respond_to?(key) ? command.payload.send(key) : nil
-      h[key] = value if value
+      value = command.tags[key] if value.nil?
+      h[key] = value unless value.nil?
     end
   end
 
