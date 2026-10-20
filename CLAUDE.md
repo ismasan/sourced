@@ -241,6 +241,7 @@ In reactions: `dispatch(Cmd, ...).at(time)` (the produced message is future-date
 ## Testing
 
 - `lib/sourced/testing/rspec.rb` provides GWT helpers (`given`/`when_`/`then_`) usable across all reactor types since `#handle_batch` has a uniform signature.
+- For a Machine, `.at(State)` (or `.at('a.b.c')`, the path of one placement, when a part is placed more than once) appends to the history the state event a transition there would append from the configuration so far (`Machine#__move_to`, `trigger: 'at'`): setup like `given`, so no entry actions, timers or eventless steps run. Raises `ArgumentError` on non-machines, after `when`, and for unplaced or ambiguous states. Specs: `spec/machine/gwt_at_spec.rb`. `#history` returns the given history so far (`given` + `.at` messages) as a frozen copy.
 - Shared store behaviour concentrated in `spec/store_spec.rb` (2400+ lines).
 - Durable workflow specs demonstrate the step-memoisation pattern.
 
