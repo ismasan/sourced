@@ -269,6 +269,52 @@ module MachineChildrenTest
     end
   end
 
+  ACCOUNT = %i[account_id].freeze
+  SESSION = %i[account_id session_id].freeze
+
+  OpenAccount = command(:open_account, ACCOUNT)
+  SuspendAccount = command(:suspend_account, ACCOUNT)
+  EndSession = command(:end_session, SESSION)
+
+  class SessionMachine < Sourced::Machine
+    partition_by :account_id, :session_id
+
+    stopped :revoked
+    started(:active) { command EndSession => :ended }
+    final :ended
+  end
+
+  # Its part starts sessions; it stops them.
+  class AccountMachine < Sourced::Machine
+    partition_by :account_id
+
+    class AccessMachine < Sourced::Machine::Part
+      part_of AccountMachine
+
+      LogIn = Command(:log_in) { attribute :session_id, String }
+      Invite = Command(:invite) { attribute :session_ids, String }
+
+      started :open do
+        command LogIn, starts: SessionMachine
+        command(Invite, starts: SessionMachine) do |_account, cmd|
+          cmd.payload.session_ids.split(',').each { |id| start SessionMachine, session_id: id }
+        end
+        children_done SessionMachine => :idle
+      end
+      final :idle
+    end
+
+    Suspended = State(:suspended)
+
+    initial { command OpenAccount => :active }
+    state :active, AccessMachine do
+      on_final AccessMachine::Idle => :closed
+      command SuspendAccount => Suspended
+    end
+    final :closed
+    final(Suspended) { stops SessionMachine }
+  end
+
   RSpec.describe 'Sourced::Machine children' do
     include Sourced::Testing::RSpec
     include MachineHelpers
@@ -581,6 +627,88 @@ module MachineChildrenTest
         children = instance.to_h[:children]
         expect(children.map { |c| [c[:kind], c[:state], c[:status][:instances].map { |i| i[:keys]['payment_id'] }] })
           .to eq([['invoke', primary, ["pay-#{primary}"]], ['invoke', backup, ["pay-#{backup}"]]])
+      end
+    end
+
+    describe "children started by a part's handlers" do
+      let(:router) { Sourced::Router.new(store:, reactors: [AccountMachine, SessionMachine]).setup! }
+      let(:access) { AccountMachine::AccessMachine }
+      let(:keys) { { account_id: 'a1' } }
+
+      def account = AccountMachine.load(store:, **keys)
+      def sessions = account.children[SessionMachine].to_h { |ref| [ref.keys[:session_id], ref.state] }
+      def session(command, session_id) = command.new(payload: { **keys, session_id: })
+
+      before do
+        run(router, OpenAccount.new(payload: keys))
+        run(router, access::LogIn.new(payload: { **keys, session_id: 's1' }))
+        run(router, access::Invite.new(payload: { **keys, session_ids: 's2,s3' }))
+      end
+
+      it "are the owner's children" do
+        expect(AccountMachine.tree.children).to eq([SessionMachine])
+        expect(AccountMachine.tree.spawned(SessionMachine).stop_on.map(&:path)).to eq(['suspended'])
+        expect(AccountMachine.handled_messages_for_evolve).to include(SessionMachine::Started, SessionMachine::Finished)
+        expect(Sourced::ReactorDefaults.expand(AccountMachine)).to eq([AccountMachine, SessionMachine])
+      end
+
+      it 'start with and without a block, each in its own partition' do
+        expect(log.grep(SessionMachine::Started).map { |m| [m.payload.session_id, m.payload.parent_state] })
+          .to eq([['s1', nil], ['s2', nil], ['s3', nil]])
+        expect(SessionMachine.load(store:, **keys, session_id: 's2').value).to eq(SessionMachine::Active)
+        expect(sessions).to eq('s1' => SessionMachine::Active, 's2' => SessionMachine::Active, 's3' => SessionMachine::Active)
+      end
+
+      it "join through the part's children_done, and on to the owner's on_final" do
+        run(router, session(EndSession, 's1'), session(EndSession, 's2'))
+        expect(account.value).to eq(AccountMachine::Active => access::Open)
+
+        run(router, session(EndSession, 's3'))
+        expect(account.value).to eq(AccountMachine::Closed)
+        expect(moves(AccountMachine).last(2).map { |m| m.slice(:trigger, :target) })
+          .to eq([{ trigger: 'children_done MachineChildrenTest::SessionMachine', target: 'active.idle' },
+                  { trigger: 'on_final', target: 'closed' }])
+      end
+
+      it "are stopped by the owner's state" do
+        run(router, session(EndSession, 's1'))
+        run(router, SuspendAccount.new(payload: keys))
+
+        expect(log.grep(SessionMachine::Stop).map { |m| m.payload.session_id }).to eq(%w[s2 s3])
+        expect(sessions).to eq('s1' => SessionMachine::Ended, 's2' => SessionMachine::Revoked, 's3' => SessionMachine::Revoked)
+        expect(account.value).to eq(AccountMachine::Suspended)
+      end
+
+      it 'are rebuilt on load' do
+        instance, = Sourced.load(AccountMachine, store:, **keys)
+
+        expect(instance.machine.children(SessionMachine).map(&:keys)).to eq([{ session_id: 's1' }, { session_id: 's2' }, { session_id: 's3' }])
+        expect(instance.machine.children(SessionMachine).map(&:at)).to eq([nil, nil, nil])
+      end
+
+      it "join through the owner's children_done" do
+        owner = Class.new(Sourced::Machine) do
+          partition_by :account_id
+          consumer_group 'parts_children_owner'
+        end
+        part = Class.new(Sourced::Machine::Part) do
+          part_of owner
+          part_prefix 'access'
+          log_in = const_set(:LogIn, Command(:log_in) { attribute :session_id, String })
+          started(:open) { command log_in, starts: MachineChildrenTest::SessionMachine }
+        end
+        owner.initial { command MachineChildrenTest::OpenAccount => :active }
+        owner.state(:active, part) { children_done MachineChildrenTest::SessionMachine => :closed }
+        owner.final :closed
+
+        instance = owner.new(keys)
+        instance.evolve(instance.decide(OpenAccount.new(payload: keys)))
+        instance.evolve(instance.decide(part::LogIn.new(payload: { **keys, session_id: 's1' })))
+        expect(instance.machine.children(SessionMachine).map(&:keys)).to eq([{ session_id: 's1' }])
+
+        instance.evolve([SessionMachine::Finished.new(payload: { **keys, session_id: 's1', final: 'ended' })])
+        closed = instance.__decide_eventless
+        expect(closed.map { |evt| evt.payload.target }).to eq(['closed'])
       end
     end
 
