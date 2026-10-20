@@ -23,6 +23,12 @@ module HandleTestMessages
     attribute :device_id, String
   end
 
+  # Handled by HandleTestReactingDecider: a command has one handler.
+  RegisterDevice = Sourced::Command.define('handle_test.register_device') do
+    attribute :device_id, String
+    attribute :name, String
+  end
+
   NotifyCreated = Sourced::Command.define('handle_test.notify_created') do
     attribute :device_id, String
   end
@@ -133,7 +139,7 @@ class HandleTestReactingDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'handle-test-reacting-decider'
 
-  command HandleTestMessages::CreateDevice do |_context, cmd|
+  command HandleTestMessages::RegisterDevice do |_context, cmd|
     event HandleTestMessages::DeviceCreated, device_id: cmd.payload.device_id, name: cmd.payload.name
   end
 
@@ -500,7 +506,7 @@ RSpec.describe 'Sourced.handle!' do
       router.register(HandleTestReactingDecider)
       Sourced.register(HandleTestReactingDecider)
 
-      cmd = HandleTestMessages::CreateDevice.new(payload: { device_id: 'd1', name: 'Sensor' })
+      cmd = HandleTestMessages::RegisterDevice.new(payload: { device_id: 'd1', name: 'Sensor' })
       Sourced.handle!(HandleTestReactingDecider, cmd, store: store)
 
       expect(router.handle_next_for(HandleTestReactingDecider, worker_id: 'test-worker')).to be true
@@ -508,7 +514,7 @@ RSpec.describe 'Sourced.handle!' do
 
       types = store.read_all(limit: 10).messages.map(&:type)
       expect(types).to eq(%w[
-        handle_test.create_device
+        handle_test.register_device
         handle_test.device_created
         handle_test.notify_created
       ])

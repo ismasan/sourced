@@ -127,7 +127,7 @@ RSpec.describe 'Sourced::Machine external events' do
   def msg(klass, **attrs) = klass.new(payload: { order_id: 'o1', **attrs })
   def summary(events) = events.map { |e| [e.class, e.payload.to_h] }
   def moves(machine, *transitions) = summary(transitions.map { |trigger, opts| moved(machine, trigger, **opts, order_id: 'o1') })
-  def guard = Sourced::ConsistencyGuard.new(conditions: [], last_position: 0)
+  def guard = Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 0)
 
   # Decided events from handling +new_messages+ after +history+, as the GWT helpers do.
   def appended(machine, history, *new_messages, replaying: false)
