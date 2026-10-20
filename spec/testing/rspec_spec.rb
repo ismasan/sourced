@@ -260,6 +260,16 @@ RSpec.describe Sourced::Testing::RSpec do
         .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a2')
         .then(RuntimeError, 'Already bound')
     end
+
+    it 'exposes the given history as a frozen copy' do
+      gwt = with_reactor(GWTTestDecider, device_id: 'd1')
+        .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+
+      expect(gwt.history.map(&:class)).to eq([GWTTestMessages::DeviceRegistered])
+      expect(gwt.history).to be_frozen
+      expect { gwt.history << :x }.to raise_error(FrozenError)
+      expect(gwt.history.size).to eq(1)
+    end
   end
 
   describe 'Decider hooks under then! with a block' do

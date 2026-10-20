@@ -1500,6 +1500,19 @@ module Sourced
     # @return [Array<Sourced::Message>]
     def __decide_eventless = deciding { append_eventless }
 
+    # Move to +target+ from the current configuration as a transition would,
+    # with no handler and nothing decided after it: the innermost active
+    # region on the way to +target+ leaves its current state. The GWT
+    # helpers' +at+.
+    # @api private
+    # @param target [PlacedNode]
+    # @param trigger [String]
+    # @return [Array<Sourced::Message>] +target+'s state, and a +Finished+ at a child machine's root final
+    def __move_to(target, trigger:)
+      region = target.region.lineage.find { |candidate| @runtime.active?(candidate) }
+      deciding { transition(@runtime.current_node(region), target, trigger:) }
+    end
+
     # Decide +event+, claimed, for the deepest active states that declare
     # it with +on+ (see {#decide}), then what that leaves to decide without one.
     # Nothing when no active state declares it.
