@@ -1819,6 +1819,43 @@ RSpec.describe Sourced::Store do
       result2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: ['store_test.device.registered'], worker_id: 'w-1')
       expect(result2).to be_nil
     end
+
+    def registered(device_id)
+      StoreTestMessages::DeviceRegistered.new(payload: { device_id:, name: device_id })
+    end
+
+    def claim_all
+      claimed = []
+      while (claim = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1'))
+        claimed << claim.partition_value['device_id']
+        store.ack(group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
+      end
+      claimed
+    end
+
+    it 'discovers partitions left out of a full batch whose messages precede its last position' do
+      batch = Sourced::Store::DISCOVERY_BATCH_SIZE
+      # dev-0's second message is the newest, so the batch's highest position
+      # is past the first messages of the partitions that didn't fit in it.
+      store.append(registered('dev-0'))
+      store.append((1..batch + 1).map { |i| registered("dev-#{i}") })
+      store.append(registered('dev-0'))
+
+      expect(claim_all).to match_array((0..batch + 1).map { |i| "dev-#{i}" })
+    end
+
+    it 'discovers a message appended while discovery runs' do
+      store.append(registered('dev-1'))
+      # A concurrent append lands just before discovery reads the latest position.
+      appended = false
+      allow(store).to receive(:latest_position).and_wrap_original do |original|
+        store.append(registered('dev-2')) unless appended
+        appended = true
+        original.call
+      end
+
+      expect(claim_all).to match_array(%w[dev-1 dev-2])
+    end
   end
 
   describe '#claim_next (composite partition — conditional AND fetch)' do

@@ -1337,6 +1337,12 @@ module Sourced
     # discovery_position watermark, find new partition tuples, create offsets
     # for them, then advance the watermark.
     #
+    # The watermark only passes messages whose partitions have offsets. A full
+    # batch (partitions ordered by first position) stops just before the last
+    # partition's first message: any partition left out starts at or after it.
+    # Otherwise the scan reached +upper+, read before scanning so a message
+    # appended meanwhile is left for the next call rather than skipped.
+    #
     # @param cg_id [Integer] consumer group internal ID
     # @param partition_by [Array<String>] sorted attribute names
     # @param handled_types [Array<String>] message type strings
@@ -1344,6 +1350,8 @@ module Sourced
     def discover_new_partitions(cg_id, partition_by, handled_types)
       cg = db[@consumer_groups_table].where(id: cg_id).first
       discovery_pos = cg[:discovery_position]
+      upper = latest_position
+      return if upper <= discovery_pos
 
       types_list = handled_types.map { |t| db.literal(t) }.join(', ')
 
@@ -1372,20 +1380,18 @@ module Sourced
       sql = <<~SQL
         WITH #{ctes.join(",\n")}
         SELECT #{selects.join(', ')},
-               MIN(m.position) AS min_pos,
-               MAX(m.position) AS max_pos
+               MIN(m.position) AS min_pos
         FROM #{@messages_table} m
         #{joins.join("\n")}
         WHERE m.message_type IN (#{types_list})
           AND m.position > #{db.literal(discovery_pos)}
+          AND m.position <= #{db.literal(upper)}
         GROUP BY #{group_by}
         ORDER BY min_pos ASC
         LIMIT #{DISCOVERY_BATCH_SIZE}
       SQL
 
       rows = db.fetch(sql).all
-
-      max_discovered_pos = 0
 
       if rows.any?
         db.transaction do
@@ -1401,18 +1407,11 @@ module Sourced
             # At most DISCOVERY_BATCH_SIZE (100) tuples per call, so the
             # cost of re-attempting known offsets is bounded.
             create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids)
-            max_discovered_pos = row[:max_pos] if row[:max_pos] > max_discovered_pos
           end
         end
       end
 
-      # Advance watermark to the max position seen in the window (whether new or known).
-      # This ensures we don't re-scan these messages on the next discovery call.
-      max_window_pos = rows.any? ? rows.map { |r| r[:max_pos] }.max : 0
-      new_watermark = [max_discovered_pos, max_window_pos, latest_position].select { |p| p > 0 }.min || discovery_pos
-      # If we found a full batch, advance only to the batch's max (more may follow).
-      # If we found fewer than a batch, we've scanned to the end — advance to latest.
-      new_watermark = latest_position if rows.size < DISCOVERY_BATCH_SIZE
+      new_watermark = rows.size < DISCOVERY_BATCH_SIZE ? upper : rows.last[:min_pos] - 1
 
       if new_watermark > discovery_pos
         db[@consumer_groups_table].where(id: cg_id).update(
