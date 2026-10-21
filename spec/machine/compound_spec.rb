@@ -433,14 +433,12 @@ RSpec.describe 'Sourced::Machine compound states' do
         initial { command M::StartPlanning => :planning }
       end)
       outline_part = Class.new(Sourced::Machine::Part) do
-        part_of machine
-        part_prefix 'fast_track_outline'
+        part_of machine, prefix: 'fast_track_outline'
         started(:outline) {}
         final :proposed
       end
       itinerary_part = Class.new(Sourced::Machine::Part) do
-        part_of machine
-        part_prefix 'fast_track_itinerary'
+        part_of machine, prefix: 'fast_track_itinerary'
         fast_track = const_set(:FastTrack, Command(:fast_track))
         started :itinerary, outline_part do
           command fast_track => outline_part::Proposed
@@ -568,8 +566,7 @@ RSpec.describe 'Sourced::Machine compound states' do
 
     it 'rejects a part with no start' do
       no_start = Class.new(Sourced::Machine::Part).tap do |klass|
-        klass.part_of owner
-        klass.part_prefix 'no_start'
+        klass.part_of owner, prefix: 'no_start'
         klass.final :done
       end
       expect { machine { state :thing, no_start } }.to raise_error(Sourced::Machine::DefinitionError, /has no start state/)

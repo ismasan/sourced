@@ -138,8 +138,7 @@ module MachineTopologyTest
           initial { command Open => :opened }
         end
         lines = Class.new(Sourced::Machine::Part) do
-          part_of machine
-          part_prefix 'lines'
+          part_of machine, prefix: 'lines'
           initial { command AddLeg, starts: LegMachine }
           final(:closed) { stops LegMachine }
         end
@@ -177,8 +176,7 @@ module MachineTopologyTest
           initial { command Open => :busy }
         end
         inner = Class.new(Sourced::Machine::Part) do
-          part_of outer
-          part_prefix 'inner'
+          part_of outer, prefix: 'inner'
           started :working do
             command Confirm => :finished
           end

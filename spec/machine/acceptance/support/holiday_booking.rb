@@ -290,8 +290,7 @@ module MachineAcceptanceHoliday
 
   # Part of TourBooking: outlined, priced, then quoted.
   class ItineraryMachine < Sourced::Machine::Part
-    part_of TourBooking
-    part_prefix 'itinerary'
+    part_of TourBooking, prefix: 'itinerary'
 
     Outlining = State(:outlining)
     Pricing = State(:pricing)
@@ -330,8 +329,7 @@ module MachineAcceptanceHoliday
 
   # Part of TourBooking: its start is itself a compound state.
   class PlanningMachine < Sourced::Machine::Part
-    part_of TourBooking
-    part_prefix 'planning'
+    part_of TourBooking, prefix: 'planning'
 
     Itinerary = State(:itinerary)
     Agreed = State(:agreed)
@@ -346,8 +344,7 @@ module MachineAcceptanceHoliday
 
   # Part of TourBooking, mounted twice, as :outbound and :return.
   class FlightLeg < Sourced::Machine::Part
-    part_of TourBooking
-    part_prefix 'flight_leg'
+    part_of TourBooking, prefix: 'flight_leg'
 
     SeatsHeld = State(:seats_held)
     Ticketed = State(:ticketed)
