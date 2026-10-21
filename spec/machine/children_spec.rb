@@ -185,7 +185,7 @@ module MachineChildrenTest
   class ParcelMachine < Sourced::Machine
     partition_by :order_id, :parcel_id
 
-    class PackingMachine < Sourced::Machine::Part
+    class PreparingMachine < Sourced::Machine::Part
       part_of ParcelMachine
 
       Pack = Command(:pack)
@@ -203,10 +203,9 @@ module MachineChildrenTest
 
     stopped :cancelled
 
-    Preparing = State(:preparing)
     Shipped = State(:shipped)
 
-    started(Preparing, PackingMachine) { on_final PackingMachine::Packed => Shipped }
+    started(PreparingMachine) { on_final PreparingMachine::Packed => Shipped }
     final Shipped
   end
 
@@ -288,7 +287,7 @@ module MachineChildrenTest
   class AccountMachine < Sourced::Machine
     partition_by :account_id
 
-    class AccessMachine < Sourced::Machine::Part
+    class ActiveMachine < Sourced::Machine::Part
       part_of AccountMachine
 
       LogIn = Command(:log_in) { attribute :session_id, String }
@@ -306,9 +305,9 @@ module MachineChildrenTest
 
     Suspended = State(:suspended)
 
-    initial { command OpenAccount => :active }
-    state :active, AccessMachine do
-      on_final AccessMachine::Idle => :closed
+    initial { command OpenAccount => ActiveMachine }
+    state ActiveMachine do
+      on_final ActiveMachine::Idle => :closed
       command SuspendAccount => Suspended
     end
     final :closed
@@ -632,7 +631,7 @@ module MachineChildrenTest
 
     describe "children started by a part's handlers" do
       let(:router) { Sourced::Router.new(store:, reactors: [AccountMachine, SessionMachine]).setup! }
-      let(:access) { AccountMachine::AccessMachine }
+      let(:access) { AccountMachine::ActiveMachine }
       let(:keys) { { account_id: 'a1' } }
 
       def account = AccountMachine.load(store:, **keys)
@@ -661,7 +660,7 @@ module MachineChildrenTest
 
       it "join through the part's children_done, and on to the owner's on_final" do
         run(router, session(EndSession, 's1'), session(EndSession, 's2'))
-        expect(account.value).to eq(AccountMachine::Active => access::Open)
+        expect(account.value).to eq(access::State => access::Open)
 
         run(router, session(EndSession, 's3'))
         expect(account.value).to eq(AccountMachine::Closed)
@@ -692,12 +691,12 @@ module MachineChildrenTest
           consumer_group 'parts_children_owner'
         end
         part = Class.new(Sourced::Machine::Part) do
-          part_of owner, prefix: 'access'
+          part_of owner, prefix: 'active'
           log_in = const_set(:LogIn, Command(:log_in) { attribute :session_id, String })
           started(:open) { command log_in, starts: MachineChildrenTest::SessionMachine }
         end
-        owner.initial { command MachineChildrenTest::OpenAccount => :active }
-        owner.state(:active, part) { children_done MachineChildrenTest::SessionMachine => :closed }
+        owner.initial { command MachineChildrenTest::OpenAccount => part }
+        owner.state(part) { children_done MachineChildrenTest::SessionMachine => :closed }
         owner.final :closed
 
         instance = owner.new(keys)
@@ -734,15 +733,15 @@ module MachineChildrenTest
       it 'runs the nested entry actions, and finishes through on_final' do
         run(router, ShipParcel.new(payload: keys))
 
-        expect(parcel.value).to eq(ParcelMachine::Preparing => ParcelMachine::PackingMachine::Packing)
+        expect(parcel.value).to eq(ParcelMachine::PreparingMachine::State => ParcelMachine::PreparingMachine::Packing)
         expect(log.grep(PrintLabel).map { |m| m.payload.to_h }).to eq([keys])
-        expect(shipping.children[ParcelMachine].map(&:state)).to eq([ParcelMachine::Preparing])
+        expect(shipping.children[ParcelMachine].map(&:state)).to eq([ParcelMachine::PreparingMachine::State])
 
-        run(router, ParcelMachine::PackingMachine::Pack.new(payload: keys))
+        run(router, ParcelMachine::PreparingMachine::Pack.new(payload: keys))
 
         expect(parcel.value).to eq(ParcelMachine::Shipped)
         expect(moves(ParcelMachine)).to eq([
-                                             { trigger: 'machine_children_test.parcel_machine.packing.pack', source: 'preparing.packing', target: 'preparing.packed',
+                                             { trigger: 'machine_children_test.parcel_machine.preparing.pack', source: 'preparing.packing', target: 'preparing.packed',
                                                exited: ['preparing.packing'], entered: ['preparing.packed'] },
                                              { trigger: 'on_final', source: 'preparing.packed', target: 'shipped',
                                                exited: %w[preparing.packed preparing], entered: ['shipped'] }
@@ -1071,7 +1070,7 @@ module MachineChildrenTest
 
         expect(node.path).to eq(Sourced::Config.reactor_key(ShippingMachine))
         expect(registered?(ParcelMachine)).to be(true)
-        expect(ParcelMachine.to_sourced_reactors).not_to include(ParcelMachine::PackingMachine)
+        expect(ParcelMachine.to_sourced_reactors).not_to include(ParcelMachine::PreparingMachine)
       end
 
       it "registers children's children" do

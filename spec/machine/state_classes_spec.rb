@@ -161,7 +161,7 @@ RSpec.describe 'Sourced::Machine state classes of parts' do
       child = mod::ChargeMachine
       expect { Class.new(Sourced::Machine) { partition_by :order_id; consumer_group 'sc_region'; state(:x) { region :charge, child } } }
         .to raise_error(Sourced::Machine::DefinitionError, /can't mount MachineStateClassesTest::ChargeMachine, a Sourced::Machine/)
-      expect { Class.new(Sourced::Machine) { partition_by :order_id; consumer_group 'sc_compound'; state(:x, child) } }
+      expect { Class.new(Sourced::Machine) { partition_by :order_id; consumer_group 'sc_compound'; state(child) } }
         .to raise_error(Sourced::Machine::DefinitionError, /can't mount MachineStateClassesTest::ChargeMachine.*child \(start, starts:\)/)
     end
   end

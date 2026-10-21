@@ -9,7 +9,6 @@ module MachinePartsTest
 
     Start = Command(:start)
 
-    Pending = State(:pending)
     Done = State(:done)
     Failed = State(:failed)
 
@@ -78,9 +77,9 @@ module MachinePartsTest
       Settle = Command(:settle)
     end
 
-    initial { command Start => Pending }
+    initial { command Start => PendingMachine }
 
-    state Pending, PendingMachine do
+    state PendingMachine do
       on_final PendingMachine::Approved => Done, PendingMachine::Rejected => Failed
     end
 
@@ -280,14 +279,14 @@ RSpec.describe Sourced::Machine::Part do
 
     it 'raises when its owner evolves the same event' do
       owner.evolve(evt) { |_context, _evt| nil }
-      owner.state(:one, evolving_part(owner, 'one', evt))
+      owner.state(evolving_part(owner, 'one', evt))
 
       expect { owner.validate! }.to raise_error(Sourced::Machine::DefinitionError, /Accepted is evolved by both #{Regexp.escape(owner.to_s)} and /)
     end
 
     it 'raises when another part evolves the same event' do
-      owner.state(:one, evolving_part(owner, 'one', evt))
-      owner.state(:two, evolving_part(owner, 'two', evt))
+      owner.state(evolving_part(owner, 'one', evt))
+      owner.state(evolving_part(owner, 'two', evt))
 
       expect { owner.validate! }.to raise_error(Sourced::Machine::DefinitionError, /Accepted is evolved by both/)
     end
@@ -305,8 +304,8 @@ RSpec.describe Sourced::Machine::Part do
           started(:a) {}
         end
       end
-      owner.state(:one, two[0])
-      owner.state(:two, two[1])
+      owner.state(:one) { region :left, two[0] }
+      owner.state(:two) { region :right, two[1] }
 
       expect { owner.validate! }
         .to raise_error(Sourced::Machine::DefinitionError, /share the part prefix "review", so their messages and states would have the same types/)
@@ -344,13 +343,171 @@ RSpec.describe Sourced::Machine::Part do
           Sourced::Machine::DefinitionError,
           /region :standalone: can't mount MachinePartsTest::Standalone, a Sourced::Machine: .*Sourced::Machine::Part \(part_of .*\).*child \(start, starts:\)/
         )
-      expect { Class.new(mod::Other) { consumer_group 'other_y'; state(:x, mounted) } }
-        .to raise_error(Sourced::Machine::DefinitionError, /state .*X: can't mount MachinePartsTest::Standalone, a Sourced::Machine/)
+      expect { Class.new(mod::Other) { consumer_group 'other_y'; state(mounted) } }
+        .to raise_error(Sourced::Machine::DefinitionError, /state MachinePartsTest::Standalone: can't mount MachinePartsTest::Standalone, a Sourced::Machine/)
     end
 
     it "raises on anything that isn't a part" do
       expect { Class.new(mod::Other) { consumer_group 'other_z'; state(:x) { region :thing, String } } }
         .to raise_error(Sourced::Machine::DefinitionError, /String isn't a Sourced::Machine::Part/)
+    end
+  end
+
+  describe 'its compound state' do
+    let(:owner) do
+      Class.new(Sourced::Machine) do
+        partition_by :payroll_id
+        consumer_group 'parts_compound_owner'
+      end
+    end
+
+    def compound_part(owner, prefix)
+      Class.new(described_class) do
+        part_of owner, prefix: prefix
+        started(:open) {}
+        final :done
+      end
+    end
+
+    it "is Part::State, typed under the owner's runtime prefix, with the owner's keys" do
+      expect(pending::State).to be < Sourced::Machine::State
+      expect(pending.to_state_handle).to be(pending::State)
+      expect(pending::State.type).to eq('machine_parts_test.payroll.runtime.pending')
+      expect(pending::State.payload_attribute_names.first(2)).to eq(%i[payroll_id run])
+      expect(pending::State.state_name).to eq(:pending)
+      expect(pending::State.machine).to be(pending)
+      expect(pending::State.part).to be(pending)
+      expect(pending::State.state).to be(pending::State)
+      expect(pending::State.to_state_handle).to be(pending::State)
+      expect(pending::Queued.part).to be_nil
+    end
+
+    it "is named after its prefix's last segment, nesting under an enclosing part's type" do
+      expect(payroll::OpenMachine::State.type).to eq('machine_parts_test.payroll.runtime.unsettled.open')
+      expect(payroll::OpenMachine::State.state_name).to eq(:open)
+      expect(payroll::AuditMachine::State.state_name).to eq(:trail)
+    end
+
+    it "isn't one of the part's declared states" do
+      expect(pending.declared_states.values).not_to include(pending::State)
+    end
+
+    it 'is placed by state Part, which mounts the part' do
+      node = payroll.root.nodes.fetch(pending::State)
+      mount = node.regions.first
+
+      expect(payroll.nodes[pending::State]).to be(node)
+      expect(mount.machine).to be(pending)
+      expect(mount).to be_compound
+      expect(payroll.tree.placements(pending::State).map(&:path)).to eq(%w[pending])
+      expect(payroll.transition_classes).to include(pending::State)
+    end
+
+    it "isn't a transition class of an owner mounting the part only as a region" do
+      expect(payroll.transition_classes).not_to include(check::State)
+    end
+
+    it 'stands in for its state as a target: command, union, nil, array, to, always, on_final, done' do
+      review = compound_part(owner, 'review')
+      other = compound_part(owner, 'other')
+      go = owner.Command(:go)
+      choose = owner.Command(:choose)
+      skip = owner.Command(:skip)
+      owner.initial do
+        command go => review
+        command(choose => review | nil) { |_context, _cmd| to(review) }
+        command(skip => [other, nil]) { |_context, _cmd| to(other) }
+      end
+      owner.state(other) do
+        on_final other::Done => review
+        command(choose => other | review) { |_context, _cmd| to(review) }
+      end
+      owner.state(review) { on_final review::Done => :routing }
+      owner.state(:routing) { always review }
+      owner.validate!
+
+      initial = owner.root.initial_node
+      expect(initial.commands[go].targets).to eq([review::State])
+      expect(initial.commands[choose].targets).to eq([review::State, nil])
+      expect(initial.commands[skip].targets).to eq([other::State, nil])
+      expect(owner.nodes[other::State].commands[choose].targets).to eq([other::State, review::State])
+      expect(owner.mounts[:other].on_final).to eq(other::Done => review::State)
+      expect(owner.nodes[owner::Routing].always.map(&:target)).to eq([review::State])
+
+      instance = owner.new(payroll_id: 'p1')
+      events = instance.decide(choose.new(payload: { payroll_id: 'p1' }))
+      expect(events.map(&:class)).to eq([review::State])
+      expect(events.last.payload.entered).to eq(%w[review review.open])
+    end
+
+    it 'takes anything responding to to_state_handle as a target' do
+      review = compound_part(owner, 'review')
+      handle = Object.new
+      handle.define_singleton_method(:to_state_handle) { review::State }
+      go = owner.Command(:go)
+      owner.initial { command go => handle }
+      owner.state(review)
+
+      expect(owner.root.initial_node.commands[go].targets).to eq([review::State])
+      nope = owner.Command(:nope)
+      expect { owner.state(:z) { command nope => Object.new } }
+        .to raise_error(Sourced::Machine::DefinitionError, /isn't a state: it doesn't respond to to_state_handle/)
+    end
+
+    it "has the part's history stand for its compound state's" do
+      expect(pending.history).to eq(pending::State.history)
+      expect(pending.history(deep: true)).to eq(pending::State.history(deep: true))
+    end
+
+    it "raises on the two-argument form, pointing to state Part" do
+      review = compound_part(owner, 'review')
+      expect { owner.state(:x, review) }
+        .to raise_error(Sourced::Machine::DefinitionError, /a state takes no part; a part is its own compound state, so mount it with state /)
+      expect { owner.started(:x, review) }.to raise_error(Sourced::Machine::DefinitionError, /mount it with state /)
+      expect { owner.state(:y) { region(:r) { state :x, review } } }.to raise_error(Sourced::Machine::DefinitionError, /mount it with state /)
+    end
+
+    it "can't be a final state" do
+      review = compound_part(owner, 'review')
+      expect { owner.final(review) }.to raise_error(Sourced::Machine::DefinitionError, /a final state can't be compound/)
+      expect { owner.final(review::State) }.to raise_error(Sourced::Machine::DefinitionError, /a final state can't be compound/)
+    end
+
+    it "raises when the owner's own state has a part's type, whichever comes first" do
+      clashing = stub_const('MachinePartsTest::ClashingOwner', Class.new(Sourced::Machine) { partition_by :payroll_id })
+      clashing.State(:review)
+      expect { compound_part(clashing, 'review') }
+        .to raise_error(Sourced::Machine::DefinitionError, /message type "machine_parts_test.clashing_owner.runtime.review" is already MachinePartsTest::ClashingOwner:review's/)
+
+      audit = compound_part(clashing, 'audit')
+      stub_const('MachinePartsTest::ClashingOwner::AuditPart', audit)
+      expect { clashing.State(:audit) }
+        .to raise_error(Sourced::Machine::DefinitionError, /message type "machine_parts_test.clashing_owner.runtime.audit" is already MachinePartsTest::ClashingOwner::AuditPart::State's/)
+    end
+
+    it 'raises when two parts placed by one machine have compound states of the same name' do
+      one = compound_part(owner, 'review')
+      two = compound_part(owner, 'audit.review')
+      owner.state(one)
+      expect { owner.state(:x) { region(:r) { state two } } }
+        .to raise_error(Sourced::Machine::DefinitionError, /compound state is named :review too/)
+    end
+
+    it 'is shared by placements in two regions, told apart by paths' do
+      review = compound_part(owner, 'review')
+      mounter = owner
+      wrapper = Class.new(described_class) do
+        part_of mounter, prefix: 'wrapper'
+        started(review) {}
+      end
+      owner.state(:both) do
+        region :left, wrapper
+        region :right, wrapper
+      end
+      owner.validate!
+
+      expect(owner.tree.placements(review::State).map(&:path)).to eq(%w[both.left.review both.right.review])
+      expect(owner.transition_classes.count(review::State)).to eq(1)
     end
   end
 
@@ -362,6 +519,15 @@ RSpec.describe Sourced::Machine::Part do
     before do
       router
       Sourced.handle!(payroll, payroll::Start.new(payload: keys), store:)
+    end
+
+    it "enters a part's compound state at the part's start, appending Part::State" do
+      entered = store.read_all(limit: 10).messages.last
+
+      expect(entered).to be_a(pending::State)
+      expect(pending::State === entered).to be(true)
+      expect(entered.payload.to_h).to include(payroll_id: 'p1', run: 1, target: 'pending', entered: %w[pending pending.queued])
+      expect(payroll.load(store:, **keys).value).to eq(pending::State => { pending::Queued => { check: :initial } })
     end
 
     it "decides a part's command with the owner's keys in its payload" do
@@ -376,7 +542,7 @@ RSpec.describe Sourced::Machine::Part do
     it 'decides commands of two parts with the same name apart' do
       Sourced.handle!(payroll, check::Accept.new(payload: keys), store:)
 
-      expect(payroll.load(store:, **keys).value).to eq(payroll::Pending => { pending::Queued => { check: check::Checked } })
+      expect(payroll.load(store:, **keys).value).to eq(pending::State => { pending::Queued => { check: check::Checked } })
     end
 
     it 'replays from the log through Sourced.load' do

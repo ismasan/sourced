@@ -17,7 +17,6 @@ module MachineTreeTest
     Placed = State(:placed)
     PaymentStarted = State(:started)
     PaymentCaptured = State(:captured)
-    Planning = State(:planning)
     Completed = State(:completed)
 
     # Mounted twice, as two regions.
@@ -36,11 +35,10 @@ module MachineTreeTest
     class PlanningMachine < Sourced::Machine::Part
       part_of OrderMachine
 
-      Itinerary = State(:itinerary)
       Finalised = State(:finalised)
     end
 
-    class OutlineMachine < Sourced::Machine::Part
+    class ItineraryMachine < Sourced::Machine::Part
       part_of PlanningMachine
 
       Outline = State(:outline)
@@ -51,13 +49,13 @@ module MachineTreeTest
     end
 
     class PlanningMachine
-      started(Itinerary, OutlineMachine) { on_final OutlineMachine::Agreed => Finalised }
+      started(ItineraryMachine) { on_final ItineraryMachine::Agreed => Finalised }
       final Finalised
     end
 
     initial do
       command PlaceOrder => Placed
-      command StartPlanning => Planning
+      command StartPlanning => PlanningMachine
     end
 
     state Placed do
@@ -71,7 +69,7 @@ module MachineTreeTest
       done Completed
     end
 
-    state Planning, PlanningMachine
+    state PlanningMachine
 
     final Completed
   end
@@ -164,7 +162,7 @@ RSpec.describe Sourced::Machine::Tree do
 
     it 'enters compound starts all the way down by default' do
       expect(tree.default_entry(at('planning')).map(&:path)).to eq(%w[planning planning.itinerary planning.itinerary.outline])
-      expect(tree.default_entry_paths(machine::Planning)).to eq(%w[planning planning.itinerary planning.itinerary.outline])
+      expect(tree.default_entry_paths(machine::PlanningMachine::State)).to eq(%w[planning planning.itinerary planning.itinerary.outline])
       expect(tree.default_entry(at('placed')).map(&:path)).to eq(%w[placed])
     end
   end

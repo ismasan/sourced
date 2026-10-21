@@ -5,17 +5,25 @@ module Sourced
     # A part of one machine's chart (its *owner*), defined in its own class so
     # a big machine can be split up. A part has the chart DSL ({Definition}),
     # and the owner's partition, messages and context; it's mounted only in its
-    # owner's chart (+state X, Part+ or +region :x, Part+), and never registered,
+    # owner's chart (+state Part+ or +region :x, Part+), and never registered,
     # instantiated or run on its own. It isn't a {Machine}: it has none of a
     # machine's own partition, consumer group, context, reactions or sync.
     #
+    # A part is its own compound state, +Part::State+ ({.to_state_handle}): +state Part+
+    # places it, mounting the part, and the part class stands for it wherever
+    # a state is taken (targets, +to+, +on_final+, +.history+).
+    #
     #   class Payroll
     #     class PendingMachine < Sourced::Machine::Part
-    #       part_of Payroll
+    #       part_of Payroll               # State: payroll.runtime.pending
     #
     #       Queued = State(:queued)       # payroll.runtime.pending.queued
     #       Process = Command(:process)   # payroll.pending.process, with Payroll's keys first
     #       # …
+    #     end
+    #
+    #     state PendingMachine do
+    #       on_final PendingMachine::Done => Paid
     #     end
     #   end
     #
@@ -28,6 +36,20 @@ module Sourced
 
       # @return [Class<Machine>, nil] the machine whose chart this is part of
       def self.owner = @owner
+
+      # The part's compound state, +Part::State+: typed
+      # +<owner's message_prefix>.runtime.<part_prefix>+, with the owner's
+      # partition keys, and named (in paths) after +part_prefix+'s last segment.
+      # Its +machine+ is the part; the machine placing it mounts the part.
+      # @return [Class<State>]
+      def self.to_state_handle = @handle || raise(DefinitionError, "#{self}: declare part_of first")
+
+      # A union of targets, as with states: +Part | Other+, +Part | nil+.
+      # @return [Targets]
+      def self.|(other) = Targets.new(members: [to_state_handle]) | other
+
+      # @see State.history
+      def self.history(deep: false) = to_state_handle.history(deep:)
 
       # Declare the machine this is a part of, before anything else. A part
       # given binds this part to its owner, and nests this part's prefix in its.
@@ -45,6 +67,7 @@ module Sourced
           raise DefinitionError, "#{self}: part_of takes a Sourced::Machine or a part, got #{owner.inspect}"
         end
         raise DefinitionError, "#{self}: a part can't be part of itself" if owner <= self
+        raise DefinitionError, "#{self}: State is already defined; a part's State is its compound state" if const_defined?(:State, false)
 
         if owner < Part
           raise DefinitionError, "#{self}: #{owner} has no part_of, so it's part of nothing yet" unless owner.owner
@@ -52,8 +75,15 @@ module Sourced
           @enclosing = owner
           owner = owner.owner
         end
+        raise DefinitionError, "#{self}: declare partition_by on #{owner} before its parts" if owner.partition_keys.empty?
+
         @owner = owner
         @part_prefix = prefix&.to_s
+        @handle = State.__generate(
+          "#{owner.message_prefix}.runtime.#{part_prefix}",
+          machine: self, state_name: part_prefix.split('.').last.to_sym, part: self
+        )
+        const_set(:State, @handle)
       end
 
       # The part's segment of its message and state types: +part_of+'s

@@ -143,7 +143,6 @@ module MachineChartTest
   class TourMachine < Sourced::Machine
     partition_by :trip_id
 
-    Planning = State(:planning)
     Reserving = State(:reserving)
     Confirmed = State(:confirmed)
 
@@ -165,11 +164,10 @@ module MachineChartTest
     class PlanningMachine < Sourced::Machine::Part
       part_of TourMachine
 
-      Itinerary = State(:itinerary)
       Finalised = State(:finalised)
     end
 
-    class OutlineMachine < Sourced::Machine::Part
+    class ItineraryMachine < Sourced::Machine::Part
       part_of PlanningMachine
 
       Outline = State(:outline)
@@ -184,14 +182,14 @@ module MachineChartTest
     end
 
     class PlanningMachine
-      started Itinerary, OutlineMachine do
+      started ItineraryMachine do
         command Finalise => Finalised
       end
       final Finalised
     end
 
-    initial { command Open => Planning }
-    state(Planning, PlanningMachine) { on_final PlanningMachine::Finalised => Reserving }
+    initial { command Open => PlanningMachine }
+    state(PlanningMachine) { on_final PlanningMachine::Finalised => Reserving }
     state Reserving do
       region :hotel, SupplierMachine
       region :flights, SupplierMachine, on_final: { SupplierMachine::Held => Confirmed }
@@ -324,7 +322,7 @@ module MachineChartTest
                                      machine: 'MachineChartTest::TourMachine::PlanningMachine')
         expect(itinerary[:on][t(:finalise)][:targets]).to eq(['planning.finalised'])
         expect(itinerary[:states].keys).to eq(%w[outline agreed])
-        expect(itinerary[:states]['agreed']).to include(id: 'planning.itinerary.agreed', machine: 'MachineChartTest::TourMachine::OutlineMachine')
+        expect(itinerary[:states]['agreed']).to include(id: 'planning.itinerary.agreed', machine: 'MachineChartTest::TourMachine::ItineraryMachine')
         expect(itinerary[:states]['agreed'][:on][t(:revise)][:targets]).to eq(['planning.itinerary.outline'])
       end
 

@@ -15,7 +15,6 @@ module GWTAtTest
     Noted = Event(:noted) { attribute :note, String }
 
     Placed = State(:placed)
-    Reviewing = State(:reviewing)
     Completed = State(:completed)
     Cancelled = State(:cancelled)
 
@@ -53,23 +52,22 @@ module GWTAtTest
     end
 
     # A compound state's part, starting at a compound state of its own.
-    class ReviewMachine < Sourced::Machine::Part
+    class ReviewingMachine < Sourced::Machine::Part
       part_of Order
 
       Approve = Command(:approve)
 
-      Drafting = State(:drafting)
       Approved = State(:approved)
 
-      class DraftMachine < Sourced::Machine::Part
-        part_of ReviewMachine
+      class DraftingMachine < Sourced::Machine::Part
+        part_of ReviewingMachine
 
         Blank = State(:blank)
 
         started(Blank) {}
       end
 
-      started Drafting, DraftMachine do
+      started DraftingMachine do
         command Approve => Approved
       end
 
@@ -78,7 +76,7 @@ module GWTAtTest
 
     initial do
       command Place => Placed
-      command Review => Reviewing
+      command Review => ReviewingMachine
     end
 
     state Placed do
@@ -88,7 +86,7 @@ module GWTAtTest
       done Completed
     end
 
-    state Reviewing, ReviewMachine
+    state ReviewingMachine
 
     final Completed
     final Cancelled
@@ -130,7 +128,7 @@ RSpec.describe 'GWT at' do
   let(:order) { GWTAtTest::Order }
   let(:payment) { order::PaymentMachine }
   let(:shipping) { order::ShippingMachine }
-  let(:review) { order::ReviewMachine }
+  let(:review) { order::ReviewingMachine }
   let(:tour) { GWTAtTest::Tour }
   let(:supplier) { tour::SupplierMachine }
 
@@ -172,7 +170,7 @@ RSpec.describe 'GWT at' do
   end
 
   it "enters a compound state's default sub-states" do
-    gwt = with_reactor(order, order_id: 'o1').at(order::Reviewing)
+    gwt = with_reactor(order, order_id: 'o1').at(order::ReviewingMachine)
 
     expect(gwt.history.last.payload.entered).to eq(['reviewing', 'reviewing.drafting', 'reviewing.drafting.blank'])
 

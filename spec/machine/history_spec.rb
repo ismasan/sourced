@@ -73,7 +73,7 @@ module MachineHistoryTest
     partition_by :doc_id
 
     # Mounted as a compound state.
-    class DraftMachine < Sourced::Machine::Part
+    class WorkingMachine < Sourced::Machine::Part
       part_of ProjectMachine
 
       Review = Command(:review)
@@ -86,12 +86,11 @@ module MachineHistoryTest
       state(Reviewing) { command Write => Writing }
     end
 
-    Working = State(:working)
     Paused = State(:paused)
 
-    initial { command Start => Working }
-    state(Working, DraftMachine) { command Pause => Paused }
-    state(Paused) { command Continue => Working.history }
+    initial { command Start => WorkingMachine }
+    state(WorkingMachine) { command Pause => Paused }
+    state(Paused) { command Continue => WorkingMachine.history }
   end
 end
 
@@ -196,11 +195,11 @@ RSpec.describe 'Sourced::Machine history' do
 
   it "restores a compound state's machine where it was" do
     project = MH::ProjectMachine
-    instance = decided(project, *cmds(MH::Start, project::DraftMachine::Review, MH::Pause))
+    instance = decided(project, *cmds(MH::Start, project::WorkingMachine::Review, MH::Pause))
     events = instance.decide(msg(MH::Continue))
 
     expect(events.last.payload.entered).to eq(%w[working working.reviewing])
-    expect(instance.machine.value).to eq(project::Working => project::DraftMachine::Reviewing)
+    expect(instance.machine.value).to eq(project::WorkingMachine::State => project::WorkingMachine::Reviewing)
   end
 
   it "rejects the history of a state without regions" do

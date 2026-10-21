@@ -62,14 +62,15 @@ module Sourced
       end
 
       # Declare where a parent starts this machine (with +Started+), without a
-      # command, or where a compound state mounting this part starts. With a
-      # part, the start is a compound state, entered at that part's own start.
-      # @param handle [State, Symbol]
-      def started(handle, machine = nil, &block)
+      # command, or where a compound state mounting this part starts. Given a
+      # part, the start is that part's compound state ({.state}).
+      # @param handle [State, Class<Part>, Symbol]
+      def started(handle, *rest, &block)
         raise DefinitionError, "#{self}: started is declared twice" if @start_state
 
+        __check_single_state!(handle, rest)
         @start_state = __handle(handle)
-        state(@start_state, machine, &block)
+        state(@start_state, &block)
       end
 
       # The machine's position before its first state.
@@ -77,10 +78,11 @@ module Sourced
 
       # Place a state, and declare the commands it accepts.
       #
-      # With a part ({Part}), the state is compound: its sub-states are that
-      # part's states, entered at its +started+ state:
+      # A part ({Part}) is its own compound state, +Part::State+: placing it
+      # (by the part or its handle) mounts the part, whose states are its
+      # sub-states, entered at the part's +started+ state:
       #
-      #   state Planning, PlanningPart do
+      #   state PlanningPart do
       #     on_final PlanningPart::Finalised => Reserving
       #   end
       #
@@ -88,42 +90,58 @@ module Sourced
       # The part's states are this machine's, its context this machine's; it
       # escalates through its root finals, which +on_final+ maps onto our states.
       #
-      # @param handle [State, Symbol] one of this machine's states; a Symbol declares it
-      # @param machine [Class<Part>, nil] a part with +started+, for a compound state
-      def state(handle, machine = nil, &block)
-        __define_state(root, handle, machine, &block)
+      # @param handle [State, Class<Part>, Symbol] one of this machine's states, or a part; a Symbol declares one
+      def state(handle, *rest, &block)
+        __check_single_state!(handle, rest)
+        __define_node(root, handle, final: false, &block)
       end
 
       # Place a final state. It accepts no commands.
       # @param handle [State, Symbol]
-      def final(handle, &block) = __define_node(root, __handle(handle), final: true, &block)
+      def final(handle, &block) = __define_node(root, handle, final: true, &block)
 
       private
 
-      def __define_state(region, handle, machine, &block)
-        handle = __handle(handle)
-        return __define_node(region, handle, final: false, &block) if machine.nil?
+      # A part mounts as its own compound state (+state Part+), not under another state.
+      def __check_single_state!(handle, rest)
+        return if rest.empty?
 
-        __check_mountable!("state #{handle}", machine)
-        raise DefinitionError, "#{self}: state #{handle}: #{machine} has no start state" unless machine.start_state
-
-        # Named after its state, so one part can be several compound states.
-        mount = __mount(handle.state_name, machine, compound: true)
-        __define_node(region, handle, final: false, mount:, &block)
+        raise DefinitionError,
+              "#{self}: state #{handle.inspect}, #{rest.map(&:inspect).join(', ')}: a state takes no part; " \
+              "a part is its own compound state, so mount it with state #{rest.first.inspect}"
       end
 
-      def __define_node(region, key, final:, mount: nil, &block)
-        key = __handle(key) unless key == INITIAL
+      def __define_node(region, key, final:, &block)
+        unless key == INITIAL
+          __check_mountable!("state #{key}", key) if Class === key && key < Machine
+          key = __handle(key)
+        end
         if region.nodes.key?(key) || nodes.key?(key)
           raise DefinitionError, "#{self}: #{key == INITIAL ? "#{region.label}'s initial position" : key} is placed twice"
         end
 
         node = Node.new(key, final:, region:)
+        node.regions << __mount_part(key.part, final:) if key != INITIAL && key.part
         region.nodes[key] = node
         nodes[key] = node unless key == INITIAL
-        node.regions << mount if mount
         NodeBuilder.new(self, node).instance_eval(&block) if block
         node
+      end
+
+      # A part's compound state mounts the part, named after the state.
+      def __mount_part(part, final:)
+        raise DefinitionError, "#{self}: final #{part}: a part is a compound state, and a final state can't be compound" if final
+
+        __check_mountable!("state #{part}", part)
+        raise DefinitionError, "#{self}: state #{part}: #{part} has no start state" unless part.start_state
+
+        name = part.to_state_handle.state_name
+        if (taken = mounts[name]) && taken.compound?
+          raise DefinitionError,
+                "#{self}: state #{part}: #{taken.machine}'s compound state is named #{name.inspect} too; give one of them another prefix:"
+        end
+
+        __mount(name, part, compound: true)
       end
 
       def __define_region(node, name, &block)
@@ -253,10 +271,13 @@ module Sourced
       end
 
       # One of this machine's states. A Symbol names one, declaring it
-      # unless +declare+ is false.
+      # unless +declare+ is false. A part stands for its compound state,
+      # which any machine of the part's owner's chart can place.
       def __handle(target, declare: true)
+        target = Machine.state_handle(target)
         case target
         in Class if Machine.handle?(target) && target.machine == self then target
+        in Class if Machine.handle?(target) && target.part&.owner.equal?(__chart_owner) then target
         in Class if Machine.handle?(target)
           raise DefinitionError, "#{self}: #{target} is #{target.machine}'s state, not #{self}'s"
         in Symbol | String if declare then __name_declared(State(target))
@@ -317,8 +338,9 @@ module Sourced
 
       # Where a transition may go: one of our states, or one of a mounted
       # part's, below the state that declares it (checked on validation),
-      # or a {History} of one.
+      # or a {History} of one. A part stands for its compound state.
       def __target(target, declare: true)
+        target = Machine.state_handle(target)
         case target
         in History then target
         in Class if Machine.handle?(target) then target
