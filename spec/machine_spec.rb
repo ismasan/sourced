@@ -353,6 +353,22 @@ RSpec.describe Sourced::Machine do
   end
 
   describe 'command forms' do
+    it 'declares a command through to_message_class' do
+      machine = Class.new(Sourced::Machine) do
+        partition_by :cart_id
+        consumer_group 'machine_test_declared_command'
+      end
+      go = machine.Command(:go)
+      declared = Object.new.tap { |obj| obj.define_singleton_method(:to_message_class) { go } }
+      done = machine.State(:done)
+      machine.initial { command declared => done }
+
+      expect(machine.root.initial_node.commands.keys).to eq([go])
+      expect { machine.state(:z) { command 42 => done } }.to raise_error(NoMethodError, /to_message_class/)
+      expect { machine.state(:y) { command go => done, OpenCart => done } }
+        .to raise_error(Sourced::Machine::DefinitionError, /invalid command declaration/)
+    end
+
     it 'moves to a single declared state, after the data events its block appends' do
       with_reactor(CartMachine, cart_id: 'c1')
         .when(OpenCart, cart_id: 'c1', currency: 'EUR', channel: 'app')

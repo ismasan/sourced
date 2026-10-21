@@ -303,19 +303,16 @@ module Sourced
 
       # @param what [String] the macro declaring it, for errors: +command+ or +on+
       def __command_definition(declaration, block, what: 'command', starts: nil)
-        command_class, targets =
+        declared, targets =
           case declaration
           in Hash if declaration.size == 1
             [declaration.keys.first, __flatten_targets(declaration.values.first)]
-          in Class
-            [declaration, [nil]]
-          else
+          in Hash
             raise DefinitionError, "#{self}: invalid #{what} declaration #{declaration.inspect}"
+          else
+            [declaration, [nil]]
           end
-
-        unless command_class in Class and command_class < Sourced::Message
-          raise DefinitionError, "#{self}: #{what} takes a message class, got #{command_class.inspect}"
-        end
+        command_class = declared.to_message_class
         starts = __starts(starts, block, "#{what} #{command_class}")
         if block.nil? && (targets.size > 1 || (targets == [nil] && starts.empty?))
           raise DefinitionError,
