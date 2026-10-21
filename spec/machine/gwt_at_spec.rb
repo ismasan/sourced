@@ -250,7 +250,7 @@ RSpec.describe 'GWT at' do
       expect { gwt.at(supplier::Holding) }.to raise_error(ArgumentError, /Holding isn't placed in it/)
       expect { gwt.at('placed.nowhere') }.to raise_error(ArgumentError, /no state at "placed.nowhere"/)
       expect { gwt.at('placed.payment.initial') }.to raise_error(ArgumentError, /is an initial position, not a state/)
-      expect { gwt.at(order::Cancel) }.to raise_error(ArgumentError, /takes a state or a state's path/)
+      expect { gwt.at(order::Cancel) }.to raise_error(NoMethodError, /to_state_handle/)
     end
 
     it 'raises after when, and after then' do

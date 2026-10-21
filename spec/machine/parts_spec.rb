@@ -451,7 +451,7 @@ RSpec.describe Sourced::Machine::Part do
       expect(owner.root.initial_node.commands[go].targets).to eq([review::State])
       nope = owner.Command(:nope)
       expect { owner.state(:z) { command nope => Object.new } }
-        .to raise_error(Sourced::Machine::DefinitionError, /isn't a state: it doesn't respond to to_state_handle/)
+        .to raise_error(NoMethodError, /to_state_handle/)
     end
 
     it "has the part's history stand for its compound state's" do
@@ -508,6 +508,45 @@ RSpec.describe Sourced::Machine::Part do
 
       expect(owner.tree.placements(review::State).map(&:path)).to eq(%w[both.left.review both.right.review])
       expect(owner.transition_classes.count(review::State)).to eq(1)
+    end
+  end
+
+  describe 'as a handler declaration' do
+    let(:keys) { { payroll_id: 'p1', run: 1 } }
+
+    def decided
+      instance = payroll.new(keys)
+      instance.decide(payroll::Start.new(payload: keys)) +
+        instance.decide(pending::Accept.new(payload: { **keys, by: 'joe' }))
+    end
+
+    it 'resolves to Part::State through to_message_class' do
+      expect(pending.to_message_class).to be(pending::State)
+    end
+
+    it "evolves only transitions to the part's compound state, not those straight to its sub-states" do
+      projection = Class.new(Sourced::Projection) do
+        context { [] }
+        evolve(MachinePartsTest::Payroll::PendingMachine) { |context, evt| context << evt.payload.entered }
+      end
+      events = decided
+
+      expect(projection.handled_messages).to eq([pending::State])
+      expect(events.map(&:class)).to include(pending::State, pending::Approved)
+      expect(projection.new.evolve(events)).to eq([%w[pending pending.queued]])
+    end
+
+    it 'subscribes a projector evolving and reacting to a part to Part::State' do
+      projector = Class.new(Sourced::Projector::StateStored) do
+        partition_by :payroll_id
+        consumer_group 'parts_handler_projector'
+        evolve(MachinePartsTest::Payroll::PendingMachine) { |context, _evt| context }
+        reaction(MachinePartsTest::Payroll::PendingMachine) { |_context, _evt| nil }
+      end
+
+      expect(projector.handled_messages).to eq([pending::State])
+      expect(projector.handled_messages_for_react).to eq([pending::State])
+      expect(projector.new(payroll_id: 'p1').reacts_to?(decided.first)).to be(true)
     end
   end
 

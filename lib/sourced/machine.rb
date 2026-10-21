@@ -212,17 +212,10 @@ module Sourced
     # are returned as they are, for their own branches.
     # @param value [Object]
     # @return [Class<State>, Symbol, String, History, Targets, nil]
-    # @raise [DefinitionError] if +value+ stands for no state
     def self.state_handle(value)
       case value
       in Symbol | String | nil | History | Targets then value
-      else
-        raise DefinitionError, "#{value.inspect} isn't a state: it doesn't respond to to_state_handle" unless value.respond_to?(:to_state_handle)
-
-        handle = value.to_state_handle
-        raise DefinitionError, "#{value.inspect}.to_state_handle returned #{handle.inspect}, not a state handle" unless handle?(handle)
-
-        handle
+      else value.to_state_handle
       end
     end
 
@@ -238,12 +231,7 @@ module Sourced
         case other
         in Targets then with(members: members | other.members)
         in nil | History then with(members: members | [other])
-        else
-          unless other.respond_to?(:to_state_handle)
-            raise DefinitionError, "#{self} | #{other.inspect}: a union of states takes states, histories or nil"
-          end
-
-          with(members: members | [Machine.state_handle(other)])
+        else with(members: members | [other.to_state_handle])
         end
       end
 
@@ -1144,7 +1132,7 @@ module Sourced
       # @return [Array<Array(Array<Object>, Sourced::Message)>] action/source pairs
       def handle_batch(partition_values, new_messages, history:, replaying: false)
         types = handled_messages_for_evolve
-        evolvable = new_messages.select { |msg| types.include?(msg.class) }
+        evolvable = new_messages.select { |msg| types.include?(msg.to_message.class) }
         __process(partition_values, new_messages, history.messages + evolvable, guard: history.guard, replaying:)
       end
 
@@ -1407,7 +1395,7 @@ module Sourced
         instance.evolve(full_history)
 
         each_with_partial_ack(messages) do |msg|
-          if __handled_command?(msg.class)
+          if __handled_command?(msg.to_message.class)
             next [Actions::OK, msg] unless instance.handles_command?(msg)
 
             events = instance.decide(msg)
@@ -1418,7 +1406,7 @@ module Sourced
               { events: appended }
             end
             [actions, msg]
-          elsif __handled_event?(msg.class) && instance.should_react?(instance.context, msg, replaying:)
+          elsif __handled_event?(msg.to_message.class) && instance.should_react?(instance.context, msg, replaying:)
             # Decided once, when claimed: replaying evolves what it decided.
             decided = instance.__decide_on(msg)
             actions = Actions.build_for(decided, guard:, source: msg)
@@ -1427,12 +1415,12 @@ module Sourced
               { events: appended.first(decided.size) }
             end
             [actions, msg]
-          elsif (__transition_class?(msg.class) || child_event?(msg.class) || instance.reacts_to?(msg)) &&
+          elsif (__transition_class?(msg.to_message.class) || child_event?(msg.to_message.class) || instance.reacts_to?(msg)) &&
                 instance.should_react?(instance.context, msg, replaying:)
             # A child finishing can complete a join or map onto one of our
             # states, and being started can enter a state that starts
             # a child of our own: decided here, under the guard.
-            joins = child_event?(msg.class) || __started?(msg) ? instance.__decide_eventless : NONE
+            joins = child_event?(msg.to_message.class) || __started?(msg) ? instance.__decide_eventless : NONE
             actions = Actions.build_for(joins, guard:, source: msg)
             actions += Actions.build_for(instance.__react(msg), source: msg)
             # The joins are the pair's first appends; what reactions dispatch isn't decided events.
@@ -1446,7 +1434,7 @@ module Sourced
         end
       end
 
-      def __started?(msg) = msg.class.equal?(@__started_class)
+      def __started?(msg) = msg.to_message.class.equal?(@__started_class)
     end
 
     # The attributes of a transition: what moved the machine, and the paths it
@@ -1486,7 +1474,7 @@ module Sourced
     # +evolve+ handler updates the domain context.
     def evolve(messages)
       Array(messages).each do |msg|
-        @runtime.apply(msg) if self.class.__transition_class?(msg.class)
+        @runtime.apply(msg) if self.class.__transition_class?(msg.to_message.class)
         track_child(msg)
         super([msg])
         __region_projections.each { |region_projection| region_projection.evolve([msg]) }
@@ -1539,7 +1527,7 @@ module Sourced
 
       deciding do
         handlers.each do |node|
-          run_handler(node, node.commands.fetch(command.class), command) if @runtime.active_node?(node)
+          run_handler(node, node.commands.fetch(command.to_message.class), command) if @runtime.active_node?(node)
         end
         append_eventless
       end
@@ -1577,7 +1565,7 @@ module Sourced
 
       deciding do
         handlers.each do |node|
-          run_handler(node, node.ons.fetch(event.class), event) if @runtime.active_node?(node)
+          run_handler(node, node.ons.fetch(event.to_message.class), event) if @runtime.active_node?(node)
         end
         append_eventless
       end
@@ -1616,7 +1604,7 @@ module Sourced
     # @return [Array<Sourced::Message>] dispatched messages
     def __react(msg)
       __handling_reactions([msg]) do |message|
-        if self.class.__transition_class?(message.class)
+        if self.class.__transition_class?(message.to_message.class)
           tree = self.class.tree
           message.payload.exited.each do |path|
             left = tree.node_at(path, message)
@@ -1631,7 +1619,7 @@ module Sourced
           entered.flat_map(&:stops).uniq.each { |child| stop_children(child, at: nil) }
         end
 
-        method_name = self.class.reaction_handlers[message.class]
+        method_name = self.class.reaction_handlers[message.to_message.class]
         method_name ? Array(send(method_name, context, message)).compact : EMPTY_ARRAY
       end
     end
@@ -1690,7 +1678,7 @@ module Sourced
     # The deepest active states accepting +message+, in definition order.
     # @param kind [Symbol] +:commands+ or +:ons+
     def handlers_for(message, kind = :commands)
-      accepting = @runtime.active_nodes.select { |node| node.public_send(kind).key?(message.class) }
+      accepting = @runtime.active_nodes.select { |node| node.public_send(kind).key?(message.to_message.class) }
       accepting.reject { |node| accepting.any? { |other| other.descendant_of?(node) } }
     end
 
@@ -1797,7 +1785,7 @@ module Sourced
     # child), then its transition, to the state the block chose with
     # {#to}, or else its only declared one.
     def run_handler(node, definition, message)
-      what = message ? message.class.to_s : definition.command_class
+      what = message ? message.to_message.class.to_s : definition.command_class
       @handler = { node:, what:, starts: definition.starts, started: 0 }
       if definition.block
         instance_exec(context, message, &definition.block)
@@ -1871,11 +1859,11 @@ module Sourced
     def child_keys(child, msg) = msg.payload.to_h.slice(*(child.partition_keys - self.class.partition_keys))
 
     def track_child(msg)
-      child = self.class.tree.child_for(msg.class)
+      child = self.class.tree.child_for(msg.to_message.class)
       return unless child
 
       keys = child_keys(child, msg)
-      if msg.instance_of?(child::Started)
+      if msg.to_message.instance_of?(child::Started)
         at = msg.payload.parent_state
         @runtime.track_child(child, keys, state: child.start_state, final: false, at:, entry_id: at && invoking_entry(at, msg))
       else
@@ -1894,7 +1882,7 @@ module Sourced
       @runtime.children(child).each { |ref| dispatch(child::Stop, ref.keys) if ref.at == at && !ref.final? }
     end
 
-    def stop_command?(command) = self.class.stop_state && command.instance_of?(self.class::Stop)
+    def stop_command?(command) = self.class.stop_state && command.to_message.instance_of?(self.class::Stop)
 
     # +Stop+ applies once the machine has started, until it's final.
     def stoppable?
