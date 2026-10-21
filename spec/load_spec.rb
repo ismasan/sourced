@@ -347,4 +347,24 @@ RSpec.describe 'Sourced.load' do
       expect(read_result.messages).to be_empty
     end
   end
+
+  describe 'missing partition values' do
+    it 'raises for a nil partition value' do
+      expect {
+        Sourced.load(LoadTestDecider, store: store, course_id: 'algebra', student_id: nil)
+      }.to raise_error(Sourced::MissingPartitionKeyError, /LoadTestDecider.*\[:student_id\]/)
+    end
+
+    it 'raises for a partition key that is not given' do
+      expect {
+        Sourced.load(LoadTestDecider, store: store, course_id: 'algebra')
+      }.to raise_error(Sourced::MissingPartitionKeyError, /\[:student_id\]/)
+    end
+
+    it 'raises for a nil value when loading a Projection' do
+      expect {
+        Sourced.load(LoadTestProjection, store: store, course_id: nil)
+      }.to raise_error(Sourced::MissingPartitionKeyError, /LoadTestProjection.*\[:course_id\]/)
+    end
+  end
 end
