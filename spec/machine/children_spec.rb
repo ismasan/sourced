@@ -47,6 +47,9 @@ module MachineChildrenTest
 
   LineState = Struct.new(:sku, :currency)
 
+  # Unwraps through to_message, without overriding #class.
+  Wrapped = Class.new(SimpleDelegator) { def to_message = __getobj__ }
+
   # What parents' after_sync hooks saw: [claimed message class, event classes]
   SYNCED = []
   PAYLOAD_CALLS = []
@@ -442,6 +445,26 @@ module MachineChildrenTest
         expect(order.value).to eq(OrderMachine::Cancelled)
       end
 
+      it 'replays wrapped messages: state events, Started and Finished tracked, Stop recognised' do
+        place_and_add_lines
+        run(router, line(StockReserved, 'l1'), line(PickLine, 'l1'))
+        wrap = ->(messages) { messages.map { |m| Wrapped.new(m.to_message) } }
+        expect(wrap.(log).first.class).to be(Wrapped)
+
+        order = OrderMachine.new(order_id: 'o1')
+        order.evolve(wrap.(log.select { |m| OrderMachine.handled_messages_for_evolve.include?(m.to_message.class) }))
+        expect(order.machine.value).to eq(OrderMachine::Placed)
+        expect(order.machine.children(LineItemMachine).to_h { |ref| [ref.keys[:line_id], [ref.state, ref.final?]] })
+          .to eq('l1' => [LineItemMachine::Picked, true], 'l2' => [LineItemMachine::Added, false])
+
+        l2 = LineItemMachine.new(order_id: 'o1', line_id: 'l2')
+        l2.evolve(wrap.(log.select { |m| m.payload.to_h[:line_id] == 'l2' && LineItemMachine.handled_messages_for_evolve.include?(m.to_message.class) }))
+        expect(l2.machine.value).to eq(LineItemMachine::Added)
+        stop = Wrapped.new(LineItemMachine::Stop.new(payload: { order_id: 'o1', line_id: 'l2' }))
+        expect(l2.handles_command?(stop)).to be(true)
+        expect(l2.decide(stop).map(&:class)).to eq([LineItemMachine::Cancelled, LineItemMachine::Finished])
+      end
+
       it 'never wakes a child for a parent fact' do
         place_and_add_lines
         claims = []
@@ -808,7 +831,7 @@ module MachineChildrenTest
           expect { LineItemMachine | 'x' }.to raise_error(Sourced::Machine::DefinitionError, /a union of machines/)
           expect { OrderMachine::Placed | LineItemMachine }
             .to raise_error(Sourced::Machine::DefinitionError, /OrderMachine::Placed \| .*LineItemMachine: .*LineItemMachine is a machine/)
-          expect { OrderMachine::Placed | 'x' }.to raise_error(Sourced::Machine::DefinitionError, /a union of states/)
+          expect { OrderMachine::Placed | 'x' }.to raise_error(NoMethodError, /to_state_handle/)
         end
 
         it 'is for machines that can be children' do

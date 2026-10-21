@@ -293,7 +293,6 @@ module Sourced
 
         def placement(target)
           tree = @reactor_class.tree
-          target = target.to_state_handle if target.respond_to?(:to_state_handle)
           case target
           in String
             node = begin
@@ -304,16 +303,15 @@ module Sourced
             raise ArgumentError, "#{@reactor_class}: #{target.inspect} is an initial position, not a state" if node.initial?
 
             node
-          in Class if target < Sourced::Machine::State
-            case tree.placements(target)
-            in [] then raise ArgumentError, "#{@reactor_class}: #{target} isn't placed in it"
+          else
+            handle = target.to_state_handle
+            case tree.placements(handle)
+            in [] then raise ArgumentError, "#{@reactor_class}: #{handle} isn't placed in it"
             in [node] then node
             in nodes
               raise ArgumentError,
-                    "#{@reactor_class}: #{target} is placed at #{nodes.map(&:path).join(', ')}; pass at the path of one"
+                    "#{@reactor_class}: #{handle} is placed at #{nodes.map(&:path).join(', ')}; pass at the path of one"
             end
-          else
-            raise ArgumentError, "#{@reactor_class}: at takes a state or a state's path, got #{target.inspect}"
           end
         end
 

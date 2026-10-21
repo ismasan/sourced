@@ -44,6 +44,12 @@ module Sourced
       # @return [Class<State>]
       def self.to_state_handle = @handle || raise(DefinitionError, "#{self}: declare part_of first")
 
+      # Handler declarations (+evolve Part+, +reaction Part+) name the part's
+      # compound state event, appended only by transitions that target the part
+      # itself, not by those straight to one of its sub-states.
+      # @return [Class<State>]
+      def self.to_message_class = to_state_handle
+
       # A union of targets, as with states: +Part | Other+, +Part | nil+.
       # @return [Targets]
       def self.|(other) = Targets.new(members: [to_state_handle]) | other
@@ -112,14 +118,14 @@ module Sourced
       # +evolve+ blocks do. One block per message class across the owner and
       # its parts (checked when the owner is validated, which locks it).
       #
-      # @param message_class [Class<Sourced::Message>]
+      # @param declared [Class<Sourced::Message>, #to_message_class]
       # @yield [context, message]
-      def self.evolve(message_class, &block)
+      def self.evolve(declared, &block)
         __owner!
         raise DefinitionError, "#{self}: evolve declared after #{owner} was validated" if @__locked
-        raise DefinitionError, "#{self}: evolve #{message_class} needs a block" unless block
+        raise DefinitionError, "#{self}: evolve #{declared} needs a block" unless block
 
-        projection_class.evolve(message_class, &block)
+        projection_class.evolve(declared, &block)
       end
 
       # The part's evolve blocks, which its owner runs on its context.
