@@ -26,10 +26,11 @@ module Sourced
 
       # Register a command handler.
       #
-      # @param message_class [Class] commands class to handle
+      # @param declared [Class, #to_message_class] command class to handle (see {Sourced::Message.to_message_class})
       # @yield [context, message] command handler block
       # @return [void]
-      def command(message_class, &block)
+      def command(declared, &block)
+        message_class = declared.to_message_class
         handled_commands << message_class
         define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
       end
@@ -91,7 +92,7 @@ module Sourced
         instance.evolve(history.messages)
 
         each_with_partial_ack(new_messages) do |msg|
-          if handled_commands.include?(msg.class)
+          if handled_commands.include?(msg.to_message.class)
             next [Actions::OK, msg] unless instance.handles_command?(msg)
 
             raw_events = instance.decide(msg)
@@ -172,7 +173,7 @@ module Sourced
     # @param command [Sourced::Message]
     # @return [Boolean]
     def handles_command?(command)
-      self.class.handled_commands.include?(command.class)
+      self.class.handled_commands.include?(command.to_message.class)
     end
 
     # Decide a command against the decider's current in-memory context.
@@ -181,7 +182,7 @@ module Sourced
     # @return [Array<Sourced::Message>] newly produced events
     def decide(command)
       @uncommitted_events = []
-      method_name = Sourced.message_method_name(PREFIX, command.class.to_s)
+      method_name = Sourced.message_method_name(PREFIX, command.to_message.class.to_s)
       send(method_name, context, command) if respond_to?(method_name)
       @uncommitted_events.dup
     end

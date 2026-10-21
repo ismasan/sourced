@@ -20,7 +20,7 @@ module Sourced
     def react(messages)
       handlers = self.class.reaction_handlers
       __handling_reactions(Array(messages)) do |message|
-        method_name = handlers[message.class]
+        method_name = handlers[message.to_message.class]
         method_name ? Array(send(method_name, context, message)).compact : EMPTY_ARRAY
       end
     end
@@ -31,7 +31,7 @@ module Sourced
     # @param message [Sourced::Message]
     # @return [Boolean]
     def reacts_to?(message)
-      self.class.handled_messages_for_react.include?(message.class)
+      self.class.handled_messages_for_react.include?(message.to_message.class)
     end
 
     # Whether a registered reaction should actually run for +message+.
@@ -155,8 +155,10 @@ module Sourced
 
       # Register a reaction handler for one or more messages types.
       #
-      # Accepts one or more message classes, or no arguments for a
+      # Accepts one or more message classes (or objects whose +to_message_class+
+      # returns one, see {Sourced::Message.to_message_class}), or no arguments for a
       # catch-all reaction across all evolve types without an explicit handler.
+      # Handlers are looked up by +message.to_message.class+.
       #
       # @example React to a specific event class
       #   reaction StudentEnrolled do |context, event|
@@ -177,19 +179,15 @@ module Sourced
             reaction(message_class, &block)
           end
 
-        in [Class => message_class] if message_class < Sourced::Message
+        in [_, _, *] => values
+          values.each { |value| reaction(value, &block) }
+        in [declared]
+          message_class = declared.to_message_class
           __validate_message_for_reaction!(message_class)
           handled_messages_for_react << message_class
           if block_given?
             reaction_handlers[message_class] = define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
           end
-        in [_, _, *] => values
-          values.each { |value| reaction(value, &block) }
-        else
-          raise(
-            ArgumentError,
-            "Invalid arguments #{args.inspect} for #{self}.reaction"
-          )
         end
       end
 

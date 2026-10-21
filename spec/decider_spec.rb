@@ -147,6 +147,26 @@ RSpec.describe Sourced::Decider do
       expect(events.size).to eq(1)
       expect(events.first).to be_a(DeciderTestMessages::DeviceBound)
     end
+
+    it 'takes anything whose to_message_class is a message class, and decides that class, wrapped or not' do
+      declared = Object.new
+      declared.define_singleton_method(:to_message_class) { DeciderTestMessages::NotifyBound }
+      decider = Class.new(Sourced::Decider) do
+        partition_by :device_id
+        command(declared) { |_context, cmd| event DeciderTestMessages::DeviceRegistered, device_id: cmd.payload.device_id }
+      end
+      cmd = DeciderTestMessages::NotifyBound.new(payload: { device_id: 'd1' })
+      wrapped = Struct.new(:to_message) { def payload = to_message.payload }.new(cmd)
+
+      expect(decider.handled_commands).to eq([DeciderTestMessages::NotifyBound])
+      expect(decider.new.handles_command?(wrapped)).to be(true)
+      expect(decider.new.decide(wrapped).map(&:class)).to eq([DeciderTestMessages::DeviceRegistered])
+    end
+
+    it 'takes only what answers to_message_class' do
+      expect { Class.new(Sourced::Decider) { command(:bind) {} } }
+        .to raise_error(NoMethodError, /to_message_class/)
+    end
   end
 
   describe '#event inside command handler' do
