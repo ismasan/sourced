@@ -738,8 +738,8 @@ Command forms:
 | Form | Block | Transition |
 |---|---|---|
 | `command Cmd => A` | optional: data events, raise to reject | to `A` (unless the block calls `to`) |
-| `command Cmd => A \| B do … end` | required | to whichever the block passes to `to` |
-| `command Cmd => A \| nil do … end` | required | to `A` if the block calls `to(A)`, else stays put |
+| `command Cmd => A | B do … end` | required | to whichever the block passes to `to` |
+| `command Cmd => A | nil do … end` | required | to `A` if the block calls `to(A)`, else stays put |
 | `command Cmd do … end` | required | data only: same as `=> nil` |
 
 Targets can be unions (`A | B | nil`, `nil` last) or Arrays (`[:a, :b, nil]`). `to` picks the target; `event` only appends data events, and raises for a state class. A handler moves the machine at most once, to a declared target, or raises `Sourced::Machine::TransitionError`. Partition keys are filled in on every event a machine emits and every message it dispatches.
@@ -840,8 +840,8 @@ end
 | Declaration | With a block | Without a block |
 |---|---|---|
 | `starts: A` | at least one `A` | exactly one `A`, from the message |
-| `starts: A \| B` | at least one of them | `DefinitionError` (which one?) |
-| `starts: A \| nil` | any number of `A` | `DefinitionError` (nothing decides) |
+| `starts: A | B` | at least one of them | `DefinitionError` (which one?) |
+| `starts: A | nil` | any number of `A` | `DefinitionError` (nothing decides) |
 
 Without a block, the child's keys are the message's attributes named by its partition keys, and its `input` the rest of the payload, without either machine's keys (the message must declare the child's keys beyond the parent's). `stops Child` in a state's block sends `Stop` to every running child of that machine when the state is entered; some handler must declare `starts: Child`. `children_done Child => Target` moves the parent once every started child of that machine is final.
 
