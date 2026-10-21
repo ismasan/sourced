@@ -1250,8 +1250,21 @@ module Sourced
 
         tree.all_regions.each { |region| __check_mount!(tree, region) if region.mount }
         tree.children.each { |child| __check_child!(child) }
+        __check_part_prefixes!(tree)
         __check_part_evolves!(tree)
         PartitionSchema.check!(self, error: DefinitionError)
+      end
+
+      # A part's prefix makes its message and state types: two parts sharing
+      # one would claim the same types (anonymous ones without the registry
+      # noticing).
+      def __check_part_prefixes!(tree)
+        tree.mounted_machines.group_by(&:part_prefix).each do |prefix, parts|
+          next if parts.size < 2
+
+          raise DefinitionError,
+                "#{self}: #{parts.join(' and ')} share the part prefix #{prefix.inspect}, so their messages and states would have the same types"
+        end
       end
 
       # A part's evolve blocks are ours: one per message class, across us and our parts.
