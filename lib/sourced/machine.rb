@@ -1395,7 +1395,8 @@ module Sourced
         instance.evolve(full_history)
 
         each_with_partial_ack(messages) do |msg|
-          if __handled_command?(msg.to_message.class)
+          klass = msg.to_message.class
+          if __handled_command?(klass)
             next [Actions::OK, msg] unless instance.handles_command?(msg)
 
             events = instance.decide(msg)
@@ -1406,7 +1407,7 @@ module Sourced
               { events: appended }
             end
             [actions, msg]
-          elsif __handled_event?(msg.to_message.class) && instance.should_react?(instance.context, msg, replaying:)
+          elsif __handled_event?(klass) && instance.should_react?(instance.context, msg, replaying:)
             # Decided once, when claimed: replaying evolves what it decided.
             decided = instance.__decide_on(msg)
             actions = Actions.build_for(decided, guard:, source: msg)
@@ -1415,12 +1416,12 @@ module Sourced
               { events: appended.first(decided.size) }
             end
             [actions, msg]
-          elsif (__transition_class?(msg.to_message.class) || child_event?(msg.to_message.class) || instance.reacts_to?(msg)) &&
+          elsif (__transition_class?(klass) || child_event?(klass) || instance.reacts_to?(msg)) &&
                 instance.should_react?(instance.context, msg, replaying:)
             # A child finishing can complete a join or map onto one of our
             # states, and being started can enter a state that starts
             # a child of our own: decided here, under the guard.
-            joins = child_event?(msg.to_message.class) || __started?(msg) ? instance.__decide_eventless : NONE
+            joins = child_event?(klass) || klass.equal?(@__started_class) ? instance.__decide_eventless : NONE
             actions = Actions.build_for(joins, guard:, source: msg)
             actions += Actions.build_for(instance.__react(msg), source: msg)
             # The joins are the pair's first appends; what reactions dispatch isn't decided events.
@@ -1433,8 +1434,6 @@ module Sourced
           end
         end
       end
-
-      def __started?(msg) = msg.to_message.class.equal?(@__started_class)
     end
 
     # The attributes of a transition: what moved the machine, and the paths it
