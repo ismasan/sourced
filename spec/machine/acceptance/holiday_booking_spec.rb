@@ -180,14 +180,14 @@ module MachineAcceptanceHoliday
       events = trip.decide(request)
 
       expect(moves(events)).to eq([['acceptance_holidays.request_tour', %w[planning planning.itinerary planning.itinerary.outlining]]])
-      expect(trip.machine.value).to eq(TourBooking::Planning => { PlanningMachine::Itinerary => ItineraryMachine::Outlining })
+      expect(trip.machine.value).to eq(PlanningMachine::State => { ItineraryMachine::State => ItineraryMachine::Outlining })
       expect(trip.__react(events.last).map(&:class)).to eq([StartPlannerChat, ShareItinerary])
     end
 
     it 'prices through a transient state, by its guards' do
       expect(moves(tour(request).decide(msg(PriceItinerary))).last).to eq(['always', %w[planning.itinerary.outlining]])
       expect(moves(tour(*quoted[0..1]).decide(msg(PriceItinerary))).last).to eq(['always', %w[planning.itinerary.quoted]])
-      expect(tour(*over_budget).machine.value).to eq(TourBooking::Planning => { PlanningMachine::Itinerary => ItineraryMachine::AwaitingSignOff })
+      expect(tour(*over_budget).machine.value).to eq(PlanningMachine::State => { ItineraryMachine::State => ItineraryMachine::AwaitingSignOff })
       expect(tour(*over_budget, msg(SignOffBudget)).machine.in?(ItineraryMachine::Quoted)).to be(true)
     end
 
@@ -343,7 +343,7 @@ module MachineAcceptanceHoliday
         expect(deliver_timers(after: PAUSE_SECONDS + 1)).to eq(3)
         expect(types).to include(CancelTour)
         expect(snapshot.context.reminders).to eq(1)
-        expect(snapshot.value).to eq(TourBooking::Planning => { PlanningMachine::Itinerary => ItineraryMachine::Quoted })
+        expect(snapshot.value).to eq(PlanningMachine::State => { ItineraryMachine::State => ItineraryMachine::Quoted })
       end
     end
   end

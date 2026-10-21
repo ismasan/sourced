@@ -546,7 +546,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
           Sourced::Machine::DefinitionError,
           /region :payment: can't mount MachineMountsTest::Mounted, a Sourced::Machine: .*Sourced::Machine::Part \(part_of MachineMountsSpecParent\).*child \(start, starts:\)/
         )
-      expect { machine { state(:other, mounted) } }
+      expect { machine { state(mounted) } }
         .to raise_error(Sourced::Machine::DefinitionError, /can't mount MachineMountsTest::Mounted, a Sourced::Machine/)
     end
 

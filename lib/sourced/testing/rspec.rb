@@ -293,6 +293,7 @@ module Sourced
 
         def placement(target)
           tree = @reactor_class.tree
+          target = target.to_state_handle if target.respond_to?(:to_state_handle)
           case target
           in String
             node = begin

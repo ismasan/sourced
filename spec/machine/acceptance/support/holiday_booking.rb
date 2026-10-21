@@ -331,10 +331,9 @@ module MachineAcceptanceHoliday
   class PlanningMachine < Sourced::Machine::Part
     part_of TourBooking, prefix: 'planning'
 
-    Itinerary = State(:itinerary)
     Agreed = State(:agreed)
 
-    started Itinerary, ItineraryMachine do
+    started ItineraryMachine do
       on_final ItineraryMachine::Accepted => Agreed
       entry { |_tour, _evt| dispatch ShareItinerary }
     end
@@ -406,7 +405,6 @@ module MachineAcceptanceHoliday
   end
 
   class TourBooking
-    Planning = State(:planning)
     OnHold = State(:on_hold)
     Reserving = State(:reserving)
     DepositPaid = State(:deposit_paid)
@@ -431,12 +429,12 @@ module MachineAcceptanceHoliday
     evolve(SeatsTicketed) { |tour, evt| tour.pnr = evt.payload.pnr }
 
     initial do
-      command RequestTour => Planning do |_tour, cmd|
+      command RequestTour => PlanningMachine do |_tour, cmd|
         event TourRequested, cmd.payload.to_h.slice(:budget, :deposit, :visas_for)
       end
     end
 
-    state Planning, PlanningMachine do
+    state PlanningMachine do
       on_final PlanningMachine::Agreed => Reserving
       entry { |_tour, _evt| dispatch StartPlannerChat }
       command ChangeDates => ItineraryMachine::Outlining do |_tour, cmd|
@@ -448,8 +446,8 @@ module MachineAcceptanceHoliday
 
     state OnHold do
       after(PAUSE_SECONDS) { |_tour, _evt| dispatch CancelTour }
-      command ResumeTour => Planning.history(deep: true)
-      command ReopenPlanning => Planning.history
+      command ResumeTour => PlanningMachine.history(deep: true)
+      command ReopenPlanning => PlanningMachine.history
       command CancelTour => Cancelled
     end
 

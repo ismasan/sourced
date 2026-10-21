@@ -173,23 +173,23 @@ module MachineTopologyTest
         outer = Class.new(Sourced::Machine) do
           def self.name = 'MachineTopologyTest::Outer'
           partition_by :trip_id
-          initial { command Open => :busy }
         end
         inner = Class.new(Sourced::Machine::Part) do
-          part_of outer, prefix: 'inner'
+          part_of outer, prefix: 'busy'
           started :working do
             command Confirm => :finished
           end
           final :finished
         end
         outer.class_exec do
-          state(:busy, inner) { on_final inner.declared_states.fetch(:finished) => :done }
+          initial { command Open => inner }
+          state(inner) { on_final inner.declared_states.fetch(:finished) => :done }
           final :done
         end
         nodes = Sourced::Topology.build([outer])
         confirm = nodes.find { |n| n.type == 'command' && n.id == t(:confirm) }
 
-        expect(confirm.produces).to eq([t('outer.runtime.inner.finished'), t('outer.runtime.done')])
+        expect(confirm.produces).to eq([t('outer.runtime.busy.finished'), t('outer.runtime.done')])
       end
 
       it 'includes state classes, child events and data events' do

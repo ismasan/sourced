@@ -154,8 +154,15 @@ module Sourced
       # @return [Class<State>] itself: a handle, like a {History}'s +state+
       def self.state = self
 
-      # @return [Class<Machine>, Class<Part>] the machine or part that declares the state
+      # @return [Class<State>] itself (see {Machine.state_handle})
+      def self.to_state_handle = self
+
+      # @return [Class<Machine>, Class<Part>] the machine or part that declares
+      #   the state: for a part's own compound state (+Part::State+), the part
       def self.machine = @machine
+
+      # @return [Class<Part>, nil] the part this is the compound state of ({Part.to_state_handle})
+      def self.part = @part
 
       # @return [Symbol] unique within {.machine}
       def self.state_name = @state_name
@@ -178,7 +185,7 @@ module Sourced
       # machine (a reloaded or redefined one); any other clash raises, since
       # the registry would silently replace it.
       # @api private
-      def self.__generate(type, machine:, state_name:)
+      def self.__generate(type, machine:, state_name:, part: nil)
         existing = Sourced::Message.registry[type]
         unless existing.nil? || (Class === existing && existing < State && existing.machine.__type_owner_key == machine.__type_owner_key)
           raise DefinitionError, "#{machine}: message type #{type.inspect} is already #{existing}'s"
@@ -191,6 +198,7 @@ module Sourced
         end
         klass.instance_variable_set(:@machine, machine)
         klass.instance_variable_set(:@state_name, state_name)
+        klass.instance_variable_set(:@part, part)
         klass
       end
     end
@@ -198,19 +206,44 @@ module Sourced
     # @return [Boolean] whether +value+ is a state handle
     def self.handle?(value) = Class === value && value < State
 
+    # The state handle +value+ stands for, wherever the chart DSL takes one:
+    # anything responding to +to_state_handle+ (a {State}, itself; a {Part},
+    # its compound state). Symbols, Strings, +nil+, {History} and {Targets}
+    # are returned as they are, for their own branches.
+    # @param value [Object]
+    # @return [Class<State>, Symbol, String, History, Targets, nil]
+    # @raise [DefinitionError] if +value+ stands for no state
+    def self.state_handle(value)
+      case value
+      in Symbol | String | nil | History | Targets then value
+      else
+        raise DefinitionError, "#{value.inspect} isn't a state: it doesn't respond to to_state_handle" unless value.respond_to?(:to_state_handle)
+
+        handle = value.to_state_handle
+        raise DefinitionError, "#{value.inspect}.to_state_handle returned #{handle.inspect}, not a state handle" unless handle?(handle)
+
+        handle
+      end
+    end
+
     # The states a transition may go to; +nil+ means it may stay.
     Targets = Data.define(:members) do
       # @param other [State, History, Targets, nil]
       # @return [Targets]
       def |(other)
+        if Class === other && other < Machine
+          raise DefinitionError, "#{self} | #{other}: #{other} is a machine, and a union of states takes states"
+        end
+
         case other
         in Targets then with(members: members | other.members)
         in nil | History then with(members: members | [other])
-        in Class if Machine.handle?(other) then with(members: members | [other])
-        in Class if other < Machine
-          raise DefinitionError, "#{self} | #{other}: #{other} is a machine, and a union of states takes states"
         else
-          raise DefinitionError, "#{self} | #{other.inspect}: a union of states takes states, histories or nil"
+          unless other.respond_to?(:to_state_handle)
+            raise DefinitionError, "#{self} | #{other.inspect}: a union of states takes states, histories or nil"
+          end
+
+          with(members: members | [Machine.state_handle(other)])
         end
       end
 
@@ -325,8 +358,8 @@ module Sourced
     ChildrenJoin = Data.define(:machine, :definition)
 
     # A region whose states are a part's ({Part}), declared with
-    # +region :name, SomePart+ or, for a compound state,
-    # +state Handle, SomePart+. Its definition isn't copied: the tree
+    # +region :name, SomePart+ or, for the part's compound state,
+    # +state SomePart+. Its definition isn't copied: the tree
     # places the part's root region under the state (see {Tree}).
     # +on_final+ maps the part's root final states onto the parent's
     # (filled while the part is defined). A compound region starts at the
@@ -398,11 +431,12 @@ module Sourced
 
       def initial(&block) = @machine.send(:__define_node, @region, INITIAL, final: false, &block)
 
-      def state(handle, machine = nil, &block)
-        @machine.send(:__define_state, @region, handle, machine, &block)
+      def state(handle, *rest, &block)
+        @machine.send(:__check_single_state!, handle, rest)
+        @machine.send(:__define_node, @region, handle, final: false, &block)
       end
 
-      def final(handle, &block) = @machine.send(:__define_node, @region, @machine.send(:__handle, handle), final: true, &block)
+      def final(handle, &block) = @machine.send(:__define_node, @region, handle, final: true, &block)
 
       # @see Machine.State
       def State(name) = @machine.State(name)
@@ -568,12 +602,12 @@ module Sourced
         @node.always << @machine.send(:__eventless, @node, 'always', target, binding.local_variable_get(:if), @node.always)
       end
 
-      # For a compound state (+state Handle, SomeMachine+): when the machine
+      # For a part's compound state (+state SomePart+): when the part
       # reaches one of its root finals, move to the target mapped to it, before
       # any +done+ join. Unmapped finals leave the machine there.
       #
-      #   state Unverified, VerificationMachine do
-      #     on_final VerificationMachine::Verified => Active
+      #   state Verification do
+      #     on_final Verification::Verified => Active
       #   end
       #
       # @param mapping [Hash{State => State}] the machine's root final => our state
@@ -710,10 +744,12 @@ module Sourced
       def in?(*args)
         case args
         in [Class => state]
+          state = Machine.state_handle(state)
           @runtime.active_nodes.any? { |node| node.key == state }
         in [String => path]
           @runtime.active_nodes.any? { |node| node.path == path }
         in [Symbol => region_name, state]
+          state = Machine.state_handle(state)
           @runtime.active_regions.any? { |r| r.name == region_name && @runtime.current_node(r).key == state }
         end
       end
@@ -1121,12 +1157,16 @@ module Sourced
         Snapshot.new(value: instance.machine.value, context: instance.context, children: instance.machine.children)
       end
 
-      # The events that move this machine: its states, its parts', and for a
-      # child, +Started+. Fixed by {.validate!}; computed on each call before it.
+      # The events that move this machine: its states, its parts' (and the
+      # compound states of those it mounts as one), and for a child,
+      # +Started+. Fixed by {.validate!}; computed on each call before it.
       # @api private
       def __transition_classes
-        @__transition_classes ||
-          [*declared_states.values, *tree.mounted_machines.flat_map { |part| part.declared_states.values }, *@__started_class]
+        return @__transition_classes if @__transition_classes
+
+        tree = self.tree
+        compound = tree.all_regions.select(&:compound?).map { |region| region.machine.to_state_handle }
+        [*declared_states.values, *tree.mounted_machines.flat_map { |part| part.declared_states.values }, *compound.uniq, *@__started_class]
       end
 
       # Membership for the runtime, by message class: Sets fixed by {.validate!}.
@@ -1208,7 +1248,7 @@ module Sourced
       def __check_target!(tree, node, target)
         handle = target.state
         placed = tree.resolve(node, target)
-        return if handle.machine == node.machine || placed.descendant_of?(node)
+        return if placed.machine == node.machine || placed.descendant_of?(node)
 
         raise DefinitionError,
               "#{self}: #{node.label} targets #{handle}, another machine's state that isn't below it; " \
@@ -1557,6 +1597,8 @@ module Sourced
                     in Class if event_class < State
                       raise Error, "#{self.class}: #{event_class} is a state; " \
                                    "move to it with to(#{event_class.state_name.inspect})"
+                    in Class if event_class < Part
+                      raise Error, "#{self.class}: #{event_class} is a compound state; move to it with to(#{event_class})"
                     in Targets
                       raise Error, "#{self.class}: #{event_class.members.compact.join(' | ')} are states; move to one of them with to"
                     in Symbol then self.class[event_class]

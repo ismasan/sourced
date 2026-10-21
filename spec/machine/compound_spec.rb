@@ -84,7 +84,6 @@ module MachineCompoundTest
     end
 
     Placed = State(:placed)
-    Thing = State(:thing)
     Ready = State(:ready)
     Cancelled = State(:cancelled)
 
@@ -93,16 +92,16 @@ module MachineCompoundTest
     initial { command PlaceOrder => Placed }
 
     state Placed do
-      command StartThing => Thing do |_context, cmd|
+      command StartThing => ThingMachine do |_context, cmd|
         event ThingBegun, thing_id: cmd.payload.thing_id
       end
     end
 
-    state Thing, ThingMachine do
+    state ThingMachine do
       on_final ThingMachine::Completed => Ready
       entry { |_context, _evt| dispatch NotifyCompound }
       exit { |_context, _evt| dispatch NotifyLeft }
-      command RestartThing => Thing
+      command RestartThing => ThingMachine
       command Cancel => Cancelled
     end
 
@@ -127,7 +126,7 @@ module MachineCompoundTest
     final Ready
   end
 
-  # The same part as two compound states, one after the other.
+  # The same part as the compound states of two parts, one after the other.
   class TwiceMachine < Sourced::Machine
     partition_by :order_id
 
@@ -146,13 +145,25 @@ module MachineCompoundTest
       final Completed
     end
 
-    First = State(:first)
-    Second = State(:second)
+    class FirstMachine < Sourced::Machine::Part
+      part_of TwiceMachine
+
+      started(StepsMachine) { on_final StepsMachine::Completed => :done }
+      final :done
+    end
+
+    class SecondMachine < Sourced::Machine::Part
+      part_of TwiceMachine
+
+      started(StepsMachine) { on_final StepsMachine::Completed => :done }
+      final :done
+    end
+
     Ready = State(:ready)
 
-    initial { command StartThing => First }
-    state(First, StepsMachine) { on_final StepsMachine::Completed => Second }
-    state(Second, StepsMachine) { on_final StepsMachine::Completed => Ready }
+    initial { command StartThing => FirstMachine }
+    state(FirstMachine) { on_final FirstMachine::Done => SecondMachine }
+    state(SecondMachine) { on_final SecondMachine::Done => Ready }
     final Ready
   end
 
@@ -167,11 +178,11 @@ module MachineCompoundTest
   class TripPlanMachine < Sourced::Machine
     partition_by :order_id
 
-    class ItineraryMachine < Sourced::Machine::Part
+    class PlanningMachine < Sourced::Machine::Part
       part_of TripPlanMachine
 
-      class OutlineMachine < Sourced::Machine::Part
-        part_of ItineraryMachine
+      class ItineraryMachine < Sourced::Machine::Part
+        part_of PlanningMachine
 
         Propose = Command(:propose)
         Revise = Command(:revise)
@@ -199,11 +210,10 @@ module MachineCompoundTest
 
       RemindItinerary = Command(:remind_itinerary)
 
-      Itinerary = State(:itinerary)
       Finalised = State(:finalised)
 
-      started Itinerary, OutlineMachine do
-        on_final OutlineMachine::Agreed => Finalised
+      started ItineraryMachine do
+        on_final ItineraryMachine::Agreed => Finalised
         entry { |_context, _evt| dispatch NotifyItinerary }
         exit { |_context, _evt| dispatch LeftItinerary }
         after(60) { |_context, _evt| dispatch RemindItinerary }
@@ -213,13 +223,12 @@ module MachineCompoundTest
       final Finalised
     end
 
-    Planning = State(:planning)
     Done = State(:done)
 
-    initial { command StartPlanning => Planning }
+    initial { command StartPlanning => PlanningMachine }
 
-    state Planning, ItineraryMachine do
-      on_final ItineraryMachine::Finalised => Done
+    state PlanningMachine do
+      on_final PlanningMachine::Finalised => Done
       entry { |_context, _evt| dispatch NotifyPlanning }
       exit { |_context, _evt| dispatch LeftPlanning }
     end
@@ -244,8 +253,8 @@ RSpec.describe 'Sourced::Machine compound states' do
   def moves(machine, *transitions) = summary(transitions.map { |trigger, opts| moved(machine, trigger, **opts, order_id: 'o1') })
 
   let(:thing) { M::OrderMachine::ThingMachine }
-  let(:itinerary) { M::TripPlanMachine::ItineraryMachine }
-  let(:outline) { itinerary::OutlineMachine }
+  let(:planning_part) { M::TripPlanMachine::PlanningMachine }
+  let(:itinerary) { planning_part::ItineraryMachine }
   let(:place) { msg(M::PlaceOrder) }
   let(:start) { msg(M::StartThing, thing_id: 't1') }
   let(:progress) { msg(thing::Progress, thing_id: 't1') }
@@ -253,8 +262,8 @@ RSpec.describe 'Sourced::Machine compound states' do
   describe 'definition' do
     let(:tree) { M::OrderMachine.tree }
 
-    it 'places the part under the state, starting at its start' do
-      compound = tree.root.nodes.fetch(M::OrderMachine::Thing)
+    it 'places the part under its compound state, starting at its start' do
+      compound = tree.root.nodes.fetch(thing::State)
       region = compound.regions.first
 
       expect(compound.machine).to eq(M::OrderMachine)
@@ -288,8 +297,10 @@ RSpec.describe 'Sourced::Machine compound states' do
         moves(M::OrderMachine, ['machine_compound_test.start_thing', { from: 'placed', to: 'thing', exited: %w[placed], entered: %w[thing thing.begun] }])
       )
       view = instance.machine
-      expect(view.value).to eq(M::OrderMachine::Thing => thing::Begun)
-      expect(view.in?(M::OrderMachine::Thing)).to be(true)
+      expect(events.last).to be_a(thing::State)
+      expect(view.value).to eq(thing::State => thing::Begun)
+      expect(view.in?(thing)).to be(true)
+      expect(view.in?(thing::State)).to be(true)
       expect(view.in?(thing::Begun)).to be(true)
       expect(view.in?('thing.begun')).to be(true)
       expect(view.entered_by(:thing)).to equal(events.last)
@@ -305,7 +316,7 @@ RSpec.describe 'Sourced::Machine compound states' do
         ['machine_compound_test.order_machine.thing.progress', { from: 'thing.begun', to: 'thing.progressed', exited: %w[thing.begun] }]
       ))
       expect(events.last).to be_a(thing::Progressed)
-      expect(instance.machine.value).to eq(M::OrderMachine::Thing => thing::Progressed)
+      expect(instance.machine.value).to eq(thing::State => thing::Progressed)
     end
 
     it 'runs both entries and timers when entered, outermost first' do
@@ -337,7 +348,7 @@ RSpec.describe 'Sourced::Machine compound states' do
         M::OrderMachine,
         ['machine_compound_test.restart_thing', { from: 'thing', to: 'thing', exited: %w[thing.progressed thing], entered: %w[thing thing.begun] }]
       ))
-      expect(instance.machine.value).to eq(M::OrderMachine::Thing => thing::Begun)
+      expect(instance.machine.value).to eq(thing::State => thing::Begun)
       expect(instance.__react(events.last).map(&:class))
         .to eq([M::Cleanup, M::NotifyLeft, M::NotifyCompound, M::NotifyThingStarted, thing::Nudge])
     end
@@ -373,23 +384,23 @@ RSpec.describe 'Sourced::Machine compound states' do
         M::TripPlanMachine,
         ['machine_compound_test.start_planning', { from: 'initial', to: 'planning', entered: %w[planning planning.itinerary planning.itinerary.outline] }]
       ))
-      expect(instance.machine.value).to eq(M::TripPlanMachine::Planning => { itinerary::Itinerary => outline::Outline })
+      expect(instance.machine.value).to eq(planning_part::State => { itinerary::State => itinerary::Outline })
       expect(instance.__react(events.last).map(&:class))
-        .to eq([M::NotifyPlanning, M::NotifyItinerary, itinerary::RemindItinerary, M::NotifyOutline, outline::RemindOutline])
+        .to eq([M::NotifyPlanning, M::NotifyItinerary, planning_part::RemindItinerary, M::NotifyOutline, itinerary::RemindOutline])
     end
 
     it "re-enters only below the compound when a command inside it targets the compound's start" do
       instance = M::TripPlanMachine.new(order_id: 'o1')
       entered = instance.decide(msg(M::StartPlanning)).last
-      remind_itinerary = instance.__react(entered).find { |cmd| itinerary::RemindItinerary === cmd }
-      instance.decide(msg(outline::Propose))
-      events = instance.decide(msg(outline::Revise))
+      remind_itinerary = instance.__react(entered).find { |cmd| planning_part::RemindItinerary === cmd }
+      instance.decide(msg(itinerary::Propose))
+      events = instance.decide(msg(itinerary::Revise))
 
       expect(summary(events)).to eq(moves(
         M::TripPlanMachine,
-        ['machine_compound_test.trip_plan_machine.itinerary.outline.revise', { from: 'planning.itinerary.proposed', to: 'planning.itinerary.outline', exited: %w[planning.itinerary.proposed] }]
+        ['machine_compound_test.trip_plan_machine.planning.itinerary.revise', { from: 'planning.itinerary.proposed', to: 'planning.itinerary.outline', exited: %w[planning.itinerary.proposed] }]
       ))
-      expect(instance.__react(events.last).map(&:class)).to eq([M::NotifyOutline, outline::RemindOutline])
+      expect(instance.__react(events.last).map(&:class)).to eq([M::NotifyOutline, itinerary::RemindOutline])
       expect(instance.machine.entered_by(:planning)).to equal(entered)
       expect(instance.handles_command?(remind_itinerary)).to be(true)
     end
@@ -398,28 +409,28 @@ RSpec.describe 'Sourced::Machine compound states' do
       instance = M::TripPlanMachine.new(order_id: 'o1')
       transitioned = instance.decide(msg(M::StartPlanning)).last
       remind_outline = instance.__react(transitioned).last
-      expect(remind_outline).to be_a(outline::RemindOutline)
+      expect(remind_outline).to be_a(itinerary::RemindOutline)
 
-      instance.decide(msg(outline::Propose))
-      instance.decide(msg(outline::Revise))
+      instance.decide(msg(itinerary::Propose))
+      instance.decide(msg(itinerary::Revise))
 
       expect(instance.handles_command?(remind_outline)).to be(false)
     end
 
     it 'escalates through on_final at each level, in the deciding decision' do
-      events = planning(msg(outline::Propose)).decide(msg(outline::Agree))
+      events = planning(msg(itinerary::Propose)).decide(msg(itinerary::Agree))
 
       expect(summary(events)).to eq(moves(
         M::TripPlanMachine,
-        ['machine_compound_test.trip_plan_machine.itinerary.outline.agree', { from: 'planning.itinerary.proposed', to: 'planning.itinerary.agreed', exited: %w[planning.itinerary.proposed] }],
+        ['machine_compound_test.trip_plan_machine.planning.itinerary.agree', { from: 'planning.itinerary.proposed', to: 'planning.itinerary.agreed', exited: %w[planning.itinerary.proposed] }],
         ['on_final', { from: 'planning.itinerary.agreed', to: 'planning.finalised', exited: %w[planning.itinerary.agreed planning.itinerary] }],
         ['on_final', { from: 'planning.finalised', to: 'done', exited: %w[planning.finalised planning] }]
       ))
     end
 
     it 'exits every level innermost first' do
-      instance = planning(msg(outline::Propose))
-      events = instance.decide(msg(outline::Agree))
+      instance = planning(msg(itinerary::Propose))
+      events = instance.decide(msg(itinerary::Agree))
 
       expect(events.flat_map { |e| instance.__react(e) }.map(&:class)).to eq([M::LeftItinerary, M::LeftPlanning])
     end
@@ -430,50 +441,54 @@ RSpec.describe 'Sourced::Machine compound states' do
       machine = stub_const('MachineCompoundTest::FastTrackMachine', Class.new(Sourced::Machine) do
         partition_by :order_id
         consumer_group 'machine_compound_test.fast_track_machine'
-        initial { command M::StartPlanning => :planning }
       end)
-      outline_part = Class.new(Sourced::Machine::Part) do
-        part_of machine, prefix: 'fast_track_outline'
+      itinerary_part = Class.new(Sourced::Machine::Part) do
+        part_of machine, prefix: 'itinerary'
         started(:outline) {}
         final :proposed
       end
-      itinerary_part = Class.new(Sourced::Machine::Part) do
-        part_of machine, prefix: 'fast_track_itinerary'
+      planning_part = Class.new(Sourced::Machine::Part) do
+        part_of machine, prefix: 'planning'
         fast_track = const_set(:FastTrack, Command(:fast_track))
-        started :itinerary, outline_part do
-          command fast_track => outline_part::Proposed
+        started itinerary_part do
+          command fast_track => itinerary_part::Proposed
         end
       end
-      machine.state :planning, itinerary_part
+      machine.initial { command M::StartPlanning => planning_part }
+      machine.state planning_part
 
       instance = decided(msg(M::StartPlanning), machine:)
-      events = instance.decide(msg(itinerary_part::FastTrack))
+      events = instance.decide(msg(planning_part::FastTrack))
 
       expect(summary(events)).to eq(moves(
         machine,
-        ['machine_compound_test.fast_track_machine.fast_track_itinerary.fast_track',
+        ['machine_compound_test.fast_track_machine.planning.fast_track',
          { from: 'planning.itinerary', to: 'planning.itinerary.proposed', exited: %w[planning.itinerary.outline] }]
       ))
     end
   end
 
-  describe 'the same part as two compound states' do
+  describe 'the same part as the compound state of two parts' do
     let(:machine) { M::TwiceMachine }
     let(:steps) { machine::StepsMachine }
+    let(:first) { machine::FirstMachine }
+    let(:second) { machine::SecondMachine }
     let(:progress) { msg(steps::Progress) }
     let(:finish) { msg(steps::Finish) }
 
-    it 'places it under each state, with one class per state' do
-      expect(machine.tree.placements(steps::Progressed).map(&:path)).to eq(%w[first.progressed second.progressed])
+    it 'places it under each, sharing its compound state and its states' do
+      expect(machine.tree.placements(steps::State).map(&:path)).to eq(%w[first.steps second.steps])
+      expect(machine.tree.placements(steps::Progressed).map(&:path)).to eq(%w[first.steps.progressed second.steps.progressed])
+      expect(machine.transition_classes.count(steps::State)).to eq(1)
       expect(machine.transition_classes.count(steps::Progressed)).to eq(1)
     end
 
     it 'runs each placement in turn' do
       instance = decided(start, progress, machine:)
-      expect(instance.machine.value).to eq(M::TwiceMachine::First => steps::Progressed)
+      expect(instance.machine.value).to eq(first::State => { steps::State => steps::Progressed })
 
       instance.decide(finish)
-      expect(instance.machine.value).to eq(M::TwiceMachine::Second => steps::Begun)
+      expect(instance.machine.value).to eq(second::State => { steps::State => steps::Begun })
       expect(instance.machine.entered_by(:second)).not_to be_nil
 
       instance.decide(progress)
@@ -526,7 +541,7 @@ RSpec.describe 'Sourced::Machine compound states' do
       commands = nodes.select { |n| n.type == 'command' }
       expect(commands.map(&:name)).to include(thing::Progress.name, M::Cancel.name)
       expect(commands.find { |n| n.name == M::StartThing.name }.produces)
-        .to contain_exactly(M::OrderMachine::Thing.type, M::ThingBegun.type)
+        .to contain_exactly(thing::State.type, M::ThingBegun.type)
     end
   end
 
@@ -555,7 +570,7 @@ RSpec.describe 'Sourced::Machine compound states' do
     # A part of +owner+, named so the chart's +src+ has a name.
     let(:part) do
       stub_const('MachineCompoundTest::DefinitionCheckPart', Class.new(Sourced::Machine::Part)).tap do |klass|
-        klass.part_of owner
+        klass.part_of owner, prefix: 'thing'
         klass.started(:begun) {}
         klass.final :completed
         klass.final :aborted
@@ -569,16 +584,16 @@ RSpec.describe 'Sourced::Machine compound states' do
         klass.part_of owner, prefix: 'no_start'
         klass.final :done
       end
-      expect { machine { state :thing, no_start } }.to raise_error(Sourced::Machine::DefinitionError, /has no start state/)
+      expect { machine { state no_start } }.to raise_error(Sourced::Machine::DefinitionError, /has no start state/)
     end
 
     it 'rejects a machine, which has its own partition: it starts as a child' do
-      expect { machine { state :thing, M::ThingMachine } }
+      expect { machine { state M::ThingMachine } }
         .to raise_error(Sourced::Machine::DefinitionError, /can't mount MachineCompoundTest::ThingMachine, a Sourced::Machine: .*start it as a child/)
     end
 
     it 'rejects regions in a compound state, and on_final without a part' do
-      expect { machine { |thing| state(:thing, thing) { region(:x) { initial } } } }
+      expect { machine { |thing| state(thing) { region(:x) { initial } } } }
         .to raise_error(Sourced::Machine::DefinitionError, /compound state, so it can't have regions/)
       expect { machine { |thing| state(:placed) { on_final thing::Completed => :ready } } }
         .to raise_error(Sourced::Machine::DefinitionError, /Placed mounts no part, so no on_final; use done/)
@@ -586,7 +601,7 @@ RSpec.describe 'Sourced::Machine compound states' do
 
     it 'maps each final once, over one or several on_final lines' do
       mapped = machine do |thing|
-        state :thing, thing do
+        state thing do
           on_final thing::Completed => :ready
           on_final thing::Aborted => :cancelled
         end
@@ -600,7 +615,7 @@ RSpec.describe 'Sourced::Machine compound states' do
     it 'rejects a final mapped twice' do
       expect do
         machine do |thing|
-          state :thing, thing do
+          state thing do
             on_final thing::Completed => :ready
             on_final thing::Completed => :cancelled
           end
