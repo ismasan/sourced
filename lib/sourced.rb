@@ -208,6 +208,7 @@ module Sourced
   # +new(values)+; otherwise, as for a {Sourced::Projection}, all of +values+ are
   # the partition and instances are built with +new+.
   #
+  # @raise [MissingPartitionKeyError] if a partition key is missing or nil
   # @example
   #   cart, read_result = Sourced.load(CartProjection, cart_id: 'c1')
   #   cart.context
@@ -215,6 +216,11 @@ module Sourced
     store ||= self.store
     partitioned = reactor_class.respond_to?(:partition_keys)
     partition_attrs = partitioned ? reactor_class.partition_keys.to_h { |k| [k, values[k]] } : values
+    missing = partition_attrs.filter_map { |k, v| k if v.nil? }
+    if missing.any?
+      raise MissingPartitionKeyError, "#{reactor_class} can't be loaded without values for partition keys #{missing.inspect}"
+    end
+
     handled_types = reactor_class.handled_messages_for_evolve.map(&:type).uniq
     read_result = store.read_partition(partition_attrs, handled_types:, upto: upto)
     instance = partitioned ? reactor_class.new(values) : reactor_class.new
