@@ -294,6 +294,24 @@ RSpec.describe Sourced::Machine::Part do
   end
 
   describe 'mounting' do
+    it 'raises when two parts of one owner share a prefix' do
+      owner = Class.new(Sourced::Machine) do
+        partition_by :payroll_id
+        consumer_group 'parts_prefix_owner'
+      end
+      two = Array.new(2) do
+        Class.new(described_class) do
+          part_of owner, prefix: 'review'
+          started(:a) {}
+        end
+      end
+      owner.state(:one, two[0])
+      owner.state(:two, two[1])
+
+      expect { owner.validate! }
+        .to raise_error(Sourced::Machine::DefinitionError, /share the part prefix "review", so their messages and states would have the same types/)
+    end
+
     it "puts its commands among the owner's, through the tree" do
       expect(payroll.handled_commands).to include(pending::Accept, pending::Reject, check::Accept)
       expect(payroll.tree.mounted_machines).to eq([pending, check])
