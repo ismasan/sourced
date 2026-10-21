@@ -31,6 +31,11 @@ module ReactTestMessages
   AnotherMultiReaction = Sourced::Message.define('react_test.another.multi.reaction') do
     attribute :thing_id, String
   end
+
+  # Unwraps through to_message, without overriding #class.
+  Wrapped = Struct.new(:to_message) do
+    def payload = to_message.payload
+  end
 end
 
 RSpec.describe Sourced::React do
@@ -101,11 +106,32 @@ RSpec.describe Sourced::React do
     end
   end
 
+  describe 'wrapped messages' do
+    it 'reacts to a wrapper by its to_message class, passing the wrapper' do
+      instance = reactor_class.new
+      wrapped = ReactTestMessages::Wrapped.new(ReactTestMessages::SomethingHappened.new(payload: { thing_id: 't1' }))
+
+      expect(instance.reacts_to?(wrapped)).to be(true)
+      expect(instance.react(wrapped).map { |msg| msg.payload.thing_id }).to eq(['t1'])
+      expect(instance.reacts_to?(ReactTestMessages::Wrapped.new(ReactTestMessages::Unhandled.new(payload: { foo: 'x' })))).to be(false)
+    end
+  end
+
   describe '.reaction' do
-    it 'rejects symbols' do
+    it 'takes anything whose to_message_class is a message class, and reacts to that class' do
+      declared = Object.new
+      declared.define_singleton_method(:to_message_class) { ReactTestMessages::Unhandled }
+      reactor_class.reaction(declared) { |_context, msg| ReactTestMessages::DoNext.new(payload: { thing_id: msg.payload.foo }) }
+
+      expect(reactor_class.handled_messages_for_react).to include(ReactTestMessages::Unhandled)
+      result = reactor_class.new.react(ReactTestMessages::Unhandled.new(payload: { foo: 'f1' }))
+      expect(result.map { |msg| msg.payload.thing_id }).to eq(['f1'])
+    end
+
+    it 'takes only what answers to_message_class' do
       expect {
         reactor_class.reaction(:react_test_something_happened) { |_context, _msg| nil }
-      }.to raise_error(ArgumentError, /Invalid arguments/)
+      }.to raise_error(NoMethodError, /to_message_class/)
     end
   end
 

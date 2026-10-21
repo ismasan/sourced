@@ -557,6 +557,8 @@ projection.evolve([item_added])
 projection.context # => { cart_id: 'c1', items: ['i1'] }
 ```
 
+Handlers (`evolve`, `reaction`, `command`) are declared for a message class, or for anything whose `to_message_class` returns one (a machine part stands for its `Part::State`); anything else raises `ArgumentError`. Messages are dispatched by `message.to_message.class`, so a wrapper that implements `#to_message` reaches the wrapped message's handler, and the handler receives the wrapper.
+
 `before_evolve` runs a block before the handler of every event the projection handles (events without a handler are still skipped), for changes common to all of them:
 
 ```ruby
@@ -927,7 +929,7 @@ end
 
 Entering it enters the part at its start too (one `Working::State` event, `entered: ['working', 'working.started']`), and runs both states' entry actions, outermost first. Commands go to the deepest state that accepts them (`Progress` to the part, `Cancel` to the compound state); leaving it exits the part first. `machine.value` is `{ Working::State => Working::Progressed }`. A part's start can itself be compound (`started Open`), to any depth.
 
-The part class goes wherever a state does: handler targets (`=> Working`, `=> Working | Other`, `=> Working | nil`), `to(Working)`, `always`, `done`, `on_final`, `children_done`, `machine.in?(Working)`, and `Working.history` / `.history(deep: true)`. In paths, the compound state is named after the last segment of the part prefix (`working`), so a machine can't place two parts whose prefixes end the same way, and an owner's own state can't share a part's prefix (`State(:working)` and `Working` would share a type): both raise `Sourced::Machine::DefinitionError`. A compound state can't be final.
+The part class goes wherever a state does: handler targets (`=> Working`, `=> Working | Other`, `=> Working | nil`), `to(Working)`, `always`, `done`, `on_final`, `children_done`, `machine.in?(Working)`, and `Working.history` / `.history(deep: true)`. As a handler declaration it stands for `Working::State` too: `evolve(Working)` or `reaction(Working)`, in any projection or reactor, handle `Working::State` events, appended only by transitions to the compound state itself (entering the part), not by transitions to one of its sub-states (`Progress` appends `Working::Progressed`). In paths, the compound state is named after the last segment of the part prefix (`working`), so a machine can't place two parts whose prefixes end the same way, and an owner's own state can't share a part's prefix (`State(:working)` and `Working` would share a type): both raise `Sourced::Machine::DefinitionError`. A compound state can't be final.
 
 Rules for parts:
 

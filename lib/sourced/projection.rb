@@ -95,16 +95,13 @@ module Sourced
         before_evolve_blocks << block
       end
 
-      # Register an evolve handler for a {Sourced::Message} subclass.
+      # Register an evolve handler for a {Sourced::Message} subclass, or for the
+      # class an object's +to_message_class+ returns (see {Sourced::Message.to_message_class}).
       #
-      # @param message_class [Class] message class to evolve from
+      # @param declared [Class, #to_message_class] message class to evolve from
       # @yield [context, message] mutates +context+ for +message+
-      # @raise [ArgumentError] if +message_class+ isn't a {Sourced::Message} subclass
-      def evolve(message_class, &block)
-        unless message_class.is_a?(Class) && message_class < Sourced::Message
-          raise ArgumentError, "#{self}.evolve expects a Sourced::Message subclass, got #{message_class.inspect}"
-        end
-
+      def evolve(declared, &block)
+        message_class = declared.to_message_class
         handled_messages << message_class unless handled_messages.include?(message_class)
         evolve_handlers[message_class] = define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
       end
@@ -127,14 +124,16 @@ module Sourced
     end
 
     # Apply messages to context via registered handlers, each preceded by the
-    # +before_evolve+ blocks. Skips messages without a registered handler.
+    # +before_evolve+ blocks. Handlers are looked up by +msg.to_message.class+,
+    # so wrapped messages dispatch too; they receive +msg+ as given. Skips
+    # messages without a registered handler.
     #
     # @param messages [Sourced::Message, Array<Sourced::Message>]
     # @return [Object] the evolved context
     def evolve(messages)
       handlers = self.class.evolve_handlers
       Array(messages).each do |msg|
-        method_name = handlers[msg.class]
+        method_name = handlers[msg.to_message.class]
         next unless method_name
 
         self.class.before_evolve_blocks.each { |blk| instance_exec(context, msg, &blk) }
