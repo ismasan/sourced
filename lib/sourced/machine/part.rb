@@ -33,11 +33,14 @@ module Sourced
       # given binds this part to its owner, and nests this part's prefix in its.
       #
       # @param owner [Class<Machine>, Class<Part>]
-      def self.part_of(owner)
+      # @param prefix [String, nil] the part's segment of its types (see {.part_prefix});
+      #   required for an anonymous part
+      def self.part_of(owner, prefix: nil)
         raise DefinitionError, "#{self}: part_of is declared twice" if @owner
-        if declared_states.any? || root.nodes.any? || @__messages_defined || @part_prefix
+        if declared_states.any? || root.nodes.any? || @__messages_defined
           raise DefinitionError, "#{self}: declare part_of first"
         end
+        raise DefinitionError, "#{self}: part_of prefix: can't be blank" if prefix && prefix.to_s.strip.empty?
         unless Class === owner && (owner < Machine || owner < Part)
           raise DefinitionError, "#{self}: part_of takes a Sourced::Machine or a part, got #{owner.inspect}"
         end
@@ -50,24 +53,17 @@ module Sourced
           owner = owner.owner
         end
         @owner = owner
+        @part_prefix = prefix&.to_s
       end
 
-      # The part's segment of its message and state types: its name relative
-      # to its owner (or the part it's +part_of+), underscored, without a
-      # trailing +Machine+ (+Payroll::PendingMachine+ => +pending+), after the
-      # enclosing part's prefix when there is one.
+      # The part's segment of its message and state types: +part_of+'s
+      # +prefix:+, or its name relative to its owner (or the part it's
+      # +part_of+), underscored, without a trailing +Machine+
+      # (+Payroll::PendingMachine+ => +pending+), after the enclosing part's
+      # prefix when there is one.
       #
-      # @param prefix [String, nil] the prefix to declare, or nil to read it
       # @return [String]
-      def self.part_prefix(prefix = nil)
-        if prefix
-          raise DefinitionError, "#{self}: declare part_prefix before states and messages" if declared_states.any? || @__messages_defined
-          raise DefinitionError, "#{self}: part_prefix can't be blank" if prefix.to_s.strip.empty?
-
-          return @part_prefix = prefix.to_s
-        end
-        @part_prefix ||= __default_part_prefix
-      end
+      def self.part_prefix = @part_prefix ||= __default_part_prefix
 
       # +<owner's message_prefix>.<part_prefix>+, which {.Command} and {.Event} type messages with.
       def self.message_prefix = "#{__owner!.message_prefix}.#{part_prefix}"
@@ -114,7 +110,7 @@ module Sourced
       private_class_method def self.__chart_owner = __owner!
 
       private_class_method def self.__default_part_prefix
-        raise DefinitionError, "#{self}: an anonymous part needs a part_prefix" unless name
+        raise DefinitionError, "#{self}: an anonymous part needs part_of's prefix:" unless name
 
         scope = [@enclosing, __owner!].find { |mod| mod&.name && name.start_with?("#{mod.name}::") }
         relative = scope ? name.delete_prefix("#{scope.name}::") : name

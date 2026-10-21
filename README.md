@@ -760,7 +760,7 @@ How it runs:
   end
   ```
 - **`on Event => Target`** moves the machine when it claims an event another reactor appended, while the state is active. It's decided like a command (same targets, `to`, `nil`; the block gets `(context, event)`), under the claim's guard, and never while replaying. The event must carry the machine's partition keys.
-- **Eventless steps** (`always`, mounted machines' `on_final`, `done`, `children_done`, starting states' children) run after every decision until none applies, each appending its own state event, all in the decision's transaction. Guards see the context with the decision's events applied.
+- **Eventless steps** (`always`, mounted parts' `on_final`, `done`, `children_done`, starting states' children) run after every decision until none applies, each appending its own state event, all in the decision's transaction. Guards see the context with the decision's events applied.
 - **Entry and exit actions are reactions**, run when the machine claims the state event, after the deciding transaction committed, and see the latest state. Leaving a state exits its active regions first. A transient state's entry actions run after the machine has already left it. They're skipped while replaying.
 - **`after(delay)`** blocks dispatch commands delivered that long after the state was entered. The delay is seconds (`after(3600)`) or a duration string, as `Message#at` takes it (`after('1h')`, `after('1h30m')`, `after('P1D')`). A timer command delivered after the machine has left that state entry is refused, even where the command is accepted, so timers never need cancelling.
 - **History**: `Working.history` targets a state with regions at the states its regions were last in (`Working.history(deep: true)` restores everything below it); regions with no history take their default entry. History is rebuilt from `exited` on replay.
@@ -854,39 +854,44 @@ end
 
 A machine is a child in one role: started by handlers (any number of them), or by one state.
 
-Registering a machine registers the children it starts too (including mounted machines' and children's own children), so `Sourced.register(OrderMachine)` also registers `LineItemMachine`. A `Sourced::Router` built directly raises `Sourced::Router::MissingReactorsError` on `setup!` if a machine's children aren't among its reactors.
+Registering a machine registers the children it starts too (including those started by its parts, and children's own children), so `Sourced.register(OrderMachine)` also registers `LineItemMachine`. A `Sourced::Router` built directly raises `Sourced::Router::MissingReactorsError` on `setup!` if a machine's children aren't among its reactors.
 
 A child is only woken by messages carrying all of its partition keys: its own events, the parent's `Started`, and `Stop`. Parent facts with fewer keys (`OrderPlaced`) are in the child's partition reads, so it can evolve them, but they never wake it.
 
-#### Composing machines
+#### Machine parts
 
-A machine's definition can be split into other machines, which run as part of it: in its partition, decided with it under one guard, on its domain context. Unlike a child machine, a composed one isn't a separate reactor.
+A big machine's chart can be split into **parts**: `Sourced::Machine::Part` classes that each hold a piece of one machine's chart (its *owner*). A part runs as part of its owner: in its partition, decided with it under one guard, on its domain context. Unlike a child machine, a part isn't a reactor: it's never registered, instantiated or run on its own.
 
-**A region** can be another machine, starting at its `initial` position each time the state is entered:
+**A region** can be a part, starting at its `initial` position each time the state is entered:
 
 ```ruby
-class PaymentMachine < Sourced::Machine     # no partition_by: it runs in the mounting machine's
-  Captured = State(:captured)
-  Expired  = State(:expired)
-
-  evolve PaymentInfoAdded do |order, evt| # updates the parent's context
-    order.card = evt.payload.card
-  end
-
-  initial do
-    command Capture => Captured
-  end
-  
-  final Captured
-  final Expired
-end
-
 class OrderMachine < Sourced::Machine
   partition_by :order_id
+  context { OrderState.new }
+
+  class PaymentMachine < Sourced::Machine::Part
+    part_of OrderMachine                    # first: the part takes its owner's keys and prefix
+
+    Capture   = Command(:capture)           # order_machine.payment.capture, with :order_id
+    CardAdded = Event(:card_added) { attribute :card, String }
+
+    Captured = State(:captured)             # order_machine.runtime.payment.captured
+    Expired  = State(:expired)
+
+    evolve(CardAdded) { |order, evt| order.card = evt.payload.card } # the owner's context
+
+    initial do
+      command Capture => Captured
+    end
+
+    final Captured
+    final Expired
+  end
+
   # ...
   state Placed do
     region :payment, PaymentMachine, on_final: { PaymentMachine::Expired => Cancelled }
-    region :shipping do # inline and composed regions mix
+    region :shipping do # inline regions and parts mix
       # ...
     end
     done Completed
@@ -894,21 +899,23 @@ class OrderMachine < Sourced::Machine
 end
 ```
 
-**A state** can be another machine: a compound state, whose sub-states are that machine's states, entered at its `started` state:
+**A state** can be a part: a compound state, whose sub-states are the part's states, entered at its `started` state:
 
 ```ruby
-class ThingMachine < Sourced::Machine
-  Started    = State(:started)
-  Progressed = State(:progressed)
-  Done       = State(:done)
-
-  started(Started) { command Progress => Progressed }
-  state(Progressed) { command Finish => Done }
-  final Done
-end
-
 class OrderMachine < Sourced::Machine
   # ...
+  class ThingMachine < Sourced::Machine::Part
+    part_of OrderMachine
+
+    Started    = State(:started)
+    Progressed = State(:progressed)
+    Done       = State(:done)
+
+    started(Started) { command Progress => Progressed }
+    state(Progressed) { command Finish => Done }
+    final Done
+  end
+
   state Working, ThingMachine do
     on_final ThingMachine::Done => Ready
     command Cancel => Cancelled # the compound state's own commands
@@ -916,19 +923,29 @@ class OrderMachine < Sourced::Machine
 end
 ```
 
-Entering `Working` enters `ThingMachine` at its start too (one `Working` event, `entered: ['working', 'working.started']`), and runs both states' entry actions, outermost first. Commands go to the deepest state that accepts them (`Progress` to the sub-machine, `Cancel` to `Working`); leaving `Working` exits the sub-machine first. `machine.value` is `{ OrderMachine::Working => ThingMachine::Progressed }`. A machine's start can itself be compound (`started Open, OpenMachine`), to any depth.
+Entering `Working` enters `ThingMachine` at its start too (one `Working` event, `entered: ['working', 'working.started']`), and runs both states' entry actions, outermost first. Commands go to the deepest state that accepts them (`Progress` to the part, `Cancel` to `Working`); leaving `Working` exits the part first. `machine.value` is `{ OrderMachine::Working => OrderMachine::ThingMachine::Progressed }`. A part's start can itself be compound (`started Open, OpenMachine`), to any depth.
 
-So a machine with `started` can be used three ways: standalone, as a child (its own partition, started by the parent's `Started`), or composed (the parent's partition).
+Rules for parts:
 
-Rules for composed machines:
+- **Messages and states**: `Command(:name)` / `Event(:name)` in a part are typed `<owner prefix>.<part prefix>.<name>` and declare the owner's partition keys first; its states are typed `<owner prefix>.runtime.<part prefix>.<name>`. The part prefix defaults to the class name relative to the owner, underscored, without a trailing `Machine` (`OrderMachine::PaymentMachine` → `payment`); `part_of OrderMachine, prefix: 'billing'` sets another. A part declared `part_of` another part belongs to that part's owner, its prefix nested under the enclosing part's. The owner appends a part's state classes as they are (`OrderMachine::PaymentMachine::Captured === evt`). A part can be mounted any number of times in its owner, sharing its classes (paths tell the placements apart).
+- **Context**: a part's `evolve(Event) { |context, evt| … }` blocks run on the owner's context, and its handlers receive it. An event is evolved by one block, across the owner and its parts.
+- **Escalation**: a part's targets are its own states. It reaches the owner through its root finals, which `on_final` maps onto the owner's states, in the deciding decision: the `on_final:` keyword for a region, `on_final Final => Target` in a compound state's block (one line per mapping, or one Hash). Unmapped finals leave the part there. When a decision both makes a region reach a mapped final and completes the owner's `done` join, `on_final` wins. (`done` is the state's own completion, and `start … on_done` a child finishing; `on_final` is an exit from the part.)
+- **Handlers run on the owner's instance**: `event`, `dispatch` and `machine` are the owner's. A part's states may have entry, exit and `after` actions, and may start children.
+- **Not allowed**: `partition_by`, `consumer_group`, `context`, reactions, sync blocks and `stopped` (they're the owner's); mounting a part outside its owner's chart, starting it as a child, or registering it. Mounting a `Sourced::Machine` raises `Sourced::Machine::DefinitionError`: reuse a machine with its own partition as a child.
 
-- **Events**: the mounting machine generates its own class for each of the composed machine's states, with its partition keys: `OrderMachine::Mounted::PaymentMachine::Captured`, type `order_machine.runtime.mounted.payment_machine.captured`. That's what it appends while `PaymentMachine` runs inside it, so a machine never reads another context's events: `PaymentMachine` standalone, as a child, or inside another machine appends its own types. `OrderMachine.state_class(PaymentMachine::Captured)` returns the class; handlers, `to`, `value` and `in?` use the composed machine's own handles. A machine can be composed several times (two regions of the same machine share these classes; paths tell them apart).
-- **Context**: the composed machine's projection is built from the parent's context, so its `evolve` blocks update the same object, and its handlers receive it. The parent's context must respond to what they call.
-- **Escalation**: a composed machine's targets are its own states. It reaches the parent through its root finals, which `on_final` maps onto the parent's, in the deciding decision: the `on_final:` keyword for a region, `on_final Final => Target` in a compound state's block (one line per mapping, or one Hash). Unmapped finals leave the machine there. When a decision both makes a region reach a mapped final and completes the parent's `done` join, `on_final` wins. (`done` is the state's own completion, and `start … on_done` a child finishing; `on_final` is an exit from the mounted machine.)
-- **Handlers run on the parent's instance**: `event`, `dispatch` and `machine` are the parent's, and partition keys are the parent's, so its events and commands must declare them. It may start children of its own (a machine with children can only be composed once).
-- **Not allowed**: reactions and sync blocks of its own (they can't run on the parent's instance; declare them on the parent).
+A part can be built anonymously, with `part_of`'s `prefix:` (there's no class name to derive it from). Constants assigned in a `Class.new` block are lexical, so set them on the part with `self::`:
 
-`Sourced.topology` describes machines' commands, states and actions, and `OrderMachine.to_mermaid` draws the machine as a Mermaid state diagram. The design behind all this is in `plans/statecharts-transitions.md`.
+```ruby
+part = Class.new(Sourced::Machine::Part) do
+  part_of OrderMachine, prefix: 'review'
+  self::Approve = Command(:approve)
+  approve = self::Approve
+  started(:pending) { command approve => :approved }
+  final :approved
+end
+```
+
+`Sourced.topology` describes machines' commands, states and actions, and `OrderMachine.to_mermaid` draws the machine as a Mermaid state diagram.
 
 ### Reactions
 

@@ -302,8 +302,7 @@ RSpec.describe Sourced::Machine do
     it 'locks a part once its owner is validated' do
       parent = machine { initial { command Ping => :pinged } }
       part = Class.new(Sourced::Machine::Part) do
-        part_of parent
-        part_prefix 'locked_region'
+        part_of parent, prefix: 'locked_region'
         started :waiting
       end
       parent.state(:pinged) { region :sub, part }

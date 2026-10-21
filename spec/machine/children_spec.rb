@@ -692,8 +692,7 @@ module MachineChildrenTest
           consumer_group 'parts_children_owner'
         end
         part = Class.new(Sourced::Machine::Part) do
-          part_of owner
-          part_prefix 'access'
+          part_of owner, prefix: 'access'
           log_in = const_set(:LogIn, Command(:log_in) { attribute :session_id, String })
           started(:open) { command log_in, starts: MachineChildrenTest::SessionMachine }
         end

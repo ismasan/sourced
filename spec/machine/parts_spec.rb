@@ -54,8 +54,7 @@ module MachinePartsTest
     end
 
     class AuditMachine < Sourced::Machine::Part
-      part_of Payroll
-      part_prefix 'audit.trail'
+      part_of Payroll, prefix: 'audit.trail'
 
       Note = Command(:note)
       Noted = State(:noted)
@@ -109,8 +108,7 @@ RSpec.describe Sourced::Machine::Part do
 
   def part(owner = payroll, &block)
     Class.new(described_class) do
-      part_of owner
-      part_prefix 'anon'
+      part_of owner, prefix: 'anon'
       class_exec(&block) if block
     end
   end
@@ -132,7 +130,7 @@ RSpec.describe Sourced::Machine::Part do
       expect { Class.new(described_class) { Command(:x) } }.to raise_error(Sourced::Machine::DefinitionError, /declare part_of first/)
 
       owner = payroll
-      expect { Class.new(described_class) { part_prefix 'x'; State(:a); part_of owner } }
+      expect { Class.new(described_class) { State(:a); part_of owner, prefix: 'x' } }
         .to raise_error(Sourced::Machine::DefinitionError, /declare part_of first/)
     end
 
@@ -143,10 +141,12 @@ RSpec.describe Sourced::Machine::Part do
       expect { Class.new(described_class) { part_of unbound } }.to raise_error(Sourced::Machine::DefinitionError, /part of nothing yet/)
     end
 
-    it 'needs a part_prefix when anonymous' do
+    it "needs part_of's prefix: when anonymous, and not a blank one" do
       owner = payroll
       expect { Class.new(described_class) { part_of owner; Command(:x) } }
-        .to raise_error(Sourced::Machine::DefinitionError, /anonymous part needs a part_prefix/)
+        .to raise_error(Sourced::Machine::DefinitionError, /anonymous part needs part_of's prefix:/)
+      expect { Class.new(described_class) { part_of owner, prefix: ' ' } }
+        .to raise_error(Sourced::Machine::DefinitionError, /prefix: can't be blank/)
     end
   end
 
@@ -181,10 +181,6 @@ RSpec.describe Sourced::Machine::Part do
       expect(payroll::OpenMachine::Settle.type).to eq('machine_parts_test.payroll.unsettled.open.settle')
       expect(payroll::OpenMachine::Settle.payload_attribute_names).to eq(%i[payroll_id run])
     end
-
-    it 'take part_prefix only before states and messages' do
-      expect { part { State(:a); part_prefix 'b' } }.to raise_error(Sourced::Machine::DefinitionError, /before states and messages/)
-    end
   end
 
   describe 'states' do
@@ -205,8 +201,7 @@ RSpec.describe Sourced::Machine::Part do
         consumer_group 'parts_twice_owner'
       end
       twice = Class.new(described_class) do
-        part_of owner
-        part_prefix 'twice'
+        part_of owner, prefix: 'twice'
         initial { command MachinePartsTest::Payroll::Start => :done }
         final :done
       end
@@ -269,8 +264,7 @@ RSpec.describe Sourced::Machine::Part do
 
     def evolving_part(owner, prefix, evt)
       Class.new(described_class) do
-        part_of owner
-        part_prefix prefix
+        part_of owner, prefix: prefix
         evolve(evt) { |_context, _evt| nil }
         started(:a) {}
       end
@@ -319,8 +313,7 @@ RSpec.describe Sourced::Machine::Part do
 
     it 'raises under a part of another owner' do
       foreign = Class.new(described_class) do
-        part_of MachinePartsTest::Other
-        part_prefix 'foreign'
+        part_of MachinePartsTest::Other, prefix: 'foreign'
       end
       expect { foreign.started(:a) { region :check, MachinePartsTest::Payroll::Providers::CheckMachine } }
         .to raise_error(Sourced::Machine::DefinitionError, /mounts only in/)

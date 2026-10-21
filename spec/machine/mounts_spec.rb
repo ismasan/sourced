@@ -517,8 +517,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
     def part(prefix = 'payment', &block)
       owner = parent
       Class.new(Sourced::Machine::Part) do
-        part_of owner
-        part_prefix prefix
+        part_of owner, prefix: prefix
         class_exec(&block)
       end
     end
