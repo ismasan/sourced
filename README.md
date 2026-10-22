@@ -648,9 +648,9 @@ This diagram was generated from the code below:
 
 ```ruby
 class OrderMachine < Sourced::Machine
-  partition_by :order_id                    # before any state: their classes take the keys
+  partition_by :order_id # before any state: their classes take the keys
 
-  Placed    = State(:placed)           # OrderMachine::Placed, type 'order_machine.runtime.placed'
+  Placed    = State(:placed) # OrderMachine::Placed, type 'order_machine.runtime.placed'
   Paying    = State(:paying)
   Rejected  = State(:rejected)
   Paid      = State(:paid)
@@ -668,11 +668,11 @@ class OrderMachine < Sourced::Machine
 
   initial do
     command PlaceOrder => Placed do |_order, cmd|
-      event OrderPlaced, total: cmd.payload.total   # data, appended before the transition
+      event OrderPlaced, total: cmd.payload.total # data, appended before the transition
     end
   end
 
-  state Placed do                      # has regions: they're all active while Placed is
+  state Placed do # has regions: they're all active while Placed is
     command CancelOrder => Cancelled
 
     region :payment do
@@ -700,7 +700,7 @@ class OrderMachine < Sourced::Machine
 
     region :shipping do
       initial do
-        command PackItem => Packed | nil do |order, cmd|   # | nil: may stay put
+        command PackItem => Packed | nil do |order, cmd| # | nil: may stay put
           event ItemPacked, sku: cmd.payload.sku
           to Packed if order.all_packed?
         end
@@ -709,7 +709,7 @@ class OrderMachine < Sourced::Machine
       final Shipped
     end
 
-    done Completed                          # once every region is final
+    done Completed # once every region is final
   end
 
   final Completed
