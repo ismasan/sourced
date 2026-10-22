@@ -276,10 +276,12 @@ module Sourced
       def __handle(target, declare: true)
         target = Machine.state_handle(target)
         case target
-        in Class if Machine.handle?(target) && target.machine == self then target
-        in Class if Machine.handle?(target) && target.part&.owner.equal?(__chart_owner) then target
         in Class if Machine.handle?(target)
-          raise DefinitionError, "#{self}: #{target} is #{target.machine}'s state, not #{self}'s"
+          unless target.machine == self || target.part&.owner.equal?(__chart_owner)
+            raise DefinitionError, "#{self}: #{target} is #{target.machine}'s state, not #{self}'s"
+          end
+
+          target
         in Symbol | String if declare then __name_declared(State(target))
         in Symbol | String
           declared_states.fetch(target.to_sym) { raise DefinitionError, "#{self} has no state #{target.inspect}" }
