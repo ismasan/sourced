@@ -1456,6 +1456,7 @@ module Sourced
       @runtime = Runtime.new(self.class.tree)
       @uncommitted_events = nil
       @handler = nil
+      @available_commands = nil
     end
 
     # Read-only view of the runtime state: the current configuration, the
@@ -1473,12 +1474,27 @@ module Sourced
     # +evolve+ handler updates the domain context.
     def evolve(messages)
       Array(messages).each do |msg|
-        @runtime.apply(msg) if self.class.__transition_class?(msg.to_message.class)
+        if self.class.__transition_class?(msg.to_message.class)
+          @runtime.apply(msg)
+          @available_commands = nil
+        end
         track_child(msg)
         super([msg])
         __region_projections.each { |region_projection| region_projection.evolve([msg]) }
       end
       context
+    end
+
+    # The command classes the active states accept, and +Stop+ while it
+    # applies. Memoized until the machine next transitions.
+    #
+    # @return [Set<Class>]
+    def available_commands
+      @available_commands ||= begin
+        commands = @runtime.active_nodes.flat_map { |node| node.commands.keys }
+        commands << self.class::Stop if self.class.stop_state && stoppable?
+        commands.to_set.freeze
+      end
     end
 
     # Whether an active state accepts +command+. A command dispatched by an

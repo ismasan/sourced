@@ -306,6 +306,22 @@ RSpec.describe 'Sourced::Machine compound states' do
       expect(view.entered_by(:thing)).to equal(events.last)
     end
 
+    it "lists the active states' commands, the part's and the compound state's own" do
+      instance = decided
+      expect(instance.available_commands).to eq(Set[M::PlaceOrder])
+      expect(instance.available_commands).to be_frozen
+      expect(instance.available_commands).to equal(instance.available_commands)
+
+      instance.decide(place)
+      expect(instance.available_commands).to eq(Set[M::StartThing])
+
+      instance.decide(start)
+      expect(instance.available_commands).to eq(Set[M::RestartThing, M::Cancel, thing::Progress, thing::Nudge])
+
+      instance.decide(msg(M::Cancel))
+      expect(instance.available_commands).to be_empty
+    end
+
     it "routes the part's commands and the compound state's own" do
       instance = decided(place, start)
       expect(instance.handles_command?(msg(M::Cancel))).to be(true)
