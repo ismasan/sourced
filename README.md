@@ -767,6 +767,15 @@ How it runs:
 - **`after(delay)`** blocks dispatch commands delivered that long after the state was entered. The delay is seconds (`after(3600)`) or a duration string, as `Message#at` takes it (`after('1h')`, `after('1h30m')`, `after('P1D')`). A timer command delivered after the machine has left that state entry is refused, even where the command is accepted, so timers never need cancelling.
 - **History**: `Working.history` targets a state with regions at the states its regions were last in (`Working.history(deep: true)` restores everything below it); regions with no history take their default entry. History is rebuilt from `exited` on replay.
 - `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.in?(OrderMachine::Paying)`, `machine.in?(:payment, OrderMachine::Paying)`, `machine.in?('placed.payment.paying')`, `machine.current(:payment)`, `machine.entered_by`, `machine.children(LineItemMachine)`.
+- `available_commands` lists the command classes the active states accept (and a child's `Stop` while it applies), as a frozen Set kept until the machine next transitions. Ex. to show the actions a UI offers:
+
+  ```ruby
+  order, _ = Sourced.load(OrderMachine, order_id: 'o1') # placed, paying
+  order.available_commands
+  # => #<Set: {CancelOrder, ExpirePayment, PackItem}>
+  ```
+
+  It lists what the states declare: a handler can still reject a command by raising or stay put with `| nil`, and a timer command is refused once its state entry is left (`handles_command?` checks that).
 
 Definitions are checked when the machine is registered (or first instantiated), raising `Sourced::Machine::DefinitionError`: targets, partition keys, unplaced states, transient states, unreachable guards. After that, the machine's `context`, `evolve`, `before_evolve`, `reaction` and `State` raise too: what it reads is fixed. A stored path that no longer names a state raises `Sourced::Machine::UnresolvablePathError` with the event's type and id, so a state or region name that stored events use can't change (rename the constant instead).
 
