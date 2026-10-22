@@ -355,11 +355,13 @@ module MachineChildrenTest
         stop = LineItemMachine::Stop.new(payload: keys)
         line = LineItemMachine.new(keys)
         expect(line.handles_command?(stop)).to be(false)
+        expect(line.available_commands).not_to include(LineItemMachine::Stop)
 
         line.evolve([LineItemMachine::Started.new(payload: {
           **keys, input: { sku: 'A1' }, trigger: 'start', source: 'initial', target: 'added', exited: [], entered: ['added']
                                                   })])
         expect(line.handles_command?(stop)).to be(true)
+        expect(line.available_commands).to include(LineItemMachine::Stop)
 
         transitioned, finished, *rest = line.decide(stop)
         expect(rest).to be_empty
@@ -367,6 +369,7 @@ module MachineChildrenTest
                                                                           exited: ['added'], **keys).payload)
         expect(finished.payload.to_h).to eq(**keys, final: 'cancelled')
         expect(line.handles_command?(stop)).to be(false)
+        expect(line.available_commands).to be_empty
       end
     end
 
