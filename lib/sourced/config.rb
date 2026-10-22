@@ -37,7 +37,8 @@ module Sourced
   #   reactors.*        one component per registered reactor (see .register)
   #   router            routes to reactors.*. On start, registers consumer groups and
   #                     freezes the error strategy (see Router#setup!)
-  #   topology          message-flow graph of reactors.*, built on each read
+  #   topology          message-flow graph of reactors.*, built on its first read and kept
+  #   topology.graph    holds it (a Topology::Memo), rebuilt with reactors.*
   #   workers.*         count, batch_size, max_drain_rounds, catchup_interval, shutdown_timeout
   #   housekeeping.*    interval, claim_ttl_seconds
   #   dispatcher        spawns workers into the context passed to #start!. On stop (and so on
@@ -164,9 +165,13 @@ module Sourced
           start { |router, _| router.setup! }
         end
 
-        # Dynamic: built when read, as it parses the reactors' source. Most processes never read it
-        c.declare('topology', T::Array)
-        c.config('topology', ['reactors.*']) { |reactors| Topology.build(reactors.values) }
+        # Built on its first read and kept, as it parses the reactors' source and most processes
+        # never read it: topology.graph holds it, and is rebuilt (empty) with the reactors.
+        c.declare('topology.graph', T::Interface[:value])
+        c.config!('topology.graph', ['reactors.*']) { |reactors| Topology::Memo.new(reactors.values) }
+        # Checked, not copied (as T::Array would on every read): readers share the kept graph.
+        c.declare('topology', T::Any[::Array])
+        c.config('topology', ['topology.graph'], &:value)
 
         c.declare('workers.count', T::Integer[0..]) { 2 }
         c.declare('workers.batch_size', T::Integer[1..]) { 50 }
