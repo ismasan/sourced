@@ -16,6 +16,29 @@ module Sourced
     AutomationNode = Struct.new(:type, :id, :name, :group_id, :group_label, :consumes, :produces, keyword_init: true)
     ReadModelNode = Struct.new(:type, :id, :name, :group_id, :group_label, :consumes, :produces, :schema, keyword_init: true)
 
+    # The topology of a set of reactors, built on its first read and kept:
+    # building parses the reactors' source, and most processes never read it.
+    # Concurrent first reads build it once. The graph is frozen, nodes and
+    # their lists included, since every reader shares it.
+    class Memo
+      # @param reactors [Enumerable<Class>]
+      def initialize(reactors)
+        @reactors = reactors
+        @lock = Mutex.new
+        @value = nil
+      end
+
+      # @return [Array<CommandNode, EventNode, AutomationNode, ReadModelNode>]
+      def value
+        @value || @lock.synchronize do
+          @value ||= Topology.build(@reactors).each do |node|
+            node.each { |field| field.freeze if Array === field }
+            node.freeze
+          end.freeze
+        end
+      end
+    end
+
     # Analyze registered reactors and build the topology graph.
     #
     # @param reactors [Enumerable<Class>] reactor classes (Deciders and/or Projectors)
