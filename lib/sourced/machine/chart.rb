@@ -30,7 +30,8 @@ module Sourced
     #   mounts (as regions, or as a compound state's), with +on_final+ by
     #   their root final.
     # * +entry+ and +exit+ count the state's actions; +after+ lists its
-    #   timers' delays in seconds.
+    #   timers' delays as declared: seconds, or a duration string
+    #   (+'30m'+, +'P1D'+; see {NodeBuilder#after}).
     # * A transition to a state's history ({State.history}) targets a
     #   history node in its +states+, as XState's: +type: 'history'+,
     #   +history: 'shallow' | 'deep'+, key +$history+ / +$deep_history+. It's
