@@ -12,8 +12,10 @@ module Sourced
   # visualization, introspection, and Event Modeling diagram generation.
   module Topology
     CommandNode = Struct.new(:type, :id, :name, :group_id, :group_label, :produces, :schema, keyword_init: true)
-    EventNode = Struct.new(:type, :id, :name, :group_id, :group_label, :produces, :schema, keyword_init: true)
-    AutomationNode = Struct.new(:type, :id, :name, :group_id, :group_label, :consumes, :produces, keyword_init: true)
+    # +transition+: a machine's state event, appended as it moves into a state.
+    EventNode = Struct.new(:type, :id, :name, :group_id, :group_label, :produces, :schema, :transition, keyword_init: true)
+    # +state+: for a machine's automation, the path of the state it belongs to.
+    AutomationNode = Struct.new(:type, :id, :name, :group_id, :group_label, :consumes, :produces, :state, keyword_init: true)
     ReadModelNode = Struct.new(:type, :id, :name, :group_id, :group_label, :consumes, :produces, :schema, keyword_init: true)
 
     # The topology of a set of reactors, built on its first read and kept:
@@ -222,8 +224,8 @@ module Sourced
         types.each { |type| add_event_node(event_nodes, command_ids, find_event_class(type), group_id) }
       end
 
-      automation = lambda do |id, name, consumes, produces|
-        nodes << AutomationNode.new(type: 'automation', id: "#{id}-#{group_id}-aut", name:, group_id:, consumes:, produces:)
+      automation = lambda do |state, id, name, consumes, produces|
+        nodes << AutomationNode.new(type: 'automation', id: "#{id}-#{group_id}-aut", name:, group_id:, consumes:, produces:, state:)
       end
 
       # Constants in a block resolve where it's declared: the machine, or a part.
@@ -236,7 +238,7 @@ module Sourced
         # Initial positions take events too.
         node.ons.each_value do |definition|
           event_class = definition.command_class
-          automation.call("#{node.path}-on-#{event_class.type}", "on(#{node.path}, #{event_class.name.split('::').last})",
+          automation.call(node.path, "#{node.path}-on-#{event_class.type}", "on(#{node.path}, #{event_class.name.split('::').last})",
                           [event_class.type], machine_block_produces(machine, analyzer, definition, node.machine))
         end
 
@@ -245,29 +247,29 @@ module Sourced
         entering = [node.key.type]
         leaving = transitions.select { |source, target| exits?(source, target, node) }.map { |_, target| target.key.type }.uniq
         entry_dispatched = dispatched_by.call(node.entries + node.afters.map(&:block), node.machine)
-        automation.call(node.path, "actions(#{node.path})", entering, entry_dispatched) if entry_dispatched.any?
+        automation.call(node.path, node.path, "actions(#{node.path})", entering, entry_dispatched) if entry_dispatched.any?
         exit_dispatched = dispatched_by.call(node.exits, node.machine)
-        automation.call("#{node.path}-exit", "exit(#{node.path})", leaving, exit_dispatched) if exit_dispatched.any?
+        automation.call(node.path, "#{node.path}-exit", "exit(#{node.path})", leaving, exit_dispatched) if exit_dispatched.any?
 
         if node.dones.any?
           finals = node.regions.flat_map { |region| region.nodes.each_value.select(&:final?).map { it.key.type } }
           joined = eventless_closure(machine, node.dones.map(&:target))
-          automation.call("#{node.path}-done", "done(#{node.path})", finals.uniq, joined.map(&:type))
+          automation.call(node.path, "#{node.path}-done", "done(#{node.path})", finals.uniq, joined.map(&:type))
         end
 
         node.children_joins.each do |join|
           child = join.machine
-          automation.call("#{node.path}-children-done-#{child.group_id}", "children_done(#{child.group_id})", [child::Finished.type],
+          automation.call(node.path, "#{node.path}-children-done-#{child.group_id}", "children_done(#{child.group_id})", [child::Finished.type],
                           machine_block_produces(machine, analyzer, join.definition, node.machine))
         end
 
         node.invokes.each do |spec|
-          automation.call("#{node.path}-start-#{spec.machine.group_id}", "start(#{spec.machine.name})",
+          automation.call(node.path, "#{node.path}-start-#{spec.machine.group_id}", "start(#{spec.machine.name})",
                           entering, [spec.machine::Started.type])
-          automation.call("#{node.path}-stop-#{spec.machine.group_id}", "stop(#{spec.machine.name})",
+          automation.call(node.path, "#{node.path}-stop-#{spec.machine.group_id}", "stop(#{spec.machine.name})",
                           leaving, [spec.machine::Stop.type])
           if spec.on_done.any?
-            automation.call("#{node.path}-on-done-#{spec.machine.group_id}", "on_done(#{spec.machine.group_id})", [spec.machine::Finished.type],
+            automation.call(node.path, "#{node.path}-on-done-#{spec.machine.group_id}", "on_done(#{spec.machine.group_id})", [spec.machine::Finished.type],
                             eventless_closure(machine, spec.on_done.values.uniq).map(&:type))
           end
         end
@@ -276,7 +278,7 @@ module Sourced
       machine.tree.children_specs.each do |spec|
         next if spec.invoke? || spec.stop_on.empty?
 
-        automation.call("stop-#{spec.machine.group_id}", "stop(#{spec.machine.name})",
+        automation.call(nil, "stop-#{spec.machine.group_id}", "stop(#{spec.machine.name})",
                         spec.stop_on.map { |node| node.key.type }.uniq, [spec.machine::Stop.type])
       end
     end
@@ -370,7 +372,7 @@ module Sourced
 
       event_nodes[evt_class.type] = EventNode.new(
         type: 'event', id: evt_class.type, name: evt_class.name, group_id:,
-        produces: [], schema: extract_schema(evt_class)
+        produces: [], schema: extract_schema(evt_class), transition: evt_class < Sourced::Machine::State
       )
     end
 
