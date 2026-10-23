@@ -22,6 +22,8 @@ module Sourced
     # at its machine's start. A mounted part's +on_final+ mappings are drawn
     # from its finals, labelled +on_final+. A transition to a state's
     # history goes to the state, its label suffixed +(H)+ (+(H*)+ for deep).
+    # A timer's command taking its own state elsewhere labels that edge
+    # +after 1h / Command+; its other commands are noted on the state.
     #
     #   Sourced::Machine::Mermaid.new(OrderMachine).to_s
     class Mermaid
@@ -45,7 +47,8 @@ module Sourced
 
       def collect_edges
         @tree.all_nodes.each do |node|
-          node.commands.each_value { |definition| handler(node, definition, short_name(definition.command_class)) }
+          node.commands.each_value { |definition| command(node, definition) }
+          timer_notes(node)
           node.ons.each_value { |definition| handler(node, definition, "on #{short_name(definition.command_class)}") }
           @notes[note_node(node)] << "stops #{node.stops.map { short_name(it) }.join(', ')}" if node.stops.any?
           { 'always' => node.always, 'done' => node.dones }.each do |kind, list|
@@ -72,6 +75,31 @@ module Sourced
           edge(node, stop.key, 'Stop', from: stop) unless node.final? || node.initial?
         end
       end
+
+      # A command its own state's timer dispatches labels the edge with the
+      # timer, once per timer.
+      def command(node, definition)
+        label = short_name(definition.command_class)
+        timers = node.afters.select { it.commands.include?(definition.command_class) }
+        return handler(node, definition, label) if timers.empty? || definition.state_targets.empty?
+
+        timers.each { handler(node, definition, "#{timer_label(it)} / #{label}") }
+      end
+
+      # Timer commands with no edge from the timer's state (data-only, or
+      # taken by another state) are noted on it.
+      def timer_notes(node)
+        node.afters.each do |timer|
+          timer.commands.each do |command|
+            next if node.commands[command]&.state_targets&.any?
+
+            @notes[node] << "#{timer_label(timer)} / #{short_name(command)}"
+          end
+        end
+      end
+
+      # The delay as declared: a duration string, or seconds.
+      def timer_label(timer) = "after #{String === timer.delay ? timer.delay : "#{timer.delay}s"}"
 
       # A handler's edges, or a note for a data-only one that starts children.
       def handler(node, definition, label)

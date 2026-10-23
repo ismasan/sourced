@@ -222,7 +222,7 @@ module MachineTopologyTest
             state "cancelled" as cancelled
             [*] --> opened : Open
             opened --> booked : Book
-            opened --> cancelled : Cancel
+            opened --> cancelled : after 1h / Cancel
             booked --> cancelled : Cancel
             booked --> done : done
             done --> [*]
