@@ -43,6 +43,8 @@ module MachineTopologyTest
 
     state Opened do
       entry { |_s, _evt| dispatch Remind }
+      # Its commands are declared, whatever the block does.
+      after('1h' => Cancel) { |_s, _evt| nil }
       command(Note) { |_s, _cmd| event Noted }
       command AddLeg, starts: LegMachine
       command Book => Booked
@@ -90,7 +92,7 @@ module MachineTopologyTest
       end
 
       it 'describes actions, joins and stopping children as automations, consuming the states that run them' do
-        expect(automation('actions(opened)')).to have_attributes(consumes: [trip(:opened)], produces: [t(:remind)])
+        expect(automation('actions(opened)')).to have_attributes(consumes: [trip(:opened)], produces: [t(:remind), t(:cancel)])
         # Exit actions run on the transitions that leave the state, not on entering it.
         expect(automation('exit(booked)')).to have_attributes(consumes: [trip(:cancelled), trip(:done)], produces: [t(:archive)])
         expect(automation('done(booked)')).to have_attributes(consumes: [trip(:paid), trip(:shipped)], produces: [trip(:done)])

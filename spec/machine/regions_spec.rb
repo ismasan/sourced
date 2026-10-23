@@ -100,7 +100,7 @@ module MachineRegionsTest
         state Charging do
           entry { |order, _evt| dispatch ChargeCard, card: order.card }
           exit { |_order, _evt| dispatch VoidPayment }
-          after(3600) { |_order, _evt| dispatch ExpirePayment }
+          after(3600 => ExpirePayment)
           command ExpirePayment => Cancelled               # an ancestor region's state
           command Abort => Cancelled
           command CapturePayment => Captured

@@ -69,7 +69,7 @@ module MachineCompoundTest
 
       started Begun do
         entry { |_context, _evt| dispatch NotifyThingStarted }
-        after(60) { |order, _evt| dispatch Nudge, thing_id: order.fetch(:thing_id) }
+        after(60 => Nudge) { |order, _evt| dispatch Nudge, thing_id: order.fetch(:thing_id) }
         command Progress => Progressed
         command Nudge => Progressed
       end
@@ -195,7 +195,7 @@ module MachineCompoundTest
 
         started Outline do
           entry { |_context, _evt| dispatch NotifyOutline }
-          after(30) { |_context, _evt| dispatch RemindOutline }
+          after(30 => RemindOutline)
           command(RemindOutline) { |_context, _cmd| nil }
           command Propose => Proposed
         end
@@ -216,7 +216,7 @@ module MachineCompoundTest
         on_final ItineraryMachine::Agreed => Finalised
         entry { |_context, _evt| dispatch NotifyItinerary }
         exit { |_context, _evt| dispatch LeftItinerary }
-        after(60) { |_context, _evt| dispatch RemindItinerary }
+        after(60 => RemindItinerary)
         command(RemindItinerary) { |_context, _cmd| nil }
       end
 

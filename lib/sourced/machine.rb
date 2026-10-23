@@ -115,6 +115,9 @@ module Sourced
     # starts fewer children than it declares.
     StartError = Class.new(Error)
 
+    # Raised when an +after+ block dispatches a command its timer doesn't declare.
+    TimerError = Class.new(Error)
+
     # Raised when a machine builds an event that isn't valid.
     InvalidEventError = Class.new(Error)
 
@@ -318,7 +321,9 @@ module Sourced
     # A delayed action: runs when its state is entered, and future-dates
     # what it dispatches by +delay+ from the entering transition. +delay+ is as
     # declared: seconds, or a duration string; +duration+ is the parsed string.
-    After = Data.define(:delay, :duration, :block) do
+    # +commands+ are what it may dispatch; without a +block+, it dispatches
+    # each of them.
+    After = Data.define(:delay, :duration, :commands, :block) do
       # @param time [Time] the entering transition's +created_at+
       # @return [Time] when what the block dispatches is delivered
       def from(time) = duration ? duration.add_to_time(time).to_local_time : time + delay
@@ -496,31 +501,41 @@ module Sourced
       # @yield [context, transition]
       def exit(&block) = @node.exits << block
 
-      # Runs when the machine enters this state, as a reaction. Messages it
-      # dispatches are delivered +delay+ after the entering transition, and
+      # Dispatches +commands+ when the machine enters this state, as a
+      # reaction. They're delivered +delay+ after the entering transition, and
       # carry its id: a command delivered after the machine has left that
       # state entry is stale, and refused (see {Machine#handles_command?}).
       #
       #   state AwaitingPayment do
-      #     after(3600) { |_context, _transition| dispatch ExpirePayment }
+      #     after '1h' => ExpirePayment
       #     command ExpirePayment => Expired
       #   end
+      #
+      # Without a block, each declared command is dispatched with the
+      # partition keys as its payload. A block dispatches them itself, and only
+      # the declared ones ({TimerError}):
+      #
+      #   after('1h' => Remind | ExpirePayment) { |order, _transition| dispatch Remind, email: order[:email] }
       #
       # The delay is seconds, or a duration string as {Sourced::Message#at}
       # takes it (+'30m'+, +'1h30m'+, +'P1D'+).
       #
-      # @param delay [Numeric, String]
+      # @param declaration [Hash{Numeric, String => Class, Plumb::Or}] delay => command(s)
       # @yield [context, transition]
-      def after(delay, &block)
+      def after(declaration, &block)
         raise DefinitionError, "#{@machine}: the initial position is never entered, so no timers" if @node.initial?
 
-        duration = Fugit.parse_duration(delay) if delay.is_a?(String)
-        unless delay.is_a?(Numeric) || duration
+        delay, declared =
+          case declaration
+          in Hash if declaration.size == 1 then declaration.first
+          else raise DefinitionError, "#{@machine}: after declares what it dispatches, ex. after('1h' => Command), got #{declaration.inspect}"
+          end
+        duration = Fugit.parse_duration(delay) if String === delay
+        unless Numeric === delay || duration
           raise DefinitionError, "#{@machine}: after needs seconds or a duration string (ex. '30m', 'PT1H'), got #{delay.inspect}"
         end
-        raise DefinitionError, "#{@machine}: after(#{delay.inspect}) needs a block" unless block
 
-        @node.afters << After.new(delay:, duration:, block:)
+        @node.afters << After.new(delay:, duration:, commands: __timer_commands(delay, declared).uniq, block:)
       end
 
       # Declare a region, active while this state is. A state with
@@ -678,6 +693,15 @@ module Sourced
         raise DefinitionError, "#{@machine}: invalid declaration #{declaration.inspect}, #{arrow.inspect}" if arrow.any?
 
         declaration
+      end
+
+      # +after('1h' => A | B)+: a command, or a union of them.
+      private def __timer_commands(delay, declared)
+        case declared
+        in Plumb::Or then declared.children.flat_map { __timer_commands(delay, it) }
+        in Class if declared < Sourced::Command then [declared]
+        else raise DefinitionError, "#{@machine}: after(#{delay.inspect}) dispatches commands, got #{declared.inspect}"
+        end
       end
     end
 
@@ -1332,6 +1356,7 @@ module Sourced
           raise DefinitionError, "#{self}: start #{start_state} must be a state of the root region"
         end
 
+        accepted = handled_commands.to_set
         tree.all_nodes.each do |node|
           raise DefinitionError, "#{self}: final state #{node.label} can't accept commands" if node.final? && node.commands.any?
           raise DefinitionError, "#{self}: final state #{node.label} can't take events" if node.final? && node.ons.any?
@@ -1345,6 +1370,7 @@ module Sourced
             definition.state_targets.each { |target| __check_target!(tree, node, target) }
           end
           __check_transient!(node) if node.transient?
+          node.afters.each { |timer| __check_timer!(node, timer, accepted) }
           node.always.each { |eventless| __check_target!(tree, node, eventless.target) }
           __check_join!(tree, node) if node.dones.any? || node.regions.any?
           node.children_joins.each { |join| __check_children_join!(tree, node, join) }
@@ -1439,6 +1465,22 @@ module Sourced
 
         raise DefinitionError,
               "#{self}: #{label} starts #{child} without a block, so it must declare #{child}'s keys #{missing.join(', ')}"
+      end
+
+      # A timer's commands are accepted somewhere, or they'd never be handled.
+      # Without a block, they're built from the partition keys alone.
+      def __check_timer!(node, timer, accepted)
+        label = "#{node.label}'s after(#{timer.delay.inspect})"
+        timer.commands.each do |command|
+          raise DefinitionError, "#{self}: #{label} dispatches #{command}, which no state accepts" unless accepted.include?(command)
+          next if timer.block
+
+          missing = (command::Payload._schema.resolve({}).errors || {}).keys - partition_keys
+          next if missing.empty?
+
+          raise DefinitionError,
+                "#{self}: #{label} dispatches #{command} without a block, so it can't fill #{command}'s #{missing.join(', ')}"
+        end
       end
 
       def __check_join!(tree, node)
@@ -1996,8 +2038,18 @@ module Sourced
 
       node.afters.each do |timer|
         started = @__reaction_dispatchers.size
-        instance_exec(context, transition, &timer.block)
+        if timer.block
+          instance_exec(context, transition, &timer.block)
+        else
+          timer.commands.each { |command| dispatch command }
+        end
         @__reaction_dispatchers.drop(started).each do |dispatcher|
+          dispatched = dispatcher.message.class
+          unless timer.commands.include?(dispatched)
+            raise TimerError, "#{self.class}: #{node.path}'s after(#{timer.delay.inspect}) dispatched #{dispatched}, " \
+                              "but declares #{timer.commands.join(' | ')}"
+          end
+
           dispatcher.at(timer.from(transition.created_at)).with_metadata(ENTERED_BY => transition.id, ENTERED_AT => node.path)
         end
       end

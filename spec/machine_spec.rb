@@ -147,7 +147,7 @@ module MachineTest
     end
 
     state Open do
-      after(3600) { |_cart, _transition| dispatch Expire }
+      after(3600 => Expire)
       command Expire => Expired
       command Checkout => Ordered
       command Reopen => Open # re-entry
@@ -697,7 +697,11 @@ RSpec.describe Sourced::Machine do
     it 'takes the delay as a duration string' do
       timed = machine do
         initial { command OpenCart => :open }
-        state(:open) { after('1h30m') { |_cart, _transition| dispatch Expire } }
+        state(:open) do
+          after('1h30m' => Expire)
+          command Expire => :expired
+        end
+        final :expired
       end
       transition = moved(timed, 'machine_test.open_cart', from: 'initial', to: 'open', cart_id: 'c1')
       expire, = timed.new(cart_id: 'c1').tap { |m| m.evolve([transition]) }.__react(transition)
@@ -754,10 +758,91 @@ RSpec.describe Sourced::Machine do
     end
 
     it 'rejects timers on the initial position, and without a delay or block' do
-      expect { machine { initial { after(60) { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /no timers/)
-      expect { machine { state(:open) { after('soon') { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
-      expect { machine { state(:open) { after(:soon) { nil } } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
-      expect { machine { state(:open) { after(60) } } }.to raise_error(Sourced::Machine::DefinitionError, /needs a block/)
+      expect { machine { initial { after(60 => Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /no timers/)
+      expect { machine { state(:open) { after('soon' => Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
+      expect { machine { state(:open) { after(soon: Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
+    end
+
+    it 'rejects timers that declare no commands' do
+      expect { machine { state(:open) { after(60) { dispatch Expire } } } }.to raise_error(Sourced::Machine::DefinitionError, /declares what it dispatches/)
+      expect { machine { state(:open) { after(60 => Expire, 120 => Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /declares what it dispatches/)
+      expect { machine { state(:open) { after(60 => CartOpened) } } }.to raise_error(Sourced::Machine::DefinitionError, /dispatches commands/)
+      expect { machine { state(:open) { after(60 => nil) } } }.to raise_error(Sourced::Machine::DefinitionError, /dispatches commands/)
+    end
+
+    it 'takes a union of commands' do
+      timed = machine do
+        initial { command OpenCart => :open }
+        state(:open) do
+          after(60 => Expire | Checkout)
+          command Expire => :closed
+          command(Checkout) { nil }
+        end
+        final :closed
+      end
+      transition = moved(timed, 'machine_test.open_cart', from: 'initial', to: 'open', cart_id: 'c1')
+      dispatched = timed.new(cart_id: 'c1').tap { |m| m.evolve([transition]) }.__react(transition)
+
+      expect(dispatched.map(&:class)).to eq([Expire, Checkout])
+      expect(dispatched.map { it.payload.cart_id }).to eq(%w[c1 c1])
+      expect(timed.to_h.dig(:states, 'open', :after)).to eq([{ delay: 60, dispatches: [Expire.type, Checkout.type] }])
+    end
+
+    it 'dispatches what a block builds, from the declared commands only' do
+      timed = machine do
+        initial { command OpenCart => :open }
+        state(:open) do
+          after(60 => Expire | Checkout) { |_cart, _transition| dispatch Checkout }
+          command Expire => :closed
+          command(Checkout) { nil }
+        end
+        final :closed
+      end
+      transition = moved(timed, 'machine_test.open_cart', from: 'initial', to: 'open', cart_id: 'c1')
+      dispatched = timed.new(cart_id: 'c1').tap { |m| m.evolve([transition]) }.__react(transition)
+      expect(dispatched.map(&:class)).to eq([Checkout])
+
+      undeclared = machine do
+        initial { command OpenCart => :open }
+        state(:open) do
+          after(60 => Expire) { |_cart, _transition| dispatch Checkout }
+          command Expire => :closed
+          command(Checkout) { nil }
+        end
+        final :closed
+      end
+      transition = moved(undeclared, 'machine_test.open_cart', from: 'initial', to: 'open', cart_id: 'c1')
+      instance = undeclared.new(cart_id: 'c1').tap { |m| m.evolve([transition]) }
+      expect { instance.__react(transition) }.to raise_error(Sourced::Machine::TimerError, /dispatched MachineTest::Checkout, but declares MachineTest::Expire/)
+    end
+
+    it 'rejects timer commands no state accepts' do
+      timed = machine do
+        initial { command OpenCart => :open }
+        state(:open) { after(60 => Expire) }
+      end
+
+      expect { timed.validate! }.to raise_error(Sourced::Machine::DefinitionError, /dispatches MachineTest::Expire, which no state accepts/)
+    end
+
+    it 'rejects blockless timers whose commands need more than the partition keys' do
+      timed = machine do
+        initial { command OpenCart => :open }
+        state(:open) do
+          after(60 => AddItem)
+          command(AddItem) { nil }
+        end
+      end
+      expect { timed.validate! }.to raise_error(Sourced::Machine::DefinitionError, /without a block, so it can't fill MachineTest::AddItem's sku, qty, unit_price/)
+
+      with_block = machine do
+        initial { command OpenCart => :open }
+        state(:open) do
+          after(60 => AddItem) { |_cart, _transition| dispatch AddItem, sku: 's', qty: 1, unit_price: 1 }
+          command(AddItem) { nil }
+        end
+      end
+      expect { with_block.validate! }.not_to raise_error
     end
 
     describe 'on a store' do

@@ -12,7 +12,10 @@ module MachineUnresolvablePathsTest
     Opened = State(:opened)
 
     initial { command Open => Opened }
-    state(Opened) { after(60) { dispatch Tick } }
+    state Opened do
+      after(60 => Tick)
+      command(Tick) { nil }
+    end
   end
 end
 

@@ -246,7 +246,7 @@ module Sourced
 
         entering = [node.key.type]
         leaving = transitions.select { |source, target| exits?(source, target, node) }.map { |_, target| target.key.type }.uniq
-        entry_dispatched = dispatched_by.call(node.entries + node.afters.map(&:block), node.machine)
+        entry_dispatched = (dispatched_by.call(node.entries, node.machine) + node.afters.flat_map { |timer| timer.commands.map(&:type) }).uniq
         automation.call(node.path, node.path, "actions(#{node.path})", entering, entry_dispatched) if entry_dispatched.any?
         exit_dispatched = dispatched_by.call(node.exits, node.machine)
         automation.call(node.path, "#{node.path}-exit", "exit(#{node.path})", leaving, exit_dispatched) if exit_dispatched.any?
