@@ -766,7 +766,7 @@ How it runs:
 - **Entry and exit actions are reactions**, run when the machine claims the state event, after the deciding transaction committed, and see the latest state. Leaving a state exits its active regions first. A transient state's entry actions run after the machine has already left it. They're skipped while replaying.
 - **`after(delay)`** blocks dispatch commands delivered that long after the state was entered. The delay is seconds (`after(3600)`) or a duration string, as `Message#at` takes it (`after('1h')`, `after('1h30m')`, `after('P1D')`). A timer command delivered after the machine has left that state entry is refused, even where the command is accepted, so timers never need cancelling.
 - **History**: `Working.history` targets a state with regions at the states its regions were last in (`Working.history(deep: true)` restores everything below it); regions with no history take their default entry. History is rebuilt from `exited` on replay.
-- `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.in?(OrderMachine::Paying)`, `machine.in?(:payment, OrderMachine::Paying)`, `machine.in?('placed.payment.paying')`, `machine.current(:payment)`, `machine.entered_by`, `machine.children(LineItemMachine)`.
+- `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.paths`, `machine.in?(OrderMachine::Paying)`, `machine.in?(:payment, OrderMachine::Paying)`, `machine.in?('placed.payment.paying')`, `machine.current(:payment)`, `machine.entered_by`, `machine.children(LineItemMachine)`.
 - `available_commands` lists the command classes the active states accept (and a child's `Stop` while it applies), as a frozen Set kept until the machine next transitions. Ex. to show the actions a UI offers:
 
   ```ruby
@@ -776,6 +776,41 @@ How it runs:
   ```
 
   It lists what the states declare: a handler can still reject a command by raising or stay put with `| nil`, and a timer command is refused once its state entry is left (`handles_command?` checks that).
+
+**Read-only configurations.** A machine's configuration is the paths of its active states: JSON-native strings, outermost first, that can be stored and read back later without loading the machine's history. `machine.paths` returns them from an instance, and `OrderMachine.configuration(paths)` reads them back against the machine's definition:
+
+```ruby
+order, _ = Sourced.load(OrderMachine, order_id: 'o1')
+paths = order.machine.paths # => ["placed", "placed.payment.paying"]
+# ... stored as JSON, with a record, in a cache …
+
+config = OrderMachine.configuration(paths)
+config.available_commands # => #<Set: {CancelOrder, ExpirePayment, PackItem}>
+config.value              # => { OrderMachine::Placed => { payment: OrderMachine::Paying, shipping: :initial } }
+config.in?(OrderMachine::Paying) # => true
+```
+
+An instance's `machine` is a configuration too, read live: it changes as the instance decides. `configuration(paths)` is detached, and the same at any point.
+
+A projection can keep the paths without loading the machine at all: each state event's `exited` and `entered` paths update them, ex. for every record a listing shows:
+
+```ruby
+class OrderListing < Sourced::Projector::StateStored
+  partition_by :order_id
+
+  context { {} }
+
+  OrderMachine.transition_classes.each do |klass|
+    evolve(klass) do |order, evt|
+      order[:machine] = (order.fetch(:machine, []) - evt.payload.exited) | evt.payload.entered
+    end
+  end
+end
+
+OrderMachine.configuration(order[:machine]).available_commands
+```
+
+A `Sourced::Machine::Configuration` is read-only: `paths`, `value`, `in?`, `current`, `final?` and `available_commands` (an instance's `machine` adds `entered_by` and `children`). It has no domain context, history or children, so it tells what the active states accept, not whether a command would succeed. Stored paths depend on state and region names, as stored state events do: paths that don't resolve raise `UnresolvablePathError`; an initial position, a state in an inactive region, or two states in one region raise `ArgumentError`.
 
 Definitions are checked when the machine is registered (or first instantiated), raising `Sourced::Machine::DefinitionError`: targets, partition keys, unplaced states, transient states, unreachable guards. After that, the machine's `context`, `evolve`, `before_evolve`, `reaction` and `State` raise too: what it reads is fixed. A stored path that no longer names a state raises `Sourced::Machine::UnresolvablePathError` with the event's type and id, so a state or region name that stored events use can't change (rename the constant instead).
 
