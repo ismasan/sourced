@@ -714,9 +714,34 @@ module Sourced
       end
     end
 
-    # Read-only view of a machine's runtime state, available as {#machine}.
-    class View
-      def initialize(runtime) = @runtime = runtime
+    # A machine's configuration: where its regions are, read against its
+    # definition. {.configuration} builds one from the paths of the active
+    # states (+machine.paths+ of a loaded instance, or the +exited+ / +entered+
+    # paths of its state events, kept by a projection), to inspect a machine
+    # without loading its history. It has no domain context, history,
+    # children or entry events, so it tells what the active states accept,
+    # not whether a command would succeed.
+    class Configuration
+      # @param machine [Class<Machine>]
+      # @param runtime [Runtime]
+      def initialize(machine, runtime)
+        @machine = machine
+        @runtime = runtime
+      end
+
+      # The paths of the active states, outermost first: what {.configuration} takes.
+      # @return [Array<String>]
+      def paths = @runtime.active_nodes.reject(&:initial?).map(&:path)
+
+      # The command classes the active states accept, and +Stop+ while it
+      # applies (the machine has started and isn't final).
+      #
+      # @return [Set<Class>]
+      def available_commands
+        commands = @runtime.active_nodes.flat_map { |node| node.commands.keys }
+        commands << @machine::Stop if @machine.stop_state && !@runtime.current_node(@runtime.root).initial? && !final?
+        commands.to_set.freeze
+      end
 
       # The current configuration: a state (or +:initial+), or for a
       # state with regions, +{ state => { region_name => value, … } }+,
@@ -745,12 +770,6 @@ module Sourced
       # Whether the root region is at a final state.
       def final? = @runtime.current_node(@runtime.root).final?
 
-      # @overload children(child)
-      #   @return [Array<ChildRef>] the children of machine +child+, started by handlers or by any state (see {ChildRef#at})
-      # @overload children
-      #   @return [Hash{Class<Machine> => Array<ChildRef>}] every child, by machine
-      def children(child = nil) = child ? @runtime.children(child) : @runtime.all_children
-
       # The state the root region, or the active region named
       # +region_name+, is at: a handle, or +:initial+; nil when no region of
       # that name is active.
@@ -758,6 +777,16 @@ module Sourced
         region = region_name ? @runtime.active_regions.find { |r| r.name == region_name } : @runtime.root
         region && @runtime.current_node(region).key
       end
+    end
+
+    # Read-only view of a machine's runtime state, available as {#machine}:
+    # its {Configuration}, and the transitions and children behind it.
+    class View < Configuration
+      # @overload children(child)
+      #   @return [Array<ChildRef>] the children of machine +child+, started by handlers or by any state (see {ChildRef#at})
+      # @overload children
+      #   @return [Hash{Class<Machine> => Array<ChildRef>}] every child, by machine
+      def children(child = nil) = child ? @runtime.children(child) : @runtime.all_children
 
       # The transition that entered the current state of the root region,
       # or of the active region named +region_name+ (nil while it's at its
@@ -837,6 +866,30 @@ module Sourced
       def active_entry_of?(node, event_id) = active_node?(node) && entered_by(node.region)&.id == event_id
 
       def value = value_of(root)
+
+      # Position the regions at the states at +paths+, outermost first, as
+      # {Configuration} takes them. For a fresh runtime: nothing is recorded
+      # as entering them.
+      #
+      # @param paths [Array<String>] the paths of the active states
+      # @raise [UnresolvablePathError] if a path doesn't resolve
+      # @raise [ArgumentError] for an initial position, a state in an inactive region, or two states in one region
+      def place(paths)
+        nodes = paths.map { |path| @tree.node_at(path) }
+        nodes.sort_by { |node| node.region.depth }.each do |node|
+          raise ArgumentError, "#{@root.machine}: #{node.path} is an initial position, not a state" if node.initial?
+          raise ArgumentError, "#{@root.machine}: #{node.path} is in an inactive region" unless active?(node.region)
+
+          pos = position(node.region)
+          unless pos.current == INITIAL
+            raise ArgumentError, "#{@root.machine}: #{node.path} and #{current_node(node.region).path} are in one region"
+          end
+
+          pos.current = node.key
+          pos.visited << node.key
+        end
+        self
+      end
 
       # What moving from +source+ to +target+ leaves and enters, given the
       # current configuration. The transition's domain is the innermost region
@@ -1134,6 +1187,20 @@ module Sourced
         types = handled_messages_for_evolve
         evolvable = new_messages.select { |msg| types.include?(msg.to_message.class) }
         __process(partition_values, new_messages, history.messages + evolvable, guard: history.guard, replaying:)
+      end
+
+      # The configuration at the states at +paths+, read-only: ex. what the
+      # active states accept, for a record a projection keeps the paths of.
+      #
+      #   OrderMachine.configuration(['placed', 'placed.payment.paying']).available_commands
+      #
+      # @param paths [Array<String>] the paths of the active states, as {Configuration#paths} returns them
+      # @return [Configuration]
+      # @raise [UnresolvablePathError] if a path doesn't resolve
+      # @raise [ArgumentError] for an initial position, a state in an inactive region, or two states in one region
+      def configuration(paths)
+        validate!
+        Configuration.new(self, Runtime.new(tree).place(paths))
       end
 
       # Load a machine instance and return its configuration and domain context.
@@ -1462,7 +1529,7 @@ module Sourced
     # Read-only view of the runtime state: the current configuration, the
     # transitions that entered it, and whether it's final.
     # @return [View]
-    def machine = View.new(@runtime)
+    def machine = View.new(self.class, @runtime)
 
     # The machine's definition as {.to_h} returns it, with this instance's
     # status filled in. See {Chart}.
@@ -1486,16 +1553,11 @@ module Sourced
     end
 
     # The command classes the active states accept, and +Stop+ while it
-    # applies. Memoized until the machine next transitions.
+    # applies (see {Configuration#available_commands}). Memoized until the
+    # machine next transitions.
     #
     # @return [Set<Class>]
-    def available_commands
-      @available_commands ||= begin
-        commands = @runtime.active_nodes.flat_map { |node| node.commands.keys }
-        commands << self.class::Stop if self.class.stop_state && stoppable?
-        commands.to_set.freeze
-      end
-    end
+    def available_commands = @available_commands ||= machine.available_commands
 
     # Whether an active state accepts +command+. A command dispatched by an
     # +after+ block is refused once the machine has left the state entry
