@@ -689,7 +689,7 @@ class OrderMachine < Sourced::Machine
 
       state Paying do
         entry { |order, _evt| dispatch ChargeCard, card: order.card }  # order_id filled in
-        after('1h') { |_order, _evt| dispatch ExpirePayment }
+        after('1h' => ExpirePayment)        # order_id filled in
         on PaymentCaptured => Paid          # appended by a payments reactor
         command ExpirePayment => Cancelled  # an ancestor region's state: exits both regions
       end
@@ -764,7 +764,7 @@ How it runs:
 - **`on Event => Target`** moves the machine when it claims an event another reactor appended, while the state is active. It's decided like a command (same targets, `to`, `nil`; the block gets `(context, event)`), under the claim's guard, and never while replaying. The event must carry the machine's partition keys.
 - **Eventless steps** (`always`, mounted parts' `on_final`, `done`, `children_done`, starting states' children) run after every decision until none applies, each appending its own state event, all in the decision's transaction. Guards see the context with the decision's events applied.
 - **Entry and exit actions are reactions**, run when the machine claims the state event, after the deciding transaction committed, and see the latest state. Leaving a state exits its active regions first. A transient state's entry actions run after the machine has already left it. They're skipped while replaying.
-- **`after(delay)`** blocks dispatch commands delivered that long after the state was entered. The delay is seconds (`after(3600)`) or a duration string, as `Message#at` takes it (`after('1h')`, `after('1h30m')`, `after('P1D')`). A timer command delivered after the machine has left that state entry is refused, even where the command is accepted, so timers never need cancelling.
+- **`after(delay => Command)`** dispatches commands delivered that long after the state was entered. The delay is seconds (`after(3600 => Expire)`) or a duration string, as `Message#at` takes it (`'1h'`, `'1h30m'`, `'P1D'`). The commands are declared, so they show in the topology and `to_h`, and some state must accept them. Without a block, each is dispatched with the partition keys as its payload (so it can't require more). A block dispatches them itself, and only the declared ones (`Machine::TimerError`): `after('1h' => Remind | Expire) { |order, _evt| dispatch Remind, email: order[:email] }`. A timer command delivered after the machine has left that state entry is refused, even where the command is accepted, so timers never need cancelling.
 - **History**: `Working.history` targets a state with regions at the states its regions were last in (`Working.history(deep: true)` restores everything below it); regions with no history take their default entry. History is rebuilt from `exited` on replay.
 - `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.paths`, `machine.in?(OrderMachine::Paying)`, `machine.in?(:payment, OrderMachine::Paying)`, `machine.in?('placed.payment.paying')`, `machine.current(:payment)`, `machine.entered_by`, `machine.children(LineItemMachine)`.
 - `available_commands` lists the command classes the active states accept (and a child's `Stop` while it applies), as a frozen Set kept until the machine next transitions. Ex. to show the actions a UI offers:

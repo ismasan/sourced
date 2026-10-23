@@ -177,7 +177,7 @@ module MachineAcceptanceHoliday
     end
 
     state ItineraryReady do
-      after(HOLD_SECONDS) { |_trip, _transition| dispatch ExpireHold }
+      after(HOLD_SECONDS => ExpireHold)
 
       # A card ending in 0000 is declined, and checkout stays where it is, hold
       # timer included. Any other is charged.
@@ -318,7 +318,7 @@ module MachineAcceptanceHoliday
 
     state Quoted do
       entry { |_tour, _evt| dispatch EmailQuote }
-      after(REMINDER_SECONDS) { |_tour, _evt| dispatch RemindTraveller }
+      after(REMINDER_SECONDS => RemindTraveller)
       command(RemindTraveller) { |_tour, _cmd| event TravellerReminded }
       command ReviseItinerary => Outlining
       command AcceptQuote => Accepted
@@ -352,7 +352,7 @@ module MachineAcceptanceHoliday
     initial { command HoldSeats => SeatsHeld }
 
     state SeatsHeld do
-      after(SEAT_HOLD_SECONDS) { |_tour, _evt| dispatch ReleaseSeats }
+      after(SEAT_HOLD_SECONDS => ReleaseSeats)
       on SeatsTicketed => Ticketed
       command ReleaseSeats => Released
     end
@@ -445,7 +445,7 @@ module MachineAcceptanceHoliday
     end
 
     state OnHold do
-      after(PAUSE_SECONDS) { |_tour, _evt| dispatch CancelTour }
+      after(PAUSE_SECONDS => CancelTour)
       command ResumeTour => PlanningMachine.history(deep: true)
       command ReopenPlanning => PlanningMachine.history
       command CancelTour => Cancelled

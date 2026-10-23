@@ -78,7 +78,8 @@ module MachineChartTest
 
     state Opened do
       entry { |_s, _evt| dispatch Remind }
-      after(60) { |_s, _evt| dispatch Remind }
+      after(60 => Remind)
+      command(Remind) { nil }
       command(Note) { |_s, _cmd| event Noted }
       command AddLeg, starts: LegMachine
       command Quote => Quoted | Rejected | nil do |_s, _cmd|
@@ -254,7 +255,7 @@ module MachineChartTest
         opened = chart[:states]['opened']
         expect(opened).to include(
           id: 'opened', key: 'opened', type: 'atomic', machine: 'MachineChartTest::TripMachine',
-          entry: 1, exit: 0, after: [{ delay: 60 }], on_done: nil, invoke: [], mounts: [], states: {}, status: nil,
+          entry: 1, exit: 0, after: [{ delay: 60, dispatches: [t(:remind)] }], on_done: nil, invoke: [], mounts: [], states: {}, status: nil,
           children_done: [{ id: 'MachineChartTest::LegMachine', targets: ['legs_done'], starts: [], starts_optional: false }]
         )
         expect(opened).not_to include(:message_type, :class)

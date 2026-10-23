@@ -287,7 +287,7 @@ RSpec.describe 'Sourced::Machine always' do
         final :b
       end
       with_timer = machine do
-        state(:a) { always :b; after(60) { dispatch MA::ConfirmTrip } }
+        state(:a) { always :b; after(60 => MA::ConfirmTrip) }
         final :b
       end
 
