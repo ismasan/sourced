@@ -816,6 +816,28 @@ RSpec.describe Sourced::Machine do
       expect { instance.__react(transition) }.to raise_error(Sourced::Machine::TimerError, /dispatched MachineTest::Checkout, but declares MachineTest::Expire/)
     end
 
+    it 'labels the edge a timer takes from its state, and notes its other commands' do
+      timed = machine do
+        initial { command OpenCart => :open }
+        state(:open) do
+          after('15m' => Checkout)
+          after(3600 => Expire)
+          after('2h' => Reopen)
+          command(Checkout) { nil }
+          command Expire => :closed
+          command Pay => :paid
+        end
+        state(:paid) { command Reopen => :open }
+        final :closed
+      end
+      lines = timed.to_mermaid.lines.map(&:chomp)
+
+      expect(lines).to include('  open --> closed : after 3600s / Expire')
+      expect(lines).not_to include('  open --> closed : Expire')
+      expect(lines).to include('  paid --> open : Reopen')
+      expect(lines.each_cons(4)).to include(['  note right of open', '    after 15m / Checkout', '    after 2h / Reopen', '  end note'])
+    end
+
     it 'rejects timer commands no state accepts' do
       timed = machine do
         initial { command OpenCart => :open }
