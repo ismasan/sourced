@@ -15,6 +15,15 @@ module Sourced
       end
     end
 
+    # Raised by {Router#setup!} for a reactor whose +to_sourced_reactors+ names
+    # reactors that aren't registered, ex. a machine's children
+    class MissingReactorsError < Sourced::Error
+      def initialize(reactor, missing)
+        super("#{reactor} needs #{missing.join(', ')} registered with this router too. " \
+              "Sourced.register(#{reactor}) registers them with it")
+      end
+    end
+
     attr_reader :store, :reactors, :error_strategy
 
     # @param store [Config::StoreInterface]
@@ -32,11 +41,17 @@ module Sourced
       reactors.each { |reactor| add(reactor) }
     end
 
-    # Prepare for routing: register the consumer groups of every reactor with
-    # the store, and freeze the error strategy. The store must be ready
-    # (for Store, see {Store#setup!}). Idempotent.
+    # Prepare for routing: check that every reactor's +to_sourced_reactors+
+    # (a machine's children) are registered too, register the consumer groups
+    # of every reactor with the store, and freeze the error strategy. The
+    # store must be ready (for Store, see {Store#setup!}). Idempotent.
     # @return [self]
+    # @raise [MissingReactorsError]
     def setup!
+      @reactors.each do |reactor|
+        missing = ReactorDefaults.expand(reactor) - @reactors
+        raise MissingReactorsError.new(reactor, missing) if missing.any?
+      end
       @reactors.each { |reactor| register_consumer_group(reactor) }
       error_strategy.freeze
       self
@@ -183,6 +198,8 @@ module Sourced
     #   invalid partitioning or exclusive ownership
     def add(reactor_class)
       ReactorDefaults.apply(reactor_class)
+      # Reactors with a definition to check (ex. Sourced::Machine) fail at registration, not on first use.
+      reactor_class.validate! if reactor_class.respond_to?(:validate!)
       if (existing = @reactors.find { |r| r.group_id == reactor_class.group_id })
         raise ArgumentError, "Cannot register #{reactor_class}: #{existing} already uses group_id #{reactor_class.group_id.inspect}"
       end
@@ -202,6 +219,7 @@ module Sourced
           "partition_by or declaring `partition_by :__id`.)"
       end
 
+      PartitionSchema.check!(reactor_class)
       handled_types = reactor_class.handled_messages.map(&:type).uniq
       validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
       validate_command_ownership!(reactor_class)

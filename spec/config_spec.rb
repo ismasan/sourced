@@ -8,6 +8,19 @@ module ConfigTestMessages
   ThingAdded = Sourced::Event.define('config_test.thing_added') do
     attribute :thing_id, String
   end
+
+  AddThing = Sourced::Command.define('config_test.add_thing') do
+    attribute :thing_id, String
+  end
+end
+
+# A reactor with a topology to draw: a command and the event it appends.
+class ConfigTestDecider < Sourced::Decider
+  partition_by :thing_id
+
+  command ConfigTestMessages::AddThing do |_context, cmd|
+    event ConfigTestMessages::ThingAdded, thing_id: cmd.payload.thing_id
+  end
 end
 
 class ConfigTestReactor
@@ -45,7 +58,7 @@ RSpec.describe Sourced::Config do
     it 'declares every component, without building anything' do
       expect(config.index.keys).to include(
         'logger', 'db', 'notifier', 'executor', 'error_strategy', 'store', 'store.table_prefix', 'store.install_tables',
-        'store.codec', 'router', 'topology',
+        'store.codec', 'router', 'topology', 'topology.graph',
         'workers.count', 'workers.batch_size', 'workers.max_drain_rounds', 'workers.catchup_interval',
         'workers.shutdown_timeout',
         'housekeeping.interval', 'housekeeping.claim_ttl_seconds', 'dispatcher',
@@ -96,7 +109,8 @@ RSpec.describe Sourced::Config do
       expect(components['store'][:deps])
         .to eq(%w[db notifier logger store.table_prefix store.install_tables store.codec])
       expect(components['router'][:deps]).to eq(%w[store reactors.ConfigTestReactor error_strategy])
-      expect(components['topology'][:deps]).to eq(%w[reactors.ConfigTestReactor])
+      expect(components['topology'][:deps]).to eq(%w[topology.graph])
+      expect(components['topology.graph'][:deps]).to eq(%w[reactors.ConfigTestReactor])
       expect(components['dispatcher'][:deps]).to include('router', 'workers.count')
       expect(components['dispatcher.catchup_poller'][:deps]).to eq(%w[dispatcher workers.catchup_interval logger])
       expect(components['dispatcher.stale_claim_reaper'][:deps]).to include('dispatcher', 'store', 'housekeeping.interval')
@@ -427,12 +441,89 @@ RSpec.describe Sourced::Config do
       expect(config['topology']).to eq(Sourced::Topology.build([ConfigTestReactor]))
     end
 
-    it 'raises for a reactor already registered under the same key' do
+    it 'builds the topology on its first read, once, and keeps it' do
+      described_class.register(config, ConfigTestDecider)
+      allow(Sourced::Topology).to receive(:build).and_call_original
+      config.build!
+      expect(Sourced::Topology).not_to have_received(:build)
+
+      reads = 8.times.map { Thread.new { config['topology'] } }.map(&:value)
+
+      expect(Sourced::Topology).to have_received(:build).once
+      expect(reads.first.map(&:id)).to eq(%w[config_test.add_thing config_test.thing_added])
+      expect(reads.map(&:object_id).uniq.size).to eq(1)
+      expect(config['topology']).to be(reads.first)
+    end
+
+    it 'freezes the topology its readers share' do
+      described_class.register(config, ConfigTestDecider)
+      config.build!
+      topology = config['topology']
+      command = topology.find { it.type == 'command' }
+
+      expect(topology).to be_frozen
+      expect(command).to be_frozen
+      expect { command.produces << 'x' }.to raise_error(FrozenError)
+    end
+
+    it 'builds the topology again once the reactors are recycled' do
+      described_class.register(config, ConfigTestDecider)
+      config.build!
+      before = config['topology']
+
+      config.recycle_component!('reactors.ConfigTestDecider')
+
+      expect(config['topology']).not_to be(before)
+      expect(config['topology']).to eq(before)
+    end
+
+    it 'skips a reactor already registered under its key' do
+      node = described_class.register(config, ConfigTestReactor)
+
+      expect(described_class.register(config, ConfigTestReactor)).to be(node)
+      config.start!
+      expect(config['router'].reactors).to eq([ConfigTestReactor])
+    end
+
+    it 'raises for a different reactor already registered under the same key' do
       described_class.register(config, ConfigTestReactor)
+      lookalike = Class.new do
+        def self.name = 'ConfigTestLookalike'
+        def self.group_id = 'ConfigTestReactor'
+        def self.handled_messages = []
+        def self.handle_claim(_claim) = []
+      end
+
+      expect {
+        described_class.register(config, lookalike)
+      }.to raise_error(ArgumentError, /\(group_id "ConfigTestReactor"\) as reactors\.ConfigTestReactor: a different reactor/)
+    end
+
+    it 'raises for a reactor whose key was overridden' do
+      described_class.register(config, ConfigTestReactor)
+      config.config!('reactors.ConfigTestReactor') { ConfigTestOtherReactor }
 
       expect {
         described_class.register(config, ConfigTestReactor)
-      }.to raise_error(ArgumentError, /can't register ConfigTestReactor \(group_id "ConfigTestReactor"\) as reactors\.ConfigTestReactor/)
+      }.to raise_error(ArgumentError, /a different reactor/)
+    end
+
+    it 'registers what to_sourced_reactors returns, recursively, returning the first node' do
+      inner = Module.new { def self.to_sourced_reactors = [ConfigTestOtherReactor, ConfigTestReactor] }
+      bundle = Module.new
+      bundle.define_singleton_method(:to_sourced_reactors) { [ConfigTestReactor, inner] }
+
+      node = described_class.register(config, bundle)
+      config.start!
+
+      expect(node.path).to eq('reactors.ConfigTestReactor')
+      expect(config['router'].reactors).to eq([ConfigTestReactor, ConfigTestOtherReactor])
+    end
+
+    it 'raises when to_sourced_reactors returns nothing' do
+      empty = Module.new { def self.to_sourced_reactors = [] }
+
+      expect { described_class.register(config, empty) }.to raise_error(ArgumentError, /returned no reactors/)
     end
 
     it 'names the reactor when distinct group_ids map to the same key' do

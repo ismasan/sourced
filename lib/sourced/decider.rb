@@ -26,10 +26,11 @@ module Sourced
 
       # Register a command handler.
       #
-      # @param message_class [Class] commands class to handle
+      # @param declared [Class, #to_message_class] command class to handle (see {Sourced::Message.to_message_class})
       # @yield [context, message] command handler block
       # @return [void]
-      def command(message_class, &block)
+      def command(declared, &block)
+        message_class = declared.to_message_class
         handled_commands << message_class
         define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
       end
@@ -41,7 +42,9 @@ module Sourced
       # 1. **Command** — if the message class is in {.handled_commands}, the
       #    decider runs {Decider#decide}, produces new events, and wraps them
       #    in an {Actions::Append} (guarded by +history.guard+). Per-message
-      #    +sync+ / +after_sync+ actions are collected.
+      #    +sync+ / +after_sync+ actions are collected. A command the decider
+      #    doesn't handle in its current context ({Decider#handles_command?}) is
+      #    acked with no events.
       #
       # 2. **Reaction-triggering event** — if the decider
       #    {React#reacts_to? reacts to} this message and
@@ -89,7 +92,9 @@ module Sourced
         instance.evolve(history.messages)
 
         each_with_partial_ack(new_messages) do |msg|
-          if handled_commands.include?(msg.class)
+          if handled_commands.include?(msg.to_message.class)
+            next [Actions::OK, msg] unless instance.handles_command?(msg)
+
             raw_events = instance.decide(msg)
             actions = Actions.build_for(raw_events, guard: history.guard, source: msg)
             # The runner correlates the events as it appends them; +events:+
@@ -148,13 +153,36 @@ module Sourced
       @uncommitted_events = []
     end
 
+    # Whether this decider handles +command+ in its current context.
+    #
+    # {Sourced.handle!} raises {Sourced::CommandNotHandledError} when this is
+    # false, without appending anything; in background workers, {.handle_batch}
+    # acks the command with no events. Defaults to whether a handler is
+    # registered for the command's class.
+    #
+    # Override to refuse commands based on context without raising, the command-side
+    # counterpart of {React#should_react?}:
+    #
+    #   def handles_command?(command)
+    #     super && !context[:archived]
+    #   end
+    #
+    # Raising in a +command+ handler still rejects the command loudly: through the
+    # error strategy in workers, as an exception in {Sourced.handle!}.
+    #
+    # @param command [Sourced::Message]
+    # @return [Boolean]
+    def handles_command?(command)
+      self.class.handled_commands.include?(command.to_message.class)
+    end
+
     # Decide a command against the decider's current in-memory context.
     #
     # @param command [Sourced::Message] command to handle
     # @return [Array<Sourced::Message>] newly produced events
     def decide(command)
       @uncommitted_events = []
-      method_name = Sourced.message_method_name(PREFIX, command.class.to_s)
+      method_name = Sourced.message_method_name(PREFIX, command.to_message.class.to_s)
       send(method_name, context, command) if respond_to?(method_name)
       @uncommitted_events.dup
     end

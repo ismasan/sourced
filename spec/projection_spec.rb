@@ -16,6 +16,11 @@ module ProjectionTestMessages
   Unhandled = Sourced::Message.define('projection_test.unhandled') do
     attribute :foo, String
   end
+
+  # Unwraps through to_message, without overriding #class.
+  Wrapped = Struct.new(:to_message) do
+    def payload = to_message.payload
+  end
 end
 
 RSpec.describe Sourced::Projection do
@@ -88,6 +93,18 @@ RSpec.describe Sourced::Projection do
       expect(projection.context[:items]).to eq([{ id: 'i1', name: 'Apple' }])
     end
 
+    it 'dispatches a wrapper by its to_message class, passing the wrapper' do
+      seen = []
+      projection_class.evolve(ProjectionTestMessages::Unhandled) { |_context, msg| seen << msg }
+      wrapped = ProjectionTestMessages::Wrapped.new(added('1', 'Apple'))
+      other = ProjectionTestMessages::Wrapped.new(ProjectionTestMessages::Unhandled.new(payload: { foo: 'x' }))
+
+      context = projection_class.new.evolve([wrapped, other])
+
+      expect(context[:items]).to eq([{ id: '1', name: 'Apple' }])
+      expect(seen).to eq([other])
+    end
+
     it 'runs evolve blocks in the projection scope' do
       klass = Class.new(Sourced::Projection) do
         context { {} }
@@ -119,11 +136,22 @@ RSpec.describe Sourced::Projection do
         .to raise_error(ArgumentError, /no arguments/)
     end
 
-    it 'rejects anything but a message class' do
+    it 'takes only what answers to_message_class' do
       expect { projection_class.evolve(:projection_test_item_added) { nil } }
-        .to raise_error(ArgumentError, /Sourced::Message subclass/)
+        .to raise_error(NoMethodError, /to_message_class/)
       expect { projection_class.evolve(String) { nil } }
-        .to raise_error(ArgumentError, /Sourced::Message subclass/)
+        .to raise_error(NoMethodError, /to_message_class/)
+    end
+
+    it 'takes anything whose to_message_class is a message class, and handles that class' do
+      declared = Object.new
+      declared.define_singleton_method(:to_message_class) { ProjectionTestMessages::Unhandled }
+      projection_class.evolve(declared) { |context, msg| context[:foo] = msg.payload.foo }
+
+      expect(projection_class.handled_messages).to include(ProjectionTestMessages::Unhandled)
+      projection = projection_class.new
+      projection.evolve(ProjectionTestMessages::Unhandled.new(payload: { foo: 'bar' }))
+      expect(projection.context[:foo]).to eq('bar')
     end
   end
 

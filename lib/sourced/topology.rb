@@ -7,14 +7,39 @@ rescue LoadError
 end
 
 module Sourced
-  # Analyzes registered reactors (Deciders and Projectors) and builds a
+  # Analyzes registered reactors (Deciders, Projectors and Machines) and builds a
   # flat array of node structs describing the message flow graph. Enables
   # visualization, introspection, and Event Modeling diagram generation.
   module Topology
     CommandNode = Struct.new(:type, :id, :name, :group_id, :produces, :schema, keyword_init: true)
-    EventNode = Struct.new(:type, :id, :name, :group_id, :produces, :schema, keyword_init: true)
-    AutomationNode = Struct.new(:type, :id, :name, :group_id, :consumes, :produces, keyword_init: true)
+    # +transition+: a machine's state event, appended as it moves into a state.
+    EventNode = Struct.new(:type, :id, :name, :group_id, :produces, :schema, :transition, keyword_init: true)
+    # +state+: for a machine's automation, the path of the state it belongs to.
+    AutomationNode = Struct.new(:type, :id, :name, :group_id, :consumes, :produces, :state, keyword_init: true)
     ReadModelNode = Struct.new(:type, :id, :name, :group_id, :consumes, :produces, :schema, keyword_init: true)
+
+    # The topology of a set of reactors, built on its first read and kept:
+    # building parses the reactors' source, and most processes never read it.
+    # Concurrent first reads build it once. The graph is frozen, nodes and
+    # their lists included, since every reader shares it.
+    class Memo
+      # @param reactors [Enumerable<Class>]
+      def initialize(reactors)
+        @reactors = reactors
+        @lock = Mutex.new
+        @value = nil
+      end
+
+      # @return [Array<CommandNode, EventNode, AutomationNode, ReadModelNode>]
+      def value
+        @value || @lock.synchronize do
+          @value ||= Topology.build(@reactors).each do |node|
+            node.each { |field| field.freeze if Array === field }
+            node.freeze
+          end.freeze
+        end
+      end
+    end
 
     # Analyze registered reactors and build the topology graph.
     #
@@ -29,7 +54,9 @@ module Sourced
       reactors.each do |reactor|
         group_id = reactor.group_id
 
-        if reactor.respond_to?(:handled_commands)
+        if reactor.is_a?(Class) && reactor < Sourced::Machine
+          add_machine(reactor, analyzer, nodes, command_ids, event_nodes)
+        elsif reactor.respond_to?(:handled_commands)
           reactor.handled_commands.each do |cmd_class|
             next if command_ids.key?(cmd_class.type)
 
@@ -156,6 +183,192 @@ module Sourced
       nodes + event_nodes.values
     end
 
+    # A machine's commands (its parts' too) produce the states they move
+    # to (a part's states are its owner's), the +Started+ of the children their
+    # +starts:+ declare, and what their blocks emit (+event+). Entry, exit and
+    # +after+ actions, joins, and starting and stopping children are automations.
+    # What runs on entering a state consumes its class; what runs on
+    # leaving it (exit actions, stopping the children it started) consumes the
+    # classes of the transitions that can leave it.
+    # @api private
+    def self.add_machine(machine, analyzer, nodes, command_ids, event_nodes)
+      machine.validate!
+      group_id = machine.group_id
+      produced = Hash.new { |h, k| h[k] = [] }
+
+      machine.all_nodes.each do |node|
+        node.commands.each_value do |definition|
+          produced[definition.command_class] |= machine_block_produces(machine, analyzer, definition, node.machine)
+        end
+      end
+      produced[machine::Stop] |= [machine.stop_state.type, machine::Finished.type] if machine.stop_state
+
+      produced.each do |cmd_class, types|
+        if (existing = command_ids[cmd_class.type])
+          existing.produces |= types
+        else
+          cmd_node = CommandNode.new(
+            type: 'command', id: cmd_class.type, name: cmd_class.name, group_id:,
+            produces: types, schema: extract_schema(cmd_class)
+          )
+          nodes << cmd_node
+          command_ids[cmd_class.type] = cmd_node
+        end
+        types.each { |type| add_event_node(event_nodes, command_ids, find_event_class(type), group_id) }
+      end
+
+      automation = lambda do |state, id, name, consumes, produces|
+        nodes << AutomationNode.new(type: 'automation', id: "#{id}-#{group_id}-aut", name:, group_id:, consumes:, produces:, state:)
+      end
+
+      # Constants in a block resolve where it's declared: the machine, or a part.
+      dispatched_by = lambda do |blocks, scope|
+        blocks.flat_map { |blk| resolve_refs(analyzer.calls_in_block(blk, :dispatch), scope) }.uniq
+      end
+      transitions = machine_transitions(machine)
+
+      machine.all_nodes.each do |node|
+        # Initial positions take events too.
+        node.ons.each_value do |definition|
+          event_class = definition.command_class
+          automation.call(node.path, "#{node.path}-on-#{event_class.type}", "on(#{node.path}, #{event_class.name.split('::').last})",
+                          [event_class.type], machine_block_produces(machine, analyzer, definition, node.machine))
+        end
+
+        next if node.initial?
+
+        entering = [node.key.type]
+        leaving = transitions.select { |source, target| exits?(source, target, node) }.map { |_, target| target.key.type }.uniq
+        entry_dispatched = (dispatched_by.call(node.entries, node.machine) + node.afters.flat_map { |timer| timer.commands.map(&:type) }).uniq
+        automation.call(node.path, node.path, "actions(#{node.path})", entering, entry_dispatched) if entry_dispatched.any?
+        exit_dispatched = dispatched_by.call(node.exits, node.machine)
+        automation.call(node.path, "#{node.path}-exit", "exit(#{node.path})", leaving, exit_dispatched) if exit_dispatched.any?
+
+        if node.dones.any?
+          finals = node.regions.flat_map { |region| region.nodes.each_value.select(&:final?).map { it.key.type } }
+          joined = eventless_closure(machine, node.dones.map(&:target))
+          automation.call(node.path, "#{node.path}-done", "done(#{node.path})", finals.uniq, joined.map(&:type))
+        end
+
+        node.children_joins.each do |join|
+          child = join.machine
+          automation.call(node.path, "#{node.path}-children-done-#{child.group_id}", "children_done(#{child.group_id})", [child::Finished.type],
+                          machine_block_produces(machine, analyzer, join.definition, node.machine))
+        end
+
+        node.invokes.each do |spec|
+          automation.call(node.path, "#{node.path}-start-#{spec.machine.group_id}", "start(#{spec.machine.name})",
+                          entering, [spec.machine::Started.type])
+          automation.call(node.path, "#{node.path}-stop-#{spec.machine.group_id}", "stop(#{spec.machine.name})",
+                          leaving, [spec.machine::Stop.type])
+          if spec.on_done.any?
+            automation.call(node.path, "#{node.path}-on-done-#{spec.machine.group_id}", "on_done(#{spec.machine.group_id})", [spec.machine::Finished.type],
+                            eventless_closure(machine, spec.on_done.values.uniq).map(&:type))
+          end
+        end
+      end
+
+      machine.tree.children_specs.each do |spec|
+        next if spec.invoke? || spec.stop_on.empty?
+
+        automation.call(nil, "stop-#{spec.machine.group_id}", "stop(#{spec.machine.name})",
+                        spec.stop_on.map { |node| node.key.type }.uniq, [spec.machine::Stop.type])
+      end
+    end
+
+    # Every transition the definition declares, as +[source, target]+ placed
+    # nodes: commands, +children_done+, +always+, +done+, state-started and
+    # mounted parts' +on_final+, and +stopped+ (from each top-level state).
+    # @api private
+    def self.machine_transitions(machine)
+      tree = machine.tree
+      pairs = tree.all_nodes.flat_map do |node|
+        definitions = node.commands.values + node.ons.values + node.children_joins.map(&:definition)
+        targets = definitions.flat_map(&:state_targets)
+        targets += (node.always + node.dones).map(&:target)
+        targets += node.invokes.flat_map { |spec| spec.on_done.values }
+        own = targets.map { |handle| [node, tree.resolve(node, handle)] }
+        mounted = node.regions.flat_map do |region|
+          region.on_final.map { |final, handle| [region.nodes.fetch(final), tree.resolve(node, handle)] }
+        end
+        own + mounted
+      end
+      if machine.stop_state
+        stop = tree.root.nodes.fetch(machine.stop_state)
+        pairs += tree.root.nodes.each_value.reject { |node| node.equal?(stop) }.map { |node| [node, stop] }
+      end
+      pairs
+    end
+
+    # Whether a transition from +source+ to +target+ can leave +node+, by the
+    # runtime's rule ({Machine::Runtime#transition_sets}): it leaves what is
+    # active below the innermost region holding both, on +source+'s side.
+    # @api private
+    def self.exits?(source, target, node)
+      lineage = target.region.lineage
+      domain = source.regions.find { |r| lineage.include?(r) } || source.region.lineage.find { |r| lineage.include?(r) }
+      return false unless domain && node.region.lineage.include?(domain)
+
+      # Active together with +source+: the same branch where their regions meet.
+      meet = node.region.lineage.find { |r| source.region.lineage.include?(r) }
+      branch(node, meet).equal?(branch(source, meet))
+    end
+
+    # +node+, or its ancestor, placed in +region+.
+    # @api private
+    def self.branch(node, region)
+      node = node.region.parent until node.region.equal?(region)
+      node
+    end
+
+    # @api private
+    # @param scope [Class<Machine>, Class<Machine::Part>] where the block is declared, which its constants resolve in
+    def self.machine_block_produces(machine, analyzer, definition, scope)
+      reached = eventless_closure(machine, definition.state_targets)
+      types = reached.map(&:type)
+      # Reaching a root final finishes a child machine.
+      if machine.__finished_class && reached.any? { |handle| machine.root.nodes[handle]&.final? }
+        types << machine.__finished_class.type
+      end
+      types += resolve_refs(analyzer.calls_in_block(definition.block, :event), scope)
+      types += definition.started_machines.map { |child| child::Started.type }
+      types.uniq
+    end
+
+    # +handles+, and every state their +always+ or a mounted part's
+    # +on_final+ can move on to, through the states entering them enters
+    # (compound starts), each once.
+    # @api private
+    def self.eventless_closure(machine, handles)
+      tree = machine.tree
+      reached = []
+      pending = handles.map(&:state)
+      until pending.empty?
+        handle = pending.shift
+        next if reached.include?(handle)
+
+        reached << handle
+        tree.placements(handle).flat_map { |placed| tree.default_entry(placed) }.each do |entered|
+          pending.concat(entered.always.map { |eventless| tree.resolve(entered, eventless.target).key })
+          # A mounted part's mapped final escalates in the same decision.
+          mapped = entered.region.on_final[entered.key]
+          pending << tree.resolve(entered.region.parent, mapped).key if mapped
+        end
+      end
+      reached
+    end
+
+    # @api private
+    def self.add_event_node(event_nodes, command_ids, evt_class, group_id)
+      return unless evt_class
+      return if event_nodes.key?(evt_class.type) || command_ids.key?(evt_class.type)
+
+      event_nodes[evt_class.type] = EventNode.new(
+        type: 'event', id: evt_class.type, name: evt_class.name, group_id:,
+        produces: [], schema: extract_schema(evt_class), transition: evt_class < Sourced::Machine::State
+      )
+    end
+
     # @api private
     def self.resolve_refs(refs, reactor)
       refs.filter_map do |ref_type, ref_value|
@@ -219,7 +432,7 @@ module Sourced
         return reactor.const_get(const_name, false)
       end
 
-      parts = reactor.name.split('::')
+      parts = reactor.name.to_s.split('::')
       while parts.length > 1
         parts.pop
         begin
@@ -252,7 +465,8 @@ module Sourced
       {}
     end
 
-    private_class_method :resolve_refs, :resolve_ref, :resolve_symbol_ref,
+    private_class_method :add_machine, :machine_block_produces, :machine_transitions, :exits?, :branch, :eventless_closure, :add_event_node,
+                         :resolve_refs, :resolve_ref, :resolve_symbol_ref,
                          :resolve_const_ref, :resolve_const_path_ref,
                          :resolve_const_index_ref,
                          :resolve_constant_in_context, :find_event_class,
@@ -279,6 +493,14 @@ module Sourced
         extract_calls_from_handler(reactor, method_name, :dispatch)
       end
 
+      # Calls to +call_name+ inside a block (ex. a machine's command handler).
+      # @param block [Proc, nil]
+      def calls_in_block(block, call_name)
+        return [] unless @prism_available && block
+
+        calls_at(*block.source_location, call_name)
+      end
+
       private
 
       def check_prism
@@ -290,16 +512,16 @@ module Sourced
       end
 
       def extract_calls_from_handler(reactor, method_name, call_name)
-        file, line = reactor.instance_method(method_name).source_location
-        return [] unless file && line
-
-        result = parse_file(file)
-        block = find_block_at_line(result.value, line)
-        return [] unless block
-
-        collect_calls(block, call_name)
+        calls_at(*reactor.instance_method(method_name).source_location, call_name)
       rescue NameError
         []
+      end
+
+      def calls_at(file, line, call_name)
+        return [] unless file && line && File.exist?(file)
+
+        block = find_block_at_line(parse_file(file).value, line)
+        block ? collect_calls(block, call_name) : []
       end
 
       def find_block_at_line(program, target_line)

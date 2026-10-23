@@ -195,6 +195,19 @@ RSpec.describe Sourced::Testing::RSpec do
         .then(GWTTestMessages::DeviceBound, device_id: 'd1', asset_id: 'a1')
     end
 
+    it 'then compares tags when the expected message has some' do
+      gwt = lambda do
+        with_reactor(GWTTestSimpleDecider, device_id: 'd1')
+          .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+          .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
+      end
+      bound = GWTTestMessages::DeviceBound.new(payload: { device_id: 'd1', asset_id: 'a1' })
+
+      gwt.().then(bound)
+      expect { gwt.().then(bound.with_tags(asset_id: 'a1')) }
+        .to raise_error(RSpec::Expectations::ExpectationNotMetError, /expected tags \{asset_id: "a1"\}, got \{\}/)
+    end
+
     it 'no given + when command → then exception (invariant violation)' do
       with_reactor(GWTTestDecider, device_id: 'd1')
         .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a1')
@@ -246,6 +259,16 @@ RSpec.describe Sourced::Testing::RSpec do
         .and(GWTTestMessages::DeviceBound, device_id: 'd1', asset_id: 'a1')
         .when(GWTTestMessages::BindDevice, device_id: 'd1', asset_id: 'a2')
         .then(RuntimeError, 'Already bound')
+    end
+
+    it 'exposes the given history as a frozen copy' do
+      gwt = with_reactor(GWTTestDecider, device_id: 'd1')
+        .given(GWTTestMessages::DeviceRegistered, device_id: 'd1', name: 'Sensor')
+
+      expect(gwt.history.map(&:class)).to eq([GWTTestMessages::DeviceRegistered])
+      expect(gwt.history).to be_frozen
+      expect { gwt.history << :x }.to raise_error(FrozenError)
+      expect(gwt.history.size).to eq(1)
     end
   end
 

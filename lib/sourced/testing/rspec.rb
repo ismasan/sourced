@@ -64,6 +64,8 @@ module Sourced
             actual = actual_messages[idx]
             @mismatching[idx] << "expected a #{expected.class}, got #{actual.class}" unless actual.class == expected.class
             @mismatching[idx] << "expected payload #{expected.payload.to_h.inspect}, got #{actual.payload.to_h.inspect}" unless expected.payload == actual.payload
+            # Tags are asserted when the expected message has some.
+            @mismatching[idx] << "expected tags #{expected.tags.inspect}, got #{actual.tags.inspect}" unless expected.tags.empty? || expected.tags == actual.tags
           end
 
           return false if @mismatching.any?
@@ -90,6 +92,8 @@ module Sourced
           if projection? && partition_attrs.any?
             raise ArgumentError, "#{reactor_class} is a projection: it takes no partition values"
           end
+          # What Router registration would reject fails the spec too.
+          Sourced::PartitionSchema.check!(reactor_class)
 
           @partition_values = partition_attrs
           @given_messages = []
@@ -111,6 +115,41 @@ module Sourced
         end
 
         alias_method :and, :given
+
+        # The history so far: {#given} messages and the state events {#at} appended.
+        #
+        # @return [Array<Sourced::Message>] a frozen copy
+        def history = @given_messages.dup.freeze
+
+        AT_TRIGGER = 'at'
+
+        # Position a machine at a state: append to the history the state event
+        # a transition there would append, from the configuration the history
+        # so far ({#given} and earlier +at+ messages) leaves, with +trigger+
+        # {AT_TRIGGER}. Setup, like {#given}: no entry actions, timers or
+        # eventless steps run. Chain several to position parallel regions.
+        #
+        # @example
+        #   with_reactor(Order, order_id: 'o1')
+        #     .at(Order::PaymentMachine::Authorizing)
+        #     .at('placed.shipping.shipped')
+        #     .when(Order::PaymentMachine::Capture, order_id: 'o1')
+        #
+        # @param target [Class<Sourced::Machine::State>, String] a state, or
+        #   the path of one of its placements, for a part placed more than once
+        # @return [self]
+        # @raise [ArgumentError] on a reactor that isn't a machine, after {#when},
+        #   or for a state that isn't placed (or is placed more than once) in it
+        def at(target)
+          raise 'test case already asserted' if @asserted
+          raise ArgumentError, "#{@reactor_class} isn't a Sourced::Machine: at positions machines" unless machine?
+          raise ArgumentError, "#{@reactor_class}: at positions the machine before when, not after" if @when_messages.any?
+
+          instance = @reactor_class.new(@partition_values)
+          instance.evolve(@given_messages)
+          @given_messages.concat(instance.__move_to(placement(target), trigger: AT_TRIGGER))
+          self
+        end
 
         # The batch of new messages to process via +handle_batch+. Can be
         # called multiple times to supply several messages.
@@ -248,6 +287,32 @@ module Sourced
 
         def projector?
           @reactor_class <= Sourced::Projector
+        end
+
+        def machine? = (@reactor_class <= Sourced::Machine) || false
+
+        def placement(target)
+          tree = @reactor_class.tree
+          case target
+          in String
+            node = begin
+              tree.node_at(target)
+            rescue Sourced::Machine::UnresolvablePathError
+              raise ArgumentError, "#{@reactor_class}: no state at #{target.inspect}"
+            end
+            raise ArgumentError, "#{@reactor_class}: #{target.inspect} is an initial position, not a state" if node.initial?
+
+            node
+          else
+            handle = target.to_state_handle
+            case tree.placements(handle)
+            in [] then raise ArgumentError, "#{@reactor_class}: #{handle} isn't placed in it"
+            in [node] then node
+            in nodes
+              raise ArgumentError,
+                    "#{@reactor_class}: #{handle} is placed at #{nodes.map(&:path).join(', ')}; pass at the path of one"
+            end
+          end
         end
 
         # A projection has no +handle_batch+ to drive: the helper builds it with
