@@ -729,6 +729,10 @@ module Sourced
         @runtime = runtime
       end
 
+      # Duck-typed: anything standing for a configuration answers it (a machine, its {#machine}).
+      # @return [Configuration] itself
+      def to_machine_config = self
+
       # The paths of the active states, outermost first: what {.configuration} takes.
       # @return [Array<String>]
       def paths = @runtime.active_nodes.reject(&:initial?).map(&:path)
@@ -1567,6 +1571,10 @@ module Sourced
     #
     # @return [Set<Class>]
     def available_commands = @available_commands ||= machine.available_commands
+
+    # Its configuration, read live (see {Configuration#to_machine_config}).
+    # @return [View]
+    def to_machine_config = machine
 
     # Every command class the machine accepts, in any state (see {Configuration#handled_commands}).
     #

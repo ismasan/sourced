@@ -810,7 +810,14 @@ end
 OrderMachine.configuration(order[:machine]).available_commands
 ```
 
-A `Sourced::Machine::Configuration` is read-only: `paths`, `value`, `in?`, `current`, `final?`, `available_commands` and `handled_commands`, every command the machine accepts in any state (a Set of `OrderMachine.handled_commands`), ex. to tell commands that aren't available now from ones the machine never takes. An instance has `available_commands` and `handled_commands` too, and its `machine` adds `entered_by` and `children`. It has no domain context, history or children, so it tells what the active states accept, not whether a command would succeed. Stored paths depend on state and region names, as stored state events do: paths that don't resolve raise `UnresolvablePathError`; an initial position, a state in an inactive region, or two states in one region raise `ArgumentError`.
+A `Sourced::Machine::Configuration` is read-only: `paths`, `value`, `in?`, `current`, `final?`, `available_commands` and `handled_commands`, every command the machine accepts in any state (a Set of `OrderMachine.handled_commands`), ex. to tell commands that aren't available now from ones the machine never takes. An instance has `available_commands` and `handled_commands` too, and its `machine` adds `entered_by` and `children`. Code that takes either an instance or a configuration calls `to_machine_config`: an instance returns its `machine`, a configuration itself.
+
+```ruby
+def command_buttons(order) = order.to_machine_config.available_commands
+
+command_buttons(order)                                 # a loaded instance
+command_buttons(OrderMachine.configuration(record[:machine])) # stored paths
+``` It has no domain context, history or children, so it tells what the active states accept, not whether a command would succeed. Stored paths depend on state and region names, as stored state events do: paths that don't resolve raise `UnresolvablePathError`; an initial position, a state in an inactive region, or two states in one region raise `ArgumentError`.
 
 Definitions are checked when the machine is registered (or first instantiated), raising `Sourced::Machine::DefinitionError`: targets, partition keys, unplaced states, transient states, unreachable guards. After that, the machine's `context`, `evolve`, `before_evolve`, `reaction` and `State` raise too: what it reads is fixed. A stored path that no longer names a state raises `Sourced::Machine::UnresolvablePathError` with the event's type and id, so a state or region name that stored events use can't change (rename the constant instead).
 
