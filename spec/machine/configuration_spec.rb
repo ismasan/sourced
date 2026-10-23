@@ -132,6 +132,16 @@ RSpec.describe Sourced::Machine::Configuration do
     expect(instance.machine.handled_commands).to equal(instance.handled_commands)
   end
 
+  it 'answers to_machine_config, as machine instances do' do
+    config = machine.configuration(['placed'])
+    expect(config.to_machine_config).to equal(config)
+
+    instance = machine.new(order_id: 'o1')
+    instance.decide(cmd(m::PlaceOrder))
+    expect(instance.to_machine_config).to be_a(described_class)
+    expect(instance.to_machine_config.paths).to eq(['placed'])
+  end
+
   it 'is what a machine instance reads as #machine' do
     instance = machine.new(order_id: 'o1')
     instance.decide(cmd(m::PlaceOrder))
