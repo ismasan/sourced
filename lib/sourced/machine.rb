@@ -743,6 +743,12 @@ module Sourced
         commands.to_set.freeze
       end
 
+      # Every command class the machine accepts, in any state, and +Stop+ for
+      # a child: {Machine.handled_commands}, as a Set.
+      #
+      # @return [Set<Class>]
+      def handled_commands = @machine.__command_set
+
       # The current configuration: a state (or +:initial+), or for a
       # state with regions, +{ state => { region_name => value, … } }+,
       # and for a compound one, +{ state => value }+.
@@ -1230,6 +1236,9 @@ module Sourced
       # @api private
       def __handled_command?(klass) = (@__command_set || handled_commands).include?(klass)
       # @api private
+      # @return [Set<Class>] {.handled_commands}, as a Set
+      def __command_set = @__command_set || handled_commands.to_set.freeze
+      # @api private
       def __handled_event?(klass) = (@__event_set || handled_events).include?(klass)
 
       # The eventless steps the definition can take, in the order they're tried:
@@ -1558,6 +1567,11 @@ module Sourced
     #
     # @return [Set<Class>]
     def available_commands = @available_commands ||= machine.available_commands
+
+    # Every command class the machine accepts, in any state (see {Configuration#handled_commands}).
+    #
+    # @return [Set<Class>]
+    def handled_commands = self.class.__command_set
 
     # Whether an active state accepts +command+. A command dispatched by an
     # +after+ block is refused once the machine has left the state entry

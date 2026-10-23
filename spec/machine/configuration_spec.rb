@@ -119,6 +119,19 @@ RSpec.describe Sourced::Machine::Configuration do
     expect(instance.machine.value).to eq(machine::Completed)
   end
 
+  it "lists every state's commands as handled_commands, wherever it is" do
+    all = Set[m::PlaceOrder, m::Cancel, m::Pay, m::Pack, m::Ship, machine::Working::Progress, machine::Stop]
+    expect(machine.configuration([]).handled_commands).to eq(all)
+    expect(machine.configuration(['cancelled']).handled_commands).to eq(all)
+    expect(machine.configuration([]).handled_commands).to be_frozen
+
+    instance = machine.new(order_id: 'o1')
+    expect(instance.handled_commands).to eq(all)
+    instance.decide(cmd(m::PlaceOrder))
+    expect(instance.handled_commands).to eq(all)
+    expect(instance.machine.handled_commands).to equal(instance.handled_commands)
+  end
+
   it 'is what a machine instance reads as #machine' do
     instance = machine.new(order_id: 'o1')
     instance.decide(cmd(m::PlaceOrder))
