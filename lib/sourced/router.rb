@@ -110,7 +110,7 @@ module Sourced
 
       rescue Sourced::PartialBatchError => e
         execute_actions(e.action_pairs, claim, reactor_class)
-        store.updating_consumer_group(group_id) do |group|
+        store.updating_consumer_group(group_id, offset_id: claim.offset_id) do |group|
           handle_exception(reactor_class, e, e.failed_message, group)
         end
         true
@@ -119,7 +119,7 @@ module Sourced
         true
       rescue StandardError => e
         store.release(group_id, offset_id: claim.offset_id)
-        store.updating_consumer_group(group_id) do |group|
+        store.updating_consumer_group(group_id, offset_id: claim.offset_id) do |group|
           handle_exception(reactor_class, e, claim.messages.first, group)
         end
         true

@@ -641,7 +641,7 @@ RSpec.describe Sourced::Router do
       expect(row[:status]).to eq('failed')
     end
 
-    it 'on_exception with retry strategy sets retry_at on consumer group' do
+    it 'on_exception with retry strategy moves the consumer group to retrying, recording the failed claim' do
       store.append(
         RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       )
@@ -659,10 +659,12 @@ RSpec.describe Sourced::Router do
 
       row = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).first
       expect(row[:retry_at]).not_to be_nil
-      expect(row[:status]).to eq('active')
+      expect(row[:status]).to eq('retrying')
 
       ctx = JSON.parse(row[:error_context], symbolize_names: true)
-      expect(ctx[:retry_count]).to eq(2)
+      expect(ctx[:retry_count]).to eq(1)
+      expect(ctx[:offset_id]).to eq(db[:sourced_offsets].get(:id))
+      expect(ctx[:exception_message]).to eq('boom')
     end
   end
 
@@ -788,6 +790,7 @@ RSpec.describe Sourced::Router do
         )
         router.drain
 
+        router.stop_consumer_group(RouterTestDecider)
         router.reset_consumer_group(RouterTestDecider)
 
         # Offsets should be cleared (group can re-process messages)
@@ -801,6 +804,7 @@ RSpec.describe Sourced::Router do
         )
         router.drain
 
+        router.stop_consumer_group('router_test_decider')
         router.reset_consumer_group('router_test_decider')
 
         row = db[:sourced_consumer_groups].where(group_id: 'router_test_decider').first
@@ -810,9 +814,18 @@ RSpec.describe Sourced::Router do
       it 'invokes on_reset callback on reactor class' do
         allow(RouterTestDecider).to receive(:on_reset)
 
+        router.stop_consumer_group(RouterTestDecider)
         router.reset_consumer_group(RouterTestDecider)
 
         expect(RouterTestDecider).to have_received(:on_reset)
+      end
+
+      it "raises for an active group, without calling on_reset" do
+        allow(RouterTestDecider).to receive(:on_reset)
+
+        expect { router.reset_consumer_group(RouterTestDecider) }
+          .to raise_error(Sourced::Store::InvalidConsumerGroupTransitionError, /it's active/)
+        expect(RouterTestDecider).not_to have_received(:on_reset)
       end
     end
 
@@ -837,6 +850,7 @@ RSpec.describe Sourced::Router do
       it 'invokes on_start callback on reactor class' do
         allow(RouterTestDecider).to receive(:on_start)
 
+        router.stop_consumer_group(RouterTestDecider)
         router.start_consumer_group(RouterTestDecider)
 
         expect(RouterTestDecider).to have_received(:on_start)

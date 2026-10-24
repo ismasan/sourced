@@ -138,7 +138,9 @@ RSpec.describe 'Sourced::Machine partition' do
 
     it 'replays to the same state, appending nothing' do
       count = log.size
+      store.stop_consumer_group(mod::OrderNotes)
       store.reset_consumer_group(mod::OrderNotes)
+      store.start_consumer_group(mod::OrderNotes)
       router.drain
 
       expect(log.size).to eq(count)

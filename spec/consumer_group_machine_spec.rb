@@ -136,9 +136,12 @@ RSpec.describe Sourced::ConsumerGroupMachine do
       expect(m.decode_context(json)).to eq(context)
     end
 
+    it 'decodes a missing retry count as 0' do
+      expect(m.decode_context({})).to eq(retry_count: 0)
+    end
+
     it 'raises for a context that is no Context' do
       expect { m.decode_context('retry_count' => 'x') }.to raise_error(Plumb::ParseError)
-      expect { m.decode_context({}) }.to raise_error(Plumb::ParseError)
       expect { m.encode_context(retry_count: 1, retry_at: 'tomorrow') }.to raise_error(Plumb::ParseError)
       expect { m.decode_context('retry_count' => 0, 'exception_backtrace' => [1, 2]) }.to raise_error(Plumb::ParseError)
     end

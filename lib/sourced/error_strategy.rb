@@ -86,9 +86,11 @@ module Sourced
     #
     # @param exception [Exception]
     # @param message [Sourced::Message]
-    # @param group [#retry, #fail]
+    # @param group [#retry, #fail, #error_context] its +error_context[:retry_count]+ counts
+    #   the retries scheduled since the group last recovered
     def call(exception, message, group)
-      retry_count = group.error_context[:retry_count] || 1
+      # This retry's number: 1 for the first.
+      retry_count = (group.error_context[:retry_count] || 0) + 1
       if retry_count <= max_retries
         now = Time.now
         retry_at = now + (backoff.call(retry_after, retry_count))
@@ -96,8 +98,7 @@ module Sourced
           @on_retry.each { |fn| fn.call(retry_count:, exception:, message:, retry_at:) }
         end
 
-        retry_count += 1
-        group.retry(retry_at, retry_count:)
+        group.retry(retry_at, exception:)
       else
         safe_dispatch do
           @on_fail.each { |fn| fn.call(retry_count:, exception:, message:) }

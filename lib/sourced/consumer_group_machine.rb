@@ -21,7 +21,7 @@ module Sourced
     consumer_group 'sourced.consumer_groups'
 
     Context = Types::Hash[
-      retry_count: Types::Integer,
+      retry_count: Types::Integer.default(0),
       'retry_at?': Time,
       'offset_id?': Types::Integer,
       'exception_class?': String,
@@ -76,7 +76,7 @@ module Sourced
     FAILURE = %i[exception_class exception_message].freeze
     FAILURE_WITH_BACKTRACE = [*FAILURE, :exception_backtrace].freeze
 
-    context { { retry_count: 0 } }
+    context { Context.parse({}) }
 
     evolve RetryScheduled do |context, evt|
       context[:retry_count] += 1
@@ -95,7 +95,7 @@ module Sourced
       context[:message] = evt.payload.message if evt.payload.message
     end
 
-    evolve(ContextCleared) { |context, _evt| context.replace(retry_count: 0) }
+    evolve(ContextCleared) { |context, _evt| context.replace(Context.parse({})) }
 
     # A registered group starts active.
     initial { command Start => Active }

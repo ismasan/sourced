@@ -330,7 +330,9 @@ RSpec.describe 'Sourced::Machine external events' do
       expect(paid.payload.trigger).to eq(MX::PaymentCaptured.type)
       expect(paid_count).to eq(1)
 
+      store.stop_consumer_group(MX::OrderMachine)
       store.reset_consumer_group(MX::OrderMachine)
+      store.start_consumer_group(MX::OrderMachine)
       router.drain
       expect(paid_count).to eq(1)
     end

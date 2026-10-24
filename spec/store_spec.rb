@@ -1258,24 +1258,44 @@ RSpec.describe Sourced::Store do
       expect(store.consumer_group_active?('my_group')).to be true
     end
 
-    it 'start_consumer_group clears retry_at and error_context' do
+    it 'start_consumer_group starts a retrying group without waiting, clearing retry_at and error_context' do
       store.register_consumer_group('my_group')
 
-      # Set retry_at and error_context via updating_consumer_group
       store.updating_consumer_group('my_group') do |group|
-        group.retry(Time.now + 60, retry_count: 1)
+        group.retry(Time.now + 60, exception: RuntimeError.new('boom'))
       end
 
       row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
+      expect(row[:status]).to eq('retrying')
       expect(row[:retry_at]).not_to be_nil
-      expect(row[:error_context]).not_to be_nil
 
       store.start_consumer_group('my_group')
 
       row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
       expect(row[:retry_at]).to be_nil
-      expect(row[:error_context]).to be_nil
+      expect(JSON.parse(row[:error_context])).to eq('retry_count' => 0)
       expect(row[:status]).to eq('active')
+    end
+
+    it "raises for a change the group's status doesn't accept, writing nothing" do
+      store.register_consumer_group('my_group')
+
+      expect { store.start_consumer_group('my_group') }
+        .to raise_error(Sourced::Store::InvalidConsumerGroupTransitionError,
+                        "Can't start consumer group my_group: it's active. It accepts: stop")
+
+      store.stop_consumer_group('my_group', 'maintenance')
+      updated_at = db[:sourced_consumer_groups].where(group_id: 'my_group').get(:updated_at)
+      expect { store.stop_consumer_group('my_group') }
+        .to raise_error(Sourced::Store::InvalidConsumerGroupTransitionError) { |e|
+          expect(e.group_id).to eq('my_group')
+          expect(e.status).to eq('stopped')
+          expect(e.command).to eq(Sourced::ConsumerGroupMachine::Stop)
+          expect(e.available).to contain_exactly(Sourced::ConsumerGroupMachine::Start, Sourced::ConsumerGroupMachine::Reset)
+        }
+      row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
+      expect(row[:updated_at]).to eq(updated_at)
+      expect(JSON.parse(row[:error_context])).to eq('retry_count' => 0, 'message' => 'maintenance')
     end
   end
 
@@ -1284,31 +1304,59 @@ RSpec.describe Sourced::Store do
       store.register_consumer_group('my_group')
     end
 
-    it 'yields a GroupUpdater and persists error_context' do
-      store.updating_consumer_group('my_group') do |group|
+    it 'yields a GroupUpdater and persists a retry: status, error_context and retry_at' do
+      retry_at = Time.now + 30
+      store.updating_consumer_group('my_group', offset_id: 7) do |group|
         expect(group).to be_a(Sourced::GroupUpdater)
-        group.retry(Time.now + 30, retry_count: 1)
+        group.retry(retry_at, exception: RuntimeError.new('boom'))
       end
 
       row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
-      ctx = JSON.parse(row[:error_context], symbolize_names: true)
-      expect(ctx[:retry_count]).to eq(1)
-      expect(row[:retry_at]).not_to be_nil
+      expect(row[:status]).to eq('retrying')
+      expect(row[:retry_at]).to eq(retry_at.iso8601)
+      ctx = Sourced::ConsumerGroupMachine.decode_context(JSON.parse(row[:error_context]))
+      expect(ctx).to eq(
+        retry_count: 1, retry_at: Time.iso8601(retry_at.iso8601(6)), offset_id: 7,
+        exception_class: 'RuntimeError', exception_message: 'boom'
+      )
     end
 
-    it 'persists error_context across successive calls (retry_count increments)' do
+    it 'counts retries across successive calls' do
       store.updating_consumer_group('my_group') do |group|
-        group.retry(Time.now + 30, retry_count: 1)
+        group.retry(Time.now + 30)
       end
 
       store.updating_consumer_group('my_group') do |group|
+        expect(group.status).to eq('retrying')
         expect(group.error_context[:retry_count]).to eq(1)
-        group.retry(Time.now + 60, retry_count: 2)
+        group.retry(Time.now + 60)
       end
 
       row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
-      ctx = JSON.parse(row[:error_context], symbolize_names: true)
-      expect(ctx[:retry_count]).to eq(2)
+      expect(JSON.parse(row[:error_context])['retry_count']).to eq(2)
+    end
+
+    it "ignores a worker's change the status doesn't accept, writing nothing" do
+      store.stop_consumer_group('my_group', 'maintenance')
+      before = db[:sourced_consumer_groups].where(group_id: 'my_group').first
+
+      store.updating_consumer_group('my_group') do |group|
+        group.fail(exception: RuntimeError.new('in flight'))
+        group.retry(Time.now + 30)
+      end
+
+      expect(db[:sourced_consumer_groups].where(group_id: 'my_group').first).to eq(before)
+    end
+
+    it 'writes nothing when the block raises' do
+      before = db[:sourced_consumer_groups].where(group_id: 'my_group').first
+      expect {
+        store.updating_consumer_group('my_group') do |group|
+          group.stop(message: 'x')
+          raise 'oops'
+        end
+      }.to raise_error('oops')
+      expect(db[:sourced_consumer_groups].where(group_id: 'my_group').first).to eq(before)
     end
 
     it 'raises for a nonexistent group' do
@@ -1320,7 +1368,7 @@ RSpec.describe Sourced::Store do
     it 'stop sets status to STOPPED and clears retry_at' do
       # First set a retry_at
       store.updating_consumer_group('my_group') do |group|
-        group.retry(Time.now + 30, retry_count: 1)
+        group.retry(Time.now + 30)
       end
 
       store.updating_consumer_group('my_group') do |group|
@@ -1332,12 +1380,16 @@ RSpec.describe Sourced::Store do
       expect(row[:retry_at]).to be_nil
     end
 
-    it 'fail sets status to FAILED and clears retry_at' do
+    it 'fail sets status to FAILED, clears retry_at and records the exception with its backtrace' do
       store.updating_consumer_group('my_group') do |group|
-        group.retry(Time.now + 30, retry_count: 1)
+        group.retry(Time.now + 30)
       end
 
-      err = RuntimeError.new('test error')
+      err = begin
+        raise 'test error'
+      rescue => e
+        e
+      end
       store.updating_consumer_group('my_group') do |group|
         group.fail(exception: err)
       end
@@ -1348,6 +1400,7 @@ RSpec.describe Sourced::Store do
       ctx = JSON.parse(row[:error_context], symbolize_names: true)
       expect(ctx[:exception_class]).to eq('RuntimeError')
       expect(ctx[:exception_message]).to eq('test error')
+      expect(ctx[:exception_backtrace]).to eq(err.backtrace)
     end
   end
 
@@ -1363,8 +1416,25 @@ RSpec.describe Sourced::Store do
         worker_id: 'w-1')
 
       expect(db[:sourced_offsets].count).to be > 0
+      store.stop_consumer_group('my_group')
       store.reset_consumer_group('my_group')
       expect(db[:sourced_offsets].count).to eq(0)
+      expect(store.consumer_group_active?('my_group')).to be(false)
+    end
+
+    it 'raises for an active group, keeping its offsets' do
+      store.register_consumer_group('my_group')
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+      store.claim_next('my_group',
+        partition_by: 'device_id',
+        handled_types: ['store_test.device.registered'],
+        worker_id: 'w-1')
+
+      expect { store.reset_consumer_group('my_group') }
+        .to raise_error(Sourced::Store::InvalidConsumerGroupTransitionError, /Can't reset consumer group my_group: it's active/)
+      expect(db[:sourced_offsets].count).to be > 0
     end
 
     it 'accepts an object responding to #group_id' do
@@ -1379,6 +1449,7 @@ RSpec.describe Sourced::Store do
 
       reactor = double('reactor', group_id: 'my_group')
       expect(db[:sourced_offsets].count).to be > 0
+      store.stop_consumer_group(reactor)
       store.reset_consumer_group(reactor)
       expect(db[:sourced_offsets].count).to eq(0)
     end
@@ -1516,7 +1587,7 @@ RSpec.describe Sourced::Store do
 
       # Set retry_at to the future
       store.updating_consumer_group(group_id) do |group|
-        group.retry(Time.now + 3600, retry_count: 1)
+        group.retry(Time.now + 3600)
       end
 
       result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
@@ -1530,11 +1601,12 @@ RSpec.describe Sourced::Store do
 
       # Set retry_at to the past
       store.updating_consumer_group(group_id) do |group|
-        group.retry(Time.now - 1, retry_count: 1)
+        group.retry(Time.now - 1)
       end
 
       result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       expect(result).not_to be_nil
+      expect(db[:sourced_consumer_groups].where(group_id:).get(:status)).to eq('retrying')
     end
 
     it 'prioritizes partition with earliest pending message' do
@@ -1650,7 +1722,9 @@ RSpec.describe Sourced::Store do
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # Reset offsets — highest_position stays at 2
+      store.stop_consumer_group(group_id)
       store.reset_consumer_group(group_id)
+      store.start_consumer_group(group_id)
 
       # Re-claim same messages — replaying because positions <= highest_position
       r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
@@ -1668,7 +1742,9 @@ RSpec.describe Sourced::Store do
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # Reset offsets
+      store.stop_consumer_group(group_id)
       store.reset_consumer_group(group_id)
+      store.start_consumer_group(group_id)
 
       # Add a new message at position 2
       store.append(
@@ -1752,7 +1828,9 @@ RSpec.describe Sourced::Store do
       cg = db[:sourced_consumer_groups].where(group_id: group_id).first
       expect(cg[:discovery_position]).to be > 0
 
+      store.stop_consumer_group(group_id)
       store.reset_consumer_group(group_id)
+      store.start_consumer_group(group_id)
 
       cg = db[:sourced_consumer_groups].where(group_id: group_id).first
       expect(cg[:discovery_position]).to eq(0)
@@ -2661,7 +2739,7 @@ RSpec.describe Sourced::Store do
       by_id = result.groups.map { |g| [g[:group_id], g] }.to_h
 
       expect(by_id['active_group'][:status]).to eq('active')
-      expect(by_id['active_group'][:error_context]).to eq({})
+      expect(by_id['active_group'][:error_context]).to eq(retry_count: 0)
 
       expect(by_id['stopped_group'][:status]).to eq('stopped')
       expect(by_id['stopped_group'][:error_context][:message]).to eq('maintenance')
@@ -2669,6 +2747,17 @@ RSpec.describe Sourced::Store do
       expect(by_id['failed_group'][:status]).to eq('failed')
       expect(by_id['failed_group'][:error_context][:exception_class]).to eq('RuntimeError')
       expect(by_id['failed_group'][:error_context][:exception_message]).to eq('boom')
+    end
+
+    it 'reports retrying groups, with their retry time' do
+      retry_at = Time.now + 60
+      store.register_consumer_group('retrying_group')
+      store.updating_consumer_group('retrying_group') { |g| g.retry(retry_at, exception: RuntimeError.new('boom')) }
+
+      group = store.stats.groups.find { |g| g[:group_id] == 'retrying_group' }
+      expect(group[:status]).to eq('retrying')
+      expect(group[:retry_at].to_i).to eq(retry_at.to_i)
+      expect(group[:error_context]).to include(retry_count: 1, exception_class: 'RuntimeError')
     end
 
     it 'groups are ordered by group_id' do
