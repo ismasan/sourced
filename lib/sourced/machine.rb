@@ -1237,6 +1237,31 @@ module Sourced
         Configuration.new(self, Runtime.new(tree).place(paths))
       end
 
+      # An instance at the states at +paths+, without loading its history: ex.
+      # to decide commands against a status stored as paths, and store the
+      # paths it moves to. Its context is the +context+ block's, and it has no
+      # history, children or events that entered its states, so a placed
+      # state's +start+ counts its child as not started yet.
+      #
+      #   group = ConsumerGroupMachine.at(['active'], group_id: 'g1')
+      #   group.decide(stop) if group.handles_command?(stop)
+      #   group.machine.paths # => ['stopped']
+      #
+      # @param paths [Array<String>] the paths of the active states, as {Configuration#paths} returns them
+      # @param partition_values [Hash{Symbol => String}]
+      # @return [Machine]
+      # @raise [Sourced::MissingPartitionKeyError] if a partition key is missing or nil
+      # @raise [UnresolvablePathError] if a path doesn't resolve
+      # @raise [ArgumentError] for an initial position, a state in an inactive region, or two states in one region
+      def at(paths, **partition_values)
+        missing = partition_keys.select { |key| partition_values[key].nil? }
+        if missing.any?
+          raise Sourced::MissingPartitionKeyError, "#{self} can't be placed without values for partition keys #{missing.inspect}"
+        end
+
+        new(partition_values).__place(paths)
+      end
+
       # Load a machine instance and return its configuration and domain context.
       #
       # @param store [Sourced::Store, nil] defaults to +Sourced.store+
@@ -1586,6 +1611,15 @@ module Sourced
     # @return [View]
     def machine = View.new(self.class, @runtime)
 
+    # Place a fresh instance at +paths+: see {.at}.
+    # @api private
+    # @return [self]
+    def __place(paths)
+      @runtime.place(paths)
+      moved!
+      self
+    end
+
     # The machine's definition as {.to_h} returns it, with this instance's
     # status filled in. See {Chart}.
     #
@@ -1598,7 +1632,7 @@ module Sourced
       Array(messages).each do |msg|
         if self.class.__transition_class?(msg.to_message.class)
           @runtime.apply(msg)
-          @available_commands = nil
+          moved!
         end
         track_child(msg)
         super([msg])
@@ -1766,6 +1800,9 @@ module Sourced
     end
 
     private
+
+    # The configuration changed: what it accepts is read again.
+    def moved! = @available_commands = nil
 
     # Choose where the running handler moves the machine: one of the
     # states its command declared.

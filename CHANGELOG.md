@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+### Added
+
+- `Machine.at(paths, **partition_values)` returns a machine instance at the states at
+  `paths`, without loading its history: decide commands against a configuration stored as
+  paths (`handles_command?`, `decide`), and read the paths it moves to from
+  `machine.paths`. Raises `MissingPartitionKeyError` without a value for each partition key.
+
 ### Changed
 
 - **Evolve and reaction dispatch use handler maps.** `Projection.evolve_handlers` and
