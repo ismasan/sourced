@@ -27,6 +27,14 @@ module Sourced
   # reactor's partition keys, in its payload or its tags.
   MissingPartitionKeyError = Class.new(Error)
 
+  # Raised by {.handle!} when the reactor doesn't handle the command in its current
+  # state (its +#handles_command?+ is false). Nothing is appended.
+  CommandNotHandledError = Class.new(Error)
+
+  # Raised when a reactor's definition is invalid, ex. a handled message that
+  # doesn't match its partition schema. Checked when it's registered with a Router.
+  DefinitionError = Class.new(Error)
+
   # Default logger for components built outside a configured system, ex. in specs.
   NULL_LOGGER = Logger.new(nil)
 
@@ -67,11 +75,12 @@ module Sourced
   # @return [Sourced::Component]
   def self.to_component = config
 
-  # Register a reactor, as a component under +reactors+ in {.config}.
+  # Register a reactor, as a component under +reactors+ in {.config}, with
+  # what its +to_sourced_reactors+ returns (a machine's children).
   # Must be called before the configuration is prepared or booted.
-  # @param reactor [Class] a reactor (see {Router#register} for the protocol)
-  # @return [Sourced::Component] the reactor's node
-  # @raise [ArgumentError] if a reactor is already registered under the same key (its group_id, escaped)
+  # @param reactor [Class, #to_sourced_reactors] a reactor (see {Router#register} for the protocol)
+  # @return [Sourced::Component] the reactor's node (see {Config.register})
+  # @raise [ArgumentError] if a different reactor is already registered under the same key (its group_id, escaped)
   # @raise [Sourced::Component::LockedComponentError] once the configuration is prepared
   def self.register(reactor)
     Config.register(config, reactor)
@@ -140,6 +149,8 @@ module Sourced
   end
 
   # Handle a command synchronously: validate, load history, decide, append, ACK.
+  #
+  # @raise [CommandNotHandledError] if the loaded reactor's +#handles_command?+ is false
   def self.handle!(reactor_class, command, store: nil)
     partition_attrs = extract_partition_attrs(command, reactor_class)
     values = reactor_class.partition_keys.map { |k| partition_attrs[k]&.to_s }
@@ -163,16 +174,24 @@ module Sourced
       instance = reactor_class.new(values)
     end
 
+    if instance.respond_to?(:handles_command?) && !instance.handles_command?(command)
+      raise CommandNotHandledError, "#{reactor_class} doesn't handle #{command.class} (#{command.type}) in its current state"
+    end
+
     raw_events = instance.decide(command)
     correlated_events = raw_events.map { |e| command.correlate(e) }
 
     guard = read_result&.guard
-    to_append = [command] + correlated_events
-    # One transaction, so a command whose offset can't be advanced isn't committed either
+    # One transaction, so a command whose offset can't be advanced isn't committed either.
+    # The command is appended on its own to learn its position: offsets advance past the
+    # command only, so the reactor's workers still claim the events it just produced and
+    # run its reactions to them. The transaction holds the write lock, so nothing lands
+    # between the two appends, and the guard is checked by whichever appends to the log first.
     store.transaction do
-      last_position = store.append(to_append, guard: guard)
+      command_position = store.append(command, guard: guard)
+      store.append(correlated_events, guard: command_position ? nil : guard)
       # nil when the command itself was future-dated and scheduled: nothing to skip past.
-      advance_registered_offsets(store, reactor_class, partition_attrs, last_position) if last_position
+      advance_registered_offsets(store, reactor_class, partition_attrs, command_position) if command_position
     end
 
     HandleResult.new(command: command, reactor: instance, events: correlated_events)
@@ -189,6 +208,7 @@ module Sourced
   # +new(values)+; otherwise, as for a {Sourced::Projection}, all of +values+ are
   # the partition and instances are built with +new+.
   #
+  # @raise [MissingPartitionKeyError] if a partition key is missing or nil
   # @example
   #   cart, read_result = Sourced.load(CartProjection, cart_id: 'c1')
   #   cart.context
@@ -196,6 +216,11 @@ module Sourced
     store ||= self.store
     partitioned = reactor_class.respond_to?(:partition_keys)
     partition_attrs = partitioned ? reactor_class.partition_keys.to_h { |k| [k, values[k]] } : values
+    missing = partition_attrs.filter_map { |k, v| k if v.nil? }
+    if missing.any?
+      raise MissingPartitionKeyError, "#{reactor_class} can't be loaded without values for partition keys #{missing.inspect}"
+    end
+
     handled_types = reactor_class.handled_messages_for_evolve.map(&:type).uniq
     read_result = store.read_partition(partition_attrs, handled_types:, upto: upto)
     instance = partitioned ? reactor_class.new(values) : reactor_class.new
@@ -242,11 +267,13 @@ require 'sourced/actions'
 require 'sourced/action_runner'
 require 'sourced/reactor_defaults'
 require 'sourced/consumer'
+require 'sourced/partition_schema'
 require 'sourced/projection'
 require 'sourced/evolve'
 require 'sourced/react'
 require 'sourced/sync'
 require 'sourced/decider'
+require 'sourced/machine'
 require 'sourced/projector'
 require 'sourced/router'
 require 'sourced/worker'

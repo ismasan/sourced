@@ -62,6 +62,12 @@ module RouterTestMessages
   OrderTouched = Sourced::Message.define('router_test.order.touched') do
     attribute :order_id, String
   end
+
+  # Declares both keys, so the mixed-keys reactors pass PartitionSchema.check!.
+  OrderOpened = Sourced::Message.define('router_test.order.opened') do
+    attribute :order_id, String
+    attribute :tenant_id, String
+  end
 end
 
 # Records the history the Router reads for each claim.
@@ -82,7 +88,7 @@ class RouterTestMixedKeysReactor
   partition_by :order_id, :tenant_id
   consumer_group 'router_test_mixed_keys'
 
-  def self.handled_messages = [RouterTestMessages::SomethingHappened]
+  def self.handled_messages = [RouterTestMessages::OrderOpened, RouterTestMessages::SomethingHappened]
   def self.handled_messages_for_evolve = [RouterTestMessages::SomethingHappened, RouterTestMessages::OrderTouched]
 end
 
@@ -94,7 +100,7 @@ class RouterTestCustomHistoryReactor
   partition_by :order_id, :tenant_id
   consumer_group 'router_test_custom_history'
 
-  def self.handled_messages = [RouterTestMessages::SomethingHappened]
+  def self.handled_messages = [RouterTestMessages::OrderOpened, RouterTestMessages::SomethingHappened]
 
   def self.context_for(attrs) = RouterTestMessages::SomethingHappened.to_conditions(order_id: attrs[:order_id])
 end

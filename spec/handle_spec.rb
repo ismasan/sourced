@@ -22,6 +22,16 @@ module HandleTestMessages
   DeviceActivated = Sourced::Event.define('handle_test.device_activated') do
     attribute :device_id, String
   end
+
+  # Handled by HandleTestReactingDecider: a command has one handler.
+  RegisterDevice = Sourced::Command.define('handle_test.register_device') do
+    attribute :device_id, String
+    attribute :name, String
+  end
+
+  NotifyCreated = Sourced::Command.define('handle_test.notify_created') do
+    attribute :device_id, String
+  end
 end
 
 class HandleTestDecider < Sourced::Decider
@@ -50,41 +60,28 @@ class HandleTestDecider < Sourced::Decider
   end
 end
 
-# Declare no partition key: they reach the decider's partition through tags.
-module HandleTagTestMessages
-  AddNote = Sourced::Command.define('handle_tag_test.add_note') do
+# A reactor PartitionSchema.check! doesn't cover (no partition_schema), so a
+# command without its partition key reaches handle!'s runtime check.
+module HandleUncheckedMessages
+  AddNote = Sourced::Command.define('handle_unchecked_test.add_note') do
     attribute :text, String
-  end
-
-  NoteAdded = Sourced::Event.define('handle_tag_test.note_added') do
-    attribute :text, String
-  end
-
-  NotesCounted = Sourced::Event.define('handle_tag_test.notes_counted') do
-    attribute :device_id, String
-    attribute :count, Integer
   end
 end
 
-class HandleTagTestDecider < Sourced::Decider
-  partition_by :device_id
-  consumer_group 'handle-tag-test-decider'
+class HandleUncheckedReactor
+  def self.partition_keys = [:device_id]
+  def self.handled_messages = [HandleUncheckedMessages::AddNote]
+  def self.handle_claim(claim) = claim.messages.map { |m| [Sourced::Actions::OK, m] }
 
-  context { { notes: [] } }
-
-  evolve HandleTagTestMessages::NoteAdded do |context, evt|
-    context[:notes] << evt.payload.text
-  end
-
-  command HandleTagTestMessages::AddNote do |context, cmd|
-    event HandleTagTestMessages::NotesCounted, device_id: cmd.tags.fetch(:device_id), count: context[:notes].size + 1
-  end
+  def initialize(_values); end
+  def decide(_cmd) = []
 end
 
-# order_id in the payload, tenant_id as a tag.
+# Events carry order_id in the payload and tenant_id as a tag; the command declares both.
 module HandleMixedTestMessages
   AddNote = Sourced::Command.define('handle_mixed_test.add_note') do
     attribute :order_id, String
+    attribute :tenant_id, String
     attribute :note, String
   end
 
@@ -121,7 +118,31 @@ class HandleMixedTestDecider < Sourced::Decider
 
   command HandleMixedTestMessages::AddNote do |context, cmd|
     event HandleMixedTestMessages::NotesCounted,
-          order_id: cmd.payload.order_id, tenant_id: cmd.tags.fetch(:tenant_id), count: context[:notes].size + 1
+          order_id: cmd.payload.order_id, tenant_id: cmd.payload.tenant_id, count: context[:notes].size + 1
+  end
+end
+
+class HandleTestReactingDecider < Sourced::Decider
+  partition_by :device_id
+  consumer_group 'handle_test_reacting_decider'
+
+  command HandleTestMessages::RegisterDevice do |_context, cmd|
+    event HandleTestMessages::DeviceCreated, device_id: cmd.payload.device_id, name: cmd.payload.name
+  end
+
+  reaction HandleTestMessages::DeviceCreated do |_context, evt|
+    dispatch HandleTestMessages::NotifyCreated, device_id: evt.payload.device_id
+  end
+end
+
+# Refuses ActivateDevice until the device exists, instead of raising.
+class HandleTestGatedDecider < HandleTestDecider
+  consumer_group 'handle_test_gated_decider'
+
+  def handles_command?(command)
+    return super unless command.is_a?(HandleTestMessages::ActivateDevice)
+
+    super && context[:exists]
   end
 end
 
@@ -247,6 +268,35 @@ RSpec.describe 'Sourced.handle!' do
     end
   end
 
+  describe 'commands the reactor does not handle' do
+    it 'raises CommandNotHandledError for a command class without a handler, appending nothing' do
+      cmd = HandleTestMessages::NotifyCreated.new(payload: { device_id: 'd1' })
+
+      expect {
+        Sourced.handle!(HandleTestDecider, cmd, store: store)
+      }.to raise_error(Sourced::CommandNotHandledError, /HandleTestDecider doesn't handle/)
+      expect(store.read_all(limit: 10).messages).to be_empty
+    end
+
+    it "raises CommandNotHandledError when the reactor's context refuses the command" do
+      cmd = HandleTestMessages::ActivateDevice.new(payload: { device_id: 'd1' })
+
+      expect {
+        Sourced.handle!(HandleTestGatedDecider, cmd, store: store)
+      }.to raise_error(Sourced::CommandNotHandledError)
+      expect(store.read_all(limit: 10).messages).to be_empty
+    end
+
+    it 'handles the command once the context allows it' do
+      Sourced.handle!(HandleTestGatedDecider, HandleTestMessages::CreateDevice.new(payload: { device_id: 'd1', name: 'Sensor' }), store: store)
+      _cmd, _reactor, events = Sourced.handle!(
+        HandleTestGatedDecider, HandleTestMessages::ActivateDevice.new(payload: { device_id: 'd1' }), store: store
+      )
+
+      expect(events.map(&:class)).to eq([HandleTestMessages::DeviceActivated])
+    end
+  end
+
   describe 'optimistic concurrency' do
     it 'guard prevents concurrent writes within the same partition' do
       # Create the device first so there is history (and thus a guard query)
@@ -295,7 +345,7 @@ RSpec.describe 'Sourced.handle!' do
     end
 
     def add_note(tenant_id)
-      HandleMixedTestMessages::AddNote.new(payload: { order_id: '01', note: 'x' }).with_tags(tenant_id:)
+      HandleMixedTestMessages::AddNote.new(payload: { order_id: '01', tenant_id:, note: 'x' })
     end
 
     before do
@@ -337,66 +387,31 @@ RSpec.describe 'Sourced.handle!' do
         Sourced.handle!(HandleMixedTestDecider, add_note('t1'), store: store)
       }.to raise_error(Sourced::ConcurrentAppendError)
     end
-  end
-
-  describe 'tag-only messages' do
-    def note(text, device_id)
-      HandleTagTestMessages::NoteAdded.new(payload: { text: }).with_tags(device_id:)
-    end
-
-    def add_note(**tags)
-      HandleTagTestMessages::AddNote.new(payload: { text: 'x' }).with_tags(**tags)
-    end
-
-    it "reads the partition from the command's tags, evolves tagged history and appends the command with its tags" do
-      store.append([note('a', 'd1'), note('b', 'd2'), note('c', 'd1')])
-
-      cmd = add_note(device_id: 'd1')
-      _cmd, reactor, events = Sourced.handle!(HandleTagTestDecider, cmd, store: store)
-
-      expect(reactor.context[:notes]).to eq(%w[a c])
-      expect(events.map { |e| e.payload.count }).to eq([3])
-
-      stored = store.read(Sourced::PartitionQuery.new(attrs: { device_id: 'd1' }, types: [HandleTagTestMessages::AddNote.type])).messages
-      expect(stored.map(&:id)).to eq([cmd.id])
-      expect(stored.first.tags).to eq(device_id: 'd1')
-    end
-
-    it 'guards against a concurrent tagged append in the partition' do
-      store.append(note('a', 'd1'))
-      allow(store).to receive(:read_partition).and_wrap_original do |original, *args, **kwargs|
-        original.call(*args, **kwargs).tap { store.append(note('concurrent', 'd1')) }
-      end
-
-      expect {
-        Sourced.handle!(HandleTagTestDecider, add_note(device_id: 'd1'), store: store)
-      }.to raise_error(Sourced::ConcurrentAppendError)
-    end
-
-    it 'raises when a partition key is in neither the payload nor the tags, appending nothing' do
-      expect {
-        Sourced.handle!(HandleTagTestDecider, add_note, store: store)
-      }.to raise_error(Sourced::MissingPartitionKeyError, /\[:device_id\]/)
-      expect(store.latest_position).to eq(0)
-    end
 
     it 'decides with GWT helpers, given tagged history' do
-      with_reactor(HandleTagTestDecider, device_id: 'd1')
-        .given(note('a', 'd1'))
-        .when(add_note(device_id: 'd1'))
-        .then(HandleTagTestMessages::NotesCounted, device_id: 'd1', count: 2)
+      with_reactor(HandleMixedTestDecider, order_id: '01', tenant_id: 't1')
+        .given(happened('a', 't1'))
+        .when(add_note('t1'))
+        .then(HandleMixedTestMessages::NotesCounted, order_id: '01', tenant_id: 't1', count: 2)
     end
 
-    it 'is claimed by a worker into its partition' do
+    it 'is claimed by a worker into its partition, evolving tagged history' do
       router = Sourced::Router.new(store: store)
-      router.register(HandleTagTestDecider)
-      store.append([note('a', 'd1'), add_note(device_id: 'd1')])
+      router.register(HandleMixedTestDecider)
+      store.append(add_note('t1'))
 
-      expect(router.handle_next_for(HandleTagTestDecider, worker_id: 'w-1')).to be true
+      nil while router.handle_next_for(HandleMixedTestDecider, worker_id: 'w-1')
 
-      counted = store.read(HandleTagTestMessages::NotesCounted.to_conditions(device_id: 'd1')).messages
-      expect(counted.map { |e| e.payload.count }).to eq([2])
+      counted = store.read(HandleMixedTestMessages::NotesCounted.to_conditions(order_id: '01', tenant_id: 't1')).messages
+      expect(counted.map { |e| e.payload.count }).to eq([3])
     end
+  end
+
+  it 'raises when a partition key is in neither the payload nor the tags, appending nothing' do
+    expect {
+      Sourced.handle!(HandleUncheckedReactor, HandleUncheckedMessages::AddNote.new(payload: { text: 'x' }), store: store)
+    }.to raise_error(Sourced::MissingPartitionKeyError, /\[:device_id\]/)
+    expect(store.latest_position).to eq(0)
   end
 
   describe 'offset advancement for registered reactors' do
@@ -437,6 +452,24 @@ RSpec.describe 'Sourced.handle!' do
       # Background worker should still find no work
       handled = router.handle_next_for(HandleTestDecider, worker_id: 'test-worker')
       expect(handled).to be false
+    end
+
+    it "lets background workers run the reactor's reactions to the events it produced" do
+      router.register(HandleTestReactingDecider)
+      Sourced.register(HandleTestReactingDecider)
+
+      cmd = HandleTestMessages::RegisterDevice.new(payload: { device_id: 'd1', name: 'Sensor' })
+      Sourced.handle!(HandleTestReactingDecider, cmd, store: store)
+
+      expect(router.handle_next_for(HandleTestReactingDecider, worker_id: 'test-worker')).to be true
+      expect(router.handle_next_for(HandleTestReactingDecider, worker_id: 'test-worker')).to be false
+
+      types = store.read_all(limit: 10).messages.map(&:type)
+      expect(types).to eq(%w[
+        handle_test.register_device
+        handle_test.device_created
+        handle_test.notify_created
+      ])
     end
 
     it "raises when the reactor is registered but Sourced hasn't started, without appending the command" do

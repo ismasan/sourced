@@ -18,13 +18,30 @@ module Sourced
     #
     # @param reactor [Class] a reactor class
     # @return [Class] the same reactor
+    # @raise [ArgumentError] if +reactor+ doesn't implement {Config::ReactorInterface}
     def apply(reactor)
+      result = Config::ReactorInterface.resolve(reactor)
+      raise ArgumentError, "#{reactor.inspect} isn't a reactor: #{result.errors}" unless result.valid?
+
       Defaults.instance_methods(false).each do |name|
         next if reactor.respond_to?(name)
 
         reactor.define_singleton_method(name, Defaults.instance_method(name))
       end
       reactor
+    end
+
+    # The reactors +reactor+ stands for: what its optional
+    # +to_sourced_reactors+ returns, recursively (a machine returns itself and
+    # the children it starts), or else itself. Each appears once.
+    #
+    # @param reactor [Class, #to_sourced_reactors]
+    # @return [Array<Class>]
+    def expand(reactor, seen = Set.new)
+      return [] unless seen.add?(reactor)
+      return [reactor] unless reactor.respond_to?(:to_sourced_reactors)
+
+      reactor.to_sourced_reactors.flat_map { |r| r.equal?(reactor) ? [r] : expand(r, seen) }
     end
 
     # Default class-method implementations. +self+ inside each is the reactor

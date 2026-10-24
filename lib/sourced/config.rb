@@ -37,7 +37,8 @@ module Sourced
   #   reactors.*        one component per registered reactor (see .register)
   #   router            routes to reactors.*. On start, registers consumer groups and
   #                     freezes the error strategy (see Router#setup!)
-  #   topology          message-flow graph of reactors.*, built on each read
+  #   topology          message-flow graph of reactors.*, built on its first read and kept
+  #   topology.graph    holds it (a Topology::Memo), rebuilt with reactors.*
   #   workers.*         count, batch_size, max_drain_rounds, catchup_interval, shutdown_timeout
   #   housekeeping.*    interval, claim_ttl_seconds
   #   dispatcher        spawns workers into the context passed to #start!. On stop (and so on
@@ -164,9 +165,13 @@ module Sourced
           start { |router, _| router.setup! }
         end
 
-        # Dynamic: built when read, as it parses the reactors' source. Most processes never read it
-        c.declare('topology', T::Array)
-        c.config('topology', ['reactors.*']) { |reactors| Topology.build(reactors.values) }
+        # Built on its first read and kept, as it parses the reactors' source and most processes
+        # never read it: topology.graph holds it, and is rebuilt (empty) with the reactors.
+        c.declare('topology.graph', T::Interface[:value])
+        c.config!('topology.graph', ['reactors.*']) { |reactors| Topology::Memo.new(reactors.values) }
+        # Checked, not copied (as T::Array would on every read): readers share the kept graph.
+        c.declare('topology', T::Any[::Array])
+        c.config('topology', ['topology.graph'], &:value)
 
         c.declare('workers.count', T::Integer[0..]) { 2 }
         c.declare('workers.batch_size', T::Integer[1..]) { 50 }
@@ -237,23 +242,45 @@ module Sourced
     # topology depend on, keyed by its group_id (see {.reactor_key}).
     # The router checks that group_ids are unique.
     #
+    # A +reactor+ that responds to +to_sourced_reactors+ registers what that
+    # returns instead, recursively: a machine returns itself and the children
+    # it starts, and anything else (ex. a module) can return a group of reactors.
+    # A reactor already registered under its key is skipped.
+    #
     # @param config [Sourced::Component] a tree built by {.build}
-    # @param reactor [Class] a reactor (see {ReactorInterface})
-    # @return [Sourced::Component] the reactor's node
-    # @raise [ArgumentError] if a reactor is already registered under the same key
+    # @param reactor [Class, #to_sourced_reactors] a reactor (see {ReactorInterface})
+    # @return [Sourced::Component] the node of the first reactor registered (the reactor itself, for a machine)
+    # @raise [ArgumentError] if a different reactor is already registered under the same key
     # @raise [Sourced::Component::LockedComponentError] once the tree is prepared
     def self.register(config, reactor)
+      reactors = ReactorDefaults.expand(reactor)
+      raise ArgumentError, "#{reactor}.to_sourced_reactors returned no reactors" if reactors.empty?
+
+      reactors.map { |r| register_one(config, r) }.first
+    end
+
+    private_class_method def self.register_one(config, reactor)
       ReactorDefaults.apply(reactor)
       key = reactor_key(reactor)
+      provider = ReactorProvider.new(reactor)
+      return config.node(key) if config.declared?(key) && config.node(key).implementation&.provider == provider
+
       begin
         config.declare(key, ReactorInterface)
       rescue Sourced::Component::DeclarationOverrideError
         raise ArgumentError, "can't register #{reactor} (group_id #{reactor.group_id.inspect}) as #{key}: " \
-                             "a reactor is already registered under that key. Keys are group_ids with '.' and '*' replaced by '_'"
+                             "a different reactor is already registered under that key. Keys are group_ids with '.' and '*' replaced by '_'"
       end
-      config.config!(key) { reactor }
+      config.component!(key, provider)
       config.node(key)
     end
+
+    # Builds a reactor's node, and tells {.register} the node is still the
+    # reactor's (not overridden) without building it.
+    ReactorProvider = Data.define(:reactor) do
+      def call = reactor
+    end
+    private_constant :ReactorProvider
 
     # The component key of a reactor, ex. 'reactors.CourseDecider'
     # @return [String]

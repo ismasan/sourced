@@ -181,11 +181,12 @@ store.read_all(limit: 20).to_enum.lazy.select { |m|
 
 ## Reactors
 
-Sourced provides three reactor base classes that share the same lifecycle (claim → evolve → handle → append → ack) and the same consumer-group machinery:
+Sourced provides four reactor base classes that share the same lifecycle (claim → evolve → handle → append → ack) and the same consumer-group machinery:
 
 - [Deciders](#deciders) — handle commands, enforce invariants, produce events
 - [Projectors](#projectors) — build read models by consuming events
 - [Durable workflows](#durable-workflows) — imperative orchestrations whose steps are memoised across re-entries
+- [Machines](#machines) — statecharts: commands accepted per state, parallel regions, timers and child machines
 
 Any reactor can produce follow-up messages via [Reactions](#reactions), and run side effects via [Sync and after-sync blocks](#sync-and-after-sync-blocks).
 
@@ -220,6 +221,33 @@ class CourseDecider < Sourced::Decider
   end
 end
 ```
+
+#### Partition schemas and reactor messages
+
+`partition_by` keys are Strings unless typed: `partition_by :order_id, item_id: Types::Integer`. `Command` and `Event` define messages typed `"<message_prefix>.<name>"` (the prefix defaults to the `group_id`, so `Shop::Orders` gives `shop.orders`; declare `message_prefix 'orders'` to keep stored types stable across renames), with the partition keys declared before the block's attributes:
+
+```ruby
+class Orders < Sourced::Decider
+  partition_by :order_id, item_id: Types::Integer
+
+  AddItem = Command(:add_item) do   # 'orders.add_item', with order_id and item_id
+    attribute :quantity, Integer
+  end
+
+  ItemAdded = Event(:item_added) do
+    attribute :quantity, Integer
+  end
+end
+```
+
+`partition_by`, `consumer_group` and `message_prefix` must come before the first `Command` / `Event`.
+
+Hand-defined messages work too, and every handled message is checked against the schema when the reactor is registered with a Router (and by the GWT test helpers), raising `Sourced::DefinitionError`:
+
+- commands, reactions and a machine's `on` events must declare every key, as required attributes;
+- other evolved events must declare at least one key: the store reads a message into a partition when the keys it declares match, so events carrying some of the keys are fine;
+- each declared key must be the schema's type or a stricter one (`String.present` passes for `String`; `Integer` doesn't);
+- at least one handled message must declare every key, or no partition is ever created.
 
 #### Synchronous command handling
 
@@ -529,6 +557,8 @@ projection.evolve([item_added])
 projection.context # => { cart_id: 'c1', items: ['i1'] }
 ```
 
+Handlers (`evolve`, `reaction`, `command`) are declared for a message class, or for anything whose `to_message_class` returns one (a machine part stands for its `Part::State`); anything else raises `ArgumentError`. Messages are dispatched by `message.to_message.class`, so a wrapper that implements `#to_message` reaches the wrapped message's handler, and the handler receives the wrapper.
+
 `before_evolve` runs a block before the handler of every event the projection handles (events without a handler are still skipped), for changes common to all of them:
 
 ```ruby
@@ -582,6 +612,397 @@ cart.context # => { cart_id: 'c1', items: [...] }
 ```
 
 This reads the partition's whole history on every call, so it suits small partitions; persist larger read models with a projector.
+
+### Machines
+
+`Sourced::Machine` is Sourced's take on [statecharts](https://statecharts.dev). A machine's position is made of named **states**, declared with `State(:name)` and placed in the chart with `initial`, `state`, `final`, `started` and `stopped`. Each state lists the commands it accepts and the states each command may move to. Every move is recorded as an event of the target state's class; every other event the machine evolves is data, which only changes its domain `context`.
+
+```mermaid
+stateDiagram-v2
+  state "placed" as placed {
+    state "paying" as placed_payment_paying
+    state "rejected" as placed_payment_rejected
+    state "paid" as placed_payment_paid
+    [*] --> placed_payment_paying : StartPayment
+    [*] --> placed_payment_rejected : StartPayment
+    placed_payment_paying --> placed_payment_paid : on PaymentCaptured
+    placed_payment_paid --> [*]
+    --
+    state "packed" as placed_shipping_packed
+    state "shipped" as placed_shipping_shipped
+    [*] --> placed_shipping_packed : PackItem
+    placed_shipping_packed --> placed_shipping_shipped : DispatchShipment
+    placed_shipping_shipped --> [*]
+  }
+  state "completed" as completed
+  state "cancelled" as cancelled
+  [*] --> placed : PlaceOrder
+  placed --> cancelled : CancelOrder
+  placed --> completed : done
+  placed_payment_paying --> cancelled : ExpirePayment
+  completed --> [*]
+  cancelled --> [*]
+```
+
+This diagram was generated from the code below:
+
+```ruby
+class OrderMachine < Sourced::Machine
+  partition_by :order_id # before any state: their classes take the keys
+
+  Placed    = State(:placed) # OrderMachine::Placed, type 'order_machine.runtime.placed'
+  Paying    = State(:paying)
+  Rejected  = State(:rejected)
+  Paid      = State(:paid)
+  Packed    = State(:packed)
+  Shipped   = State(:shipped)
+  Completed = State(:completed)
+  Cancelled = State(:cancelled)
+
+  # Domain context, as in a Decider: any object, mutated by evolve handlers.
+  # Like any projection's, the context block takes no arguments.
+  context { OrderState.new }
+  evolve(OrderPlaced) { |order, evt| order.total = evt.payload.total }
+  evolve(PaymentInfoAdded) { |order, evt| order.card = evt.payload.card }
+  evolve(ItemPacked) { |order, evt| order.packed << evt.payload.sku }
+
+  initial do
+    command PlaceOrder => Placed do |_order, cmd|
+      event OrderPlaced, total: cmd.payload.total # data, appended before the transition
+    end
+  end
+
+  state Placed do # has regions: they're all active while Placed is
+    command CancelOrder => Cancelled
+
+    region :payment do
+      initial do
+        command StartPayment => Paying | Rejected do |order, cmd|
+          if order.total.positive?
+            event PaymentInfoAdded, card: cmd.payload.card
+            to Paying
+          else
+            to Rejected
+          end
+        end
+      end
+
+      state Paying do
+        entry { |order, _evt| dispatch ChargeCard, card: order.card }  # order_id filled in
+        after('1h' => ExpirePayment)        # order_id filled in
+        on PaymentCaptured => Paid          # appended by a payments reactor
+        command ExpirePayment => Cancelled  # an ancestor region's state: exits both regions
+      end
+
+      state Rejected
+      final Paid
+    end
+
+    region :shipping do
+      initial do
+        command PackItem => Packed | nil do |order, cmd| # | nil: may stay put
+          event ItemPacked, sku: cmd.payload.sku
+          to Packed if order.all_packed?
+        end
+      end
+      state(Packed) { command DispatchShipment => Shipped }
+      final Shipped
+    end
+
+    done Completed # once every region is final
+  end
+
+  final Completed
+  final Cancelled
+end
+
+order = OrderMachine.new(order_id: 'o1')
+order.decide(PlaceOrder.new(payload: { order_id: 'o1', total: 10 }))
+order.decide(StartPayment.new(payload: { order_id: 'o1', card: '4242' }))
+order.machine.value
+# => { OrderMachine::Placed => { payment: OrderMachine::Paying, shipping: :initial } }
+```
+
+**States are event classes.** `State(:paying)` generates a `Sourced::Machine::State` subclass and returns it: it's the handle the chart places and transitions target, and the event appended whenever the machine moves there. Its type is `<prefix>.runtime.<name>`, where the prefix comes from the machine's `group_id` (its class name, lowercase and dot-separated, unless `consumer_group 'orders'` fixes it), so declare `partition_by` and `consumer_group` before any state. The constant is yours to name and rename; the state's name is what's stored. Placing a Symbol (`state :outline`, `final :done`) declares the state and sets its constant (`Outline`). A state event carries the partition keys and where the machine went:
+
+```ruby
+# order_machine.runtime.paying
+{ order_id: 'o1', trigger: 'orders.start_payment', source: 'placed.payment.initial',
+  target: 'placed.payment.paying', exited: [], entered: ['placed.payment.paying'] }
+```
+
+`trigger` is the command or event type that moved the machine, or `'always'`, `'done'`, `'on_final'`, `'start'`, `'stop'`, `'children_done <child class name>'`. `source` and `target` are paths: state and region names joined with dots from the root, a compound state's sub-states directly under it (`working.progressed`). `exited` (innermost first) and `entered` (outermost first) are every state the move left and entered. Loading a machine replays these paths; transition rules aren't re-run.
+
+Command forms:
+
+| Form | Block | Transition |
+|---|---|---|
+| `command Cmd => A` | optional: data events, raise to reject | to `A` (unless the block calls `to`) |
+| `command Cmd => A | B do … end` | required | to whichever the block passes to `to` |
+| `command Cmd => A | nil do … end` | required | to `A` if the block calls `to(A)`, else stays put |
+| `command Cmd do … end` | required | data only: same as `=> nil` |
+
+Targets can be unions (`A | B | nil`, `nil` last) or Arrays (`[:a, :b, nil]`). `to` picks the target; `event` only appends data events, and raises for a state class. A handler moves the machine at most once, to a declared target, or raises `Sourced::Machine::TransitionError`. Partition keys are filled in on every event a machine emits and every message it dispatches.
+
+How it runs:
+
+- **One reactor, one consumer group.** Every message for a partition is decided one at a time, under one consistency guard, so regions never run concurrently and share the domain context.
+- **Commands go to the deepest active states that accept them**: a state's handler runs only when none of its active regions accepts the command. Handlers in sibling regions run in definition order. A command no active state accepts makes `Sourced.handle!` raise `Sourced::CommandNotHandledError`; workers ack it with no events.
+- **Targets** are states of the handler's region or an ancestor's, or below the handler's own state; never a sibling region's. A transition exits what's active below the innermost region holding both ends, innermost first, and enters the path down to the target, outermost first, then each compound state's start and each region's initial position.
+- **Regions** start at `initial` each time their state is entered; states of an inactive region are ignored.
+- **`done Completed`** joins: once every region of the state is final, the machine moves on in the same decision. Several guarded `done`s are tried in order (`done Delivered, if: :all_confirmed?` then `done Partial`); with none passing, the machine stays.
+- **`always Target, if: guard`** moves the machine as soon as its state is entered, and after every later decision while it's active: the first passing `always` wins. A state with an unguarded `always` is *transient*: it's left in the decision that enters it, so it can't accept commands or events, have timers, regions, joins or start children.
+
+  ```ruby
+  state Reviewing do
+    always Cancelled, if: ->(trip) { trip.any?('cancelled') }
+    always Refused, if: :any_refused?        # a Symbol is sent to the domain context
+    always Confirmed, if: AllConfirmed       # anything with #call(context)
+    always AwaitingSuppliers
+  end
+  ```
+- **`on Event => Target`** moves the machine when it claims an event another reactor appended, while the state is active. It's decided like a command (same targets, `to`, `nil`; the block gets `(context, event)`), under the claim's guard, and never while replaying. The event must carry the machine's partition keys.
+- **Eventless steps** (`always`, mounted parts' `on_final`, `done`, `children_done`, starting states' children) run after every decision until none applies, each appending its own state event, all in the decision's transaction. Guards see the context with the decision's events applied.
+- **Entry and exit actions are reactions**, run when the machine claims the state event, after the deciding transaction committed, and see the latest state. Leaving a state exits its active regions first. A transient state's entry actions run after the machine has already left it. They're skipped while replaying.
+- **`after(delay => Command)`** dispatches commands delivered that long after the state was entered. The delay is seconds (`after(3600 => Expire)`) or a duration string, as `Message#at` takes it (`'1h'`, `'1h30m'`, `'P1D'`). The commands are declared, so they show in the topology and `to_h`, and some state must accept them. Without a block, each is dispatched with the partition keys as its payload (so it can't require more). A block dispatches them itself, and only the declared ones (`Machine::TimerError`): `after('1h' => Remind | Expire) { |order, _evt| dispatch Remind, email: order[:email] }`. A timer command delivered after the machine has left that state entry is refused, even where the command is accepted, so timers never need cancelling.
+- **History**: `Working.history` targets a state with regions at the states its regions were last in (`Working.history(deep: true)` restores everything below it); regions with no history take their default entry. History is rebuilt from `exited` on replay.
+- `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.paths`, `machine.in?(OrderMachine::Paying)`, `machine.in?(:payment, OrderMachine::Paying)`, `machine.in?('placed.payment.paying')`, `machine.current(:payment)`, `machine.entered_by`, `machine.children(LineItemMachine)`.
+- `available_commands` lists the command classes the active states accept (and a child's `Stop` while it applies), as a frozen Set kept until the machine next transitions. Ex. to show the actions a UI offers:
+
+  ```ruby
+  order, _ = Sourced.load(OrderMachine, order_id: 'o1') # placed, paying
+  order.available_commands
+  # => #<Set: {CancelOrder, ExpirePayment, PackItem}>
+  ```
+
+  It lists what the states declare: a handler can still reject a command by raising or stay put with `| nil`, and a timer command is refused once its state entry is left (`handles_command?` checks that).
+
+**Read-only configurations.** A machine's configuration is the paths of its active states: JSON-native strings, outermost first, that can be stored and read back later without loading the machine's history. `machine.paths` returns them from an instance, and `OrderMachine.configuration(paths)` reads them back against the machine's definition:
+
+```ruby
+order, _ = Sourced.load(OrderMachine, order_id: 'o1')
+paths = order.machine.paths # => ["placed", "placed.payment.paying"]
+# ... stored as JSON, with a record, in a cache …
+
+config = OrderMachine.configuration(paths)
+config.available_commands # => #<Set: {CancelOrder, ExpirePayment, PackItem}>
+config.value              # => { OrderMachine::Placed => { payment: OrderMachine::Paying, shipping: :initial } }
+config.in?(OrderMachine::Paying) # => true
+```
+
+An instance's `machine` is a configuration too, read live: it changes as the instance decides. `configuration(paths)` is detached, and the same at any point.
+
+A projection can keep the paths without loading the machine at all: each state event's `exited` and `entered` paths update them, ex. for every record a listing shows:
+
+```ruby
+class OrderListing < Sourced::Projector::StateStored
+  partition_by :order_id
+
+  context { {} }
+
+  OrderMachine.transition_classes.each do |klass|
+    evolve(klass) do |order, evt|
+      order[:machine] = (order.fetch(:machine, []) - evt.payload.exited) | evt.payload.entered
+    end
+  end
+end
+
+OrderMachine.configuration(order[:machine]).available_commands
+```
+
+A `Sourced::Machine::Configuration` is read-only: `paths`, `value`, `in?`, `current`, `final?`, `available_commands` and `handled_commands`, every command the machine accepts in any state (a Set of `OrderMachine.handled_commands`), ex. to tell commands that aren't available now from ones the machine never takes. An instance has `available_commands` and `handled_commands` too, and its `machine` adds `entered_by` and `children`. Code that takes either an instance or a configuration calls `to_machine_config`: an instance returns its `machine`, a configuration itself.
+
+```ruby
+def command_buttons(order) = order.to_machine_config.available_commands
+
+command_buttons(order)                                 # a loaded instance
+command_buttons(OrderMachine.configuration(record[:machine])) # stored paths
+``` It has no domain context, history or children, so it tells what the active states accept, not whether a command would succeed. Stored paths depend on state and region names, as stored state events do: paths that don't resolve raise `UnresolvablePathError`; an initial position, a state in an inactive region, or two states in one region raise `ArgumentError`.
+
+Definitions are checked when the machine is registered (or first instantiated), raising `Sourced::Machine::DefinitionError`: targets, partition keys, unplaced states, transient states, unreachable guards. After that, the machine's `context`, `evolve`, `before_evolve`, `reaction` and `State` raise too: what it reads is fixed. A stored path that no longer names a state raises `Sourced::Machine::UnresolvablePathError` with the event's type and id, so a state or region name that stored events use can't change (rename the constant instead).
+
+#### Child machines
+
+Regions are for modelling. For work that runs in parallel, a machine starts **child machines**: separate reactors in their own partitions, keyed by the parent's keys plus their own. A handler or a state can start one, and **a child lives as long as the scope that started it**: a handler is a moment, so its children run independently until they finish or a state `stops` them; a state lasts, so its child is stopped when the state is left.
+
+```ruby
+class LineItemMachine < Sourced::Machine
+  partition_by :order_id, :line_id
+
+  Added    = State(:added)
+  Reserved = State(:reserved)
+  Picked   = State(:picked)
+
+  context { LineState.new }
+  
+  evolve(OrderPlaced) do |line, evt| # the parent's fact
+    line.currency = evt.payload.currency
+  end
+
+  started Added do # where the parent starts it
+    entry { |line, _evt| dispatch ReserveStock }
+    command StockReserved => Reserved
+  end
+  
+  state(Reserved) do
+    command PickLine => Picked
+  end
+  
+  final Picked
+
+  stopped :dropped # generates Stop, Started and Finished
+end
+
+class OrderMachine < Sourced::Machine
+  partition_by :order_id
+  # ...
+
+  state Placed do
+    command AddLine, starts: LineItemMachine # one line, keyed by the payload's line_id
+
+    command Ship, starts: ParcelMachine | nil do |order, _cmd|
+      order.parcels.each { |id| start ParcelMachine, parcel_id: id }
+    end
+
+    children_done LineItemMachine => LinesDone # once every started line is final
+
+    command CancelOrder => Cancelled
+  end
+
+  final Cancelled do
+    stops LineItemMachine # live lines are sent Stop
+  end
+
+  state AwaitingPayment do
+    # One child per entry of AwaitingPayment, stopped when it's left
+    start PaymentMachine do
+      payload { |_order, _state| { payment_id: SecureRandom.uuid } }
+      on_done PaymentMachine::Captured => Paid
+      on_done PaymentMachine::Declined => PaymentFailed
+    end
+  end
+end
+```
+
+`stopped` generates three messages, under `<prefix>.runtime.child`: `Started` (appended by the parent's `start`, entering the child's `started` state; `start`'s attributes beyond the child's keys are its `input`), `Finished` (appended when the child reaches a root final), and the `Stop` command, accepted from any started, non-final position. The constants `Started`, `Finished` and `Stop` are reserved for them. `stopped` places a root final, taking a block as `final` does (`stopped Dropped do entry { … } end`); without one, it marks the root final already placed under that handle, or places a bare one. The parent evolves only its children's `Started` and `Finished`: `machine.children(LineItemMachine)` returns `ChildRef`s (`keys`, `state`, `final?`), and `machine.children` all of them, by machine.
+
+**Started by handlers.** A handler (`command`, `on` or `children_done`) declares the children it may start with `starts:`, a machine or a union of them built with `|` (`nil` last), and starts them with `start Child, **payload` in its block. Starts are counted after the block runs: too few, or starting a machine `starts:` doesn't name, raises `Sourced::Machine::StartError`.
+
+| Declaration | With a block | Without a block |
+|---|---|---|
+| `starts: A` | at least one `A` | exactly one `A`, from the message |
+| `starts: A | B` | at least one of them | `DefinitionError` (which one?) |
+| `starts: A | nil` | any number of `A` | `DefinitionError` (nothing decides) |
+
+Without a block, the child's keys are the message's attributes named by its partition keys, and its `input` the rest of the payload, without either machine's keys (the message must declare the child's keys beyond the parent's). `stops Child` in a state's block sends `Stop` to every running child of that machine when the state is entered; some handler must declare `starts: Child`. `children_done Child => Target` moves the parent once every started child of that machine is final.
+
+**Started by a state.** `start Child do … end` in a state's block runs one child per entry of the state: it's started in the decision that enters the state and sent `Stop` when the state is left. The block requires `payload { |context, state| … }`, which returns the child's `Started` payload (its keys, the rest as `input`), where `state` is the event that entered the state. It's called once, and its result is recorded in `Started`. `on_done Final => Target` (one or more) maps the child's root finals onto targets of the state, with the child's `Finished` type as the move's `trigger`. A child with no `on_done` runs until it finishes or the state is left. There's no guard: to start a child only sometimes, route through a transient state, so the condition is a state the chart shows:
+
+```ruby
+state Confirmed do
+  always AwaitingPayment, if: :payment_due?   # starts PaymentMachine
+  always Paid
+end
+```
+
+A machine is a child in one role: started by handlers (any number of them), or by one state.
+
+Registering a machine registers the children it starts too (including those started by its parts, and children's own children), so `Sourced.register(OrderMachine)` also registers `LineItemMachine`. A `Sourced::Router` built directly raises `Sourced::Router::MissingReactorsError` on `setup!` if a machine's children aren't among its reactors.
+
+A child is only woken by messages carrying all of its partition keys: its own events, the parent's `Started`, and `Stop`. Parent facts with fewer keys (`OrderPlaced`) are in the child's partition reads, so it can evolve them, but they never wake it.
+
+#### Machine parts
+
+A big machine's chart can be split into **parts**: `Sourced::Machine::Part` classes that each hold a piece of one machine's chart (its *owner*). A part runs as part of its owner: in its partition, decided with it under one guard, on its domain context. Unlike a child machine, a part isn't a reactor: it's never registered, instantiated or run on its own.
+
+**A region** can be a part, starting at its `initial` position each time the state is entered:
+
+```ruby
+class OrderMachine < Sourced::Machine
+  partition_by :order_id
+  context { OrderState.new }
+
+  class PaymentMachine < Sourced::Machine::Part
+    part_of OrderMachine                    # first: the part takes its owner's keys and prefix
+
+    Capture   = Command(:capture)           # order_machine.payment.capture, with :order_id
+    CardAdded = Event(:card_added) { attribute :card, String }
+
+    Captured = State(:captured)             # order_machine.runtime.payment.captured
+    Expired  = State(:expired)
+
+    evolve(CardAdded) { |order, evt| order.card = evt.payload.card } # the owner's context
+
+    initial do
+      command Capture => Captured
+    end
+
+    final Captured
+    final Expired
+  end
+
+  # ...
+  state Placed do
+    region :payment, PaymentMachine, on_final: { PaymentMachine::Expired => Cancelled }
+    region :shipping do # inline regions and parts mix
+      # ...
+    end
+    done Completed
+  end
+end
+```
+
+**A part is also its own compound state**, `Part::State`: a state class generated by `part_of`, typed `<owner prefix>.runtime.<part prefix>` with the owner's keys. `state Part` places it, its sub-states the part's states, entered at the part's `started` state:
+
+```ruby
+class OrderMachine < Sourced::Machine
+  # ...
+  class Working < Sourced::Machine::Part
+    part_of OrderMachine                      # Working::State: order_machine.runtime.working
+
+    Started    = State(:started)
+    Progressed = State(:progressed)
+    Done       = State(:done)
+
+    started(Started) { command Progress => Progressed }
+    state(Progressed) { command Finish => Done }
+    final Done
+  end
+
+  initial { command Place => Working } # the part stands for its compound state
+
+  state Working do
+    on_final Working::Done => Ready
+    command Cancel => Cancelled               # the compound state's own commands
+  end
+end
+```
+
+Entering it enters the part at its start too (one `Working::State` event, `entered: ['working', 'working.started']`), and runs both states' entry actions, outermost first. Commands go to the deepest state that accepts them (`Progress` to the part, `Cancel` to the compound state); leaving it exits the part first. `machine.value` is `{ Working::State => Working::Progressed }`. A part's start can itself be compound (`started Open`), to any depth.
+
+The part class goes wherever a state does: handler targets (`=> Working`, `=> Working | Other`, `=> Working | nil`), `to(Working)`, `always`, `done`, `on_final`, `children_done`, `machine.in?(Working)`, and `Working.history` / `.history(deep: true)`. As a handler declaration it stands for `Working::State` too: `evolve(Working)` or `reaction(Working)`, in any projection or reactor, handle `Working::State` events, appended only by transitions to the compound state itself (entering the part), not by transitions to one of its sub-states (`Progress` appends `Working::Progressed`). In paths, the compound state is named after the last segment of the part prefix (`working`), so a machine can't place two parts whose prefixes end the same way, and an owner's own state can't share a part's prefix (`State(:working)` and `Working` would share a type): both raise `Sourced::Machine::DefinitionError`. A compound state can't be final.
+
+Rules for parts:
+
+- **Messages and states**: `Command(:name)` / `Event(:name)` in a part are typed `<owner prefix>.<part prefix>.<name>` and declare the owner's partition keys first; its states are typed `<owner prefix>.runtime.<part prefix>.<name>`. The part prefix defaults to the class name relative to the owner, underscored, without a trailing `Machine` (`OrderMachine::PaymentMachine` → `payment`); `part_of OrderMachine, prefix: 'billing'` sets another. A part declared `part_of` another part belongs to that part's owner, its prefix nested under the enclosing part's. The owner appends a part's state classes as they are (`OrderMachine::PaymentMachine::Captured === evt`, `OrderMachine::Working::State === evt`). A part can be mounted any number of times in its owner's chart, sharing its classes (paths tell the placements apart), but each machine places a part's compound state once.
+- **Context**: a part's `evolve(Event) { |context, evt| … }` blocks run on the owner's context, and its handlers receive it. An event is evolved by one block, across the owner and its parts.
+- **Escalation**: a part's targets are its own states. It reaches the owner through its root finals, which `on_final` maps onto the owner's states, in the deciding decision: the `on_final:` keyword for a region, `on_final Final => Target` in a compound state's block (one line per mapping, or one Hash). Unmapped finals leave the part there. When a decision both makes a region reach a mapped final and completes the owner's `done` join, `on_final` wins. (`done` is the state's own completion, and `start … on_done` a child finishing; `on_final` is an exit from the part.)
+- **Handlers run on the owner's instance**: `event`, `dispatch` and `machine` are the owner's. A part's states may have entry, exit and `after` actions, and may start children.
+- **Not allowed**: `partition_by`, `consumer_group`, `context`, reactions, sync blocks and `stopped` (they're the owner's); mounting a part outside its owner's chart, starting it as a child, or registering it. Mounting a `Sourced::Machine` raises `Sourced::Machine::DefinitionError`: reuse a machine with its own partition as a child.
+
+A part can be built anonymously, with `part_of`'s `prefix:` (there's no class name to derive it from). Constants assigned in a `Class.new` block are lexical, so set them on the part with `self::`:
+
+```ruby
+part = Class.new(Sourced::Machine::Part) do
+  part_of OrderMachine, prefix: 'review'
+  self::Approve = Command(:approve)
+  approve = self::Approve
+  started(:pending) { command approve => :approved }
+  final :approved
+end
+```
+
+`Sourced.topology` describes machines' commands, states and actions, and `OrderMachine.to_mermaid` draws the machine as a Mermaid state diagram.
 
 ### Reactions
 
@@ -673,7 +1094,17 @@ Sourced.register(EnrolmentDecider)
 Sourced.register(CourseCatalogProjector)
 ```
 
-Each reactor becomes a component of Sourced's configuration, under `reactors` and keyed by its `group_id` with dots replaced by underscores (`Shop::CourseDecider` → `reactors.shop_course_decider`); the router and `Sourced.topology` depend on all of them. Register reactors before Sourced boots: registering once it's booted raises, and so does registering two reactors with the same `group_id`. Their consumer groups are registered with the store when Sourced starts.
+Each reactor becomes a component of Sourced's configuration, under `reactors` and keyed by its `group_id` with dots replaced by underscores (`Shop::CourseDecider` → `reactors.shop_course_decider`); the router and `Sourced.topology` depend on all of them. Register reactors before Sourced boots: registering once it's booted raises, and so does registering two different reactors with the same `group_id` (registering the same one again is a no-op). Their consumer groups are registered with the store when Sourced starts.
+
+Anything that responds to `to_sourced_reactors` registers what that returns instead, recursively. A machine returns itself and the child machines it starts; a module can group a bounded context's reactors:
+
+```ruby
+module Booking
+  def self.to_sourced_reactors = [BookingMachine, BookingsProjector]
+end
+
+Sourced.register(Booking)
+```
 
 ## The reactor protocol
 
@@ -1092,7 +1523,7 @@ offsets, total_count = store.read_offsets(group_id: 'course_decider')
 
 ## Topology introspection
 
-`Sourced.topology` analyses all registered reactors (deciders and projectors) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for projectors). Each node has at least `type`, `id`, `name`, `group_id`, `group_label` (its reactor's class name, for display), and depending on kind, `consumes` / `produces` / `schema`.
+`Sourced.topology` analyses all registered reactors (deciders, projectors and machines) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for projectors). Each node has at least `type`, `id`, `name`, `group_id`, `group_label` (its reactor's class name, for display), and depending on kind, `consumes` / `produces` / `schema`.
 
 ```ruby
 Sourced.register(CourseDecider)
@@ -1119,7 +1550,30 @@ Sourced.topology
   .map(&:name)
 ```
 
-`produces` / `consumes` are resolved statically by parsing reactor source with Prism, so they are only populated when the `prism` gem is available.
+`produces` / `consumes` are resolved statically by parsing reactor source with Prism, so they are only populated when the `prism` gem is available. A machine's declared targets are known without parsing: a command node always lists its target states' types (and those its `always` steps lead to) and the `Started` of the children its `starts:` declares, and adds the events its block emits when Prism is available. Machine entry and `after` actions (`actions(<path>)`), exit actions (`exit(<path>)`, consuming the transitions that can leave the state), `on` transitions, joins, and starting or stopping children appear as automations.
+
+For a machine's own shape, `MyMachine.to_mermaid` returns a Mermaid `stateDiagram-v2`: states, regions as concurrent sections, compound states as nested states, and transitions labelled with the commands, events (`on PaymentCaptured`), joins (`done`, `always [guard]`) that take them, `/ starts LineItemMachine` for the children a handler starts, and `(H)` / `(H*)` for history targets. Data-only handlers that start children, and the children a state `stops`, go in a note on the state.
+
+To render a machine yourself, `MyMachine.to_h` returns its definition as a JSON-serializable Hash. It borrows XState's vocabulary and nesting (`states`, `initial`, `type: 'parallel' | 'compound' | 'final' | 'history'`, `on`, `always`, `entry` / `exit`, `after`, `invoke`). States are keyed by name and identified by path, each command or `on` event is one transition (with `kind: 'command' | 'event'`) listing every state it may move to and the children it `starts` (by `group_id`, with `starts_optional` for `| nil`), a state lists the children it `stops`, a state's `start` is its `invoke`, the machine's `children` have `kind: 'spawn'` (started by handlers) or `'invoke'` (by a state), and a region's initial position is a node of its own. An instance's `#to_h` returns the same Hash with every `status` key filled in, which is `nil` in the definition:
+
+```ruby
+OrderMachine.to_h                    # the definition: every status is nil
+
+order, = Sourced.load(OrderMachine, order_id: 'o1')
+order.to_h                           # the same keys, with the instance's status
+order.to_h[:status]                  # => { active: true, current: 'placed', done: false,
+                                     #      value: { 'placed' => { 'payment' => 'placed.payment.paying', 'shipping' => 'placed.shipping.initial' } } }
+
+result = Sourced.handle!(OrderMachine, PlaceOrder.new(payload: { order_id: 'o1', total: 10 }))
+result.reactor.to_h                  # status after the command, including the events it decided
+```
+
+- A region's status is `{ active:, current:, done: }`. The machine's (its root region's) adds `value`, the current configuration, by path.
+- A state's is `{ active:, visited:, entered_by: }`. Visited means entered since its region was last entered, and `entered_by` is the event that entered an active state (`id`, `type`, `at`).
+- A child's is `{ instances: [{ keys:, state:, final: }] }`.
+- The domain `context` isn't included.
+
+`OrderMachine.load(order_id: 'o1')` returns a `Snapshot` (`value`, `context`, `children`) without building a reactor instance yourself.
 
 ## Testing
 

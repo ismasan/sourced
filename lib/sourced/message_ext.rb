@@ -57,6 +57,13 @@ module Sourced
   ConsistencyGuard = Data.define(:query, :last_position)
 
   class Message
+    # The class-level counterpart of {#to_message}: what handler declarations
+    # (+evolve+, +reaction+, +command+) resolve to, and store and subscribe
+    # handlers under. Anything standing for a message class answers it (ex. a
+    # machine part, its +Part::State+).
+    # @return [Class<Message>]
+    def self.to_message_class = self
+
     # Build a {QueryCondition} for the intersection of this message's declared
     # attributes and the given key-value pairs. Attributes not declared on this
     # message class are silently ignored. Returns an array with a single condition

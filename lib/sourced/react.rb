@@ -18,13 +18,10 @@ module Sourced
     # Run reaction handlers for one or more messages.
     # Supports both explicit message returns and dispatch(...) calls.
     def react(messages)
+      handlers = self.class.reaction_handlers
       __handling_reactions(Array(messages)) do |message|
-        method_name = Sourced.message_method_name(PREFIX, message.class.to_s)
-        if respond_to?(method_name)
-          Array(send(method_name, context, message)).compact
-        else
-          EMPTY_ARRAY
-        end
+        method_name = handlers[message.to_message.class]
+        method_name ? Array(send(method_name, context, message)).compact : EMPTY_ARRAY
       end
     end
 
@@ -34,7 +31,7 @@ module Sourced
     # @param message [Sourced::Message]
     # @return [Boolean]
     def reacts_to?(message)
-      self.class.handled_messages_for_react.include?(message.class)
+      self.class.handled_messages_for_react.include?(message.to_message.class)
     end
 
     # Whether a registered reaction should actually run for +message+.
@@ -140,6 +137,12 @@ module Sourced
         catch_all_react_events.each do |klass|
           subclass.catch_all_react_events << klass
         end
+        subclass.reaction_handlers.merge!(reaction_handlers)
+      end
+
+      # @return [Hash{Class => Symbol}] each reacted-to message class's reaction method
+      def reaction_handlers
+        @reaction_handlers ||= {}
       end
 
       def handled_messages_for_react
@@ -152,8 +155,10 @@ module Sourced
 
       # Register a reaction handler for one or more messages types.
       #
-      # Accepts one or more message classes, or no arguments for a
+      # Accepts one or more message classes (or objects whose +to_message_class+
+      # returns one, see {Sourced::Message.to_message_class}), or no arguments for a
       # catch-all reaction across all evolve types without an explicit handler.
+      # Handlers are looked up by +message.to_message.class+.
       #
       # @example React to a specific event class
       #   reaction StudentEnrolled do |context, event|
@@ -168,24 +173,21 @@ module Sourced
         case args
         in []
           handled_messages_for_evolve.each do |message_class|
-            method_name = Sourced.message_method_name(PREFIX, message_class.to_s)
-            next if instance_methods.include?(method_name.to_sym)
+            next if reaction_handlers.key?(message_class)
 
             catch_all_react_events << message_class
             reaction(message_class, &block)
           end
 
-        in [Class => message_class] if message_class < Sourced::Message
-          __validate_message_for_reaction!(message_class)
-          handled_messages_for_react << message_class
-          define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block) if block_given?
         in [_, _, *] => values
           values.each { |value| reaction(value, &block) }
-        else
-          raise(
-            ArgumentError,
-            "Invalid arguments #{args.inspect} for #{self}.reaction"
-          )
+        in [declared]
+          message_class = declared.to_message_class
+          __validate_message_for_reaction!(message_class)
+          handled_messages_for_react << message_class
+          if block_given?
+            reaction_handlers[message_class] = define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
+          end
         end
       end
 

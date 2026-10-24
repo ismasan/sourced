@@ -2,29 +2,34 @@
 
 ### Changed
 
-- **Reactor state lives in a `Sourced::Projection`.** A reactor's `state` /
+- **Evolve and reaction dispatch use handler maps.** `Projection.evolve_handlers` and
+  `React.reaction_handlers` map each message class to its handler, filled when the handler
+  is declared, instead of building and checking method names per message. Like
+  `handled_messages`, they're copied when a class is subclassed: a handler declared on a
+  parent after a subclass exists isn't seen by the subclass.
+- **Reactor context lives in a `Sourced::Projection`.** A reactor's `context` /
   `evolve` declarations now define a projection subclass the reactor owns, and
-  `#state` / `#evolve` delegate to it. Evolve blocks run in the projection's
+  `#context` / `#evolve` delegate to it. Evolve blocks run in the projection's
   scope, so they no longer see the reactor's methods or collaborators.
-  - **`state` blocks take no arguments.** Projections don't receive partition
-    values: a state is a function of the events it evolves, so set identifying
-    values (ex. ids) in `evolve` blocks. A `state` block that declares arguments
-    (`state { |values| ... }`, `state { |_| ... }`) raises `ArgumentError`.
-    `StateStored#load_state` still receives the partition values.
-  - `before_evolve { |state, event| ... }` runs before the evolve handler of
+  - **`context` blocks take no arguments.** Projections don't receive partition
+    values: a context is a function of the events it evolves, so set identifying
+    values (ex. ids) in `evolve` blocks. A `context` block that declares arguments
+    (`context { |values| ... }`, `context { |_| ... }`) raises `ArgumentError`.
+    `StateStored#load_context` still receives the partition values.
+  - `before_evolve { |context, event| ... }` runs before the evolve handler of
     every event a projection (or reactor) handles, ex. to set ids or timestamps
     common to all events.
   - Projections can be standalone classes (`class CartProjection <
     Sourced::Projection`), shared between reactors with `evolve CartProjection`.
     Each reactor subclasses it, so its own extra `evolve` blocks don't leak.
-  - `Projector::StateStored` loads stored state with a new `load_state` block,
-    which runs in the reactor's scope. Move snapshot loading out of `state`
-    blocks into `load_state`.
-  - `Sourced::Evolve` can no longer be included into a plain class for state;
+  - `Projector::StateStored` loads stored context with a new `load_context` block,
+    which runs in the reactor's scope. Move snapshot loading out of `context`
+    blocks into `load_context`.
+  - `Sourced::Evolve` can no longer be included into a plain class for context;
     use `Sourced::Projection`. `DurableWorkflow` no longer includes it.
   - The GWT helpers take projection classes: `with_reactor(CartProjection)`
-    evolves the `given` messages and yields the state to a `then` block.
-  - `Sourced.load(CartProjection, cart_id: 'c1')` loads a projection's state
+    evolves the `given` messages and yields the context to a `then` block.
+  - `Sourced.load(CartProjection, cart_id: 'c1')` loads a projection's context
     from the log. `Sourced.load` takes any class with `handled_messages_for_evolve`
     and `#evolve`. With `partition_keys` it builds `new(values)`; without it the
     given values are the partition and it builds `new`.
@@ -168,6 +173,57 @@
 
 ### Added
 
+- `Sourced::Machine`, Sourced's statecharts. A machine's position is made of
+  *states*, declared with `State(:name)`: each generates an event class (type
+  `<prefix>.runtime.<name>`, prefix from `group_id`) that is both the handle the chart
+  places (`initial`, `state`, `final`, `started`, `stopped`) and the event appended when the
+  machine moves there, recording `trigger`, `source`, `target` and the `exited` /
+  `entered` paths, which replay applies. States list the commands they accept and
+  the states each may move to (`command PlaceOrder => Placed`, `=> A | B` or
+  `=> A | nil` with `to(A)` in the block, or data-only without an arrow); `event` appends
+  data events, evolved into the machine's domain `context`. States can have `region`s,
+  all active while the state is: commands go to the deepest active states that
+  accept them, can target an ancestor region's state or one below their own, and
+  `done Target` joins once every region is final. Eventless transitions: `always Target,
+  if: guard` (transient states with an unguarded one) and guarded `done`, guards
+  being a Symbol sent to the context or any `#call(context)`. `on Event => Target` moves the
+  machine when it claims another reactor's event. `State.history` /
+  `history(deep: true)` re-enter a state's regions where they were. Entry and exit
+  actions run as reactions when the transition is claimed; `after(delay) { dispatch Cmd }`
+  blocks (seconds, or a duration string such as `'1h30m'`) dispatch commands delivered that
+  long after the state was entered, refused once that entry has been left. Child
+  machines run in their own partitions (keys including the parent's), living as long as
+  the scope that started them: a child declares `started` and `stopped`, generating
+  `Started`, `Finished` and `Stop` (`<prefix>.runtime.child.*`); a parent's handlers
+  declare `starts: Child` (`Child | Other`, `Child | nil`) and call `start Child,
+  **payload` (a blockless handler starts one from the message; a count that doesn't fit
+  raises `StartError`), a state `stops Child`, and `children_done Child => Target`
+  joins over them; or a state runs one for its duration with `start Child do
+  payload { |context, state| … }; on_done Final => Target end`. Children are tracked
+  by machine class (`machine.children(Child)`). Commands the current state doesn't
+  accept raise `CommandNotHandledError` in `Sourced.handle!` and are acked by workers.
+  Definitions are checked when the machine is registered, after which its DSL is locked;
+  stored paths that no longer resolve raise `UnresolvablePathError`. `Sourced.topology`
+  describes machines, `Machine.to_mermaid` draws one as a Mermaid state diagram,
+  `Machine.to_h` returns the definition as a JSON-serializable, XState-shaped Hash, and
+  `Machine#to_h` the same Hash with the instance's status. Design in
+  `plans/statecharts-transitions.md`.
+- Composing machines: `region :payment, PaymentMachine, on_final: { PaymentMachine::Expired
+  => Cancelled }` runs another machine as a region, and `state Working, ThingMachine do
+  on_final ThingMachine::Done => Ready end` as a compound state whose sub-states start at its `started`
+  state (which can itself be compound). A composed machine runs in the parent's partition and instance, its
+  projection built from the parent's context; it escalates through its root finals, which
+  `on_final` maps onto the parent's states. The mounting machine appends its own
+  generated classes for the composed machine's states
+  (`OrderMachine::Mounted::PaymentMachine::Captured`, type
+  `order_machine.runtime.mounted.payment_machine.captured`, see `state_class`), so a
+  machine can be composed several times, and never reads another context's events.
+- `Decider#handles_command?(command)`: whether the decider handles a command in its
+  current context. Defaults to whether a handler is registered for the command's class;
+  override it to refuse commands based on context without raising, the command-side
+  counterpart of `should_react?`. `Sourced.handle!` raises
+  `Sourced::CommandNotHandledError` when it's false, appending nothing, and background
+  workers ack the command with no events.
 - **Message codecs.** Messages are declared with native Ruby types (`Date`, `Time`,
   `Symbol`, `BigDecimal`, `URI`, `Range`, …) and `Plumb::Codec::JSON` translates them to
   and from the store's JSON columns. Apps register encoders for their own value types
@@ -186,6 +242,10 @@
 
 - Reactor subclasses inherit their superclass's `partition_by` keys unless they declare
   their own. They had no partition keys, so their partition reads came back empty.
+- `Sourced.handle!` skipped the reactor's reactions to its own events: it advanced the
+  reactor's offset past everything it appended, so workers never claimed those events.
+  It now advances offsets past the command only, appending the command and its events
+  separately within one transaction.
 - `Date` and `Time` payload attributes never round-tripped through the store: they
   were written via `#to_s` and read back as Strings, producing invalid messages. This
   affected `DurableWorkflow`'s `WaitStarted#at`.
