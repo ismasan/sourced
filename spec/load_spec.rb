@@ -24,7 +24,7 @@ end
 
 class LoadTestDecider < Sourced::Decider
   partition_by :course_id, :student_id
-  consumer_group 'load-test-decider'
+  consumer_group 'load_test_decider'
 
   context { { enrolled: false, grades: [] } }
 
@@ -48,7 +48,7 @@ end
 
 class LoadTestProjector < Sourced::Projector::StateStored
   partition_by :course_id
-  consumer_group 'load-test-projector'
+  consumer_group 'load_test_projector'
 
   context do
     { course_id: nil, title: nil, student_count: 0 }

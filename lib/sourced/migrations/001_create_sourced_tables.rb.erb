@@ -53,6 +53,7 @@ Sequel.migration do
     create_table?(:<%= consumer_groups_table %>) do
       primary_key :id
       String :group_id, null: false, unique: true
+      String :label
       String :status, null: false, default: 'active'
       Integer :highest_position, null: false, default: 0
       Integer :discovery_position, null: false, default: 0

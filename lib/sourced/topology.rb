@@ -11,10 +11,10 @@ module Sourced
   # flat array of node structs describing the message flow graph. Enables
   # visualization, introspection, and Event Modeling diagram generation.
   module Topology
-    CommandNode = Struct.new(:type, :id, :name, :group_id, :produces, :schema, keyword_init: true)
-    EventNode = Struct.new(:type, :id, :name, :group_id, :produces, :schema, keyword_init: true)
-    AutomationNode = Struct.new(:type, :id, :name, :group_id, :consumes, :produces, keyword_init: true)
-    ReadModelNode = Struct.new(:type, :id, :name, :group_id, :consumes, :produces, :schema, keyword_init: true)
+    CommandNode = Struct.new(:type, :id, :name, :group_id, :group_label, :produces, :schema, keyword_init: true)
+    EventNode = Struct.new(:type, :id, :name, :group_id, :group_label, :produces, :schema, keyword_init: true)
+    AutomationNode = Struct.new(:type, :id, :name, :group_id, :group_label, :consumes, :produces, keyword_init: true)
+    ReadModelNode = Struct.new(:type, :id, :name, :group_id, :group_label, :consumes, :produces, :schema, keyword_init: true)
 
     # Analyze registered reactors and build the topology graph.
     #
@@ -28,6 +28,7 @@ module Sourced
 
       reactors.each do |reactor|
         group_id = reactor.group_id
+        group_label = reactor.group_label
 
         if reactor.respond_to?(:handled_commands)
           reactor.handled_commands.each do |cmd_class|
@@ -42,6 +43,7 @@ module Sourced
               id: cmd_class.type,
               name: cmd_class.name,
               group_id: group_id,
+              group_label: group_label,
               produces: produced_types,
               schema: schema
             )
@@ -60,6 +62,7 @@ module Sourced
                 id: evt_type,
                 name: evt_class.name,
                 group_id: group_id,
+                group_label: group_label,
                 produces: [],
                 schema: extract_schema(evt_class)
               )
@@ -80,6 +83,7 @@ module Sourced
               id: evt_type,
               name: evt_class.name,
               group_id: group_id,
+              group_label: group_label,
               produces: [],
               schema: extract_schema(evt_class)
             )
@@ -106,6 +110,7 @@ module Sourced
               id: aut_id,
               name: "reaction(#{evt_class.name})",
               group_id: group_id,
+              group_label: group_label,
               consumes: is_projector ? [rm_id] : [evt_class.type],
               produces: produced_types
             )
@@ -128,8 +133,9 @@ module Sourced
             nodes << AutomationNode.new(
               type: 'automation',
               id: aut_id,
-              name: "reaction(#{group_id})",
+              name: "reaction(#{group_label})",
               group_id: group_id,
+              group_label: group_label,
               consumes: consumes,
               produces: produced_types
             )
@@ -144,8 +150,9 @@ module Sourced
           nodes << ReadModelNode.new(
             type: 'readmodel',
             id: rm_id,
-            name: group_id,
+            name: group_label,
             group_id: group_id,
+            group_label: group_label,
             consumes: consumes,
             produces: projector_aut_ids,
             schema: {}

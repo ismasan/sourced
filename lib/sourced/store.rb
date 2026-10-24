@@ -573,20 +573,22 @@ module Sourced
     # instead of lazily via discovery in {#claim_next}.
     #
     # @param group_id [String] unique identifier for the consumer group
+    # @param label [String, nil] the name the group is shown under (its reactor's
+    #   class name). Updated on every registration, so it follows a renamed class.
     # @param partition_by [Array<String, Symbol>, nil] attribute names defining partitions
     # @param exclusive [Boolean] when true, the group exclusively owns its message
     #   types and uses queue (delete-on-ack) semantics
     # @param handled_types [Array<String>] message type strings this group consumes.
     #   Used to derive per-type index basis (:id for id-partitioned groups).
     # @return [void]
-    def register_consumer_group(group_id, partition_by: nil, exclusive: false, handled_types: [])
+    def register_consumer_group(group_id, label: nil, partition_by: nil, exclusive: false, handled_types: [])
       partition_by_sorted = partition_by ? Array(partition_by).map(&:to_s).sort : nil
       partition_by_json = partition_by_sorted ? JSON.dump(partition_by_sorted) : nil
       now = Time.now.iso8601
       db.run(<<~SQL)
-        INSERT INTO #{@consumer_groups_table} (group_id, status, highest_position, partition_by, created_at, updated_at)
-        VALUES (#{db.literal(group_id)}, '#{ACTIVE}', 0, #{db.literal(partition_by_json)}, #{db.literal(now)}, #{db.literal(now)})
-        ON CONFLICT(group_id) DO UPDATE SET partition_by = #{db.literal(partition_by_json)}, updated_at = #{db.literal(now)}
+        INSERT INTO #{@consumer_groups_table} (group_id, label, status, highest_position, partition_by, created_at, updated_at)
+        VALUES (#{db.literal(group_id)}, #{db.literal(label)}, '#{ACTIVE}', 0, #{db.literal(partition_by_json)}, #{db.literal(now)}, #{db.literal(now)})
+        ON CONFLICT(group_id) DO UPDATE SET label = #{db.literal(label)}, partition_by = #{db.literal(partition_by_json)}, updated_at = #{db.literal(now)}
       SQL
 
       # id-partitioned groups (reserved "__id" key) must have their message types
@@ -1063,6 +1065,7 @@ module Sourced
     #   # => [
     #   #   {
     #   #     group_id: "my_decider",
+    #   #     label: "MyDecider",
     #   #     status: "active",
     #   #     retry_at: nil,
     #   #     error_context: {},
@@ -1072,6 +1075,7 @@ module Sourced
     #   #   },
     #   #   {
     #   #     group_id: "failing_decider",
+    #   #     label: "FailingDecider",
     #   #     status: "failed",
     #   #     retry_at: nil,
     #   #     error_context: { exception_class: "RuntimeError", exception_message: "boom" },
@@ -1086,6 +1090,7 @@ module Sourced
       groups = db.fetch(<<~SQL).all
         SELECT
           cg.group_id,
+          cg.label,
           cg.status,
           cg.retry_at,
           cg.error_context,
@@ -1094,7 +1099,7 @@ module Sourced
           COUNT(o.id) AS partition_count
         FROM #{@consumer_groups_table} cg
         LEFT JOIN #{@offsets_table} o ON o.consumer_group_id = cg.id
-        GROUP BY cg.id, cg.group_id, cg.status, cg.retry_at, cg.error_context
+        GROUP BY cg.id, cg.group_id, cg.label, cg.status, cg.retry_at, cg.error_context
         ORDER BY cg.group_id
       SQL
 

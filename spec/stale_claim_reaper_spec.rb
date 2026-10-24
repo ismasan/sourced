@@ -14,7 +14,7 @@ end
 
 class ReaperTestProjector < Sourced::Projector::StateStored
   partition_by :device_id
-  consumer_group 'reaper-test-projector'
+  consumer_group 'reaper_test_projector'
 
   context { { devices: [] } }
 
@@ -65,7 +65,7 @@ RSpec.describe 'Store worker heartbeat and stale claim release' do
 
   describe '#release_stale_claims' do
     before do
-      store.register_consumer_group('reaper-test-projector')
+      store.register_consumer_group('reaper_test_projector')
 
       # Append a message to create a partition
       store.append(
@@ -74,7 +74,7 @@ RSpec.describe 'Store worker heartbeat and stale claim release' do
 
       # Claim the partition
       @claim = store.claim_next(
-        'reaper-test-projector',
+        'reaper_test_projector',
         partition_by: ['device_id'],
         handled_types: ['reaper_test.device.registered'],
         worker_id: 'w1'
@@ -121,10 +121,10 @@ RSpec.describe 'Store worker heartbeat and stale claim release' do
       )
 
       # Ack the first claim so d1 partition is free, then claim d2 with w2
-      store.ack('reaper-test-projector', offset_id: @claim.offset_id, position: @claim.messages.last.position)
+      store.ack('reaper_test_projector', offset_id: @claim.offset_id, position: @claim.messages.last.position)
 
       claim2 = store.claim_next(
-        'reaper-test-projector',
+        'reaper_test_projector',
         partition_by: ['device_id'],
         handled_types: ['reaper_test.device.registered'],
         worker_id: 'w2'
@@ -132,7 +132,7 @@ RSpec.describe 'Store worker heartbeat and stale claim release' do
 
       # Re-claim d1 with w1
       claim1 = store.claim_next(
-        'reaper-test-projector',
+        'reaper_test_projector',
         partition_by: ['device_id'],
         handled_types: ['reaper_test.device.registered'],
         worker_id: 'w1'
@@ -212,13 +212,13 @@ RSpec.describe Sourced::StaleClaimReaper do
     it 'removes a drained queue offset end-to-end' do
       reaper = described_class.new(store: store, interval: 30, ttl_seconds: 60, logger: logger)
 
-      store.register_consumer_group('q-group', partition_by: 'device_id', exclusive: true)
+      store.register_consumer_group('q_group', partition_by: 'device_id', exclusive: true)
       store.append(
         StaleClaimReaperTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       )
-      claim = store.claim_next('q-group', partition_by: 'device_id',
+      claim = store.claim_next('q_group', partition_by: 'device_id',
         handled_types: ['reaper_test.device.registered'], worker_id: 'w1')
-      store.ack_and_delete('q-group', offset_id: claim.offset_id, positions: claim.messages.map(&:position))
+      store.ack_and_delete('q_group', offset_id: claim.offset_id, positions: claim.messages.map(&:position))
 
       expect(db[:sourced_offsets].count).to eq(1)
       reaper.send(:reap)

@@ -25,7 +25,7 @@ end
 
 class TestItemProjector < Sourced::Projector::StateStored
   partition_by :list_id
-  consumer_group 'item-projector-test'
+  consumer_group 'item_projector_test'
 
   context do
     { items: [], synced: false }
@@ -55,7 +55,7 @@ end
 
 class TestItemESProjector < Sourced::Projector::EventSourced
   partition_by :list_id
-  consumer_group 'item-es-projector-test'
+  consumer_group 'item_es_projector_test'
 
   context do
     { items: [], synced: false }
@@ -85,7 +85,7 @@ end
 
 class TestDelayedItemProjector < Sourced::Projector::StateStored
   partition_by :list_id
-  consumer_group 'delayed-item-projector-test'
+  consumer_group 'delayed_item_projector_test'
 
   context do
     { items: [] }
@@ -104,7 +104,7 @@ end
 # Reacts on replay too, by overriding the default replay gate.
 class TestReplayingItemProjector < Sourced::Projector::StateStored
   partition_by :list_id
-  consumer_group 'replaying-item-projector-test'
+  consumer_group 'replaying_item_projector_test'
 
   context do
     { items: [] }
@@ -126,7 +126,7 @@ end
 # Gates reactions per message on the payload, regardless of replaying.
 class TestSelectiveItemProjector < Sourced::Projector::StateStored
   partition_by :list_id
-  consumer_group 'selective-item-projector-test'
+  consumer_group 'selective_item_projector_test'
 
   context do
     { items: [] }

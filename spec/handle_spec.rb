@@ -26,7 +26,7 @@ end
 
 class HandleTestDecider < Sourced::Decider
   partition_by :device_id
-  consumer_group 'handle-test-decider'
+  consumer_group 'handle_test_decider'
 
   context { { exists: false, active: false } }
 
@@ -107,7 +107,7 @@ end
 
 class HandleMixedTestDecider < Sourced::Decider
   partition_by :order_id, :tenant_id
-  consumer_group 'handle-mixed-test-decider'
+  consumer_group 'handle_mixed_test_decider'
 
   context { { notes: [], touched: false } }
 

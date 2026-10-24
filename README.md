@@ -673,7 +673,7 @@ Sourced.register(EnrolmentDecider)
 Sourced.register(CourseCatalogProjector)
 ```
 
-Each reactor becomes a component of Sourced's configuration, under `reactors` and keyed by its `group_id` (`reactors.CourseDecider`); the router and `Sourced.topology` depend on all of them. Register reactors before Sourced boots: registering once it's booted raises, and so does registering two reactors with the same `group_id`. Their consumer groups are registered with the store when Sourced starts.
+Each reactor becomes a component of Sourced's configuration, under `reactors` and keyed by its `group_id` with dots replaced by underscores (`Shop::CourseDecider` → `reactors.shop_course_decider`); the router and `Sourced.topology` depend on all of them. Register reactors before Sourced boots: registering once it's booted raises, and so does registering two reactors with the same `group_id`. Their consumer groups are registered with the store when Sourced starts.
 
 ## The reactor protocol
 
@@ -709,7 +709,7 @@ A **signal** is inert data — a plain `Hash` or a `Sourced::Actions` value obje
 | `{ type: :after_sync, work: -> { } }` | run a side effect after commit |
 | `{ type: :ack, delete: false }` | acknowledge the source message; `delete: true` removes it (see below) |
 
-The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name), `partition_keys` (`[]`), `exclusive?` (`false`), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate.
+The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name, normalized), `group_label` (the class name), `partition_keys` (`[]`), `exclusive?` (`false`), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate.
 
 ## Delete-on-ack queues
 
@@ -900,6 +900,8 @@ After the configured retries are exhausted, the consumer group is marked as fail
 
 Each reactor class is a consumer group. The store tracks per-partition offsets so multiple reactors process the same events independently.
 
+A group id is lowercase and dot-separated: by default the reactor's class name normalized by `Sourced::Types::GroupId` (`CrossPost::Connections::LinkedIn` → `cross_post.connections.linked_in`), and `consumer_group` normalizes what it's given the same way, raising `ArgumentError` for what it can't (`'cross post'`). The store keeps the class name too, as the group's `label` (`group_label` on the reactor), so tools can show where a group lives in code.
+
 The lifecycle methods (`stop_consumer_group`, `start_consumer_group`, `reset_consumer_group`, `consumer_group_active?`) accept either a String group ID or any object responding to `#group_id` (e.g. a reactor class).
 
 ```ruby
@@ -912,7 +914,7 @@ store.reset_consumer_group(CourseDecider)  # reprocess from beginning
 store.consumer_group_active?(CourseDecider)  # => true/false
 
 # Or use plain strings
-store.stop_consumer_group('CourseApp::CourseDecider')
+store.stop_consumer_group('course_app.course_decider')
 ```
 
 All three raise `Sourced::Store::UnknownConsumerGroupError`, naming the registered groups, for a group that isn't registered with the store (a typo, or a reactor that isn't registered): consumer groups are registered when Sourced starts.
@@ -929,7 +931,9 @@ Sourced.stop_consumer_group(CourseDecider, 'maintenance window')
 Sourced.reset_consumer_group(CourseDecider)
 Sourced.start_consumer_group(CourseDecider)
 
-# String group_id works too — the router resolves it to the registered class
+# A String group_id works too — the router resolves it to the registered class,
+# and so does the class name
+Sourced.stop_consumer_group('course_app.course_decider')
 Sourced.stop_consumer_group('CourseApp::CourseDecider')
 ```
 
@@ -981,7 +985,8 @@ Each group hash contains:
 
 | Key                  | Description                                                    |
 |----------------------|----------------------------------------------------------------|
-| `group_id`           | Consumer group identifier (e.g. `"CourseDecider"`)             |
+| `group_id`           | Consumer group identifier (e.g. `"course_decider"`)            |
+| `label`              | The reactor's class name (e.g. `"CourseDecider"`), or nil      |
 | `status`             | `"active"`, `"stopped"`, or `"failed"`                         |
 | `retry_at`           | `Time` of next retry, or `nil`                                 |
 | `error_context`      | Hash with error details (`{}` when healthy, see below)         |
@@ -1047,7 +1052,7 @@ Each offset in the result is a Hash with:
 #### Filtering by group
 
 ```ruby
-result = store.read_offsets(group_id: 'CourseDecider')
+result = store.read_offsets(group_id: 'course_decider')
 result.offsets.each do |o|
   puts "#{o[:partition_key]}: position #{o[:last_position]}, claimed=#{o[:claimed]}"
 end
@@ -1082,12 +1087,12 @@ behind = store.read_offsets(limit: 50).to_enum.lazy.select { |o|
 #### Array destructuring
 
 ```ruby
-offsets, total_count = store.read_offsets(group_id: 'CourseDecider')
+offsets, total_count = store.read_offsets(group_id: 'course_decider')
 ```
 
 ## Topology introspection
 
-`Sourced.topology` analyses all registered reactors (deciders and projectors) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for projectors). Each node has at least `type`, `id`, `name`, `group_id`, and depending on kind, `consumes` / `produces` / `schema`.
+`Sourced.topology` analyses all registered reactors (deciders and projectors) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for projectors). Each node has at least `type`, `id`, `name`, `group_id`, `group_label` (its reactor's class name, for display), and depending on kind, `consumes` / `produces` / `schema`.
 
 ```ruby
 Sourced.register(CourseDecider)

@@ -95,8 +95,8 @@ RSpec.describe Sourced::Config do
 
       expect(components['store'][:deps])
         .to eq(%w[db notifier logger store.table_prefix store.install_tables store.codec])
-      expect(components['router'][:deps]).to eq(%w[store reactors.ConfigTestReactor error_strategy])
-      expect(components['topology'][:deps]).to eq(%w[reactors.ConfigTestReactor])
+      expect(components['router'][:deps]).to eq(%w[store reactors.config_test_reactor error_strategy])
+      expect(components['topology'][:deps]).to eq(%w[reactors.config_test_reactor])
       expect(components['dispatcher'][:deps]).to include('router', 'workers.count')
       expect(components['dispatcher.catchup_poller'][:deps]).to eq(%w[dispatcher workers.catchup_interval logger])
       expect(components['dispatcher.stale_claim_reaper'][:deps]).to include('dispatcher', 'store', 'housekeeping.interval')
@@ -146,7 +146,7 @@ RSpec.describe Sourced::Config do
       config.start!
 
       expect(config['store'].installed?).to be(true)
-      expect(config['store'].consumer_group_active?('ConfigTestReactor')).to be(true)
+      expect(config['store'].consumer_group_active?('config_test_reactor')).to be(true)
       expect(config['error_strategy']).to be_frozen
     end
 
@@ -402,8 +402,8 @@ RSpec.describe Sourced::Config do
     it 'declares the reactor under reactors, keyed by group_id' do
       node = described_class.register(config, ConfigTestReactor)
 
-      expect(node.path).to eq('reactors.ConfigTestReactor')
-      expect(config.declared?('reactors.ConfigTestReactor')).to be(true)
+      expect(node.path).to eq('reactors.config_test_reactor')
+      expect(config.declared?('reactors.config_test_reactor')).to be(true)
     end
 
     it 'escapes characters with a meaning in component keys' do
@@ -432,7 +432,7 @@ RSpec.describe Sourced::Config do
 
       expect {
         described_class.register(config, ConfigTestReactor)
-      }.to raise_error(ArgumentError, /can't register ConfigTestReactor \(group_id "ConfigTestReactor"\) as reactors\.ConfigTestReactor/)
+      }.to raise_error(ArgumentError, /can't register ConfigTestReactor \(group_id "config_test_reactor"\) as reactors\.config_test_reactor/)
     end
 
     it 'names the reactor when distinct group_ids map to the same key' do
@@ -459,9 +459,9 @@ RSpec.describe Sourced::Config do
 
     it 'checks that implementations are reactors' do
       described_class.register(config, ConfigTestReactor)
-      config.config!('reactors.ConfigTestReactor') { Object.new }
+      config.config!('reactors.config_test_reactor') { Object.new }
 
-      expect { config.build! }.to raise_error(Plumb::ParseError, /reactors\.ConfigTestReactor/)
+      expect { config.build! }.to raise_error(Plumb::ParseError, /reactors\.config_test_reactor/)
     end
   end
 
@@ -563,10 +563,10 @@ RSpec.describe 'Sourced.config' do
     Sourced.start!
 
     Sourced.stop_consumer_group(ConfigTestReactor)
-    expect(Sourced.store.consumer_group_active?('ConfigTestReactor')).to be(false)
+    expect(Sourced.store.consumer_group_active?('config_test_reactor')).to be(false)
 
     Sourced.start_consumer_group('ConfigTestReactor')
-    expect(Sourced.store.consumer_group_active?('ConfigTestReactor')).to be(true)
+    expect(Sourced.store.consumer_group_active?('config_test_reactor')).to be(true)
   end
 
   it 'is mounted by mounting Sourced' do
@@ -586,7 +586,7 @@ RSpec.describe 'Sourced.config' do
         def self.name = 'ConfigLoadDecider'
 
         partition_by :thing_id
-        consumer_group 'config-load-decider'
+        consumer_group 'config_load_decider'
 
         context { { count: 0 } }
       end

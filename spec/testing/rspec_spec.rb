@@ -46,7 +46,7 @@ end
 
 class GWTTestDecider < Sourced::Decider
   partition_by :device_id
-  consumer_group 'gwt-test-decider'
+  consumer_group 'gwt_test_decider'
 
   context { { exists: false, bound: false } }
 
@@ -84,7 +84,7 @@ end
 # Decider without reactions (produces only events)
 class GWTTestSimpleDecider < Sourced::Decider
   partition_by :device_id
-  consumer_group 'gwt-test-simple-decider'
+  consumer_group 'gwt_test_simple_decider'
 
   context { { exists: false } }
 
@@ -100,7 +100,7 @@ end
 
 class GWTTestStateStoredProjector < Sourced::Projector::StateStored
   partition_by :list_id
-  consumer_group 'gwt-test-ss-projector'
+  consumer_group 'gwt_test_ss_projector'
 
   context do
     { items: [], synced: false, after_synced: false }
@@ -125,7 +125,7 @@ end
 
 class GWTTestEventSourcedProjector < Sourced::Projector::EventSourced
   partition_by :list_id
-  consumer_group 'gwt-test-es-projector'
+  consumer_group 'gwt_test_es_projector'
 
   context do
     { items: [], synced: false, after_synced: false }
@@ -253,7 +253,7 @@ RSpec.describe Sourced::Testing::RSpec do
     it 'receive events: correlated to the command, and run once' do
       seen = []
       klass = Class.new(GWTTestSimpleDecider) do
-        consumer_group 'gwt-test-simple-decider-recording'
+        consumer_group 'gwt_test_simple_decider_recording'
         after_sync { |events:, **| seen.concat(events) }
       end
       cmd = GWTTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
@@ -276,7 +276,7 @@ RSpec.describe Sourced::Testing::RSpec do
       seen = []
       calls = []
       Class.new(GWTTestStateStoredProjector).tap do |klass|
-        klass.consumer_group 'gwt-test-ss-projector-recording'
+        klass.consumer_group 'gwt_test_ss_projector_recording'
         klass.after_sync { |messages:, **| seen.concat(messages); calls << :after_sync }
         klass.sync { |**| calls << :sync }
         klass.define_singleton_method(:seen) { seen }
@@ -349,7 +349,7 @@ RSpec.describe Sourced::Testing::RSpec do
     it 'given events are both history and batch: context evolves and hooks see them' do
       seen = []
       klass = Class.new(GWTTestEventSourcedProjector) do
-        consumer_group 'gwt-test-es-projector-recording'
+        consumer_group 'gwt_test_es_projector_recording'
         after_sync { |context:, messages:, **| seen << [context[:items].dup, messages.size] }
       end
 

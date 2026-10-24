@@ -31,7 +31,7 @@ end
 
 class TestDeviceDecider < Sourced::Decider
   partition_by :device_id
-  consumer_group 'device-decider-test'
+  consumer_group 'device_decider_test'
 
   context { { exists: false, bound: false } }
 
@@ -60,7 +60,7 @@ end
 
 class TestDelayedReactionDecider < Sourced::Decider
   partition_by :device_id
-  consumer_group 'device-delayed-decider-test'
+  consumer_group 'device_delayed_decider_test'
 
   context { { exists: false, bound: false } }
 
@@ -87,7 +87,7 @@ end
 # Reacts on replay too, by overriding the default replay gate.
 class TestReplayingReactionDecider < Sourced::Decider
   partition_by :device_id
-  consumer_group 'device-replaying-decider-test'
+  consumer_group 'device_replaying_decider_test'
 
   context { { exists: false, bound: false } }
 
@@ -109,7 +109,7 @@ end
 # Counts occurrences so a message evolved twice is observable.
 class TestCountingDecider < Sourced::Decider
   partition_by :device_id
-  consumer_group 'device-counting-decider-test'
+  consumer_group 'device_counting_decider_test'
 
   context { { bound_count: 0 } }
 
@@ -291,7 +291,7 @@ RSpec.describe Sourced::Decider do
       seen_sync = []
       seen_after = []
       decider = Class.new(TestDeviceDecider) do
-        consumer_group 'device-decider-correlation-test'
+        consumer_group 'device_decider_correlation_test'
         sync { |events:, **| seen_sync.concat(events) }
         after_sync { |events:, **| seen_after.concat(events) }
       end

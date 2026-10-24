@@ -30,9 +30,13 @@ module Sourced
     # Default class-method implementations. +self+ inside each is the reactor
     # class (they are installed as singleton methods on the reactor).
     module Defaults
-      # Consumer group id defaults to the reactor's class name (mirrors
-      # Sourced::Consumer#group_id).
-      def group_id = name
+      # Consumer group id defaults to the reactor's class name, normalized by
+      # {Types::GroupId} (mirrors Sourced::Consumer#group_id).
+      def group_id = name && Types::GroupId.parse(name)
+
+      # The name the group is shown under: the class name (mirrors
+      # Sourced::Consumer#group_label).
+      def group_label = name || group_id
 
       # No partition keys declared. The Router treats an empty set as an
       # id-partitioned queue for exclusive reactors, and an error otherwise —

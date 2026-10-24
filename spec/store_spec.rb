@@ -1169,11 +1169,11 @@ RSpec.describe Sourced::Store do
     end
 
     it 'clears consumer groups, offsets, and offset_key_pairs' do
-      store.register_consumer_group('test-group')
+      store.register_consumer_group('test_group')
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      store.claim_next('test-group',
+      store.claim_next('test_group',
         partition_by: 'device_id',
         handled_types: ['store_test.device.registered'],
         worker_id: 'w-1')
@@ -1188,8 +1188,8 @@ RSpec.describe Sourced::Store do
 
   describe '#register_consumer_group' do
     it 'creates row with active status' do
-      store.register_consumer_group('my-group')
-      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
+      store.register_consumer_group('my_group')
+      row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
       expect(row).not_to be_nil
       expect(row[:status]).to eq('active')
       expect(row[:created_at]).not_to be_nil
@@ -1197,23 +1197,23 @@ RSpec.describe Sourced::Store do
     end
 
     it 'is idempotent' do
-      store.register_consumer_group('my-group')
-      expect { store.register_consumer_group('my-group') }.not_to raise_error
-      expect(db[:sourced_consumer_groups].where(group_id: 'my-group').count).to eq(1)
+      store.register_consumer_group('my_group')
+      expect { store.register_consumer_group('my_group') }.not_to raise_error
+      expect(db[:sourced_consumer_groups].where(group_id: 'my_group').count).to eq(1)
     end
 
   end
 
   describe '#consumer_group_active?' do
     it 'returns true for active group' do
-      store.register_consumer_group('my-group')
-      expect(store.consumer_group_active?('my-group')).to be true
+      store.register_consumer_group('my_group')
+      expect(store.consumer_group_active?('my_group')).to be true
     end
 
     it 'returns false for stopped group' do
-      store.register_consumer_group('my-group')
-      store.stop_consumer_group('my-group')
-      expect(store.consumer_group_active?('my-group')).to be false
+      store.register_consumer_group('my_group')
+      store.stop_consumer_group('my_group')
+      expect(store.consumer_group_active?('my_group')).to be false
     end
 
     it 'returns false for nonexistent group' do
@@ -1221,58 +1221,58 @@ RSpec.describe Sourced::Store do
     end
 
     it 'accepts an object responding to #group_id' do
-      store.register_consumer_group('my-group')
-      reactor = double('reactor', group_id: 'my-group')
+      store.register_consumer_group('my_group')
+      reactor = double('reactor', group_id: 'my_group')
       expect(store.consumer_group_active?(reactor)).to be true
     end
   end
 
   describe '#stop/start_consumer_group' do
     it 'raises for a group that is not registered, naming the registered ones' do
-      store.register_consumer_group('my-group')
+      store.register_consumer_group('my_group')
 
       %i[stop_consumer_group start_consumer_group reset_consumer_group].each do |method|
         expect { store.public_send(method, 'typo') }
-          .to raise_error(Sourced::Store::UnknownConsumerGroupError, /No consumer group "typo".*registered groups: my-group/)
+          .to raise_error(Sourced::Store::UnknownConsumerGroupError, /No consumer group "typo".*registered groups: my_group/)
       end
       expect { store.updating_consumer_group('typo') { |_| } }.to raise_error(Sourced::Store::UnknownConsumerGroupError)
     end
 
     it 'toggles status' do
-      store.register_consumer_group('my-group')
-      store.stop_consumer_group('my-group')
-      expect(store.consumer_group_active?('my-group')).to be false
+      store.register_consumer_group('my_group')
+      store.stop_consumer_group('my_group')
+      expect(store.consumer_group_active?('my_group')).to be false
 
-      store.start_consumer_group('my-group')
-      expect(store.consumer_group_active?('my-group')).to be true
+      store.start_consumer_group('my_group')
+      expect(store.consumer_group_active?('my_group')).to be true
     end
 
     it 'accepts an object responding to #group_id' do
-      store.register_consumer_group('my-group')
-      reactor = double('reactor', group_id: 'my-group')
+      store.register_consumer_group('my_group')
+      reactor = double('reactor', group_id: 'my_group')
 
       store.stop_consumer_group(reactor)
-      expect(store.consumer_group_active?('my-group')).to be false
+      expect(store.consumer_group_active?('my_group')).to be false
 
       store.start_consumer_group(reactor)
-      expect(store.consumer_group_active?('my-group')).to be true
+      expect(store.consumer_group_active?('my_group')).to be true
     end
 
     it 'start_consumer_group clears retry_at and error_context' do
-      store.register_consumer_group('my-group')
+      store.register_consumer_group('my_group')
 
       # Set retry_at and error_context via updating_consumer_group
-      store.updating_consumer_group('my-group') do |group|
+      store.updating_consumer_group('my_group') do |group|
         group.retry(Time.now + 60, retry_count: 1)
       end
 
-      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
+      row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
       expect(row[:retry_at]).not_to be_nil
       expect(row[:error_context]).not_to be_nil
 
-      store.start_consumer_group('my-group')
+      store.start_consumer_group('my_group')
 
-      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
+      row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
       expect(row[:retry_at]).to be_nil
       expect(row[:error_context]).to be_nil
       expect(row[:status]).to eq('active')
@@ -1281,32 +1281,32 @@ RSpec.describe Sourced::Store do
 
   describe '#updating_consumer_group' do
     before do
-      store.register_consumer_group('my-group')
+      store.register_consumer_group('my_group')
     end
 
     it 'yields a GroupUpdater and persists error_context' do
-      store.updating_consumer_group('my-group') do |group|
+      store.updating_consumer_group('my_group') do |group|
         expect(group).to be_a(Sourced::GroupUpdater)
         group.retry(Time.now + 30, retry_count: 1)
       end
 
-      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
+      row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
       ctx = JSON.parse(row[:error_context], symbolize_names: true)
       expect(ctx[:retry_count]).to eq(1)
       expect(row[:retry_at]).not_to be_nil
     end
 
     it 'persists error_context across successive calls (retry_count increments)' do
-      store.updating_consumer_group('my-group') do |group|
+      store.updating_consumer_group('my_group') do |group|
         group.retry(Time.now + 30, retry_count: 1)
       end
 
-      store.updating_consumer_group('my-group') do |group|
+      store.updating_consumer_group('my_group') do |group|
         expect(group.error_context[:retry_count]).to eq(1)
         group.retry(Time.now + 60, retry_count: 2)
       end
 
-      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
+      row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
       ctx = JSON.parse(row[:error_context], symbolize_names: true)
       expect(ctx[:retry_count]).to eq(2)
     end
@@ -1319,30 +1319,30 @@ RSpec.describe Sourced::Store do
 
     it 'stop sets status to STOPPED and clears retry_at' do
       # First set a retry_at
-      store.updating_consumer_group('my-group') do |group|
+      store.updating_consumer_group('my_group') do |group|
         group.retry(Time.now + 30, retry_count: 1)
       end
 
-      store.updating_consumer_group('my-group') do |group|
+      store.updating_consumer_group('my_group') do |group|
         group.stop(message: 'operator requested shutdown')
       end
 
-      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
+      row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
       expect(row[:status]).to eq('stopped')
       expect(row[:retry_at]).to be_nil
     end
 
     it 'fail sets status to FAILED and clears retry_at' do
-      store.updating_consumer_group('my-group') do |group|
+      store.updating_consumer_group('my_group') do |group|
         group.retry(Time.now + 30, retry_count: 1)
       end
 
       err = RuntimeError.new('test error')
-      store.updating_consumer_group('my-group') do |group|
+      store.updating_consumer_group('my_group') do |group|
         group.fail(exception: err)
       end
 
-      row = db[:sourced_consumer_groups].where(group_id: 'my-group').first
+      row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
       expect(row[:status]).to eq('failed')
       expect(row[:retry_at]).to be_nil
       ctx = JSON.parse(row[:error_context], symbolize_names: true)
@@ -1353,48 +1353,48 @@ RSpec.describe Sourced::Store do
 
   describe '#reset_consumer_group' do
     it 'deletes all offsets' do
-      store.register_consumer_group('my-group')
+      store.register_consumer_group('my_group')
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      store.claim_next('my-group',
+      store.claim_next('my_group',
         partition_by: 'device_id',
         handled_types: ['store_test.device.registered'],
         worker_id: 'w-1')
 
       expect(db[:sourced_offsets].count).to be > 0
-      store.reset_consumer_group('my-group')
+      store.reset_consumer_group('my_group')
       expect(db[:sourced_offsets].count).to eq(0)
     end
 
     it 'accepts an object responding to #group_id' do
-      store.register_consumer_group('my-group')
+      store.register_consumer_group('my_group')
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      store.claim_next('my-group',
+      store.claim_next('my_group',
         partition_by: 'device_id',
         handled_types: ['store_test.device.registered'],
         worker_id: 'w-1')
 
-      reactor = double('reactor', group_id: 'my-group')
+      reactor = double('reactor', group_id: 'my_group')
       expect(db[:sourced_offsets].count).to be > 0
       store.reset_consumer_group(reactor)
       expect(db[:sourced_offsets].count).to eq(0)
     end
 
     it 'is a no-op for queue-mode groups (offsets kept)' do
-      store.register_consumer_group('queue-group', exclusive: true)
+      store.register_consumer_group('queue_group', exclusive: true)
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      store.claim_next('queue-group',
+      store.claim_next('queue_group',
         partition_by: 'device_id',
         handled_types: ['store_test.device.registered'],
         worker_id: 'w-1')
 
       expect(db[:sourced_offsets].count).to be > 0
-      store.reset_consumer_group('queue-group')
+      store.reset_consumer_group('queue_group')
       expect(db[:sourced_offsets].count).to be > 0
     end
   end
@@ -2264,12 +2264,12 @@ RSpec.describe Sourced::Store do
     let(:handled_types) { ['store_test.device.registered'] }
 
     it 'deletes drained queue offsets (unclaimed, no remaining messages)' do
-      store.register_consumer_group('queue-group', partition_by: 'device_id', exclusive: true)
+      store.register_consumer_group('queue_group', partition_by: 'device_id', exclusive: true)
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      result = store.claim_next('queue-group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      store.ack_and_delete('queue-group', offset_id: result.offset_id, positions: result.messages.map(&:position))
+      result = store.claim_next('queue_group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.ack_and_delete('queue_group', offset_id: result.offset_id, positions: result.messages.map(&:position))
 
       expect(db[:sourced_offsets].count).to eq(1)
       reaped = store.release_drained_offsets
@@ -2279,25 +2279,25 @@ RSpec.describe Sourced::Store do
     end
 
     it 'keeps queue offsets that still have pending messages' do
-      store.register_consumer_group('queue-group', partition_by: 'device_id', exclusive: true)
+      store.register_consumer_group('queue_group', partition_by: 'device_id', exclusive: true)
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      store.claim_next('queue-group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      store.release('queue-group', offset_id: db[:sourced_offsets].first[:id])
+      store.claim_next('queue_group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.release('queue_group', offset_id: db[:sourced_offsets].first[:id])
 
       expect(store.release_drained_offsets).to eq(0)
       expect(db[:sourced_offsets].count).to eq(1)
     end
 
     it 'keeps a retain (non-deleting) offset whose partition still has messages' do
-      store.register_consumer_group('log-group', partition_by: 'device_id')
+      store.register_consumer_group('log_group', partition_by: 'device_id')
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      result = store.claim_next('log-group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next('log_group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       # ack retains the message (event-log semantics) -> partition not drained
-      store.ack('log-group', offset_id: result.offset_id, position: result.messages.last.position)
+      store.ack('log_group', offset_id: result.offset_id, position: result.messages.last.position)
 
       expect(store.release_drained_offsets).to eq(0)
       expect(db[:sourced_offsets].count).to eq(1)
@@ -2306,24 +2306,24 @@ RSpec.describe Sourced::Store do
     it 'reaps a drained offset for a non-exclusive (log) group that deleted its messages' do
       # Deletion is decoupled from exclusivity: a log-mode reactor may delete via
       # a :delete action. Its drained offset must still be reaped (no leak).
-      store.register_consumer_group('log-group', partition_by: 'device_id')
+      store.register_consumer_group('log_group', partition_by: 'device_id')
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      result = store.claim_next('log-group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next('log_group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       store.delete_messages(result.messages.map(&:position))
-      store.ack('log-group', offset_id: result.offset_id, position: result.messages.last.position)
+      store.ack('log_group', offset_id: result.offset_id, position: result.messages.last.position)
 
       expect(store.release_drained_offsets).to eq(1)
       expect(db[:sourced_offsets].count).to eq(0)
     end
 
     it 'leaves claimed queue offsets alone' do
-      store.register_consumer_group('queue-group', partition_by: 'device_id', exclusive: true)
+      store.register_consumer_group('queue_group', partition_by: 'device_id', exclusive: true)
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      result = store.claim_next('queue-group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next('queue_group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       # Delete the message but leave the claim held (simulating an in-flight worker)
       db[:sourced_messages].where(position: result.messages.map(&:position)).delete
 
@@ -2600,14 +2600,14 @@ RSpec.describe Sourced::Store do
     end
 
     it 'returns groups with zeroed stats when no messages processed' do
-      store.register_consumer_group('group-a')
-      store.register_consumer_group('group-b')
+      store.register_consumer_group('group_a')
+      store.register_consumer_group('group_b')
 
       result = store.stats
       expect(result.max_position).to eq(0)
       expect(result.groups.size).to eq(2)
 
-      group_a = result.groups.find { |g| g[:group_id] == 'group-a' }
+      group_a = result.groups.find { |g| g[:group_id] == 'group_a' }
       expect(group_a[:status]).to eq('active')
       expect(group_a[:retry_at]).to be_nil
       expect(group_a[:oldest_processed]).to eq(0)
@@ -2615,8 +2615,18 @@ RSpec.describe Sourced::Store do
       expect(group_a[:partition_count]).to eq(0)
     end
 
+    it "returns each group's label, updated on every registration" do
+      store.register_consumer_group('shop.orders', label: 'Shop::Orders')
+      store.register_consumer_group('shop.carts')
+      expect(store.stats.groups.to_h { [_1[:group_id], _1[:label]] })
+        .to eq('shop.orders' => 'Shop::Orders', 'shop.carts' => nil)
+    
+      store.register_consumer_group('shop.orders', label: 'Shop::OrderList')
+      expect(store.stats.groups.find { _1[:group_id] == 'shop.orders' }[:label]).to eq('Shop::OrderList')
+    end
+
     it 'reflects processing state after claim and ack' do
-      group_id = 'stats-test'
+      group_id = 'stats_test'
       store.register_consumer_group(group_id)
 
       store.append([
@@ -2640,25 +2650,25 @@ RSpec.describe Sourced::Store do
     end
 
     it 'reports stopped and failed group statuses with error context' do
-      store.register_consumer_group('active-group')
-      store.register_consumer_group('stopped-group')
-      store.register_consumer_group('failed-group')
+      store.register_consumer_group('active_group')
+      store.register_consumer_group('stopped_group')
+      store.register_consumer_group('failed_group')
 
-      store.stop_consumer_group('stopped-group', 'maintenance')
-      store.updating_consumer_group('failed-group') { |g| g.fail(exception: RuntimeError.new('boom')) }
+      store.stop_consumer_group('stopped_group', 'maintenance')
+      store.updating_consumer_group('failed_group') { |g| g.fail(exception: RuntimeError.new('boom')) }
 
       result = store.stats
       by_id = result.groups.map { |g| [g[:group_id], g] }.to_h
 
-      expect(by_id['active-group'][:status]).to eq('active')
-      expect(by_id['active-group'][:error_context]).to eq({})
+      expect(by_id['active_group'][:status]).to eq('active')
+      expect(by_id['active_group'][:error_context]).to eq({})
 
-      expect(by_id['stopped-group'][:status]).to eq('stopped')
-      expect(by_id['stopped-group'][:error_context][:message]).to eq('maintenance')
+      expect(by_id['stopped_group'][:status]).to eq('stopped')
+      expect(by_id['stopped_group'][:error_context][:message]).to eq('maintenance')
 
-      expect(by_id['failed-group'][:status]).to eq('failed')
-      expect(by_id['failed-group'][:error_context][:exception_class]).to eq('RuntimeError')
-      expect(by_id['failed-group'][:error_context][:exception_message]).to eq('boom')
+      expect(by_id['failed_group'][:status]).to eq('failed')
+      expect(by_id['failed_group'][:error_context][:exception_class]).to eq('RuntimeError')
+      expect(by_id['failed_group'][:error_context][:exception_message]).to eq('boom')
     end
 
     it 'groups are ordered by group_id' do
@@ -2680,8 +2690,8 @@ RSpec.describe Sourced::Store do
     end
 
     it 'returns all offsets across groups with group_name and group_status' do
-      store.register_consumer_group('group-a')
-      store.register_consumer_group('group-b')
+      store.register_consumer_group('group_a')
+      store.register_consumer_group('group_b')
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
@@ -2689,16 +2699,16 @@ RSpec.describe Sourced::Store do
       ])
 
       # Claim to bootstrap offsets in both groups
-      store.claim_next('group-a', partition_by: 'device_id',
+      store.claim_next('group_a', partition_by: 'device_id',
         handled_types: ['store_test.device.registered'], worker_id: 'w-1')
-      store.claim_next('group-b', partition_by: 'device_id',
+      store.claim_next('group_b', partition_by: 'device_id',
         handled_types: ['store_test.device.registered'], worker_id: 'w-2')
 
       result = store.read_offsets
       expect(result.total_count).to be >= 2
 
       group_names = result.offsets.map { |o| o[:group_name] }.uniq.sort
-      expect(group_names).to include('group-a', 'group-b')
+      expect(group_names).to include('group_a', 'group_b')
 
       result.offsets.each do |o|
         expect(o).to have_key(:id)
@@ -2714,25 +2724,25 @@ RSpec.describe Sourced::Store do
     end
 
     it 'filters by group_id when provided' do
-      store.register_consumer_group('group-a')
-      store.register_consumer_group('group-b')
+      store.register_consumer_group('group_a')
+      store.register_consumer_group('group_b')
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       ])
 
-      store.claim_next('group-a', partition_by: 'device_id',
+      store.claim_next('group_a', partition_by: 'device_id',
         handled_types: ['store_test.device.registered'], worker_id: 'w-1')
-      store.claim_next('group-b', partition_by: 'device_id',
+      store.claim_next('group_b', partition_by: 'device_id',
         handled_types: ['store_test.device.registered'], worker_id: 'w-2')
 
-      result = store.read_offsets(group_id: 'group-a')
-      expect(result.offsets).to all(satisfy { |o| o[:group_name] == 'group-a' })
+      result = store.read_offsets(group_id: 'group_a')
+      expect(result.offsets).to all(satisfy { |o| o[:group_name] == 'group_a' })
       expect(result.total_count).to eq(result.offsets.size)
     end
 
     it 'paginates with from_id and limit (inclusive)' do
-      store.register_consumer_group('group-a')
+      store.register_consumer_group('group_a')
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
@@ -2742,17 +2752,17 @@ RSpec.describe Sourced::Store do
 
       # Claim each to bootstrap offsets
       3.times do
-        store.claim_next('group-a', partition_by: 'device_id',
+        store.claim_next('group_a', partition_by: 'device_id',
           handled_types: ['store_test.device.registered'], worker_id: 'w-1')
       end
 
       # Get first page of 2
-      page1 = store.read_offsets(group_id: 'group-a', limit: 2)
+      page1 = store.read_offsets(group_id: 'group_a', limit: 2)
       expect(page1.offsets.size).to eq(2)
       expect(page1.total_count).to eq(3)
 
       # Get second page starting from next id (inclusive)
-      page2 = store.read_offsets(group_id: 'group-a', limit: 2, from_id: page1.offsets.last[:id] + 1)
+      page2 = store.read_offsets(group_id: 'group_a', limit: 2, from_id: page1.offsets.last[:id] + 1)
       expect(page2.offsets.size).to eq(1)
 
       # No overlap between pages
@@ -2762,7 +2772,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'to_enum iterates across pages' do
-      store.register_consumer_group('group-a')
+      store.register_consumer_group('group_a')
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
@@ -2771,38 +2781,38 @@ RSpec.describe Sourced::Store do
       ])
 
       3.times do
-        store.claim_next('group-a', partition_by: 'device_id',
+        store.claim_next('group_a', partition_by: 'device_id',
           handled_types: ['store_test.device.registered'], worker_id: 'w-1')
       end
 
       # Paginate with limit: 1 to force multiple fetches
-      result = store.read_offsets(group_id: 'group-a', limit: 1)
+      result = store.read_offsets(group_id: 'group_a', limit: 1)
       all_offsets = result.to_enum.to_a
       expect(all_offsets.size).to eq(3)
       expect(all_offsets.map { |o| o[:id] }).to eq(all_offsets.map { |o| o[:id] }.sort)
     end
 
     it 'includes claim status fields' do
-      store.register_consumer_group('group-a')
+      store.register_consumer_group('group_a')
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       ])
 
       # Claim creates an offset that is claimed
-      claim = store.claim_next('group-a', partition_by: 'device_id',
+      claim = store.claim_next('group_a', partition_by: 'device_id',
         handled_types: ['store_test.device.registered'], worker_id: 'w-1')
 
-      result = store.read_offsets(group_id: 'group-a')
+      result = store.read_offsets(group_id: 'group_a')
       offset = result.offsets.first
 
       expect(offset[:claimed]).to be true
       expect(offset[:claimed_by]).to eq('w-1')
 
       # Ack releases the claim
-      store.ack('group-a', offset_id: claim.offset_id, position: claim.messages.last.position)
+      store.ack('group_a', offset_id: claim.offset_id, position: claim.messages.last.position)
 
-      result = store.read_offsets(group_id: 'group-a')
+      result = store.read_offsets(group_id: 'group_a')
       offset = result.offsets.first
 
       expect(offset[:claimed]).to be false
@@ -3003,13 +3013,13 @@ RSpec.describe Sourced::Store do
     end
 
     it 'creates offsets for multiple registered consumer groups' do
-      store.register_consumer_group('group-a', partition_by: [:device_id])
-      store.register_consumer_group('group-b', partition_by: [:device_id])
+      store.register_consumer_group('group_a', partition_by: [:device_id])
+      store.register_consumer_group('group_b', partition_by: [:device_id])
 
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
 
-      cg_a = db[:sourced_consumer_groups].where(group_id: 'group-a').first
-      cg_b = db[:sourced_consumer_groups].where(group_id: 'group-b').first
+      cg_a = db[:sourced_consumer_groups].where(group_id: 'group_a').first
+      cg_b = db[:sourced_consumer_groups].where(group_id: 'group_b').first
 
       offsets_a = db[:sourced_offsets].where(consumer_group_id: cg_a[:id]).all
       offsets_b = db[:sourced_offsets].where(consumer_group_id: cg_b[:id]).all
@@ -3270,21 +3280,21 @@ RSpec.describe Sourced::Store do
     end
 
     it 'claims tagged messages into their partition (lazy discovery)' do
-      store.register_consumer_group('tags-lazy')
+      store.register_consumer_group('tags_lazy')
       store.append([note('one', device_id: 'dev-1'), note('untagged')])
 
-      claim = store.claim_next('tags-lazy', partition_by: 'device_id', handled_types:, worker_id: 'w-1')
+      claim = store.claim_next('tags_lazy', partition_by: 'device_id', handled_types:, worker_id: 'w-1')
       expect(claim.partition_value).to eq('device_id' => 'dev-1')
       expect(claim.messages.map { |m| m.payload.text }).to eq(['one'])
-      expect(store.claim_next('tags-lazy', partition_by: 'device_id', handled_types:, worker_id: 'w-2')).to be_nil
+      expect(store.claim_next('tags_lazy', partition_by: 'device_id', handled_types:, worker_id: 'w-2')).to be_nil
     end
 
     it 'claims tagged messages into their partition (eager offsets), with a guard that covers them' do
-      store.register_consumer_group('tags-eager', partition_by: [:device_id], handled_types:)
+      store.register_consumer_group('tags_eager', partition_by: [:device_id], handled_types:)
       store.append(note('one', device_id: 'dev-1'))
       expect(db[:sourced_offsets].select_map(:partition_key)).to eq(['device_id:dev-1'])
 
-      claim = store.claim_next('tags-eager', partition_by: 'device_id', handled_types:, worker_id: 'w-1')
+      claim = store.claim_next('tags_eager', partition_by: 'device_id', handled_types:, worker_id: 'w-1')
       expect(claim.messages.map { |m| m.payload.text }).to eq(['one'])
 
       store.append(note('two', device_id: 'dev-1'))

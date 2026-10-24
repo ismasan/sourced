@@ -28,7 +28,7 @@ end
 
 class DispatchTestDecider < Sourced::Decider
   partition_by :device_id
-  consumer_group 'dispatch-test-decider'
+  consumer_group 'dispatch_test_decider'
 
   context { { exists: false, bound: false } }
 
@@ -54,7 +54,7 @@ end
 
 class DispatchTestProjector < Sourced::Projector::StateStored
   partition_by :device_id
-  consumer_group 'dispatch-test-projector'
+  consumer_group 'dispatch_test_projector'
 
   context { { devices: [] } }
 
@@ -76,7 +76,7 @@ class DispatchTestBlocking
   extend Sourced::Consumer
 
   partition_by :device_id
-  consumer_group 'dispatch-test-blocking'
+  consumer_group 'dispatch_test_blocking'
 
   class << self
     attr_accessor :entered, :release
@@ -115,11 +115,11 @@ RSpec.describe Sourced::Dispatcher do
     end
 
     it 'start_consumer_group triggers notify_reactor_resumed' do
-      store.stop_consumer_group('dispatch-test-decider')
+      store.stop_consumer_group('dispatch_test_decider')
 
-      expect(notifier).to receive(:notify_reactor_resumed).with('dispatch-test-decider')
+      expect(notifier).to receive(:notify_reactor_resumed).with('dispatch_test_decider')
 
-      store.start_consumer_group('dispatch-test-decider')
+      store.start_consumer_group('dispatch_test_decider')
     end
 
     it 'empty append does not notify' do
@@ -139,7 +139,7 @@ RSpec.describe Sourced::Dispatcher do
       end
 
       claim = store.claim_next(
-        'dispatch-test-projector',
+        'dispatch_test_projector',
         partition_by: ['device_id'],
         handled_types: DispatchTestProjector.handled_messages.map(&:type),
         worker_id: 'w1',
@@ -158,7 +158,7 @@ RSpec.describe Sourced::Dispatcher do
       end
 
       claim = store.claim_next(
-        'dispatch-test-projector',
+        'dispatch_test_projector',
         partition_by: ['device_id'],
         handled_types: DispatchTestProjector.handled_messages.map(&:type),
         worker_id: 'w1'
@@ -190,7 +190,7 @@ RSpec.describe Sourced::Dispatcher do
     end
 
     it 'maps group_id to reactor for reactor_resumed' do
-      queuer.call('reactor_resumed', 'dispatch-test-decider')
+      queuer.call('reactor_resumed', 'dispatch_test_decider')
 
       popped = work_queue.pop
       expect(popped).to eq(DispatchTestDecider)
@@ -205,7 +205,7 @@ RSpec.describe Sourced::Dispatcher do
     end
 
     it 'ignores unknown group_ids' do
-      queuer.call('reactor_resumed', 'unknown-group')
+      queuer.call('reactor_resumed', 'unknown_group')
 
       work_queue.push(nil)
       expect(work_queue.pop).to be_nil
