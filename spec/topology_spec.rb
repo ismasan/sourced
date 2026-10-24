@@ -177,7 +177,7 @@ RSpec.describe Sourced::Topology do
 
     it 'sets correct group_id on command nodes' do
       node = find_node('ccc_topo.create_widget')
-      expect(node.group_id).to eq('TopologyTest::WidgetDecider')
+      expect(node.group_id).to eq('topology_test.widget_decider')
     end
 
     it 'extracts produced events via Prism' do
@@ -213,7 +213,7 @@ RSpec.describe Sourced::Topology do
 
     it 'assigns first-seen group_id to event nodes' do
       node = find_node('ccc_topo.widget_created')
-      expect(node.group_id).to eq('TopologyTest::WidgetDecider')
+      expect(node.group_id).to eq('topology_test.widget_decider')
     end
 
     it 'event nodes have empty produces' do
@@ -229,22 +229,22 @@ RSpec.describe Sourced::Topology do
     it 'builds automation nodes for reactions' do
       aut_nodes = find_nodes_by_type('automation')
       expect(aut_nodes.map(&:id)).to include(
-        'ccc_topo.widget_created-TopologyTest::WidgetDecider-aut'
+        'ccc_topo.widget_created-topology_test.widget_decider-aut'
       )
     end
 
     it 'sets correct consumes on automation nodes' do
-      node = find_node('ccc_topo.widget_created-TopologyTest::WidgetDecider-aut')
+      node = find_node('ccc_topo.widget_created-topology_test.widget_decider-aut')
       expect(node.consumes).to eq(['ccc_topo.widget_created'])
     end
 
     it 'extracts dispatched commands from reactions via Prism' do
-      node = find_node('ccc_topo.widget_created-TopologyTest::WidgetDecider-aut')
+      node = find_node('ccc_topo.widget_created-topology_test.widget_decider-aut')
       expect(node.produces).to eq(['ccc_topo.notify_widget'])
     end
 
     it 'sets automation name from event class' do
-      node = find_node('ccc_topo.widget_created-TopologyTest::WidgetDecider-aut')
+      node = find_node('ccc_topo.widget_created-topology_test.widget_decider-aut')
       expect(node.name).to eq('reaction(TopologyTest::WidgetCreated)')
     end
   end
@@ -274,7 +274,7 @@ RSpec.describe Sourced::Topology do
     it 'sets correct name and group_id on readmodel node' do
       node = find_node('topology_test.widget_list_projector-rm')
       expect(node.name).to eq('TopologyTest::WidgetListProjector')
-      expect(node.group_id).to eq('TopologyTest::WidgetListProjector')
+      expect(node.group_id).to eq('topology_test.widget_list_projector')
     end
 
     it 'readmodel consumes the evolved event types' do
@@ -331,7 +331,7 @@ RSpec.describe Sourced::Topology do
   context 'with MixedReactingProjector (specific + catch-all reactions)' do
     let(:reactors) { [TopologyTest::MixedReactingProjector] }
     let(:rm_id) { 'topology_test.mixed_reacting_projector-rm' }
-    let(:specific_aut_id) { 'ccc_topo.widget_created-TopologyTest::MixedReactingProjector-aut' }
+    let(:specific_aut_id) { 'ccc_topo.widget_created-topology_test.mixed_reacting_projector-aut' }
     let(:catchall_aut_id) { 'topology_test.mixed_reacting_projector-aut' }
 
     it 'builds two automation nodes: one specific and one catch-all' do
@@ -366,7 +366,7 @@ RSpec.describe Sourced::Topology do
     let(:reactors) { [TopologyTest::SchedulingDecider] }
 
     it 'detects dispatch through .at() chain' do
-      node = find_node('ccc_topo.schedule_event-TopologyTest::SchedulingDecider-aut')
+      node = find_node('ccc_topo.schedule_event-topology_test.scheduling_decider-aut')
       expect(node).not_to be_nil
       expect(node.produces).to eq(['ccc_topo.delayed_cmd'])
     end
@@ -382,7 +382,7 @@ RSpec.describe Sourced::Topology do
 
     it 'uses first reactor as group_id owner' do
       node = find_node('ccc_topo.widget_created')
-      expect(node.group_id).to eq('TopologyTest::WidgetDecider')
+      expect(node.group_id).to eq('topology_test.widget_decider')
     end
   end
 

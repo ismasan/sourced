@@ -61,12 +61,27 @@ module Sourced
       @partition_keys = keys.flatten.map(&:to_sym)
     end
 
+    # The consumer group id: the declared {.consumer_group}, or else the class
+    # name, normalized by {Types::GroupId} (+CrossPost::Account+ =>
+    # +cross_post.account+). Nil for an anonymous class with no declared group.
     def group_id
-      @group_id ||= name
+      @group_id ||= name && Types::GroupId.parse(name)
     end
 
+    # The name the group is shown under: the class name, which locates the
+    # reactor in code whatever its {.group_id}. Falls back to the group id for
+    # an anonymous class.
+    def group_label = name || group_id
+
+    # Declare the consumer group id. Normalized by {Types::GroupId}, so
+    # +'Shop::Orders'+ and +'shop.orders'+ declare the same group.
+    #
+    # @raise [ArgumentError] if +id+ can't be normalized into a group id
     def consumer_group(id)
-      @group_id = id
+      result = Types::GroupId.resolve(id)
+      raise ArgumentError, "#{self}: invalid consumer_group #{id.inspect}: #{result.errors}" unless result.valid?
+
+      @group_id = result.value
     end
 
     # Declare this reactor as the exclusive owner of its handled message types:

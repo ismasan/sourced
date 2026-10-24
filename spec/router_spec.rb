@@ -80,7 +80,7 @@ class RouterTestMixedKeysReactor
   extend RouterTestHistoryRecorder
 
   partition_by :order_id, :tenant_id
-  consumer_group 'router-test-mixed-keys'
+  consumer_group 'router_test_mixed_keys'
 
   def self.handled_messages = [RouterTestMessages::SomethingHappened]
   def self.handled_messages_for_evolve = [RouterTestMessages::SomethingHappened, RouterTestMessages::OrderTouched]
@@ -92,7 +92,7 @@ class RouterTestCustomHistoryReactor
   extend RouterTestHistoryRecorder
 
   partition_by :order_id, :tenant_id
-  consumer_group 'router-test-custom-history'
+  consumer_group 'router_test_custom_history'
 
   def self.handled_messages = [RouterTestMessages::SomethingHappened]
 
@@ -104,7 +104,7 @@ class RouterTestQueueHistoryReactor
   extend Sourced::Consumer
   extend RouterTestHistoryRecorder
 
-  consumer_group 'router-test-queue-history'
+  consumer_group 'router_test_queue_history'
   exclusive
 
   def self.handled_messages = [RouterTestMessages::OrderTouched]
@@ -114,7 +114,7 @@ end
 # Test decider for router specs
 class RouterTestDecider < Sourced::Decider
   partition_by :device_id
-  consumer_group 'router-test-decider'
+  consumer_group 'router_test_decider'
 
   context { { exists: false, bound: false } }
 
@@ -149,7 +149,7 @@ end
 # Test projector for router specs
 class RouterTestProjector < Sourced::Projector::StateStored
   partition_by :device_id
-  consumer_group 'router-test-projector'
+  consumer_group 'router_test_projector'
 
   context { { devices: [] } }
 
@@ -173,7 +173,7 @@ class RouterTestAuditReactor
   extend Sourced::Consumer
 
   partition_by :device_id
-  consumer_group 'router-test-audit'
+  consumer_group 'router_test_audit'
 
   def self.handled_messages
     [RouterTestMessages::DeviceRegistered, RouterTestMessages::DeviceBound]
@@ -194,7 +194,7 @@ class RouterTestQueueWorker
   extend Sourced::Consumer
 
   partition_by :queue_id
-  consumer_group 'router-test-queue'
+  consumer_group 'router_test_queue'
   exclusive
 
   def self.handled_messages
@@ -236,7 +236,7 @@ class FakeCommander
     @processed = []
   end
 
-  # no .group_id → Router defaults it to the class name ('FakeCommander')
+  # no .group_id → Router defaults it to the class name, normalized ('fake_commander')
   def self.exclusive? = true
   def self.handled_messages = HANDLED
 
@@ -262,7 +262,7 @@ end
 
 # Same as FakeCommander but NOT exclusive — invalid (no partition_keys).
 class NonExclusiveCommander
-  def self.group_id = 'non-exclusive-commander'
+  def self.group_id = 'non_exclusive_commander'
   def self.handled_messages = [RouterQueueMessages::DoThing]
   def self.handle_claim(claim) = []
 end
@@ -272,7 +272,7 @@ class RouterTestQueueObserver
   extend Sourced::Consumer
 
   partition_by :queue_id
-  consumer_group 'router-test-queue-observer'
+  consumer_group 'router_test_queue_observer'
 
   def self.handled_messages
     [RouterTestMessages::QueueJob]
@@ -299,13 +299,13 @@ RSpec.describe Sourced::Router do
       routed = Sourced::Router.new(store:, reactors: [RouterTestDecider])
 
       expect(routed.reactors).to eq([RouterTestDecider])
-      expect(store.consumer_group_active?('router-test-decider')).to be false
+      expect(store.consumer_group_active?('router_test_decider')).to be false
     end
 
     it 'raises for reactors sharing a group_id' do
       twin = Class.new do
         def self.name = 'RouterTestTwin'
-        def self.group_id = 'router-test-decider'
+        def self.group_id = 'router_test_decider'
         def self.partition_keys = [:device_id]
         def self.handled_messages = [RouterTestMessages::DeviceRegistered]
         def self.handle_claim(_claim) = []
@@ -313,7 +313,27 @@ RSpec.describe Sourced::Router do
 
       expect {
         Sourced::Router.new(store:, reactors: [RouterTestDecider, twin])
-      }.to raise_error(ArgumentError, /RouterTestDecider already uses group_id "router-test-decider"/)
+      }.to raise_error(ArgumentError, /RouterTestDecider already uses group_id "router_test_decider"/)
+    end
+
+    it "raises for a group_id that isn't lowercase and dot-separated" do
+      odd = Class.new do
+        def self.name = 'RouterTestOdd'
+        def self.group_id = 'Router::Odd'
+        def self.partition_keys = [:device_id]
+        def self.handled_messages = [RouterTestMessages::DeviceRegistered]
+        def self.handle_claim(_claim) = []
+      end
+    
+      expect {
+        Sourced::Router.new(store:, reactors: [odd])
+      }.to raise_error(ArgumentError, /RouterTestOdd: group_id "Router::Odd" isn't lowercase and dot-separated/)
+    end
+    
+    it 'registers the group under its label, the class name' do
+      Sourced::Router.new(store:, reactors: [RouterTestDecider]).setup!
+      group = store.stats.groups.find { _1[:group_id] == RouterTestDecider.group_id }
+      expect(group[:label]).to eq('RouterTestDecider')
     end
 
     it 'validates exclusive ownership' do
@@ -392,7 +412,7 @@ RSpec.describe Sourced::Router do
 
       expect {
         routed.handle_next_for(RouterTestQueueWorker)
-      }.to raise_error(Sourced::Router::UnregisteredReactorError, /RouterTestQueueWorker is not registered with this router \(registered: RouterTestDecider \(router-test-decider\)\)/)
+      }.to raise_error(Sourced::Router::UnregisteredReactorError, /RouterTestQueueWorker is not registered with this router \(registered: RouterTestDecider \(router_test_decider\)\)/)
     end
   end
 
@@ -409,7 +429,7 @@ RSpec.describe Sourced::Router do
       expect(routed.setup!).to be(routed)
       routed.setup!
 
-      expect(store.consumer_group_active?('router-test-decider')).to be true
+      expect(store.consumer_group_active?('router_test_decider')).to be true
     end
   end
 
@@ -453,7 +473,7 @@ RSpec.describe Sourced::Router do
     it 'creates consumer group and introspects handle_claim signature' do
       router.register(RouterTestDecider)
 
-      expect(store.consumer_group_active?('router-test-decider')).to be true
+      expect(store.consumer_group_active?('router_test_decider')).to be true
       expect(router.reactors).to include(RouterTestDecider)
     end
 
@@ -469,7 +489,7 @@ RSpec.describe Sourced::Router do
     it 'passes partition_keys to register_consumer_group' do
       router.register(RouterTestDecider)
 
-      row = db[:sourced_consumer_groups].where(group_id: 'router-test-decider').first
+      row = db[:sourced_consumer_groups].where(group_id: 'router_test_decider').first
       expect(JSON.parse(row[:partition_by])).to eq(['device_id'])
     end
   end
@@ -557,7 +577,7 @@ RSpec.describe Sourced::Router do
 
       # Offset should be released (not advanced) — can re-claim
       claim = store.claim_next(
-        'router-test-decider',
+        'router_test_decider',
         partition_by: ['device_id'],
         handled_types: RouterTestDecider.handled_messages.map(&:type),
         worker_id: 'w-1'
@@ -732,9 +752,9 @@ RSpec.describe Sourced::Router do
       end
 
       it 'stops group and calls on_stop with string group_id' do
-        router.stop_consumer_group('router-test-decider', 'maintenance')
+        router.stop_consumer_group('router_test_decider', 'maintenance')
 
-        expect(store.consumer_group_active?('router-test-decider')).to be false
+        expect(store.consumer_group_active?('router_test_decider')).to be false
       end
 
       it 'invokes on_stop callback on reactor class' do
@@ -775,9 +795,9 @@ RSpec.describe Sourced::Router do
         )
         router.drain
 
-        router.reset_consumer_group('router-test-decider')
+        router.reset_consumer_group('router_test_decider')
 
-        row = db[:sourced_consumer_groups].where(group_id: 'router-test-decider').first
+        row = db[:sourced_consumer_groups].where(group_id: 'router_test_decider').first
         expect(row[:discovery_position]).to eq(0)
       end
 
@@ -801,11 +821,11 @@ RSpec.describe Sourced::Router do
       end
 
       it 'starts group with string group_id' do
-        router.stop_consumer_group('router-test-decider')
+        router.stop_consumer_group('router_test_decider')
 
-        router.start_consumer_group('router-test-decider')
+        router.start_consumer_group('router_test_decider')
 
-        expect(store.consumer_group_active?('router-test-decider')).to be true
+        expect(store.consumer_group_active?('router_test_decider')).to be true
       end
 
       it 'invokes on_start callback on reactor class' do
@@ -820,8 +840,8 @@ RSpec.describe Sourced::Router do
     describe 'resolve_reactor_class' do
       it 'raises for an unregistered group_id, naming the registered reactors' do
         expect {
-          router.stop_consumer_group('unknown-group')
-        }.to raise_error(Sourced::Router::UnregisteredReactorError, /group_id "unknown-group" is not registered with this router \(registered: RouterTestDecider \(router-test-decider\)/)
+          router.stop_consumer_group('unknown_group')
+        }.to raise_error(Sourced::Router::UnregisteredReactorError, /group_id "unknown_group" is not registered with this router \(registered: RouterTestDecider \(router_test_decider\)/)
       end
 
       it 'raises for an unregistered reactor class, even one whose group exists in the store' do
@@ -1045,7 +1065,7 @@ RSpec.describe Sourced::Router do
 
     it 'registers a class that does not extend Consumer, partitioned by id' do
       router.register(FakeCommander)
-      row = db[:sourced_consumer_groups].where(group_id: 'FakeCommander').first
+      row = db[:sourced_consumer_groups].where(group_id: 'fake_commander').first
       expect(JSON.parse(row[:partition_by])).to eq(['__id'])
     end
 
@@ -1057,7 +1077,7 @@ RSpec.describe Sourced::Router do
     it 'raises for a Consumer reactor that forgot partition_by (never silently deletes)' do
       klass = Class.new do
         extend Sourced::Consumer
-        consumer_group 'forgot-partition'
+        consumer_group 'forgot_partition'
         def self.handled_messages = [RouterQueueMessages::DoThing]
         def self.handle_claim(_claim) = []
       end
@@ -1071,7 +1091,7 @@ RSpec.describe Sourced::Router do
       # so it is only allowed for exclusive reactors, same as omitting partition_by.
       klass = Class.new do
         extend Sourced::Consumer
-        consumer_group 'explicit-id-non-exclusive'
+        consumer_group 'explicit_id_non_exclusive'
         partition_by :__id
         def self.handled_messages = [RouterQueueMessages::DoThing]
         def self.handle_claim(_claim) = []
@@ -1114,8 +1134,8 @@ RSpec.describe Sourced::Router do
       expect(FakeCommander.processed).to be_empty
 
       # after reactivating the group, the retained message is re-claimable
-      store.start_consumer_group('FakeCommander')
-      claim = store.claim_next('FakeCommander', partition_by: ['__id'],
+      store.start_consumer_group('fake_commander')
+      claim = store.claim_next('fake_commander', partition_by: ['__id'],
         handled_types: ['router_q.do_thing'], worker_id: 'w2')
       expect(claim.messages.size).to eq(1)
     end

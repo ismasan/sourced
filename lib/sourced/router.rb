@@ -44,7 +44,8 @@ module Sourced
 
     # Register a reactor. Reactors are duck-typed: only +handled_messages+ and
     # +handle_claim+ are required. Optional methods (+group_id+ — defaults to the
-    # class name, +partition_keys+, +exclusive?+, +context_for+, lifecycle hooks)
+    # class name normalized by {Types::GroupId}, +group_label+ — the class name,
+    # +partition_keys+, +exclusive?+, +context_for+, lifecycle hooks)
     # get defaults so a plain class (e.g. a Sidereal Commander adapter) can
     # register without depending on Sourced.
     #
@@ -183,6 +184,10 @@ module Sourced
     #   invalid partitioning or exclusive ownership
     def add(reactor_class)
       ReactorDefaults.apply(reactor_class)
+      unless Types::GROUP_ID_FORMAT.match?(reactor_class.group_id.to_s)
+        raise ArgumentError, "Cannot register #{reactor_class.group_label || reactor_class.inspect}: group_id #{reactor_class.group_id.inspect} " \
+                             "isn't lowercase and dot-separated, like 'shop.orders' (see Sourced::Types::GroupId)"
+      end
       if (existing = @reactors.find { |r| r.group_id == reactor_class.group_id })
         raise ArgumentError, "Cannot register #{reactor_class}: #{existing} already uses group_id #{reactor_class.group_id.inspect}"
       end
@@ -212,7 +217,7 @@ module Sourced
     end
 
     def register_consumer_group(reactor_class)
-      store.register_consumer_group(reactor_class.group_id, **@groups.fetch(reactor_class))
+      store.register_consumer_group(reactor_class.group_id, label: reactor_class.group_label, **@groups.fetch(reactor_class))
     end
 
     # A reactor's own +on_exception+ handles its errors; otherwise this router's
@@ -293,7 +298,9 @@ module Sourced
       reactor = if reactor_or_id.is_a?(Module)
                   @reactors.find { |r| r.equal?(reactor_or_id) }
                 else
-                  @reactors.find { |r| r.group_id == reactor_or_id }
+                  # A class name finds its reactor too: 'Shop::Orders' is 'shop.orders'.
+                  group_id = Types::GroupId.resolve(reactor_or_id).value
+                  @reactors.find { |r| r.group_id == reactor_or_id || r.group_id == group_id }
                 end
       reactor || raise(UnregisteredReactorError.new(reactor_or_id, @reactors))
     end

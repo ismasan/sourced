@@ -129,7 +129,7 @@ RSpec.describe Sourced::React do
         include Sourced::React
         extend Sourced::Consumer
 
-        consumer_group 'ccc-reactor'
+        consumer_group 'ccc_reactor'
 
         def context
           { source: 'context' }
@@ -170,7 +170,7 @@ RSpec.describe Sourced::React do
         expect(result.map(&:class)).to eq([ReactTestMessages::DelayedCommand])
         expect(result.first.causation_id).to eq(source.id)
         expect(result.first.correlation_id).to eq(source.correlation_id)
-        expect(result.first.metadata[:producer]).to eq('ccc-reactor')
+        expect(result.first.metadata[:producer]).to eq('ccc_reactor')
         expect(result.first.metadata[:foo]).to eq('bar')
         expect(result.first.created_at).to eq(now + 10)
       end
