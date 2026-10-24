@@ -1,8 +1,8 @@
 GIT
   remote: https://github.com/ismasan/docco.git
-  revision: 032150bac85215da8470ca302003a63cc39632b2
+  revision: 116a866bb78790ae67bcc6be575cd7dc65e1578a
   specs:
-    docco (0.1.0)
+    docco (0.1.4)
       kramdown
       kramdown-parser-gfm
 
@@ -52,8 +52,8 @@ GEM
       rdoc (>= 4.0.0)
       reline (>= 0.4.2)
     json (2.18.1)
-    kramdown (2.5.1)
-      rexml (>= 3.3.9)
+    kramdown (2.5.2)
+      rexml (>= 3.4.4)
     kramdown-parser-gfm (1.1.0)
       kramdown (~> 2.0)
     language_server-protocol (3.17.0.4)
