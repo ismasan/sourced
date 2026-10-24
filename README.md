@@ -11,6 +11,50 @@ Sourced is a Ruby library for aggregateless, stream-less event sourcing. Events 
 - **Decide → Evolve → React** — reactors handle commands, evolve context from history, and react to events.
 - **Optimistic concurrency** — reads return a `ConsistencyGuard` that detects conflicting writes at append time.
 
+A student enrols in a course from a form, a projector keeps the course roster, and an automation notifies the student:
+
+```mermaid
+eventmodeling
+
+tf 01 ui EnrolmentForm [[EnrolmentForm]]
+tf 02 cmd EnrolStudent [[EnrolStudent]]
+tf 03 evt StudentEnrolled [[StudentEnrolled]]
+tf 04 rmo CourseRoster [[CourseRoster]]
+tf 05 pcr StudentNotifier
+tf 06 cmd NotifyStudent [[NotifyStudent]]
+tf 07 evt StudentNotified [[StudentNotified]]
+
+data EnrolmentForm {
+  course_id: 'c1'
+  student_id: 's1'
+}
+
+data EnrolStudent {
+  course_id: 'c1'
+  student_id: 's1'
+}
+
+data StudentEnrolled {
+  course_id: 'c1'
+  student_id: 's1'
+}
+
+data CourseRoster {
+  course_id: 'c1'
+  students: ['s1']
+}
+
+data NotifyStudent {
+  student_id: 's1'
+}
+
+data StudentNotified {
+  student_id: 's1'
+}
+```
+
+In Sourced, a [Decider](#deciders) handles `EnrolStudent` and appends `StudentEnrolled` to the log, a [Projector](#projectors) evolves `CourseRoster` from it, and the projector's [reaction](#reactions) dispatches `NotifyStudent`, which another reactor handles in turn.
+
 ## Messages
 
 Messages have no `stream_id` or `seq` — they get a global `position` when stored.
