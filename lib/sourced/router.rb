@@ -184,7 +184,7 @@ module Sourced
     #   invalid partitioning or exclusive ownership
     def add(reactor_class)
       ReactorDefaults.apply(reactor_class)
-      unless Types::GROUP_ID_FORMAT.match?(reactor_class.group_id.to_s)
+      unless Types::GroupIdFormat === reactor_class.group_id.to_s
         raise ArgumentError, "Cannot register #{reactor_class.group_label || reactor_class.inspect}: group_id #{reactor_class.group_id.inspect} " \
                              "isn't lowercase and dot-separated, like 'shop.orders' (see Sourced::Types::GroupId)"
       end

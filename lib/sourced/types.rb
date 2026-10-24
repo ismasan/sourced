@@ -42,15 +42,15 @@ module Sourced
 
     # A consumer group id: lowercase, dot-separated segments of letters,
     # digits and underscores (+cross_post.connections.linked_in+).
-    GROUP_ID_FORMAT = /\A[a-z0-9_]+(\.[a-z0-9_]+)*\z/
+    GroupIdFormat = String[/\A[a-z0-9_]+(\.[a-z0-9_]+)*\z/]
 
-    # Normalizes a module name or a loosely written id into a {GROUP_ID_FORMAT}
+    # Normalizes a module name or a loosely written id into a {GroupIdFormat}
     # id, and rejects what can't be normalized:
     #
     #   GroupId.parse('CrossPost::Connections::LinkedIn') # => "cross_post.connections.linked_in"
     #   GroupId.parse('device-decider')                   # => "device_decider"
     #   GroupId.parse('cross post')                       # raises Plumb::ParseError
-    GroupId = (String.present >> ModuleToMessageType)[GROUP_ID_FORMAT]
+    GroupId = (String.present >> ModuleToMessageType)[GroupIdFormat]
 
     # An arbitrary JSON-native value: scalars, and arrays/hashes of them, all
     # the way down. Use it for message attributes whose shape isn't known up
