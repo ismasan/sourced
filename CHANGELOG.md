@@ -2,10 +2,11 @@
 
 ### Added
 
-- `Machine.at(paths, **partition_values)` returns a machine instance at the states at
-  `paths`, without loading its history: decide commands against a configuration stored as
-  paths (`handles_command?`, `decide`), and read the paths it moves to from
-  `machine.paths`. Raises `MissingPartitionKeyError` without a value for each partition key.
+- `Machine.at(paths, context = <context block's>, **partition_values)` returns a machine
+  instance at the states at `paths`, on the given context, without loading its history:
+  decide commands against a configuration stored as paths (`handles_command?`, `decide`),
+  and read the paths it moves to from `machine.paths` and its context from `context`.
+  Raises `MissingPartitionKeyError` without a value for each partition key.
 
 ### Changed
 

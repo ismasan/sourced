@@ -865,17 +865,18 @@ command_buttons(OrderMachine.configuration(record[:machine])) # stored paths
 
 It has no domain context, history or children, so it tells what the active states accept, not whether a command would succeed. Stored paths depend on state and region names, as stored state events do: paths that don't resolve raise `UnresolvablePathError`; an initial position, a state in an inactive region, or two states in one region raise `ArgumentError`.
 
-`OrderMachine.at(paths, **partition_values)` is an instance at the given paths, to decide commands against a configuration stored as paths without loading the machine's history. Handlers run as they do on any instance: keep the paths it moves to, and the events it returns if you want them.
+`OrderMachine.at(paths, context, **partition_values)` is an instance at the given paths, on the given context, to decide commands against a configuration stored as paths without loading the machine's history. Handlers run as they do on any instance: keep the paths it moves to and its context, and the events it returns if you want them.
 
 ```ruby
-order = OrderMachine.at(record[:machine], order_id: 'o1')
+order = OrderMachine.at(record[:machine], record[:context], order_id: 'o1')
 raise "can't cancel" unless order.handles_command?(cancel)
 
 order.decide(cancel)
 record[:machine] = order.machine.paths # => ["cancelled"]
+record[:context] = order.context
 ```
 
-Its context is the `context` block's, and it has no history, children or events that entered its states (so a placed state's `start` counts its child as not started yet). It raises `Sourced::MissingPartitionKeyError` without a value for each partition key, and the same errors as `configuration(paths)` for paths that are no configuration.
+The context is used as given, so deciding evolves that object; without one, it's the `context` block's. Store and read it in whatever form the context's values allow (ex. through `Plumb::Codec::JSON` for a typed Hash). The instance has no history, children or events that entered its states (so a placed state's `start` counts its child as not started yet). It raises `Sourced::MissingPartitionKeyError` without a value for each partition key, and the same errors as `configuration(paths)` for paths that are no configuration.
 
 Definitions are checked when the machine is registered (or first instantiated), raising `Sourced::Machine::DefinitionError`: targets, partition keys, unplaced states, transient states, unreachable guards. After that, the machine's `context`, `evolve`, `before_evolve`, `reaction` and `State` raise too: what it reads is fixed. A stored path that no longer names a state raises `Sourced::Machine::UnresolvablePathError` with the event's type and id, so a state or region name that stored events use can't change (rename the constant instead).
 

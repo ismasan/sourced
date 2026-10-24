@@ -1239,27 +1239,29 @@ module Sourced
 
       # An instance at the states at +paths+, without loading its history: ex.
       # to decide commands against a status stored as paths, and store the
-      # paths it moves to. Its context is the +context+ block's, and it has no
-      # history, children or events that entered its states, so a placed
-      # state's +start+ counts its child as not started yet.
+      # paths it moves to. Its context is +context+, or else the +context+
+      # block's, and it has no history, children or events that entered its
+      # states, so a placed state's +start+ counts its child as not started yet.
       #
-      #   group = ConsumerGroupMachine.at(['active'], group_id: 'g1')
+      #   group = ConsumerGroupMachine.at(['active'], { retry_count: 0 }, group_id: 'g1')
       #   group.decide(stop) if group.handles_command?(stop)
       #   group.machine.paths # => ['stopped']
+      #   group.context       # => { retry_count: 0 }
       #
       # @param paths [Array<String>] the paths of the active states, as {Configuration#paths} returns them
+      # @param context [Object] the starting context, as given: deciding evolves this object
       # @param partition_values [Hash{Symbol => String}]
       # @return [Machine]
       # @raise [Sourced::MissingPartitionKeyError] if a partition key is missing or nil
       # @raise [UnresolvablePathError] if a path doesn't resolve
       # @raise [ArgumentError] for an initial position, a state in an inactive region, or two states in one region
-      def at(paths, **partition_values)
+      def at(paths, context = Projection::UNSET, **partition_values)
         missing = partition_keys.select { |key| partition_values[key].nil? }
         if missing.any?
           raise Sourced::MissingPartitionKeyError, "#{self} can't be placed without values for partition keys #{missing.inspect}"
         end
 
-        new(partition_values).__place(paths)
+        new(partition_values).__place(paths, context)
       end
 
       # Load a machine instance and return its configuration and domain context.
@@ -1611,10 +1613,11 @@ module Sourced
     # @return [View]
     def machine = View.new(self.class, @runtime)
 
-    # Place a fresh instance at +paths+: see {.at}.
+    # Place a fresh instance at +paths+, on +context+: see {.at}.
     # @api private
     # @return [self]
-    def __place(paths)
+    def __place(paths, context = Projection::UNSET)
+      @projection = self.class.projection_class.new(context) unless Projection::UNSET.equal?(context)
       @runtime.place(paths)
       moved!
       self
