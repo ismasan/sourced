@@ -256,7 +256,7 @@ module MachineChartTest
         expect(opened).to include(
           id: 'opened', key: 'opened', type: 'atomic', machine: 'MachineChartTest::TripMachine',
           entry: 1, exit: 0, after: [{ delay: 60, dispatches: [t(:remind)] }], on_done: nil, invoke: [], mounts: [], states: {}, status: nil,
-          children_done: [{ id: 'MachineChartTest::LegMachine', targets: ['legs_done'], starts: [], starts_optional: false }]
+          children_done: [{ id: 'machine_chart_test.leg_machine', targets: ['legs_done'], starts: [], starts_optional: false }]
         )
         expect(opened).not_to include(:message_type, :class)
         expect(opened[:on][t(:note)]).to include(targets: [], optional: true, auto: false)
@@ -272,7 +272,7 @@ module MachineChartTest
         expect(payment[:states].keys).to eq(%w[initial awaiting_payment payment_failed paid])
         expect(payment[:states]['awaiting_payment'][:id]).to eq('booked.payment.awaiting_payment')
         expect(payment[:states]['awaiting_payment'][:invoke]).to eq([
-          { id: 'MachineChartTest::ChargeMachine', src: 'MachineChartTest::ChargeMachine',
+          { id: 'machine_chart_test.charge_machine', src: 'MachineChartTest::ChargeMachine',
             on_done: { 'captured' => 'booked.payment.paid', 'declined' => 'booked.payment.payment_failed' } }
         ])
         # A transition to an ancestor region's state is listed where it's taken
@@ -281,9 +281,9 @@ module MachineChartTest
 
       it 'describes children' do
         expect(chart[:children]).to eq([
-          { id: 'MachineChartTest::LegMachine', machine: 'MachineChartTest::LegMachine', kind: 'spawn', state: nil,
+          { id: 'machine_chart_test.leg_machine', machine: 'MachineChartTest::LegMachine', kind: 'spawn', state: nil,
             stop_on: ['cancelled'], status: nil },
-          { id: 'MachineChartTest::ChargeMachine', machine: 'MachineChartTest::ChargeMachine', kind: 'invoke',
+          { id: 'machine_chart_test.charge_machine', machine: 'MachineChartTest::ChargeMachine', kind: 'invoke',
             state: 'booked.payment.awaiting_payment', stop_on: [], status: nil }
         ])
       end
@@ -330,7 +330,7 @@ module MachineChartTest
       it "lists the children handlers start, and those a state stops" do
         chart = StartingMachine.to_h
         opened = chart[:states]['opened']
-        leg, charge = 'MachineChartTest::LegMachine', 'MachineChartTest::ChargeMachine'
+        leg, charge = 'machine_chart_test.leg_machine', 'machine_chart_test.charge_machine'
 
         expect(opened[:on][t(:add_leg)]).to include(targets: [], starts: [leg], starts_optional: false)
         expect(opened[:on][t(:quote)]).to include(targets: ['quoted'], starts: [charge], starts_optional: true)
@@ -417,7 +417,7 @@ module MachineChartTest
       it "lists children's instances" do
         trip = trip(message(Open), message(AddLeg, leg_id: 'l1'), message(AddLeg, leg_id: 'l2'))
         trip.evolve([LegMachine::Finished.new(payload: { trip_id: 't1', leg_id: 'l1', final: 'confirmed' })])
-        legs = trip.to_h[:children].find { |c| c[:id] == 'MachineChartTest::LegMachine' }
+        legs = trip.to_h[:children].find { |c| c[:id] == 'machine_chart_test.leg_machine' }
         expect(legs[:status]).to eq(instances: [
           { keys: { 'leg_id' => 'l1' }, state: 'confirmed', final: true },
           { keys: { 'leg_id' => 'l2' }, state: 'added', final: false }

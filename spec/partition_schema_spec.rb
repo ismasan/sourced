@@ -62,7 +62,7 @@ RSpec.describe Sourced::PartitionSchema do
 
   def decider(&block)
     Class.new(Sourced::Decider) do
-      consumer_group 'partition-schema-test'
+      consumer_group 'partition_schema_test'
       partition_by :order_id
       class_eval(&block)
     end
@@ -171,7 +171,7 @@ RSpec.describe Sourced::PartitionSchema do
 
     it 'allows evolved events with some of the keys' do
       reactor = Class.new(Sourced::Projector::StateStored) do
-        consumer_group 'partition-schema-projector'
+        consumer_group 'partition_schema_projector'
         partition_by :order_id, item_id: Sourced::Types::Integer
         context { {} }
         evolve(PartitionSchemaTest::OrderNoted) { |*| }
@@ -182,7 +182,7 @@ RSpec.describe Sourced::PartitionSchema do
 
     it 'checks the types of the keys an evolved event declares' do
       reactor = Class.new(Sourced::Projector::StateStored) do
-        consumer_group 'partition-schema-projector'
+        consumer_group 'partition_schema_projector'
         partition_by :order_id, item_id: Sourced::Types::Integer
         context { {} }
         evolve(PartitionSchemaTest::Orders::ItemAdded) { |*| }
@@ -203,7 +203,7 @@ RSpec.describe Sourced::PartitionSchema do
 
     it 'requires a message declaring every key' do
       reactor = Class.new(Sourced::Projector::StateStored) do
-        consumer_group 'partition-schema-projector'
+        consumer_group 'partition_schema_projector'
         partition_by :order_id, :item_id
         context { {} }
         evolve(PartitionSchemaTest::OrderNoted) { |*| }

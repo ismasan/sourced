@@ -471,7 +471,7 @@ RSpec.describe Sourced::Config do
       config.build!
       before = config['topology']
 
-      config.recycle_component!('reactors.ConfigTestDecider')
+      config.recycle_component!('reactors.config_test_decider')
 
       expect(config['topology']).not_to be(before)
       expect(config['topology']).to eq(before)
@@ -489,19 +489,19 @@ RSpec.describe Sourced::Config do
       described_class.register(config, ConfigTestReactor)
       lookalike = Class.new do
         def self.name = 'ConfigTestLookalike'
-        def self.group_id = 'ConfigTestReactor'
+        def self.group_id = 'config_test_reactor'
         def self.handled_messages = []
         def self.handle_claim(_claim) = []
       end
 
       expect {
         described_class.register(config, lookalike)
-      }.to raise_error(ArgumentError, /\(group_id "ConfigTestReactor"\) as reactors\.ConfigTestReactor: a different reactor/)
+      }.to raise_error(ArgumentError, /\(group_id "config_test_reactor"\) as reactors\.config_test_reactor: a different reactor/)
     end
 
     it 'raises for a reactor whose key was overridden' do
       described_class.register(config, ConfigTestReactor)
-      config.config!('reactors.ConfigTestReactor') { ConfigTestOtherReactor }
+      config.config!('reactors.config_test_reactor') { ConfigTestOtherReactor }
 
       expect {
         described_class.register(config, ConfigTestReactor)

@@ -124,7 +124,7 @@ end
 
 class HandleTestReactingDecider < Sourced::Decider
   partition_by :device_id
-  consumer_group 'handle-test-reacting-decider'
+  consumer_group 'handle_test_reacting_decider'
 
   command HandleTestMessages::RegisterDevice do |_context, cmd|
     event HandleTestMessages::DeviceCreated, device_id: cmd.payload.device_id, name: cmd.payload.name
@@ -137,7 +137,7 @@ end
 
 # Refuses ActivateDevice until the device exists, instead of raising.
 class HandleTestGatedDecider < HandleTestDecider
-  consumer_group 'handle-test-gated-decider'
+  consumer_group 'handle_test_gated_decider'
 
   def handles_command?(command)
     return super unless command.is_a?(HandleTestMessages::ActivateDevice)

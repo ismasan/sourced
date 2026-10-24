@@ -201,6 +201,7 @@ module Sourced
     def self.add_machine(machine, analyzer, nodes, command_ids, event_nodes)
       machine.validate!
       group_id = machine.group_id
+      group_label = machine.group_label
       produced = Hash.new { |h, k| h[k] = [] }
 
       machine.all_nodes.each do |node|
@@ -215,17 +216,17 @@ module Sourced
           existing.produces |= types
         else
           cmd_node = CommandNode.new(
-            type: 'command', id: cmd_class.type, name: cmd_class.name, group_id:,
+            type: 'command', id: cmd_class.type, name: cmd_class.name, group_id:, group_label:,
             produces: types, schema: extract_schema(cmd_class)
           )
           nodes << cmd_node
           command_ids[cmd_class.type] = cmd_node
         end
-        types.each { |type| add_event_node(event_nodes, command_ids, find_event_class(type), group_id) }
+        types.each { |type| add_event_node(event_nodes, command_ids, find_event_class(type), group_id, group_label) }
       end
 
       automation = lambda do |state, id, name, consumes, produces|
-        nodes << AutomationNode.new(type: 'automation', id: "#{id}-#{group_id}-aut", name:, group_id:, consumes:, produces:, state:)
+        nodes << AutomationNode.new(type: 'automation', id: "#{id}-#{group_id}-aut", name:, group_id:, group_label:, consumes:, produces:, state:)
       end
 
       # Constants in a block resolve where it's declared: the machine, or a part.
@@ -259,7 +260,7 @@ module Sourced
 
         node.children_joins.each do |join|
           child = join.machine
-          automation.call(node.path, "#{node.path}-children-done-#{child.group_id}", "children_done(#{child.group_id})", [child::Finished.type],
+          automation.call(node.path, "#{node.path}-children-done-#{child.group_id}", "children_done(#{child.name})", [child::Finished.type],
                           machine_block_produces(machine, analyzer, join.definition, node.machine))
         end
 
@@ -269,7 +270,7 @@ module Sourced
           automation.call(node.path, "#{node.path}-stop-#{spec.machine.group_id}", "stop(#{spec.machine.name})",
                           leaving, [spec.machine::Stop.type])
           if spec.on_done.any?
-            automation.call(node.path, "#{node.path}-on-done-#{spec.machine.group_id}", "on_done(#{spec.machine.group_id})", [spec.machine::Finished.type],
+            automation.call(node.path, "#{node.path}-on-done-#{spec.machine.group_id}", "on_done(#{spec.machine.name})", [spec.machine::Finished.type],
                             eventless_closure(machine, spec.on_done.values.uniq).map(&:type))
           end
         end
@@ -366,12 +367,12 @@ module Sourced
     end
 
     # @api private
-    def self.add_event_node(event_nodes, command_ids, evt_class, group_id)
+    def self.add_event_node(event_nodes, command_ids, evt_class, group_id, group_label)
       return unless evt_class
       return if event_nodes.key?(evt_class.type) || command_ids.key?(evt_class.type)
 
       event_nodes[evt_class.type] = EventNode.new(
-        type: 'event', id: evt_class.type, name: evt_class.name, group_id:,
+        type: 'event', id: evt_class.type, name: evt_class.name, group_id:, group_label:,
         produces: [], schema: extract_schema(evt_class), transition: evt_class < Sourced::Machine::State
       )
     end

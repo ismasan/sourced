@@ -723,7 +723,7 @@ order.machine.value
 # => { OrderMachine::Placed => { payment: OrderMachine::Paying, shipping: :initial } }
 ```
 
-**States are event classes.** `State(:paying)` generates a `Sourced::Machine::State` subclass and returns it: it's the handle the chart places and transitions target, and the event appended whenever the machine moves there. Its type is `<prefix>.runtime.<name>`, where the prefix comes from the machine's `group_id` (its class name, unless `consumer_group 'orders'` fixes it), so declare `partition_by` and `consumer_group` before any state. The constant is yours to name and rename; the state's name is what's stored. Placing a Symbol (`state :outline`, `final :done`) declares the state and sets its constant (`Outline`). A state event carries the partition keys and where the machine went:
+**States are event classes.** `State(:paying)` generates a `Sourced::Machine::State` subclass and returns it: it's the handle the chart places and transitions target, and the event appended whenever the machine moves there. Its type is `<prefix>.runtime.<name>`, where the prefix comes from the machine's `group_id` (its class name, lowercase and dot-separated, unless `consumer_group 'orders'` fixes it), so declare `partition_by` and `consumer_group` before any state. The constant is yours to name and rename; the state's name is what's stored. Placing a Symbol (`state :outline`, `final :done`) declares the state and sets its constant (`Outline`). A state event carries the partition keys and where the machine went:
 
 ```ruby
 # order_machine.runtime.paying
@@ -731,7 +731,7 @@ order.machine.value
   target: 'placed.payment.paying', exited: [], entered: ['placed.payment.paying'] }
 ```
 
-`trigger` is the command or event type that moved the machine, or `'always'`, `'done'`, `'on_final'`, `'start'`, `'stop'`, `'children_done <child group_id>'`. `source` and `target` are paths: state and region names joined with dots from the root, a compound state's sub-states directly under it (`working.progressed`). `exited` (innermost first) and `entered` (outermost first) are every state the move left and entered. Loading a machine replays these paths; transition rules aren't re-run.
+`trigger` is the command or event type that moved the machine, or `'always'`, `'done'`, `'on_final'`, `'start'`, `'stop'`, `'children_done <child class name>'`. `source` and `target` are paths: state and region names joined with dots from the root, a compound state's sub-states directly under it (`working.progressed`). `exited` (innermost first) and `entered` (outermost first) are every state the move left and entered. Loading a machine replays these paths; transition rules aren't re-run.
 
 Command forms:
 

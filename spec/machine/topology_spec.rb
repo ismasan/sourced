@@ -163,7 +163,7 @@ module MachineTopologyTest
         expect(find.call('command', t(:add_leg)).produces).to eq([started])
         expect(find.call('command', t(:book)).produces).to eq([starting.call(:settled), started])
         expect(find.call('automation', 'on(opened, Settled)').produces).to eq([starting.call(:settled), started])
-        expect(find.call('automation', "children_done(#{LegMachine.group_id})")).to have_attributes(
+        expect(find.call('automation', "children_done(#{LegMachine.name})")).to have_attributes(
           consumes: [leg('child.finished')], produces: [starting.call(:done), started]
         )
         expect(find.call('automation', 'stop(MachineTopologyTest::LegMachine)')).to have_attributes(

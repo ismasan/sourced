@@ -665,7 +665,7 @@ module Sourced
           raise DefinitionError, "#{@machine}: children_done takes a child machine, got #{child.inspect}"
         end
 
-        what = "children_done #{child.group_id}"
+        what = "children_done #{child.group_label}"
         targets = @machine.send(:__flatten_targets, target)
         raise DefinitionError, "#{@machine}: #{what} must move to a state, not nil" if targets.include?(nil)
         raise DefinitionError, "#{@machine}: #{what} with several states needs a block" if block.nil? && targets.size > 1

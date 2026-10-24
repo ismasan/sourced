@@ -125,7 +125,7 @@ end
 
 # Refuses BindDevice until the device is registered, instead of raising.
 class TestGatedDeviceDecider < TestDeviceDecider
-  consumer_group 'device-gated-decider-test'
+  consumer_group 'device_gated_decider_test'
 
   def handles_command?(command)
     super && context[:exists]

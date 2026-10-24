@@ -237,7 +237,7 @@ RSpec.describe 'GWT at' do
     it 'raises on a reactor that is not a machine' do
       decider = Class.new(Sourced::Decider) do
         partition_by :device_id
-        consumer_group 'gwt-at-decider'
+        consumer_group 'gwt_at_decider'
       end
 
       expect { with_reactor(decider, device_id: 'd1').at(order::Placed) }
