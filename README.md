@@ -1322,10 +1322,10 @@ router.drain
 
 Sourced already supports consumer-group retries on failure.
 
-- On reactor errors, `Router#handle_next_for` calls the configured error strategy (the `error_strategy` component), with the exception, the failing message and the consumer group. A reactor that defines its own `on_exception(exception, message, group)` class method handles its errors instead.
+- On reactor errors, `Router#handle_next_for` calls the configured error strategy (the `error_strategy` component), with the exception, the failing message and the consumer group. A reactor that defines its own `on_exception(exception, message, group)` class method handles its errors instead. Either one moves the group with `group.retry(time, exception:)` or `group.fail(exception:)` (see [Consumer group statuses](#consumer-group-statuses)), and reads `group.error_context[:retry_count]`, the retries scheduled since the group last recovered.
 - If a batch fails mid-way, it is raised as `Sourced::PartialBatchError`. The error carries the already-processed `action_pairs` (which are still ack'd) and the `failed_message` the strategy receives — so partial progress is not lost.
-- The default `Sourced::ErrorStrategy` marks the consumer group as failed immediately.
-- If you configure a retrying error strategy, Sourced stores the next retry time in the consumer group's `retry_at` column and skips claiming work for that group until that time has passed.
+- The default `Sourced::ErrorStrategy` marks the consumer group as `failed` immediately, recording the exception's class, message and backtrace.
+- If you configure a retrying error strategy, the group becomes `retrying`: Sourced stores the next retry time in its `retry_at` column and skips claiming work for it until that time has passed. Once the partition that failed is processed, the group is `active` again, and its retry count starts again for the next failure.
 
 So retries are built in already, but they are opt-in via the error strategy configuration.
 
@@ -1384,7 +1384,7 @@ With the configuration above, failures retry after:
 - retry 4: 16 seconds
 - retry 5: 32 seconds
 
-After the configured retries are exhausted, the consumer group is marked as failed.
+After the configured retries are exhausted, the consumer group is marked as failed. Processing other partitions while a group retries doesn't recover it, so a partition that keeps failing still reaches the limit.
 
 ## Consumer groups
 
@@ -1399,8 +1399,8 @@ store = Sourced.store
 
 # Pass reactor classes directly
 store.stop_consumer_group(CourseDecider)
+store.reset_consumer_group(CourseDecider)  # reprocess from beginning once started
 store.start_consumer_group(CourseDecider)
-store.reset_consumer_group(CourseDecider)  # reprocess from beginning
 store.consumer_group_active?(CourseDecider)  # => true/false
 
 # Or use plain strings
@@ -1409,7 +1409,63 @@ store.stop_consumer_group('course_app.course_decider')
 
 All three raise `Sourced::Store::UnknownConsumerGroupError`, naming the registered groups, for a group that isn't registered with the store (a typo, or a reactor that isn't registered): consumer groups are registered when Sourced starts.
 
-When retries are configured via the `error_strategy` component, failed consumer groups remain active but paused until their `retry_at` time. Once that time passes, they become claimable again automatically.
+### Consumer group statuses
+
+A group's status follows `Sourced::ConsumerGroupMachine`, a statechart that isn't registered as a reactor: it's only the rules. Its states are the statuses, stored as their paths in the group's `status` column:
+
+```mermaid
+stateDiagram-v2
+  [*] --> active : Start
+  active --> stopped : Stop
+  active --> retrying : Retry
+  active --> failed : Fail
+  retrying --> retrying : Retry
+  retrying --> active : Recover
+  retrying --> active : Start
+  retrying --> failed : Fail
+  retrying --> stopped : Stop
+  stopped --> active : Start
+  stopped --> stopped : Reset
+  failed --> active : Start
+  failed --> stopped : Stop
+  failed --> failed : Reset
+```
+
+| Status | Claimed by workers | Accepts |
+|---|---|---|
+| `active` | yes | `stop` |
+| `retrying` | once `retry_at` has passed | `start` (retry now), `stop` |
+| `stopped` | no | `start`, `reset` |
+| `failed` | no | `start`, `stop`, `reset` |
+
+Operator commands (`stop_consumer_group`, `start_consumer_group`, `reset_consumer_group`) raise `Sourced::Store::InvalidConsumerGroupTransitionError` for a status that doesn't accept them, writing nothing, so the Router's `on_stop` / `on_start` / `on_reset` callbacks don't run either. The error has the `group_id`, `status`, `command` and the commands the status `available` accepts:
+
+```ruby
+Sourced.reset_consumer_group(CourseDecider)
+# => Sourced::Store::InvalidConsumerGroupTransitionError:
+#    Can't reset consumer group course_app.course_decider: it's active. It accepts: stop
+```
+
+To replay a group, stop it, reset it, and start it again:
+
+```ruby
+Sourced.stop_consumer_group(CourseDecider, 'rebuilding projections')
+Sourced.reset_consumer_group(CourseDecider)  # offsets cleared; still stopped
+Sourced.start_consumer_group(CourseDecider)  # reprocesses from the beginning
+```
+
+Workers move groups too: the error strategy's `Retry` and `Fail`, and `Recover` once the partition a retrying group failed on is processed. These never raise: where a status doesn't accept one, the group stays as it is, ex. a batch that was still running when an operator stopped the group fails afterwards, and the group stays `stopped`.
+
+Each change is read and written in one SQLite write transaction (`BEGIN IMMEDIATE`), so a worker failing a group and an operator stopping it can't both act on the status they read.
+
+The machine is a regular `Sourced::Machine`, so a UI can ask a group's status which commands it accepts, or draw the chart (`ConsumerGroupMachine.to_mermaid`, `.to_h`):
+
+```ruby
+group = Sourced.store.stats.groups.find { |g| g[:group_id] == 'course_app.course_decider' }
+config = Sourced::ConsumerGroupMachine.configuration([group[:status]])
+config.available_commands.to_a & Sourced::ConsumerGroupMachine::OPERATOR_COMMANDS
+# => [Sourced::ConsumerGroupMachine::Stop]
+```
 
 ### Lifecycle hooks via Router
 
