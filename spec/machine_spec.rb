@@ -710,6 +710,28 @@ RSpec.describe Sourced::Machine do
       expect(expire.metadata[:entered_by]).to eq(transition.id)
     end
 
+    it 'adds a duration string to a time in the hour the clocks go back' do
+      tz = ENV['TZ']
+      ENV['TZ'] = 'Europe/London'
+      timed = machine do
+        initial { command OpenCart => :open }
+        state(:open) do
+          after('1h30m' => Expire)
+          command Expire => :expired
+        end
+        final :expired
+      end
+      # 01:30 BST, which happens again an hour later as 01:30 GMT.
+      Timecop.freeze(Time.utc(2026, 10, 25, 0, 30).getlocal) do
+        transition = moved(timed, 'machine_test.open_cart', from: 'initial', to: 'open', cart_id: 'c1')
+        expire, = timed.new(cart_id: 'c1').tap { |m| m.evolve([transition]) }.__react(transition)
+
+        expect(expire.created_at).to eq(transition.created_at + 5400)
+      end
+    ensure
+      ENV['TZ'] = tz
+    end
+
     it 'accepts a timer command while its state entry is current' do
       instance = TimerMachine.new(cart_id: 'c1')
       instance.evolve([opened])
@@ -761,6 +783,13 @@ RSpec.describe Sourced::Machine do
       expect { machine { initial { after(60 => Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /no timers/)
       expect { machine { state(:open) { after('soon' => Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
       expect { machine { state(:open) { after(soon: Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
+    end
+
+    it 'rejects delays in months or years' do
+      %w[1M P1M 1y P1Y1D].each do |delay|
+        expect { machine { state(:open) { after(delay => Expire) } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /can't wait months or years/)
+      end
     end
 
     it 'rejects timers that declare no commands' do

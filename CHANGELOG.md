@@ -261,6 +261,11 @@
 - A message's `created_at` was stored at whole-second precision in the log while the
   scheduled-message blob kept microseconds. Both now come from the encoded message, at
   microsecond precision.
+- A machine's `after` timer with a duration string (`'1h30m'`) raised `ArgumentError`
+  ("Cannot determine timezone from \"BST\"") when its state was entered in the hour the
+  clocks go back. The delay is now turned into seconds when the timer is declared and
+  added to the entering transition's time, exactly. Months and years, which aren't a
+  fixed number of seconds, raise `Machine::DefinitionError`.
 
 ### Changed
 

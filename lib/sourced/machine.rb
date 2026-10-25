@@ -319,14 +319,14 @@ module Sourced
     end
 
     # A delayed action: runs when its state is entered, and future-dates
-    # what it dispatches by +delay+ from the entering transition. +delay+ is as
-    # declared: seconds, or a duration string; +duration+ is the parsed string.
+    # what it dispatches by +seconds+ from the entering transition. +delay+ is
+    # as declared, seconds or a duration string, for rendering.
     # +commands+ are what it may dispatch; without a +block+, it dispatches
     # each of them.
-    After = Data.define(:delay, :duration, :commands, :block) do
+    After = Data.define(:delay, :seconds, :commands, :block) do
       # @param time [Time] the entering transition's +created_at+
       # @return [Time] when what the block dispatches is delivered
-      def from(time) = duration ? duration.add_to_time(time).to_local_time : time + delay
+      def from(time) = time + seconds
     end
 
     # A child machine the parent tracks: started by handlers that declare it in
@@ -518,7 +518,8 @@ module Sourced
       #   after('1h' => Remind | ExpirePayment) { |order, _transition| dispatch Remind, email: order[:email] }
       #
       # The delay is seconds, or a duration string as {Sourced::Message#at}
-      # takes it (+'30m'+, +'1h30m'+, +'P1D'+).
+      # takes it (+'30m'+, +'1h30m'+, +'P1D'+), up to weeks: months and years
+      # aren't a fixed number of seconds.
       #
       # @param declaration [Hash{Numeric, String => Class, Plumb::Or}] delay => command(s)
       # @yield [context, transition]
@@ -530,12 +531,8 @@ module Sourced
           in Hash if declaration.size == 1 then declaration.first
           else raise DefinitionError, "#{@machine}: after declares what it dispatches, ex. after('1h' => Command), got #{declaration.inspect}"
           end
-        duration = Fugit.parse_duration(delay) if String === delay
-        unless Numeric === delay || duration
-          raise DefinitionError, "#{@machine}: after needs seconds or a duration string (ex. '30m', 'PT1H'), got #{delay.inspect}"
-        end
-
-        @node.afters << After.new(delay:, duration:, commands: __timer_commands(delay, declared).uniq, block:)
+        seconds = __timer_seconds(delay)
+        @node.afters << After.new(delay:, seconds:, commands: __timer_commands(delay, declared).uniq, block:)
       end
 
       # Declare a region, active while this state is. A state with
@@ -693,6 +690,21 @@ module Sourced
         raise DefinitionError, "#{@machine}: invalid declaration #{declaration.inspect}, #{arrow.inspect}" if arrow.any?
 
         declaration
+      end
+
+      # +after+'s delay in seconds: as given, or a duration string's.
+      private def __timer_seconds(delay)
+        return delay if Numeric === delay
+
+        duration = Fugit.parse_duration(delay) if String === delay
+        unless duration
+          raise DefinitionError, "#{@machine}: after needs seconds or a duration string (ex. '30m', 'PT1H'), got #{delay.inspect}"
+        end
+        if duration.h.key?(:yea) || duration.h.key?(:mon)
+          raise DefinitionError, "#{@machine}: after(#{delay.inspect}) can't wait months or years, which vary in length; give days (ex. '30d')"
+        end
+
+        duration.to_sec
       end
 
       # +after('1h' => A | B)+: a command, or a union of them.
