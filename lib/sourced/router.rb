@@ -105,22 +105,36 @@ module Sourced
           return true
         end
 
-        execute_actions(action_pairs, claim, reactor_class)
+        execute_actions(action_pairs, claim, reactor_class) do
+          # The partition a retrying group failed on went through: the group
+          # recovers, in the ack's transaction.
+          if claim.retrying
+            store.updating_consumer_group(group_id) { |updater| updater.recover(offset_id: claim.offset_id) }
+          end
+        end
         true
 
+      # The group's retry or failure is recorded while the claim is held, so
+      # no other worker processes the partition before it's recorded.
       rescue Sourced::PartialBatchError => e
-        execute_actions(e.action_pairs, claim, reactor_class)
-        store.updating_consumer_group(group_id) do |group|
-          handle_exception(reactor_class, e, e.failed_message, group)
+        begin
+          store.updating_consumer_group(group_id, offset_id: claim.offset_id) do |group|
+            handle_exception(reactor_class, e, e.failed_message, group)
+          end
+        ensure
+          execute_actions(e.action_pairs, claim, reactor_class)
         end
         true
       rescue Sourced::ConcurrentAppendError
         store.release(group_id, offset_id: claim.offset_id)
         true
       rescue StandardError => e
-        store.release(group_id, offset_id: claim.offset_id)
-        store.updating_consumer_group(group_id) do |group|
-          handle_exception(reactor_class, e, claim.messages.first, group)
+        begin
+          store.updating_consumer_group(group_id, offset_id: claim.offset_id) do |group|
+            handle_exception(reactor_class, e, claim.messages.first, group)
+          end
+        ensure
+          store.release(group_id, offset_id: claim.offset_id)
         end
         true
       end
@@ -241,12 +255,17 @@ module Sourced
     # A reactor's own +on_exception+ handles its errors; otherwise this router's
     # error strategy does. Not a {ReactorDefaults} default: the strategy belongs
     # to the router, and reactor classes can be shared between routers.
+    # A reactor's +on_exception+ may call the group's operator methods: where
+    # the status doesn't accept one, ex. +stop+ on a group an operator
+    # stopped mid-claim, it's logged, as worker commands are.
     def handle_exception(reactor_class, exception, message, group)
       if reactor_class.respond_to?(:on_exception)
         reactor_class.on_exception(exception, message, group)
       else
         error_strategy.call(exception, message, group)
       end
+    rescue Store::InvalidConsumerGroupTransitionError => e
+      store.logger.warn "Sourced: #{e.message}, ignoring"
     end
 
     # A registered reactor's effective partition keys: its declared keys, or
@@ -326,6 +345,7 @@ module Sourced
     # Interpret the reactor's returned action signals against the store, then
     # finalize the claim: advance the offset cursor and delete any messages the
     # reactor explicitly marked for deletion via a +delete: true+ signal.
+    # A block runs in the same transaction, before the ack.
     def execute_actions(action_pairs, claim, reactor)
       group_id = reactor.group_id
       # One runner per batch: it carries the batch's append floor (see ActionRunner).
@@ -343,6 +363,7 @@ module Sourced
             flagged_deletes << source_message.position if delete_requested
           end
         end
+        yield if block_given?
 
         if last_position
           # Deletion is driven solely by :delete signals — never by the reactor's

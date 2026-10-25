@@ -30,7 +30,11 @@ module Sourced
   end
 
   # Returned by {Store#claim_next} with everything needed to process and ack a partition.
-  ClaimResult = Data.define(:offset_id, :key_pair_ids, :partition_key, :partition_value, :messages, :replaying, :guard)
+  # +retrying+ is true for the claim of the partition whose failure its retrying
+  # group is waiting on: processing it recovers the group (see {GroupUpdater#recover}).
+  ClaimResult = Data.define(:offset_id, :key_pair_ids, :partition_key, :partition_value, :messages, :replaying, :guard, :retrying) do
+    def initialize(retrying: false, **) = super
+  end
 
   # Returned by {Store#read} with messages and a consistency guard.
   # Supports array destructuring via #to_ary for backwards compatibility:
@@ -111,9 +115,13 @@ module Sourced
   # consumer group management, and partition-based offset tracking
   # for parallel background processing.
   class Store
+    # Consumer group statuses: {ConsumerGroupMachine}'s states.
     ACTIVE = 'active'
+    RETRYING = 'retrying'
     STOPPED = 'stopped'
     FAILED = 'failed'
+    # Groups {#claim_next} claims from.
+    CLAIMABLE = [ACTIVE, RETRYING].freeze
     DISCOVERY_BATCH_SIZE = 100
 
     # @return [Sequel::SQLite::Database]
@@ -212,6 +220,27 @@ module Sourced
         super("No consumer group #{group_id.inspect} in this store (#{known_list}). " \
               'Groups are registered with Store#register_consumer_group, which Sourced does for each reactor when it starts')
       end
+    end
+
+    # Raised by the consumer group lifecycle methods (stop, start, reset) for
+    # a group whose status doesn't accept the change (see {ConsumerGroupMachine}).
+    # Nothing is written.
+    class InvalidConsumerGroupTransitionError < Sourced::Error
+      attr_reader :group_id, :status, :command, :available
+
+      # @param available [Array<Class>] the operator commands the status accepts
+      def initialize(group_id, status, command, available)
+        @group_id = group_id
+        @status = status
+        @command = command
+        @available = available
+        accepts = available.empty? ? 'nothing' : available.map { |klass| command_name(klass) }.sort.join(', ')
+        super("Can't #{command_name(command)} consumer group #{group_id}: it's #{status}. It accepts: #{accepts}")
+      end
+
+      private
+
+      def command_name(klass) = klass.type.split('.').last
     end
 
     # Whether {#install!} creates the tables. True for a store built directly;
@@ -603,7 +632,8 @@ module Sourced
       @registered_groups[group_id] = { cg_id: cg[:id], partition_by: partition_by_sorted, exclusive: exclusive }
     end
 
-    # Whether the consumer group exists and is active.
+    # Whether the consumer group exists and workers claim it: it's active or
+    # retrying ({CLAIMABLE}).
     #
     # @param group_id [String, #group_id] identifier or object responding to +#group_id+
     # @return [Boolean]
@@ -612,14 +642,16 @@ module Sourced
       row = db[@consumer_groups_table].where(group_id: group_id).select(:status).first
       return false unless row
 
-      row[:status] == ACTIVE
+      CLAIMABLE.include?(row[:status])
     end
 
-    # Stop a consumer group intentionally. Stopped groups are skipped by {#claim_next}.
+    # Stop an active, retrying or failed consumer group intentionally.
+    # Stopped groups are skipped by {#claim_next}.
     #
     # @param group_id [String, #group_id] identifier or object responding to +#group_id+
     # @param message [String, nil] optional operator-supplied reason
     # @return [void]
+    # @raise [InvalidConsumerGroupTransitionError] if the group is stopped already
     def stop_consumer_group(group_id, message = nil)
       group_id = resolve_group_id(group_id)
       updating_consumer_group(group_id) do |group|
@@ -627,54 +659,51 @@ module Sourced
       end
     end
 
-    # Re-activate a stopped or failed consumer group, clearing retry state.
+    # Re-activate a stopped or failed consumer group, or a retrying one
+    # without waiting for its retry, clearing its error context.
     #
     # @param group_id [String, #group_id] identifier or object responding to +#group_id+
     # @return [void]
+    # @raise [InvalidConsumerGroupTransitionError] if the group is active
     def start_consumer_group(group_id)
       group_id = resolve_group_id(group_id)
-      consumer_group_row!(group_id)
-      db[@consumer_groups_table]
-        .where(group_id: group_id)
-        .update(
-          status: ACTIVE,
-          retry_at: nil,
-          error_context: nil,
-          # Reset the scan latch/watermark so the group rescans on resume.
-          # 0 is "dirty" for partitioned groups and "no latch" for legacy ones.
-          last_nil_types_max_pos: 0,
-          updated_at: Time.now.iso8601
-        )
-      # As with appends: announce once the change is visible, never on rollback.
-      db.after_commit { notifier.notify_reactor_resumed(group_id) }
+      updating_consumer_group(group_id) do |group|
+        group.start
+        # As with appends: announce once the change is visible, never on rollback.
+        db.after_commit { notifier.notify_reactor_resumed(group_id) }
+      end
     end
 
-    # Load a consumer group row, yield a {GroupUpdater} for mutation,
-    # then persist the accumulated updates atomically.
-    # Mirrors SequelBackend#updating_consumer_group.
+    # Load a consumer group row and yield a {GroupUpdater}, which decides its
+    # changes with {ConsumerGroupMachine}, then write them. Reading and
+    # writing share one write transaction (+BEGIN IMMEDIATE+, or the
+    # enclosing transaction), so what the updater reads can't change before
+    # it writes, ex. a worker failing a group an operator is stopping.
     #
     # @param group_id [String]
+    # @param offset_id [Integer, nil] the claim being processed, for {GroupUpdater#retry}
     # @yieldparam group [Sourced::GroupUpdater]
     # @return [void]
-    def updating_consumer_group(group_id)
-      dataset = db[@consumer_groups_table].where(group_id: group_id)
-      row = consumer_group_row!(group_id)
+    # @raise [InvalidConsumerGroupTransitionError] from the updater's operator commands
+    def updating_consumer_group(group_id, offset_id: nil)
+      db.transaction(mode: :immediate) do
+        row = consumer_group_row!(group_id)
+        row[:error_context] = JSON.parse(row[:error_context]) if row[:error_context]
 
-      ctx = row[:error_context] ? JSON.parse(row[:error_context], symbolize_names: true) : {}
-      row[:error_context] = ctx
+        group = Sourced::GroupUpdater.new(group_id, row, logger, offset_id:)
+        yield group
 
-      group = Sourced::GroupUpdater.new(group_id, row, logger)
-      yield group
-
-      updates = group.updates.dup
-      updates[:error_context] = JSON.dump(updates[:error_context])
-      dataset.update(updates)
+        updates = group.updates
+        db[@consumer_groups_table].where(id: row[:id]).update(updates) unless updates.empty?
+      end
     end
 
-    # Delete all offsets for a consumer group, resetting it to process from the beginning.
+    # Delete all offsets for a stopped or failed consumer group, resetting it to
+    # process from the beginning once it's started. It stays stopped or failed.
     #
     # @param group_id [String, #group_id] identifier or object responding to +#group_id+
     # @return [void]
+    # @raise [InvalidConsumerGroupTransitionError] if the group is active or retrying
     def reset_consumer_group(group_id)
       group_id = resolve_group_id(group_id)
       cg = consumer_group_row!(group_id)
@@ -687,12 +716,10 @@ module Sourced
         return
       end
 
-      db[@offsets_table].where(consumer_group_id: cg[:id]).delete
-      db[@consumer_groups_table].where(id: cg[:id]).update(
-        discovery_position: 0,
-        last_nil_types_max_pos: 0,
-        updated_at: Time.now.iso8601
-      )
+      updating_consumer_group(group_id) do |group|
+        group.reset
+        db[@offsets_table].where(consumer_group_id: cg[:id]).delete
+      end
     end
 
     # Claim the next available partition for processing.
@@ -720,8 +747,10 @@ module Sourced
       partition_by = Array(partition_by).sort
       now = Time.now.iso8601
       cg = db[@consumer_groups_table]
-        .where(group_id: group_id, status: ACTIVE)
-        .where { Sequel.|({retry_at: nil}, Sequel.lit('retry_at <= ?', now)) }
+        .where(group_id: group_id, status: CLAIMABLE)
+        # retry_at is UTC (see GroupUpdater#updates): ISO 8601 strings compare
+        # as times only in one offset, which local time changes at DST.
+        .where { Sequel.|({retry_at: nil}, Sequel.lit('retry_at <= ?', Time.now.utc.iso8601)) }
         .first
       return nil unless cg
 
@@ -826,8 +855,16 @@ module Sourced
         partition_value: partition_value,
         messages: messages,
         replaying: replaying,
-        guard: guard
+        guard: guard,
+        retrying: retrying_claim?(cg, claimed[:offset_id])
       )
+    end
+
+    # Whether +offset_id+ is the claim a retrying group's failure was for.
+    def retrying_claim?(cg, offset_id)
+      return false unless cg[:status] == RETRYING && cg[:error_context]
+
+      ConsumerGroupMachine.decode_context(JSON.parse(cg[:error_context]))[:offset_id] == offset_id
     end
 
     # Acknowledge processing: advance the offset to +position+ and release the claim.
@@ -1068,7 +1105,7 @@ module Sourced
     #   #     label: "MyDecider",
     #   #     status: "active",
     #   #     retry_at: nil,
-    #   #     error_context: {},
+    #   #     error_context: { retry_count: 0 },
     #   #     oldest_processed: 10,
     #   #     newest_processed: 42,
     #   #     partition_count: 3
@@ -1078,7 +1115,7 @@ module Sourced
     #   #     label: "FailingDecider",
     #   #     status: "failed",
     #   #     retry_at: nil,
-    #   #     error_context: { exception_class: "RuntimeError", exception_message: "boom" },
+    #   #     error_context: { retry_count: 0, exception_class: "RuntimeError", exception_message: "boom", exception_backtrace: [...] },
     #   #     oldest_processed: 5,
     #   #     newest_processed: 30,
     #   #     partition_count: 2
@@ -1105,7 +1142,7 @@ module Sourced
 
       groups.each do |g|
         g[:retry_at] = Time.parse(g[:retry_at]) if g[:retry_at]
-        g[:error_context] = g[:error_context] ? JSON.parse(g[:error_context], symbolize_names: true) : {}
+        g[:error_context] = ConsumerGroupMachine.decode_context(g[:error_context] ? JSON.parse(g[:error_context]) : {})
       end
 
       Stats.new(max_position: latest_position, groups: groups)

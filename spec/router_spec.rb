@@ -641,7 +641,7 @@ RSpec.describe Sourced::Router do
       expect(row[:status]).to eq('failed')
     end
 
-    it 'on_exception with retry strategy sets retry_at on consumer group' do
+    it 'on_exception with retry strategy moves the consumer group to retrying, recording the failed claim' do
       store.append(
         RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       )
@@ -659,10 +659,128 @@ RSpec.describe Sourced::Router do
 
       row = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).first
       expect(row[:retry_at]).not_to be_nil
-      expect(row[:status]).to eq('active')
+      expect(row[:status]).to eq('retrying')
 
       ctx = JSON.parse(row[:error_context], symbolize_names: true)
-      expect(ctx[:retry_count]).to eq(2)
+      expect(ctx[:retry_count]).to eq(1)
+      expect(ctx[:offset_id]).to eq(db[:sourced_offsets].get(:id))
+      expect(ctx[:exception_message]).to eq('boom')
+    end
+
+    context 'with a retrying group' do
+      # Built before handle_claim is stubbed: the router reads its signature.
+      let!(:retrying_router) do
+        strategy = Sourced::ErrorStrategy.new
+        strategy.retry(times: 3, after: 0)
+        Sourced::Router.new(store:, reactors: [RouterTestDecider], error_strategy: strategy).setup!
+      end
+
+      def status = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).get(:status)
+      def context = JSON.parse(db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).get(:error_context))
+
+      before do
+        store.append(RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' }))
+        store.append(RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' }))
+      end
+
+      # handle_claim raises with each of +failures+, in turn, then handles claims.
+      def failing(*failures)
+        allow(RouterTestDecider).to receive(:handle_claim).and_wrap_original do |original, claim, **kwargs|
+          failure = failures.shift
+          raise failure if failure
+
+          original.call(claim, **kwargs)
+        end
+      end
+
+      it 'recovers once the partition it failed on is processed, counting retries again' do
+        failing(RuntimeError.new('boom'))
+
+        retrying_router.handle_next_for(RouterTestDecider)
+        expect(status).to eq('retrying')
+
+        retrying_router.handle_next_for(RouterTestDecider)
+        expect(status).to eq('active')
+        expect(context).to eq('retry_count' => 0)
+      end
+
+      it 'is active while retrying, as workers claim it' do
+        failing(RuntimeError.new('boom'))
+
+        retrying_router.handle_next_for(RouterTestDecider)
+        expect(status).to eq('retrying')
+        expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be(true)
+      end
+
+      it 'records the retry before releasing the failed claim' do
+        failing(RuntimeError.new('boom'))
+        status_at_release = nil
+        allow(store).to receive(:release).and_wrap_original do |original, *args, **kwargs|
+          status_at_release = status
+          original.call(*args, **kwargs)
+        end
+
+        retrying_router.handle_next_for(RouterTestDecider)
+        expect(status_at_release).to eq('retrying')
+      end
+
+      it "records a partial batch's retry before acking what it processed" do
+        failing(Sourced::PartialBatchError.new([], nil, RuntimeError.new('partial')))
+        status_at_ack = nil
+        allow(retrying_router).to receive(:execute_actions).and_wrap_original do |original, *args, &block|
+          status_at_ack = status
+          original.call(*args, &block)
+        end
+
+        retrying_router.handle_next_for(RouterTestDecider)
+        expect(status_at_ack).to eq('retrying')
+      end
+
+      it "recovers in the ack's transaction" do
+        failing(RuntimeError.new('boom'))
+        retrying_router.handle_next_for(RouterTestDecider)
+
+        # Recording the recovery fails once: the ack rolls back with it.
+        recover_failed = false
+        allow(store).to receive(:updating_consumer_group).and_wrap_original do |original, group_id, **kwargs, &block|
+          unless kwargs[:offset_id] || recover_failed
+            recover_failed = true
+            raise 'recover failed'
+          end
+          original.call(group_id, **kwargs, &block)
+        end
+        retrying_router.handle_next_for(RouterTestDecider)
+
+        expect(db[:sourced_offsets].get(:last_position)).to eq(0)
+        expect(context).to include('retry_count' => 2, 'exception_message' => 'recover failed')
+      end
+
+      it "ignores an on_exception stop for a group an operator stopped mid-claim" do
+        allow(RouterTestDecider).to receive(:handle_claim) do
+          store.stop_consumer_group(RouterTestDecider.group_id)
+          raise 'boom'
+        end
+        allow(RouterTestDecider).to receive(:on_exception) { |_e, _msg, group| group.stop(message: 'boom') }
+
+        expect(retrying_router.handle_next_for(RouterTestDecider)).to be(true)
+        expect(status).to eq('stopped')
+      end
+
+      it 'keeps retrying while the partition it failed on fails again' do
+        failing(RuntimeError.new('boom'), RuntimeError.new('again'))
+
+        2.times { retrying_router.handle_next_for(RouterTestDecider) }
+        expect(status).to eq('retrying')
+        expect(context).to include('retry_count' => 2, 'exception_message' => 'again')
+      end
+
+      it "doesn't recover on a partially processed batch" do
+        failing(RuntimeError.new('boom'), Sourced::PartialBatchError.new([], nil, RuntimeError.new('partial')))
+
+        2.times { retrying_router.handle_next_for(RouterTestDecider) }
+        expect(status).to eq('retrying')
+        expect(context).to include('retry_count' => 2, 'exception_message' => 'partial')
+      end
     end
   end
 
@@ -788,6 +906,7 @@ RSpec.describe Sourced::Router do
         )
         router.drain
 
+        router.stop_consumer_group(RouterTestDecider)
         router.reset_consumer_group(RouterTestDecider)
 
         # Offsets should be cleared (group can re-process messages)
@@ -801,6 +920,7 @@ RSpec.describe Sourced::Router do
         )
         router.drain
 
+        router.stop_consumer_group('router_test_decider')
         router.reset_consumer_group('router_test_decider')
 
         row = db[:sourced_consumer_groups].where(group_id: 'router_test_decider').first
@@ -810,9 +930,18 @@ RSpec.describe Sourced::Router do
       it 'invokes on_reset callback on reactor class' do
         allow(RouterTestDecider).to receive(:on_reset)
 
+        router.stop_consumer_group(RouterTestDecider)
         router.reset_consumer_group(RouterTestDecider)
 
         expect(RouterTestDecider).to have_received(:on_reset)
+      end
+
+      it "raises for an active group, without calling on_reset" do
+        allow(RouterTestDecider).to receive(:on_reset)
+
+        expect { router.reset_consumer_group(RouterTestDecider) }
+          .to raise_error(Sourced::Store::InvalidConsumerGroupTransitionError, /it's active/)
+        expect(RouterTestDecider).not_to have_received(:on_reset)
       end
     end
 
@@ -837,6 +966,7 @@ RSpec.describe Sourced::Router do
       it 'invokes on_start callback on reactor class' do
         allow(RouterTestDecider).to receive(:on_start)
 
+        router.stop_consumer_group(RouterTestDecider)
         router.start_consumer_group(RouterTestDecider)
 
         expect(RouterTestDecider).to have_received(:on_start)

@@ -1,43 +1,137 @@
 # frozen_string_literal: true
 
 module Sourced
-  # Accumulates mutations to a consumer group row for atomic persistence.
-  # Accumulates consumer group mutations for atomic persistence.
-  # Used by {Store#updating_consumer_group}.
+  # {ConsumerGroupMachine} defines the state machine that drives
+  # the lifecycle of a consumer group (stopping, resuming, retrying, failing)
+  # current status and context are stored by the Store.
+  # Commands raise {Store::InvalidConsumerGroupTransitionError} where the status doesn't
+  # accept them. Worker commands ({#retry}, {#fail}, {#recover}) come from
+  # error handling and acks, and are ignored there. Used by {Store#updating_consumer_group}.
   class GroupUpdater
-    attr_reader :group_id, :updates, :error_context
+    attr_reader :group_id
 
-    def initialize(group_id, row, logger)
+    # @param group_id [String]
+    # @param row [Hash] the group's row, its +error_context+ JSON-native (parsed) or nil
+    # @param logger [Logger]
+    # @param offset_id [Integer, nil] the claim being processed, which {#retry} records
+    def initialize(group_id, row, logger, offset_id: nil)
       @group_id = group_id
       @logger = logger
-      @error_context = row[:error_context]
-      @updates = { error_context: @error_context.dup }
+      @offset_id = offset_id
+      context = ConsumerGroupMachine.decode_context(row[:error_context] || {})
+      @machine = ConsumerGroupMachine.at([row[:status]], context, group_id:)
+      @columns = nil
     end
 
+    # @return [String] the group's status: its machine's path
+    def status = @machine.machine.paths.first
+
+    # @return [Hash] the group's {ConsumerGroupMachine::Context}
+    def error_context = @machine.context
+
+    # The columns to write: the machine's status and encoded context, or none
+    # when it didn't move. +retry_at+ is UTC, which {Store#claim_next}
+    # compares as a string.
+    # @return [Hash]
+    def updates
+      return {} unless @columns
+
+      @columns.merge(
+        status:,
+        error_context: JSON.dump(ConsumerGroupMachine.encode_context(error_context)),
+        retry_at: error_context[:retry_at]&.getutc&.iso8601,
+        updated_at: Time.now.iso8601
+      )
+    end
+
+    # @param message [String, nil] the operator's reason
     def stop(message: nil)
+      move!(ConsumerGroupMachine::Stop, message:)
       @logger.error "Sourced: stopping consumer group #{group_id}"
-      @updates[:status] = Store::STOPPED
-      @updates[:retry_at] = nil
-      @updates[:updated_at] = Time.now.iso8601
-      @updates[:error_context][:message] = message if message
     end
 
-    def fail(exception: nil)
-      @logger.error "Sourced: failing consumer group #{group_id}. #{exception&.class}: #{exception&.message}"
-      @updates[:status] = Store::FAILED
-      @updates[:retry_at] = nil
-      @updates[:updated_at] = Time.now.iso8601
-      if exception
-        @updates[:error_context][:exception_class] = exception.class.to_s
-        @updates[:error_context][:exception_message] = exception.message
+    # Resume a stopped or failed group, or a retrying one without waiting.
+    def start
+      move!(ConsumerGroupMachine::Start)
+      # Reset the scan latch/watermark so the group rescans on resume.
+      # 0 is "dirty" for partitioned groups and "no latch" for legacy ones.
+      @columns[:last_nil_types_max_pos] = 0
+    end
+
+    # Reset a stopped or failed group's discovery; the store deletes its offsets.
+    def reset
+      move!(ConsumerGroupMachine::Reset)
+      @columns.merge!(discovery_position: 0, last_nil_types_max_pos: 0)
+    end
+
+    # Try the group again at +time+, recording +exception+ and the claim that failed.
+    # @param time [Time]
+    # @param exception [Exception, nil]
+    # @return [Boolean] whether the group's status accepted it
+    def retry(time, exception: nil)
+      move(ConsumerGroupMachine::Retry, retry_at: time, offset_id: @offset_id, **failure(exception)).tap do |moved|
+        @logger.warn "Sourced: retrying consumer group #{group_id} at #{time}" if moved
       end
     end
 
-    def retry(time, **ctx)
-      @logger.warn "Sourced: retrying consumer group #{group_id} at #{time}"
-      @updates[:updated_at] = Time.now.iso8601
-      @updates[:retry_at] = time.iso8601
-      @updates[:error_context].merge!(ctx)
+    # @param exception [Exception, nil] recorded with its backtrace
+    # @return [Boolean] whether the group's status accepted it
+    def fail(exception: nil)
+      move(ConsumerGroupMachine::Fail, **failure(exception), exception_backtrace: exception&.backtrace).tap do |moved|
+        @logger.error "Sourced: failing consumer group #{group_id}. #{exception&.class}: #{exception&.message}" if moved
+      end
+    end
+
+    # The claim at +offset_id+ was processed: a retrying group recovers when
+    # its retry was for that claim, and starts counting retries again.
+    # @param offset_id [Integer]
+    def recover(offset_id:)
+      return unless error_context[:offset_id] == offset_id
+
+      @logger.info "Sourced: consumer group #{group_id} recovered"
+      move(ConsumerGroupMachine::Recover)
+    end
+
+    private
+
+    def failure(exception)
+      exception ? { exception_class: exception.class.to_s, exception_message: exception.message } : {}
+    end
+
+    # An operator command: raise where the status doesn't accept it.
+    def move!(command_class, **payload)
+      command = command_for(command_class, payload)
+      unless @machine.handles_command?(command)
+        available = @machine.available_commands.to_a & ConsumerGroupMachine::OPERATOR_COMMANDS
+        raise Store::InvalidConsumerGroupTransitionError.new(group_id, status, command_class, available)
+      end
+
+      decide(command)
+    end
+
+    # A worker command: ignored where the status doesn't accept it.
+    # @return [Boolean] whether it moved the machine
+    def move(command_class, **payload)
+      command = command_for(command_class, payload)
+      unless @machine.handles_command?(command)
+        @logger.warn "Sourced: consumer group #{group_id} is #{status}, ignoring #{command_class.type}"
+        return false
+      end
+
+      decide(command)
+      true
+    end
+
+    def command_for(command_class, payload)
+      command = command_class.new(payload: { group_id:, **payload })
+      raise ArgumentError, "invalid #{command_class}: #{command.errors.inspect}" unless command.valid?
+
+      command
+    end
+
+    def decide(command)
+      @machine.decide(command)
+      @columns ||= {}
     end
   end
 

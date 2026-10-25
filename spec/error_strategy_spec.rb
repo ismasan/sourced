@@ -8,8 +8,8 @@ RSpec.describe Sourced::ErrorStrategy do
   let(:group) do
     instance_double('Group').tap do |g|
       allow(g).to receive(:error_context).and_return({})
-      allow(g).to receive(:retry)
-      allow(g).to receive(:fail)
+      allow(g).to receive(:retry).and_return(true)
+      allow(g).to receive(:fail).and_return(true)
     end
   end
 
@@ -53,7 +53,7 @@ RSpec.describe Sourced::ErrorStrategy do
       strategy = described_class.new
       strategy.retry(times: 1)
       strategy.on_retry { |**kwargs| captured = kwargs }
-      allow(group).to receive(:error_context).and_return(retry_count: 1)
+      allow(group).to receive(:error_context).and_return(retry_count: 0)
 
       Timecop.freeze(Time.utc(2026, 1, 1)) do
         strategy.call(exception, message, group)
@@ -82,7 +82,7 @@ RSpec.describe Sourced::ErrorStrategy do
       strategy.retry(times: 2)
       strategy.on_retry { |retry_count:, **| calls << [:a, retry_count] }
       strategy.on_retry { |retry_count:, **| calls << [:b, retry_count] }
-      allow(group).to receive(:error_context).and_return(retry_count: 1)
+      allow(group).to receive(:error_context).and_return(retry_count: 0)
 
       strategy.call(exception, message, group)
       expect(calls).to eq([[:a, 1], [:b, 1]])
@@ -137,7 +137,7 @@ RSpec.describe Sourced::ErrorStrategy do
       strategy = described_class.new
       strategy.retry(times: 1)
       strategy.on_retry(reporter)
-      allow(group).to receive(:error_context).and_return(retry_count: 1)
+      allow(group).to receive(:error_context).and_return(retry_count: 0)
 
       Timecop.freeze(Time.utc(2026, 1, 1)) do
         strategy.call(exception, message, group)
@@ -175,7 +175,7 @@ RSpec.describe Sourced::ErrorStrategy do
   end
 
   describe '#call with retries configured' do
-    it 'schedules a retry using the backoff, increments retry_count, and fires on_retry' do
+    it 'schedules the next retry using the backoff, and fires on_retry with its number' do
       backoff = ->(retry_after, retry_count) { retry_after * (2**(retry_count - 1)) }
       captured = nil
 
@@ -183,7 +183,7 @@ RSpec.describe Sourced::ErrorStrategy do
       strategy.retry(times: 3, after: 5, backoff: backoff)
       strategy.on_retry { |**kwargs| captured = kwargs }
 
-      allow(group).to receive(:error_context).and_return(retry_count: 2)
+      allow(group).to receive(:error_context).and_return(retry_count: 1)
 
       Timecop.freeze(Time.utc(2026, 1, 1)) do
         strategy.call(exception, message, group)
@@ -195,7 +195,7 @@ RSpec.describe Sourced::ErrorStrategy do
           message: message,
           retry_at: expected_at
         )
-        expect(group).to have_received(:retry).with(expected_at, retry_count: 3)
+        expect(group).to have_received(:retry).with(expected_at, exception:)
         expect(group).not_to have_received(:fail)
       end
     end
@@ -206,7 +206,7 @@ RSpec.describe Sourced::ErrorStrategy do
       strategy.retry(times: 2)
       strategy.on_fail { |**kwargs| captured = kwargs }
 
-      allow(group).to receive(:error_context).and_return(retry_count: 3)
+      allow(group).to receive(:error_context).and_return(retry_count: 2)
 
       strategy.call(exception, message, group)
 
@@ -215,7 +215,7 @@ RSpec.describe Sourced::ErrorStrategy do
       expect(group).not_to have_received(:retry)
     end
 
-    it 'treats a missing error_context retry_count as 1' do
+    it 'counts a missing error_context retry_count as no retries yet' do
       captured = nil
       strategy = described_class.new
       strategy.retry(times: 1)
@@ -224,7 +224,26 @@ RSpec.describe Sourced::ErrorStrategy do
 
       strategy.call(exception, message, group)
       expect(captured[:retry_count]).to eq(1)
-      expect(group).to have_received(:retry).with(anything, retry_count: 2)
+      expect(group).to have_received(:retry).with(anything, exception:)
+    end
+
+    it "doesn't fire on_retry or on_fail when the group's status ignores the command" do
+      calls = []
+      strategy = described_class.new
+      strategy.retry(times: 1)
+      strategy.on_retry { calls << :retry }
+      strategy.on_fail { calls << :fail }
+      allow(group).to receive(:retry).and_return(false)
+      allow(group).to receive(:fail).and_return(false)
+
+      allow(group).to receive(:error_context).and_return(retry_count: 0)
+      strategy.call(exception, message, group)
+      allow(group).to receive(:error_context).and_return(retry_count: 1)
+      strategy.call(exception, message, group)
+
+      expect(group).to have_received(:retry)
+      expect(group).to have_received(:fail)
+      expect(calls).to be_empty
     end
   end
 end
