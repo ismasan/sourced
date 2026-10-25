@@ -7,7 +7,7 @@ require 'sourced/testing/rspec'
 require 'sequel'
 
 module DurableTests
-  FilledStringArray = Sourced::Types::Array[String].with(size: 1..)
+  FilledStringArray = Sourced::Types::Array[String].where(size: 1..)
 
   class IPResolver
     def self.resolve = '11.111.111'
