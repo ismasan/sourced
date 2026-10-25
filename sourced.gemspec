@@ -33,7 +33,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'plumb', '0.4.0'
   spec.add_dependency 'sequel'
   spec.add_dependency 'sqlite3'
-  spec.add_dependency 'sourced-message', '>= 0.5.1'
+  spec.add_dependency 'sourced-message', '>= 0.5.2'
   spec.add_dependency 'sourced-component', '~> 0.1', '>= 0.1.1'
 
   # For more information and examples about making a new gem, check out our

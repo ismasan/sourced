@@ -265,7 +265,8 @@
   ("Cannot determine timezone from \"BST\"") when its state was entered in the hour the
   clocks go back. The delay is now turned into seconds when the timer is declared and
   added to the entering transition's time, exactly. Months and years, which aren't a
-  fixed number of seconds, raise `Machine::DefinitionError`.
+  fixed number of seconds, raise `Machine::DefinitionError`. `Message#at` had the same
+  bug, fixed in sourced-message 0.5.2, which Sourced now requires.
 
 ### Changed
 
