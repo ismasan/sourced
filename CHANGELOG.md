@@ -2,6 +2,12 @@
 
 ### Added
 
+- **Pattern matching on machines.** Machine instances, `Machine::Configuration`s and views
+  match states in `case` / `in` and `case` / `when`: a state, or a part, matches where it's
+  active (`State.===`, `Part.===`, as `in?`), and Hash patterns name regions at their
+  current states (`#deconstruct_keys`, the root region `:root`):
+  `in { payment: OrderMachine::Paid | :initial }`. A region name more than one active
+  region has (through parts, ex. one mounted twice) raises `Machine::AmbiguousRegionError`.
 - `Machine.at(paths, context = <context block's>, **partition_values)` returns a machine
   instance at the states at `paths`, on the given context, without loading its history:
   decide commands against a configuration stored as paths (`handles_command?`, `decide`),

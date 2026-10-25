@@ -865,6 +865,19 @@ command_buttons(OrderMachine.configuration(record[:machine])) # stored paths
 
 It has no domain context, history or children, so it tells what the active states accept, not whether a command would succeed. Stored paths depend on state and region names, as stored state events do: paths that don't resolve raise `UnresolvablePathError`; an initial position, a state in an inactive region, or two states in one region raise `ArgumentError`.
 
+Instances, configurations and views match states in `case` / `in` (and `case` / `when`), ex. to render a UI by state. A state (or part) matches where it's active, as `in?`, ancestors included, so the first matching branch wins and more specific states go first. A Hash pattern names regions: each active region by name (the root region is `:root`), at its current state or `:initial`.
+
+```ruby
+case order # an instance, or OrderMachine.configuration(record[:machine])
+in { payment: OrderMachine::Paid, shipping: OrderMachine::Shipped } then render_complete
+in { payment: OrderMachine::Paying | :initial } then render_payment_form
+in OrderMachine::Cancelled then render_cancelled
+in OrderMachine::Placed then render_placed
+end
+```
+
+A region that isn't active doesn't match. Region names are unique within a machine, but a part's own regions are named in the part, so two active regions can share a name, ex. a part mounted twice: a pattern naming it raises `Sourced::Machine::AmbiguousRegionError` (match by path, with `in?(path)`). State classes still match their events as classes do (`OrderMachine::Placed === event`).
+
 `OrderMachine.at(paths, context, **partition_values)` is an instance at the given paths, on the given context, to decide commands against a configuration stored as paths without loading the machine's history. Handlers run as they do on any instance: keep the paths it moves to and its context, and the events it returns if you want them.
 
 ```ruby

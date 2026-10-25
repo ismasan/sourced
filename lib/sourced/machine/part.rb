@@ -57,6 +57,9 @@ module Sourced
       # @see State.history
       def self.history(deep: false) = to_state_handle.history(deep:)
 
+      # Pattern matching, as its compound state's: @see State.===
+      def self.===(other) = to_state_handle === other
+
       # Declare the machine this is a part of, before anything else. A part
       # given binds this part to its owner, and nests this part's prefix in its.
       #

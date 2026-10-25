@@ -125,6 +125,10 @@ module Sourced
     # ex. after a state or region was renamed or removed.
     UnresolvablePathError = Class.new(Error)
 
+    # Raised when a pattern names a region more than one active region is
+    # named, ex. two placements of a part.
+    AmbiguousRegionError = Class.new(Error)
+
     INITIAL = :initial
 
     # Metadata keys on messages dispatched by an +after+ block: the id of the
@@ -179,6 +183,21 @@ module Sourced
       # configuration below it), or its default entry where it has none.
       # @return [History]
       def self.history(deep: false) = History.new(state:, deep:)
+
+      # Pattern matching on a machine (an instance, {Configuration} or
+      # {View}): it matches when the state is active, as {Configuration#in?}.
+      # It matches itself too, a region's value in
+      # {Configuration#deconstruct_keys}, and its events as any class does.
+      #
+      #   case machine
+      #   in { payment: OrderMachine::Paying } then …
+      #   in OrderMachine::Placed then …
+      #   end
+      def self.===(other)
+        return other.to_machine_config.in?(self) if other.respond_to?(:to_machine_config)
+
+        equal?(other) || super
+      end
 
       def self.to_s = name || (state ? "#{machine}:#{state_name}" : super)
       def self.inspect = to_s
@@ -822,6 +841,30 @@ module Sourced
       def current(region_name = nil)
         region = region_name ? @runtime.active_regions.find { |r| r.name == region_name } : @runtime.root
         region && @runtime.current_node(region).key
+      end
+
+      # Hash patterns on region names: each active region named in +keys+
+      # (all of them for +nil+), at its {#current} state. The root region is
+      # +:root+.
+      #
+      #   case machine
+      #   in { payment: OrderMachine::Paid, shipping: OrderMachine::Packed | :initial } then …
+      #   end
+      #
+      # @param keys [Array<Symbol>, nil]
+      # @return [Hash{Symbol => Class<State>, Symbol}]
+      # @raise [AmbiguousRegionError] for a name more than one active region has
+      def deconstruct_keys(keys)
+        regions = @runtime.active_regions
+        regions = regions.select { |region| keys.include?(region.name) } if keys
+        regions.group_by(&:name).to_h do |name, named|
+          if named.size > 1
+            raise AmbiguousRegionError, "#{@machine}: #{named.size} active regions are named #{name.inspect} " \
+                                        "(#{named.map(&:path).join(', ')}); match their states with in?(path)"
+          end
+
+          [name, @runtime.current_node(named.first).key]
+        end
       end
     end
 
@@ -1666,6 +1709,9 @@ module Sourced
     # Its configuration, read live (see {Configuration#to_machine_config}).
     # @return [View]
     def to_machine_config = machine
+
+    # Hash patterns on region names (see {Configuration#deconstruct_keys}).
+    def deconstruct_keys(keys) = machine.deconstruct_keys(keys)
 
     # Every command class the machine accepts, in any state (see {Configuration#handled_commands}).
     #
