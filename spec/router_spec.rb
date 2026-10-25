@@ -666,6 +666,60 @@ RSpec.describe Sourced::Router do
       expect(ctx[:offset_id]).to eq(db[:sourced_offsets].get(:id))
       expect(ctx[:exception_message]).to eq('boom')
     end
+
+    context 'with a retrying group' do
+      # Built before handle_claim is stubbed: the router reads its signature.
+      let!(:retrying_router) do
+        strategy = Sourced::ErrorStrategy.new
+        strategy.retry(times: 3, after: 0)
+        Sourced::Router.new(store:, reactors: [RouterTestDecider], error_strategy: strategy).setup!
+      end
+
+      def status = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).get(:status)
+      def context = JSON.parse(db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).get(:error_context))
+
+      before do
+        store.append(RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' }))
+        store.append(RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' }))
+      end
+
+      # handle_claim raises with each of +failures+, in turn, then handles claims.
+      def failing(*failures)
+        allow(RouterTestDecider).to receive(:handle_claim).and_wrap_original do |original, claim, **kwargs|
+          failure = failures.shift
+          raise failure if failure
+
+          original.call(claim, **kwargs)
+        end
+      end
+
+      it 'recovers once the partition it failed on is processed, counting retries again' do
+        failing(RuntimeError.new('boom'))
+
+        retrying_router.handle_next_for(RouterTestDecider)
+        expect(status).to eq('retrying')
+
+        retrying_router.handle_next_for(RouterTestDecider)
+        expect(status).to eq('active')
+        expect(context).to eq('retry_count' => 0)
+      end
+
+      it 'keeps retrying while the partition it failed on fails again' do
+        failing(RuntimeError.new('boom'), RuntimeError.new('again'))
+
+        2.times { retrying_router.handle_next_for(RouterTestDecider) }
+        expect(status).to eq('retrying')
+        expect(context).to include('retry_count' => 2, 'exception_message' => 'again')
+      end
+
+      it "doesn't recover on a partially processed batch" do
+        failing(RuntimeError.new('boom'), Sourced::PartialBatchError.new([], nil, RuntimeError.new('partial')))
+
+        2.times { retrying_router.handle_next_for(RouterTestDecider) }
+        expect(status).to eq('retrying')
+        expect(context).to include('retry_count' => 2, 'exception_message' => 'partial')
+      end
+    end
   end
 
   describe '#drain' do

@@ -106,6 +106,10 @@ module Sourced
         end
 
         execute_actions(action_pairs, claim, reactor_class)
+        # The partition a retrying group failed on went through: the group recovers.
+        if claim.retrying
+          store.updating_consumer_group(group_id) { |updater| updater.recover(offset_id: claim.offset_id) }
+        end
         true
 
       rescue Sourced::PartialBatchError => e

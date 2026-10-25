@@ -30,7 +30,11 @@ module Sourced
   end
 
   # Returned by {Store#claim_next} with everything needed to process and ack a partition.
-  ClaimResult = Data.define(:offset_id, :key_pair_ids, :partition_key, :partition_value, :messages, :replaying, :guard)
+  # +retrying+ is true for the claim of the partition whose failure its retrying
+  # group is waiting on: processing it recovers the group (see {GroupUpdater#recover}).
+  ClaimResult = Data.define(:offset_id, :key_pair_ids, :partition_key, :partition_value, :messages, :replaying, :guard, :retrying) do
+    def initialize(retrying: false, **) = super
+  end
 
   # Returned by {Store#read} with messages and a consistency guard.
   # Supports array destructuring via #to_ary for backwards compatibility:
@@ -848,8 +852,16 @@ module Sourced
         partition_value: partition_value,
         messages: messages,
         replaying: replaying,
-        guard: guard
+        guard: guard,
+        retrying: retrying_claim?(cg, claimed[:offset_id])
       )
+    end
+
+    # Whether +offset_id+ is the claim a retrying group's failure was for.
+    def retrying_claim?(cg, offset_id)
+      return false unless cg[:status] == RETRYING && cg[:error_context]
+
+      JSON.parse(cg[:error_context])['offset_id'] == offset_id
     end
 
     # Acknowledge processing: advance the offset to +position+ and release the claim.

@@ -1348,6 +1348,19 @@ RSpec.describe Sourced::Store do
       expect(db[:sourced_consumer_groups].where(group_id: 'my_group').first).to eq(before)
     end
 
+    it 'recovers a retrying group when the claim its retry was for is processed' do
+      store.updating_consumer_group('my_group', offset_id: 7) { |group| group.retry(Time.now - 1) }
+
+      store.updating_consumer_group('my_group') { |group| group.recover(offset_id: 8) }
+      expect(db[:sourced_consumer_groups].where(group_id: 'my_group').get(:status)).to eq('retrying')
+
+      store.updating_consumer_group('my_group') { |group| group.recover(offset_id: 7) }
+      row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
+      expect(row[:status]).to eq('active')
+      expect(row[:retry_at]).to be_nil
+      expect(JSON.parse(row[:error_context])).to eq('retry_count' => 0)
+    end
+
     it 'writes nothing when the block raises' do
       before = db[:sourced_consumer_groups].where(group_id: 'my_group').first
       expect {
@@ -1607,6 +1620,24 @@ RSpec.describe Sourced::Store do
       result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       expect(result).not_to be_nil
       expect(db[:sourced_consumer_groups].where(group_id:).get(:status)).to eq('retrying')
+    end
+
+    it "flags the claim of the partition a retrying group failed on as retrying, and no other" do
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }))
+
+      failed = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(failed.retrying).to be(false)
+      store.release(group_id, offset_id: failed.offset_id)
+      store.updating_consumer_group(group_id, offset_id: failed.offset_id) { |group| group.retry(Time.now - 1) }
+
+      again = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      expect(again.offset_id).to eq(failed.offset_id)
+      expect(again.retrying).to be(true)
+
+      other = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-2')
+      expect(other.partition_value).to eq('device_id' => 'dev-2')
+      expect(other.retrying).to be(false)
     end
 
     it 'prioritizes partition with earliest pending message' do

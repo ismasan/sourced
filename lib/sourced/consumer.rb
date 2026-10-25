@@ -5,8 +5,8 @@ module Sourced
   # placed at the row's status and context, each method moves the machine
   # with a command. Operator commands ({#stop}, {#start}, {#reset}) raise
   # {Store::InvalidConsumerGroupTransitionError} where the status doesn't
-  # accept them. Worker commands ({#retry}, {#fail}) come from error
-  # handling, and are ignored there. Used by {Store#updating_consumer_group}.
+  # accept them. Worker commands ({#retry}, {#fail}, {#recover}) come from
+  # error handling and acks, and are ignored there. Used by {Store#updating_consumer_group}.
   class GroupUpdater
     attr_reader :group_id
 
@@ -75,6 +75,16 @@ module Sourced
     def fail(exception: nil)
       @logger.error "Sourced: failing consumer group #{group_id}. #{exception&.class}: #{exception&.message}"
       move(ConsumerGroupMachine::Fail, **failure(exception), exception_backtrace: exception&.backtrace)
+    end
+
+    # The claim at +offset_id+ was processed: a retrying group recovers when
+    # its retry was for that claim, and starts counting retries again.
+    # @param offset_id [Integer]
+    def recover(offset_id:)
+      return unless error_context[:offset_id] == offset_id
+
+      @logger.info "Sourced: consumer group #{group_id} recovered"
+      move(ConsumerGroupMachine::Recover)
     end
 
     private
