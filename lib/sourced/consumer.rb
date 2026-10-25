@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
 module Sourced
-  # A consumer group row's changes, as {ConsumerGroupMachine} decides them:
-  # placed at the row's status and context, each method moves the machine
-  # with a command. Operator commands ({#stop}, {#start}, {#reset}) raise
-  # {Store::InvalidConsumerGroupTransitionError} where the status doesn't
+  # {ConsumerGroupMachine} defines the state machine that drives
+  # the lifecycle of a consumer group (stopping, resuming, retrying, failing)
+  # current status and context are stored by the Store.
+  # Commands raise {Store::InvalidConsumerGroupTransitionError} where the status doesn't
   # accept them. Worker commands ({#retry}, {#fail}, {#recover}) come from
   # error handling and acks, and are ignored there. Used by {Store#updating_consumer_group}.
   class GroupUpdater
@@ -29,8 +29,8 @@ module Sourced
     # @return [Hash] the group's {ConsumerGroupMachine::Context}
     def error_context = @machine.context
 
-    # The columns to write, with the row's new status and context: none when
-    # the machine didn't move. +retry_at+ is UTC, which {Store#claim_next}
+    # The columns to write: the machine's status and encoded context, or none
+    # when it didn't move. +retry_at+ is UTC, which {Store#claim_next}
     # compares as a string.
     # @return [Hash]
     def updates
