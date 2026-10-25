@@ -704,6 +704,68 @@ RSpec.describe Sourced::Router do
         expect(context).to eq('retry_count' => 0)
       end
 
+      it 'is active while retrying, as workers claim it' do
+        failing(RuntimeError.new('boom'))
+
+        retrying_router.handle_next_for(RouterTestDecider)
+        expect(status).to eq('retrying')
+        expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be(true)
+      end
+
+      it 'records the retry before releasing the failed claim' do
+        failing(RuntimeError.new('boom'))
+        status_at_release = nil
+        allow(store).to receive(:release).and_wrap_original do |original, *args, **kwargs|
+          status_at_release = status
+          original.call(*args, **kwargs)
+        end
+
+        retrying_router.handle_next_for(RouterTestDecider)
+        expect(status_at_release).to eq('retrying')
+      end
+
+      it "records a partial batch's retry before acking what it processed" do
+        failing(Sourced::PartialBatchError.new([], nil, RuntimeError.new('partial')))
+        status_at_ack = nil
+        allow(retrying_router).to receive(:execute_actions).and_wrap_original do |original, *args, &block|
+          status_at_ack = status
+          original.call(*args, &block)
+        end
+
+        retrying_router.handle_next_for(RouterTestDecider)
+        expect(status_at_ack).to eq('retrying')
+      end
+
+      it "recovers in the ack's transaction" do
+        failing(RuntimeError.new('boom'))
+        retrying_router.handle_next_for(RouterTestDecider)
+
+        # Recording the recovery fails once: the ack rolls back with it.
+        recover_failed = false
+        allow(store).to receive(:updating_consumer_group).and_wrap_original do |original, group_id, **kwargs, &block|
+          unless kwargs[:offset_id] || recover_failed
+            recover_failed = true
+            raise 'recover failed'
+          end
+          original.call(group_id, **kwargs, &block)
+        end
+        retrying_router.handle_next_for(RouterTestDecider)
+
+        expect(db[:sourced_offsets].get(:last_position)).to eq(0)
+        expect(context).to include('retry_count' => 2, 'exception_message' => 'recover failed')
+      end
+
+      it "ignores an on_exception stop for a group an operator stopped mid-claim" do
+        allow(RouterTestDecider).to receive(:handle_claim) do
+          store.stop_consumer_group(RouterTestDecider.group_id)
+          raise 'boom'
+        end
+        allow(RouterTestDecider).to receive(:on_exception) { |_e, _msg, group| group.stop(message: 'boom') }
+
+        expect(retrying_router.handle_next_for(RouterTestDecider)).to be(true)
+        expect(status).to eq('stopped')
+      end
+
       it 'keeps retrying while the partition it failed on fails again' do
         failing(RuntimeError.new('boom'), RuntimeError.new('again'))
 

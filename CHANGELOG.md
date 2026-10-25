@@ -41,7 +41,14 @@
   - `GroupUpdater#retry(time, exception: nil)` (it took `**ctx` to merge into the error
     context, ex. `retry_count:`). A reactor's own `on_exception` calling
     `group.retry(time, retry_count: n)` raises `ArgumentError`.
-  - `claim_next` claims `active` and `retrying` groups (`Store::CLAIMABLE`).
+  - `claim_next` claims `active` and `retrying` groups (`Store::CLAIMABLE`), and
+    `consumer_group_active?` is true for both.
+  - The Router records a failed claim's retry or failure before releasing or acking the
+    claim, and a recovery in the ack's transaction.
+  - `GroupUpdater#retry` / `#fail` return whether the group's status accepted them, and log
+    only then; `ErrorStrategy`'s `on_retry` / `on_fail` fire only then too.
+  - An operator method a reactor's `on_exception` calls (ex. `group.stop`) that the
+    group's status doesn't accept is logged, not raised.
 
 - **Evolve and reaction dispatch use handler maps.** `Projection.evolve_handlers` and
   `React.reaction_handlers` map each message class to its handler, filled when the handler

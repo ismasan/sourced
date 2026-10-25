@@ -1401,7 +1401,7 @@ store = Sourced.store
 store.stop_consumer_group(CourseDecider)
 store.reset_consumer_group(CourseDecider)  # reprocess from beginning once started
 store.start_consumer_group(CourseDecider)
-store.consumer_group_active?(CourseDecider)  # => true/false
+store.consumer_group_active?(CourseDecider)  # => true while workers claim it (active or retrying)
 
 # Or use plain strings
 store.stop_consumer_group('course_app.course_decider')

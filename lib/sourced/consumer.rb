@@ -46,8 +46,8 @@ module Sourced
 
     # @param message [String, nil] the operator's reason
     def stop(message: nil)
-      @logger.error "Sourced: stopping consumer group #{group_id}"
       move!(ConsumerGroupMachine::Stop, message:)
+      @logger.error "Sourced: stopping consumer group #{group_id}"
     end
 
     # Resume a stopped or failed group, or a retrying one without waiting.
@@ -67,15 +67,19 @@ module Sourced
     # Try the group again at +time+, recording +exception+ and the claim that failed.
     # @param time [Time]
     # @param exception [Exception, nil]
+    # @return [Boolean] whether the group's status accepted it
     def retry(time, exception: nil)
-      @logger.warn "Sourced: retrying consumer group #{group_id} at #{time}"
-      move(ConsumerGroupMachine::Retry, retry_at: time, offset_id: @offset_id, **failure(exception))
+      move(ConsumerGroupMachine::Retry, retry_at: time, offset_id: @offset_id, **failure(exception)).tap do |moved|
+        @logger.warn "Sourced: retrying consumer group #{group_id} at #{time}" if moved
+      end
     end
 
     # @param exception [Exception, nil] recorded with its backtrace
+    # @return [Boolean] whether the group's status accepted it
     def fail(exception: nil)
-      @logger.error "Sourced: failing consumer group #{group_id}. #{exception&.class}: #{exception&.message}"
-      move(ConsumerGroupMachine::Fail, **failure(exception), exception_backtrace: exception&.backtrace)
+      move(ConsumerGroupMachine::Fail, **failure(exception), exception_backtrace: exception&.backtrace).tap do |moved|
+        @logger.error "Sourced: failing consumer group #{group_id}. #{exception&.class}: #{exception&.message}" if moved
+      end
     end
 
     # The claim at +offset_id+ was processed: a retrying group recovers when
@@ -106,13 +110,16 @@ module Sourced
     end
 
     # A worker command: ignored where the status doesn't accept it.
+    # @return [Boolean] whether it moved the machine
     def move(command_class, **payload)
       command = command_for(command_class, payload)
-      if @machine.handles_command?(command)
-        decide(command)
-      else
+      unless @machine.handles_command?(command)
         @logger.warn "Sourced: consumer group #{group_id} is #{status}, ignoring #{command_class.type}"
+        return false
       end
+
+      decide(command)
+      true
     end
 
     def command_for(command_class, payload)

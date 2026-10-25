@@ -632,7 +632,8 @@ module Sourced
       @registered_groups[group_id] = { cg_id: cg[:id], partition_by: partition_by_sorted, exclusive: exclusive }
     end
 
-    # Whether the consumer group exists and is active.
+    # Whether the consumer group exists and workers claim it: it's active or
+    # retrying ({CLAIMABLE}).
     #
     # @param group_id [String, #group_id] identifier or object responding to +#group_id+
     # @return [Boolean]
@@ -641,7 +642,7 @@ module Sourced
       row = db[@consumer_groups_table].where(group_id: group_id).select(:status).first
       return false unless row
 
-      row[:status] == ACTIVE
+      CLAIMABLE.include?(row[:status])
     end
 
     # Stop an active, retrying or failed consumer group intentionally.
@@ -863,7 +864,7 @@ module Sourced
     def retrying_claim?(cg, offset_id)
       return false unless cg[:status] == RETRYING && cg[:error_context]
 
-      JSON.parse(cg[:error_context])['offset_id'] == offset_id
+      ConsumerGroupMachine.decode_context(JSON.parse(cg[:error_context]))[:offset_id] == offset_id
     end
 
     # Acknowledge processing: advance the offset to +position+ and release the claim.
