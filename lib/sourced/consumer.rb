@@ -30,7 +30,8 @@ module Sourced
     def error_context = @machine.context
 
     # The columns to write, with the row's new status and context: none when
-    # the machine didn't move.
+    # the machine didn't move. +retry_at+ is UTC, which {Store#claim_next}
+    # compares as a string.
     # @return [Hash]
     def updates
       return {} unless @columns
@@ -38,7 +39,7 @@ module Sourced
       @columns.merge(
         status:,
         error_context: JSON.dump(ConsumerGroupMachine.encode_context(error_context)),
-        retry_at: error_context[:retry_at]&.iso8601,
+        retry_at: error_context[:retry_at]&.getutc&.iso8601,
         updated_at: Time.now.iso8601
       )
     end

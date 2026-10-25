@@ -747,7 +747,9 @@ module Sourced
       now = Time.now.iso8601
       cg = db[@consumer_groups_table]
         .where(group_id: group_id, status: CLAIMABLE)
-        .where { Sequel.|({retry_at: nil}, Sequel.lit('retry_at <= ?', now)) }
+        # retry_at is UTC (see GroupUpdater#updates): ISO 8601 strings compare
+        # as times only in one offset, which local time changes at DST.
+        .where { Sequel.|({retry_at: nil}, Sequel.lit('retry_at <= ?', Time.now.utc.iso8601)) }
         .first
       return nil unless cg
 

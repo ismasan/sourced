@@ -7,8 +7,41 @@
   decide commands against a configuration stored as paths (`handles_command?`, `decide`),
   and read the paths it moves to from `machine.paths` and its context from `context`.
   Raises `MissingPartitionKeyError` without a value for each partition key.
+- `Sourced::ConsumerGroupMachine`: the statechart a consumer group's status follows
+  (`active`, `retrying`, `stopped`, `failed`), never registered as a reactor. Its operator
+  commands (`OPERATOR_COMMANDS`: Start, Stop, Reset) and worker commands (`WORKER_COMMANDS`:
+  Retry, Recover, Fail) say what each status accepts; `configuration([status])` answers it
+  for a UI, and `to_mermaid` / `to_h` draw it. Its context, a typed Hash
+  (`ConsumerGroupMachine::Context`, encoded with `encode_context` / `decode_context`), is
+  the group's `error_context`.
+- **A `retrying` consumer group status.** A retrying error strategy moves a group to
+  `retrying`, recording the failed claim's offset; once that partition is processed, the
+  group is `active` again and its retry count starts again. `ClaimResult#retrying` flags
+  that claim. `start_consumer_group` on a retrying group retries it without waiting.
+- `Store::InvalidConsumerGroupTransitionError`, raised by `stop_consumer_group`,
+  `start_consumer_group` and `reset_consumer_group` for a status that doesn't accept them,
+  with the group, its status, the command and the commands it accepts.
 
 ### Changed
+
+- **Consumer group status changes follow `ConsumerGroupMachine`.** `GroupUpdater` places the
+  machine at the group's status and context and moves it; the store reads and writes the row
+  in one write transaction (`BEGIN IMMEDIATE`).
+  - `reset_consumer_group` requires a stopped or failed group (it raised nothing on an
+    active one, deleting offsets under running workers): stop, reset, then start to replay.
+    The group stays stopped or failed after the reset.
+  - `stop_consumer_group` on a stopped group, and `start_consumer_group` on an active one,
+    raise.
+  - A worker's retry or failure that a status doesn't accept leaves the group as it is: a
+    failure after a stop leaves it `stopped` (it became `failed`).
+  - `error_context` is the machine's typed context: `{ retry_count: 0 }` for a healthy group
+    (`stats` returned `{}`), with times decoded as `Time`, and a failure's
+    `exception_backtrace`. `retry_count` counts the retries scheduled since the group last
+    recovered, and is reset when it recovers or starts (it carried over between failures).
+  - `GroupUpdater#retry(time, exception: nil)` (it took `**ctx` to merge into the error
+    context, ex. `retry_count:`). A reactor's own `on_exception` calling
+    `group.retry(time, retry_count: n)` raises `ArgumentError`.
+  - `claim_next` claims `active` and `retrying` groups (`Store::CLAIMABLE`).
 
 - **Evolve and reaction dispatch use handler maps.** `Projection.evolve_handlers` and
   `React.reaction_handlers` map each message class to its handler, filled when the handler
@@ -248,6 +281,9 @@
 
 ### Fixed
 
+- A retrying consumer group's `retry_at` is stored in UTC, and `claim_next` compares it with
+  the current UTC time. Both were local-time ISO 8601 strings, which compare as times only
+  within one UTC offset: when clocks went back, a retry an hour away could be claimed at once.
 - Reactor subclasses inherit their superclass's `partition_by` keys unless they declare
   their own. They had no partition keys, so their partition reads came back empty.
 - `Sourced.handle!` skipped the reactor's reactions to its own events: it advanced the

@@ -1313,7 +1313,7 @@ RSpec.describe Sourced::Store do
 
       row = db[:sourced_consumer_groups].where(group_id: 'my_group').first
       expect(row[:status]).to eq('retrying')
-      expect(row[:retry_at]).to eq(retry_at.iso8601)
+      expect(row[:retry_at]).to eq(retry_at.getutc.iso8601)
       ctx = Sourced::ConsumerGroupMachine.decode_context(JSON.parse(row[:error_context]))
       expect(ctx).to eq(
         retry_count: 1, retry_at: Time.iso8601(retry_at.iso8601(6)), offset_id: 7,
@@ -1605,6 +1605,24 @@ RSpec.describe Sourced::Store do
 
       result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
       expect(result).to be_nil
+    end
+
+    it 'returns nil when retry_at is in the future across a clock change' do
+      store.append(
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
+      )
+
+      tz = ENV['TZ']
+      ENV['TZ'] = 'Europe/London'
+      # 01:30 BST: an hour later is 01:30 GMT, the same local wall-clock time.
+      Timecop.freeze(Time.utc(2026, 10, 25, 0, 30).getlocal) do
+        store.updating_consumer_group(group_id) { |group| group.retry(Time.now + 3600) }
+
+        result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+        expect(result).to be_nil
+      end
+    ensure
+      ENV['TZ'] = tz
     end
 
     it 'returns claims when retry_at is in the past' do

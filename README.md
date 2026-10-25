@@ -1444,17 +1444,17 @@ class CourseDecider < Sourced::Decider
   # Called when the consumer group is stopped.
   # `message` is the optional reason string passed to stop_consumer_group.
   def self.on_stop(message = nil)
-    Rails.logger.info "CourseDecider stopped: #{message}"
+    logger.info "CourseDecider stopped: #{message}"
   end
 
   # Called when the consumer group is reset (offsets cleared).
   def self.on_reset
-    Rails.cache.delete_matched('course_projections/*')
+    cache.delete_matched('course_projections/*')
   end
 
   # Called when the consumer group is started.
   def self.on_start
-    Rails.logger.info 'CourseDecider started'
+    logger.info 'CourseDecider started'
   end
 end
 ```
@@ -1477,24 +1477,28 @@ Each group hash contains:
 |----------------------|----------------------------------------------------------------|
 | `group_id`           | Consumer group identifier (e.g. `"course_decider"`)            |
 | `label`              | The reactor's class name (e.g. `"CourseDecider"`), or nil      |
-| `status`             | `"active"`, `"stopped"`, or `"failed"`                         |
+| `status`             | `"active"`, `"retrying"`, `"stopped"`, or `"failed"`           |
 | `retry_at`           | `Time` of next retry, or `nil`                                 |
-| `error_context`      | Hash with error details (`{}` when healthy, see below)         |
+| `error_context`      | Hash with error details (`{ retry_count: 0 }` when healthy, see below) |
 | `oldest_processed`   | `MIN(last_position)` across partitions where processing started |
 | `newest_processed`   | `MAX(last_position)` across partitions                          |
 | `partition_count`    | Number of offset rows (partitions) for this group              |
 
 ### `error_context`
 
-The `error_context` hash is empty (`{}`) for healthy groups. When a group is stopped or has failed, it may contain:
+The `error_context` hash is the group's `ConsumerGroupMachine::Context`: a typed Hash, stored as JSON and decoded by its schema, so times come back as `Time`s. It's `{ retry_count: 0 }` for a healthy group, and starting or recovering a group resets it to that.
 
-| Key                  | Present when | Description                          |
-|----------------------|--------------|--------------------------------------|
-| `:message`           | Stopped      | Operator-supplied reason for stopping |
-| `:exception_class`   | Failed       | Exception class name (e.g. `"RuntimeError"`) |
-| `:exception_message` | Failed       | Exception message string             |
+| Key                    | Present when       | Description                          |
+|------------------------|--------------------|--------------------------------------|
+| `:retry_count`         | Always             | Retries scheduled since the group last recovered |
+| `:retry_at`            | Retrying           | `Time` of the next retry             |
+| `:offset_id`           | Retrying, failed   | The partition offset whose claim failed |
+| `:exception_class`     | Retrying, failed   | Exception class name (e.g. `"RuntimeError"`) |
+| `:exception_message`   | Retrying, failed   | Exception message string             |
+| `:exception_backtrace` | Failed             | The exception's backtrace, an Array of Strings |
+| `:message`             | Stopped            | Operator-supplied reason for stopping |
 
-When retries are configured, `error_context` also accumulates retry state set by `GroupUpdater#retry_later`.
+A failed group that's stopped keeps its failure.
 
 ```ruby
 stats = store.stats
