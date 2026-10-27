@@ -72,9 +72,9 @@ module Sourced
     extend Definition
 
     # The machine's transitions, its children's starts and finishes, and the
-    # evolve types of its parts are read too, alongside the projection's
-    # selector. They're the machine's own, not its projection's (which has no
-    # handlers for them), so adopting a projection with +evolve SomeProjection+
+    # evolve types of its parts are read too, alongside the projector's
+    # selector. They're the machine's own, not its projector's (which has no
+    # handlers for them), so adopting a projector with +evolve SomeProjector+
     # keeps them. Prepended after Sourced::Evolve's class methods.
     module EvolveTypes
       # Fixed by {Machine.validate!}; computed on each call before it.
@@ -82,9 +82,9 @@ module Sourced
         return @__selector if @__selector
 
         tree = self.tree
-        parts = tree.mounted_machines.map { |part| part.projection_class.selector }
+        parts = tree.mounted_machines.map { |part| part.projector.selector }
         own = Selector[*__transition_classes, *tree.child_events, *handled_events]
-        [projection_class.selector, own, *parts].reduce(:+).by(*partition_keys)
+        [projector.selector, own, *parts].reduce(:+).by(*partition_keys)
       end
     end
     singleton_class.prepend EvolveTypes
@@ -1291,7 +1291,7 @@ module Sourced
         @__transition_set = @__transition_classes.to_set.freeze
         @__command_set = @__handled_commands.to_set.freeze
         @__event_set = @__handled_events.to_set.freeze
-        @__region_projection_classes = __region_projection_classes.freeze
+        @__region_projectors = __region_projectors.freeze
         @__eventless_steps = __eventless_steps.freeze
         @validated = true
       ensure
@@ -1362,7 +1362,7 @@ module Sourced
       # @raise [Sourced::MissingPartitionKeyError] if a partition key is missing or nil
       # @raise [UnresolvablePathError] if a path doesn't resolve
       # @raise [ArgumentError] for an initial position, a state in an inactive region, or two states in one region
-      def at(paths, context = Projection::UNSET, **partition_values)
+      def at(paths, context = Projector::UNSET, **partition_values)
         missing = partition_keys.select { |key| partition_values[key].nil? }
         if missing.any?
           raise Sourced::MissingPartitionKeyError, "#{self} can't be placed without values for partition keys #{missing.inspect}"
@@ -1420,11 +1420,11 @@ module Sourced
         }.select { |_, present| present }.keys
       end
 
-      # The projections of the parts that evolve anything.
+      # The projectors of the parts that evolve anything.
       # @api private
-      def __region_projection_classes
-        @__region_projection_classes ||
-          tree.mounted_machines.map(&:projection_class).reject { |klass| klass.handled_messages.empty? }
+      def __region_projectors
+        @__region_projectors ||
+          tree.mounted_machines.map(&:projector).reject { |klass| klass.handled_messages.empty? }
       end
 
       # What a parent's +Started+ enters: this machine's start, and its default configuration.
@@ -1537,9 +1537,9 @@ module Sourced
 
       # A part's evolve blocks are ours: one per message class, across us and our parts.
       def __check_part_evolves!(tree)
-        evolved = projection_class.handled_messages.to_h { |klass| [klass, self] }
+        evolved = projector.handled_messages.to_h { |klass| [klass, self] }
         tree.mounted_machines.each do |part|
-          part.projection_class.handled_messages.each do |klass|
+          part.projector.handled_messages.each do |klass|
             raise DefinitionError, "#{self}: #{klass} is evolved by both #{evolved[klass]} and #{part}" if evolved.key?(klass)
 
             evolved[klass] = part
@@ -1723,8 +1723,8 @@ module Sourced
     # Place a fresh instance at +paths+, on +context+: see {.at}.
     # @api private
     # @return [self]
-    def __place(paths, context = Projection::UNSET)
-      @projection = self.class.projection_class.new(context) unless Projection::UNSET.equal?(context)
+    def __place(paths, context = Projector::UNSET)
+      @projection = self.class.projector.new(context) unless Projector::UNSET.equal?(context)
       @runtime.place(paths)
       moved!
       self
@@ -2009,7 +2009,7 @@ module Sourced
     # The projections of our parts, built from our context: their +evolve+
     # blocks apply to the same object as ours.
     def __region_projections
-      @__region_projections ||= self.class.__region_projection_classes.map { |klass| klass.new(projection.context) }
+      @__region_projections ||= self.class.__region_projectors.map { |klass| klass.new(projection.context) }
     end
 
     # The first active state with a passing +always+ moves on.

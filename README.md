@@ -11,7 +11,7 @@ Sourced is a Ruby library for aggregateless, stream-less event sourcing. Events 
 - **Decide → Evolve → React** — reactors handle commands, evolve context from history, and react to events.
 - **Optimistic concurrency** — reads return a `ConsistencyGuard` that detects conflicting writes at append time.
 
-A student enrols in a course from a form, a projector keeps the course roster, and an automation notifies the student:
+A student enrols in a course from a form, a read model keeps the course roster, and an automation notifies the student:
 
 ```mermaid
 eventmodeling
@@ -53,7 +53,7 @@ data StudentNotified {
 }
 ```
 
-In Sourced, a [Decider](#deciders) handles `EnrolStudent` and appends `StudentEnrolled` to the log, a [Projector](#projectors) evolves `CourseRoster` from it, and the projector's [reaction](#reactions) dispatches `NotifyStudent`, which another reactor handles in turn.
+In Sourced, a [Decider](#deciders) handles `EnrolStudent` and appends `StudentEnrolled` to the log, a [read model](#read-models) evolves `CourseRoster` from it, and the read model's [reaction](#reactions) dispatches `NotifyStudent`, which another reactor handles in turn.
 
 ## Messages
 
@@ -237,7 +237,7 @@ store.read_all(limit: 20).to_enum.lazy.select { |m|
 Sourced provides four reactor base classes that share the same lifecycle (claim → evolve → handle → append → ack) and the same consumer-group machinery:
 
 - [Deciders](#deciders) — handle commands, enforce invariants, produce events
-- [Projectors](#projectors) — build read models by consuming events
+- [Read models](#read-models) — build read models by consuming events
 - [Durable workflows](#durable-workflows) — imperative orchestrations whose steps are memoised across re-entries
 - [Machines](#machines) — statecharts: commands accepted per state, parallel regions, timers and child machines
 
@@ -259,7 +259,7 @@ class CourseDecider < Sourced::Decider
 
   # Evolve context from events (rebuilds history).
   # Evolve blocks run in the reactor's projection, not the reactor itself:
-  # see Projections below.
+  # see Projectors below.
   evolve CourseCreated do |context, _event|
     context[:name_taken] = true
   end
@@ -431,16 +431,16 @@ decider, read_result = Sourced.load(CourseDecider, course_name: 'Algebra')
 decider.context  # => { name_taken: true }
 ```
 
-### Projectors
+### Read models
 
-Projectors consume events to build read models. Two flavours:
+`Sourced::ReadModel` reactors consume events to build read models: projections they persist. Two flavours:
 
-#### EventSourced projector
+#### EventSourced read model
 
 Rebuilds context from full history on every batch (like deciders).
 
 ```ruby
-class CourseCatalogProjector < Sourced::Projector::EventSourced
+class CourseCatalogReadModel < Sourced::ReadModel::EventSourced
   partition_by :course_id
 
   context do
@@ -472,12 +472,12 @@ class CourseCatalogProjector < Sourced::Projector::EventSourced
 end
 ```
 
-#### StateStored projector
+#### StateStored read model
 
 Loads persisted context via the `load_context` block, evolves only new (unprocessed) messages on top of it. `load_context` runs in the reactor's scope, so it can read your storage; when it returns `nil`, the `context` block builds the initial context.
 
 ```ruby
-class MyProjector < Sourced::Projector::StateStored
+class MyReadModel < Sourced::ReadModel::StateStored
   partition_by :course_id
 
   context do
@@ -585,16 +585,16 @@ def execute
 end
 ```
 
-### Projections
+### Projectors
 
-A reactor's `context` and `evolve` declarations define a `Sourced::Projection`: a plain in-memory object that builds context from events and knows nothing about stores, partitions, commands or side effects. Evolve blocks run in the projection's scope, so they can't reach the reactor's methods or collaborators, such as a database.
+A reactor's `context` and `evolve` declarations define a projector, a `Sourced::Projector` subclass: the definition of how a projection, a plain in-memory object, builds context from events. A projector knows nothing about stores, partitions, commands or side effects. A reactor's projector is `Reactor.projector`, and its built-up projection is `reactor.projection`. Evolve blocks run in the projection's scope, so they can't reach the reactor's methods or collaborators, such as a database.
 
 A projection's context is a function of the events it evolves. The `context` block takes no arguments: identifying values, such as a cart's id, come from the events, so set them in `evolve` blocks, or once in a `before_evolve` block (below) when any of several events can come first. A `context` block that declares arguments (`context { |values| ... }`, even `|_|`) raises `ArgumentError` when the class loads.
 
-A projection can also be its own class, unit-tested on its own and shared between reactors:
+A projector can also be its own class, unit-tested on its own and shared between reactors:
 
 ```ruby
-class CartProjection < Sourced::Projection
+class CartProjector < Sourced::Projector
   context do
     { cart_id: nil, items: [] }
   end
@@ -605,7 +605,7 @@ class CartProjection < Sourced::Projection
   end
 end
 
-projection = CartProjection.new
+projection = CartProjector.new
 projection.evolve([item_added])
 projection.context # => { cart_id: 'c1', items: ['i1'] }
 ```
@@ -615,7 +615,7 @@ Handlers (`evolve`, `reaction`, `command`) are declared for a message class, or 
 `before_evolve` runs a block before the handler of every event the projection handles (events without a handler are still skipped), for changes common to all of them:
 
 ```ruby
-class CartProjection < Sourced::Projection
+class CartProjector < Sourced::Projector
   context { { cart_id: nil, items: [], updated_at: nil } }
 
   before_evolve do |context, event|
@@ -634,9 +634,9 @@ Reactors adopt it with `evolve`:
 ```ruby
 class Carts < Sourced::Decider
   partition_by :cart_id
-  evolve CartProjection
+  evolve CartProjector
 
-  # More evolve blocks extend this reactor's copy, not CartProjection itself
+  # More evolve blocks extend this reactor's copy, not CartProjector itself
   evolve CartClosed do |context, _event|
     context[:closed] = true
   end
@@ -647,24 +647,24 @@ class Carts < Sourced::Decider
   end
 end
 
-class CartListing < Sourced::Projector::EventSourced
+class CartListing < Sourced::ReadModel::EventSourced
   partition_by :cart_id
-  evolve CartProjection
+  evolve CartProjector
 
   sync { |context:, **| MyDB.upsert(context) }
 end
 ```
 
-Each reactor works on a projection subclass of its own, so its extra `evolve` blocks never leak into the shared class or other reactors. `evolve SomeProjection` must come before the reactor's own `context` / `evolve` declarations.
+Each reactor works on a projector subclass of its own, so its extra `evolve` blocks never leak into the shared class or other reactors. `evolve SomeProjector` must come before the reactor's own `context` / `evolve` declarations.
 
-`Sourced.load` reads a projection's context straight from the log, with no projector or read model. The attributes you pass are its partition:
+`Sourced.load` reads a projection's context straight from the log, with no read model. The attributes you pass are its partition:
 
 ```ruby
-cart, read_result = Sourced.load(CartProjection, cart_id: 'c1')
+cart, read_result = Sourced.load(CartProjector, cart_id: 'c1')
 cart.context # => { cart_id: 'c1', items: [...] }
 ```
 
-This reads the partition's whole history on every call, so it suits small partitions; persist larger read models with a projector.
+This reads the partition's whole history on every call, so it suits small partitions; persist larger ones with a read model.
 
 ### Machines
 
@@ -874,7 +874,7 @@ An instance's `machine` is a configuration too, read live: it changes as the ins
 A projection can keep the paths without loading the machine at all: each state event's `exited` and `entered` paths update them, ex. for every record a listing shows:
 
 ```ruby
-class OrderListing < Sourced::Projector::StateStored
+class OrderListing < Sourced::ReadModel::StateStored
   partition_by :order_id
 
   context { {} }
@@ -1113,7 +1113,7 @@ end
 
 ### Reactions
 
-Both deciders and projectors can react to events to produce follow-up messages, enabling workflow orchestration. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
+Both deciders and read models can react to events to produce follow-up messages, enabling workflow orchestration. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
 
 ```ruby
 class EnrolmentDecider < Sourced::Decider
@@ -1161,7 +1161,7 @@ Reactions are skipped during replay (when `replaying: true`), so side effects do
 
 ### Sync and After-Sync Blocks
 
-Both deciders and projectors support `sync` and `after_sync` blocks for running side effects during message processing.
+Both deciders and read models support `sync` and `after_sync` blocks for running side effects during message processing.
 
 - **`sync`** blocks run **inside** the store transaction, alongside event persistence and offset acknowledgement. Use them for writes that must be atomic with the event append (e.g. updating a database projection).
 - **`after_sync`** blocks run **after** the transaction commits. Use them for side effects that should only happen if the commit succeeds (e.g. sending emails, HTTP calls, pushing to external queues).
@@ -1171,7 +1171,7 @@ Both receive the same keyword arguments as the reactor's action-building step:
 | Reactor type | Keyword arguments                     |
 |--------------|---------------------------------------|
 | Decider      | `context:`, `messages:`, `events:`      |
-| Projector    | `context:`, `messages:`, `replaying:`   |
+| ReadModel    | `context:`, `messages:`, `replaying:`   |
 
 ```ruby
 class OrderDecider < Sourced::Decider
@@ -1198,7 +1198,7 @@ Multiple `sync` and `after_sync` blocks can be registered; they execute in regis
 ```ruby
 Sourced.register(CourseDecider)
 Sourced.register(EnrolmentDecider)
-Sourced.register(CourseCatalogProjector)
+Sourced.register(CourseCatalogReadModel)
 ```
 
 Each reactor becomes a component of Sourced's configuration, under `reactors` and keyed by its `group_id` with dots replaced by underscores (`Shop::CourseDecider` → `reactors.shop_course_decider`); the router and `Sourced.topology` depend on all of them. Register reactors before Sourced boots: registering once it's booted raises, and so does registering two different reactors with the same `group_id` (registering the same one again is a no-op). Their consumer groups are registered with the store when Sourced starts.
@@ -1207,7 +1207,7 @@ Anything that responds to `to_sourced_reactors` registers what that returns inst
 
 ```ruby
 module Booking
-  def self.to_sourced_reactors = [BookingMachine, BookingsProjector]
+  def self.to_sourced_reactors = [BookingMachine, BookingsReadModel]
 end
 
 Sourced.register(Booking)
@@ -1215,7 +1215,7 @@ Sourced.register(Booking)
 
 ## The reactor protocol
 
-Deciders, projectors and workflows are conveniences over a small duck-typed protocol. **Any class that responds to `handled_messages` and `handle_claim` is a reactor** — it can be registered and driven by the runtime without subclassing or even depending on Sourced. This is how a message handler from another framework can run on Sourced as a durable queue.
+Deciders, read models and workflows are conveniences over a small duck-typed protocol. **Any class that responds to `handled_messages` and `handle_claim` is a reactor** — it can be registered and driven by the runtime without subclassing or even depending on Sourced. This is how a message handler from another framework can run on Sourced as a durable queue.
 
 ```ruby
 class MyWorker
@@ -1690,12 +1690,12 @@ offsets, total_count = store.read_offsets(group_id: 'course_decider')
 
 ## Topology introspection
 
-`Sourced.topology` analyses all registered reactors (deciders, projectors and machines) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for projectors). Each node has at least `type`, `id`, `name`, `group_id`, `group_label` (its reactor's class name, for display), and depending on kind, `consumes` / `produces` / `schema`.
+`Sourced.topology` analyses all registered reactors (deciders, read models and machines) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for read models). Each node has at least `type`, `id`, `name`, `group_id`, `group_label` (its reactor's class name, for display), and depending on kind, `consumes` / `produces` / `schema`.
 
 ```ruby
 Sourced.register(CourseDecider)
 Sourced.register(EnrolmentDecider)
-Sourced.register(CourseCatalogProjector)
+Sourced.register(CourseCatalogReadModel)
 
 Sourced.topology.each do |node|
   puts "#{node.type}: #{node.name}"
@@ -1704,7 +1704,7 @@ end
 # event: CourseApp::CourseCreated
 # command: CourseApp::EnrolStudent
 # automation: reaction(CourseCreated)
-# readmodel: CourseApp::CourseCatalogProjector
+# readmodel: CourseApp::CourseCatalogReadModel
 # ...
 ```
 
@@ -1744,7 +1744,7 @@ result.reactor.to_h                  # status after the command, including the e
 
 ## Testing
 
-Sourced ships with RSpec helpers for Given-When-Then testing of deciders and projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
+Sourced ships with RSpec helpers for Given-When-Then testing of deciders, read models and projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
 
 ```ruby
 require 'sourced/testing/rspec'
@@ -1827,32 +1827,32 @@ it 'runs sync block' do
 end
 ```
 
-### Testing projectors
+### Testing read models
 
-Projectors use `.given` (events to evolve) and `.then` with a block that receives a result whose `context` is the projected context. `.when` is not supported — projectors don't handle commands.
+Read models use `.given` (events to evolve) and `.then` with a block that receives a result whose `context` is the projected context. `.when` is not supported — read models don't handle commands.
 
 #### StateStored
 
 ```ruby
-RSpec.describe ItemProjector do
+RSpec.describe ItemReadModel do
   include Sourced::Testing::RSpec
 
   it 'builds context from events' do
-    with_reactor(ItemProjector, list_id: 'L1')
+    with_reactor(ItemReadModel, list_id: 'L1')
       .given(ItemAdded, list_id: 'L1', name: 'Apple')
       .given(ItemAdded, list_id: 'L1', name: 'Banana')
       .then { |r| expect(r.context[:items]).to eq(['Apple', 'Banana']) }
   end
 
   it 'handles removal' do
-    with_reactor(ItemProjector, list_id: 'L1')
+    with_reactor(ItemReadModel, list_id: 'L1')
       .given(ItemAdded, list_id: 'L1', name: 'Apple')
       .and(ItemArchived, list_id: 'L1', name: 'Apple')
       .then { |r| expect(r.context[:items]).to eq([]) }
   end
 
   it 'runs sync actions with then!' do
-    with_reactor(ItemProjector, list_id: 'L1')
+    with_reactor(ItemReadModel, list_id: 'L1')
       .given(ItemAdded, list_id: 'L1', name: 'Apple')
       .then! { |r| expect(r.context[:synced]).to be true }
   end
@@ -1864,11 +1864,11 @@ end
 Same API — the helper creates an instance, evolves from all given messages, and yields the result:
 
 ```ruby
-RSpec.describe CatalogProjector do
+RSpec.describe CatalogReadModel do
   include Sourced::Testing::RSpec
 
   it 'rebuilds context from full history' do
-    with_reactor(CatalogProjector, course_id: 'c1')
+    with_reactor(CatalogReadModel, course_id: 'c1')
       .given(CourseCreated, course_id: 'c1', course_name: 'Algebra')
       .given(StudentEnrolled, course_id: 'c1', student_id: 's1')
       .then { |r| expect(r.context[:students]).to eq(['s1']) }
@@ -1876,16 +1876,16 @@ RSpec.describe CatalogProjector do
 end
 ```
 
-### Testing projections
+### Testing projectors
 
-A bare `Sourced::Projection` takes the same `.given` / `.then` chain: the helper builds it, evolves the given messages, and yields the result. Projections take no partition attributes and produce no messages, so passing attributes, `.when` and expected messages raise; an exception class asserts an error raised while evolving.
+A bare `Sourced::Projector` takes the same `.given` / `.then` chain: the helper builds it, evolves the given messages, and yields the result. Projectors take no partition attributes and produce no messages, so passing attributes, `.when` and expected messages raise; an exception class asserts an error raised while evolving.
 
 ```ruby
-RSpec.describe CartProjection do
+RSpec.describe CartProjector do
   include Sourced::Testing::RSpec
 
   it 'collects added items' do
-    with_reactor(CartProjection)
+    with_reactor(CartProjector)
       .given(ItemAdded, cart_id: 'c1', item_id: 'i1')
       .given(ItemAdded, cart_id: 'c1', item_id: 'i2')
       .then { |r| expect(r.context[:items]).to eq(%w[i1 i2]) }
@@ -1901,7 +1901,7 @@ end
 
 See `examples/app/` for a complete Sinatra application with:
 - Two deciders (course creation with name uniqueness, student enrolment with capacity limits)
-- An event-sourced projector writing JSON files
+- An event-sourced read model writing JSON files
 - Synchronous command handling via `Sourced.handle!` in HTTP endpoints
 - Background worker processing in the same process as the web server
 

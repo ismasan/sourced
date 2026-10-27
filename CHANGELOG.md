@@ -39,6 +39,14 @@
   Claims only ever needed those: an offset from another type waited for one, which
   creates it anyway. Groups that share partition keys but handle different types write
   and scan fewer offsets.
+- **Renamed for one naming convention: a projector is the definition, a projection
+  its result.** `Sourced::Projection` is now `Sourced::Projector` (its subclasses are
+  projectors, their instances projections), and a reactor's `projection_class` is
+  `projector`; a reactor instance's built-up projection is still `#projection`. The
+  reactor base class that persists read models, formerly `Sourced::Projector`
+  (`Projector::StateStored` / `Projector::EventSourced`), is now `Sourced::ReadModel`
+  (`ReadModel::StateStored` / `ReadModel::EventSourced`), in `sourced/read_model`.
+  Group ids derived from class names follow renamed classes.
 - **`Sourced::Selector` is what the store reads.** A selector is a frozen value of
   message types scoped by partition keys (`Selector[A, B].by(:course_id)`), with values
   bound to those keys (`.bind(course_id: 'c1')`). `+` combines selectors, including ones

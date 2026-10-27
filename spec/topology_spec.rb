@@ -81,10 +81,10 @@ module TopologyTest
     end
   end
 
-  # --- Projector (StateStored, no reactions) ---
-  class WidgetListProjector < Sourced::Projector::StateStored
+  # --- ReadModel (StateStored, no reactions) ---
+  class WidgetListReadModel < Sourced::ReadModel::StateStored
     partition_by :widget_id
-    consumer_group 'TopologyTest::WidgetListProjector'
+    consumer_group 'TopologyTest::WidgetListReadModel'
 
     context { { items: [] } }
 
@@ -93,10 +93,10 @@ module TopologyTest
     end
   end
 
-  # --- Projector (EventSourced, with catch-all reaction) ---
-  class ReactingProjector < Sourced::Projector::EventSourced
+  # --- ReadModel (EventSourced, with catch-all reaction) ---
+  class ReactingReadModel < Sourced::ReadModel::EventSourced
     partition_by :widget_id
-    consumer_group 'TopologyTest::ReactingProjector'
+    consumer_group 'TopologyTest::ReactingReadModel'
 
     context { { items: [] } }
 
@@ -109,10 +109,10 @@ module TopologyTest
     end
   end
 
-  # --- Projector with specific + catch-all reactions ---
-  class MixedReactingProjector < Sourced::Projector::EventSourced
+  # --- ReadModel with specific + catch-all reactions ---
+  class MixedReactingReadModel < Sourced::ReadModel::EventSourced
     partition_by :widget_id
-    consumer_group 'TopologyTest::MixedReactingProjector'
+    consumer_group 'TopologyTest::MixedReactingReadModel'
 
     context { { items: [] } }
 
@@ -249,8 +249,8 @@ RSpec.describe Sourced::Topology do
     end
   end
 
-  context 'with WidgetListProjector (no reactions)' do
-    let(:reactors) { [TopologyTest::WidgetListProjector] }
+  context 'with WidgetListReadModel (no reactions)' do
+    let(:reactors) { [TopologyTest::WidgetListReadModel] }
 
     it 'does not build command nodes' do
       expect(find_nodes_by_type('command')).to be_empty
@@ -266,32 +266,32 @@ RSpec.describe Sourced::Topology do
     end
 
     it 'builds a readmodel node' do
-      node = find_node('topology_test.widget_list_projector-rm')
+      node = find_node('topology_test.widget_list_read_model-rm')
       expect(node).not_to be_nil
       expect(node.type).to eq('readmodel')
     end
 
     it 'sets correct name and group_id on readmodel node' do
-      node = find_node('topology_test.widget_list_projector-rm')
-      expect(node.name).to eq('TopologyTest::WidgetListProjector')
-      expect(node.group_id).to eq('topology_test.widget_list_projector')
+      node = find_node('topology_test.widget_list_read_model-rm')
+      expect(node.name).to eq('TopologyTest::WidgetListReadModel')
+      expect(node.group_id).to eq('topology_test.widget_list_read_model')
     end
 
     it 'readmodel consumes the evolved event types' do
-      node = find_node('topology_test.widget_list_projector-rm')
+      node = find_node('topology_test.widget_list_read_model-rm')
       expect(node.consumes).to eq(['ccc_topo.widget_created'])
     end
 
     it 'readmodel produces nothing when there are no reactions' do
-      node = find_node('topology_test.widget_list_projector-rm')
+      node = find_node('topology_test.widget_list_read_model-rm')
       expect(node.produces).to eq([])
     end
   end
 
-  context 'with ReactingProjector (catch-all reaction)' do
-    let(:reactors) { [TopologyTest::ReactingProjector] }
-    let(:rm_id) { 'topology_test.reacting_projector-rm' }
-    let(:aut_id) { 'topology_test.reacting_projector-aut' }
+  context 'with ReactingReadModel (catch-all reaction)' do
+    let(:reactors) { [TopologyTest::ReactingReadModel] }
+    let(:rm_id) { 'topology_test.reacting_read_model-rm' }
+    let(:aut_id) { 'topology_test.reacting_read_model-aut' }
 
     it 'builds a readmodel node' do
       node = find_node(rm_id)
@@ -314,7 +314,7 @@ RSpec.describe Sourced::Topology do
       expect(aut_nodes.size).to eq(1)
       node = aut_nodes.first
       expect(node.id).to eq(aut_id)
-      expect(node.name).to eq('reaction(TopologyTest::ReactingProjector)')
+      expect(node.name).to eq('reaction(TopologyTest::ReactingReadModel)')
     end
 
     it 'automation node consumes the readmodel' do
@@ -328,11 +328,11 @@ RSpec.describe Sourced::Topology do
     end
   end
 
-  context 'with MixedReactingProjector (specific + catch-all reactions)' do
-    let(:reactors) { [TopologyTest::MixedReactingProjector] }
-    let(:rm_id) { 'topology_test.mixed_reacting_projector-rm' }
-    let(:specific_aut_id) { 'ccc_topo.widget_created-topology_test.mixed_reacting_projector-aut' }
-    let(:catchall_aut_id) { 'topology_test.mixed_reacting_projector-aut' }
+  context 'with MixedReactingReadModel (specific + catch-all reactions)' do
+    let(:reactors) { [TopologyTest::MixedReactingReadModel] }
+    let(:rm_id) { 'topology_test.mixed_reacting_read_model-rm' }
+    let(:specific_aut_id) { 'ccc_topo.widget_created-topology_test.mixed_reacting_read_model-aut' }
+    let(:catchall_aut_id) { 'topology_test.mixed_reacting_read_model-aut' }
 
     it 'builds two automation nodes: one specific and one catch-all' do
       aut_nodes = find_nodes_by_type('automation')
@@ -346,7 +346,7 @@ RSpec.describe Sourced::Topology do
 
     it 'catch-all automation is named after the reactor' do
       node = find_node(catchall_aut_id)
-      expect(node.name).to eq('reaction(TopologyTest::MixedReactingProjector)')
+      expect(node.name).to eq('reaction(TopologyTest::MixedReactingReadModel)')
     end
 
     it 'both automation nodes consume the readmodel' do
@@ -373,7 +373,7 @@ RSpec.describe Sourced::Topology do
   end
 
   context 'event deduplication across reactors' do
-    let(:reactors) { [TopologyTest::WidgetDecider, TopologyTest::WidgetListProjector] }
+    let(:reactors) { [TopologyTest::WidgetDecider, TopologyTest::WidgetListReadModel] }
 
     it 'deduplicates event nodes by type string' do
       evt_nodes = find_nodes_by_type('event').select { |n| n.id == 'ccc_topo.widget_created' }
@@ -405,8 +405,8 @@ RSpec.describe Sourced::Topology do
       [
         TopologyTest::WidgetDecider,
         TopologyTest::NotifierDecider,
-        TopologyTest::WidgetListProjector,
-        TopologyTest::ReactingProjector,
+        TopologyTest::WidgetListReadModel,
+        TopologyTest::ReactingReadModel,
         TopologyTest::SchedulingDecider
       ]
     end

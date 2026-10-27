@@ -1,124 +1,154 @@
 # frozen_string_literal: true
 
 module Sourced
-  # Reactor base class for Sourced read-model projectors.
+  # Defines how a projection, an in-memory context, is evolved from a history
+  # of messages. A projector (a subclass) is the definition; a projection (an
+  # instance) is its result.
+  #
+  # A projector knows nothing about stores, partitions, commands or side
+  # effects: it declares an initial context and how each message type changes it,
+  # so a projection's context is a function of the messages it evolves. Evolve
+  # blocks run in the projection's own scope.
+  #
+  # Identifying values (ex. a cart's id) come from the messages, not from
+  # outside: set them in the evolve blocks.
+  #
+  # Reactors evolve their context through a projector (see {Sourced::Evolve}),
+  # either one declared inline or a standalone one shared between reactors.
+  #
+  # @example
+  #   class CartProjector < Sourced::Projector
+  #     context do
+  #       { cart_id: nil, items: [] }
+  #     end
+  #
+  #     evolve ItemAdded do |context, evt|
+  #       context[:cart_id] = evt.payload.cart_id
+  #       context[:items] << evt.payload.item_id
+  #     end
+  #   end
+  #
+  #   projection = CartProjector.new
+  #   projection.evolve(messages)
+  #   projection.context # => { items: [...] }
   class Projector
-    include Sourced::Evolve
-    include Sourced::React
-    include Sourced::Sync
-    extend Sourced::Consumer
+    PREFIX = 'sourced_evolution'
+
+    # Default for the +context+ argument, distinct from an explicit +nil+ context.
+    UNSET = Object.new.freeze
 
     class << self
-      # Projectors claim events they evolve from + events they react to.
-      #
-      # @return [Array<Class>] evolved and reacted-to message classes
+      def inherited(subclass)
+        super
+        subclass.handled_messages.concat(handled_messages)
+        subclass.evolve_handlers.merge!(evolve_handlers)
+        subclass.before_evolve_blocks.concat(before_evolve_blocks)
+        subclass.instance_variable_set(:@selector, selector)
+      end
+
+      # @return [Hash{Class => Symbol}] each handled message class's evolve method
+      def evolve_handlers
+        @evolve_handlers ||= {}
+      end
+
+      # @return [Array<Class>] message classes this projection evolves from
       def handled_messages
-        (projection_class.handled_messages + handled_messages_for_react).uniq
+        @handled_messages ||= []
       end
 
-      private
-
-      # Reactions are gated per message by {React#should_react?}, which by
-      # default skips them while replaying. +sync+ / +after_sync+ blocks are
-      # not gated: they run on every claim and receive +replaying:+ so they
-      # can branch themselves.
-      def build_action_pairs(instance, messages, replaying:)
-        sync_actions = instance.collect_actions(
-          context: instance.context, messages:, replaying:
-        )
-
-        reaction_pairs = each_with_partial_ack(messages) do |msg|
-          next unless instance.reacts_to?(msg)
-          next unless instance.should_react?(instance.context, msg, replaying:)
-
-          reaction_msgs = Array(instance.react(msg))
-          actions = Actions.build_for(reaction_msgs)
-          actions.any? ? [actions, msg] : nil
-        end
-
-        reaction_pairs + [[sync_actions, messages.last]]
-      end
-    end
-
-    attr_reader :partition_values
-
-    # @param partition_values [Hash{Symbol => String}] partition key-value pairs
-    def initialize(partition_values = {})
-      @partition_values = partition_values
-    end
-
-    # Projector variant that evolves only the claimed messages on top of stored context.
-    #
-    # The stored context is loaded by the +load_context+ block, which runs in the
-    # reactor's scope and so may read a database. When it returns +nil+ (or
-    # isn't declared), the projection's +context+ block builds the initial context.
-    #
-    # @example
-    #   class CartListing < Sourced::Projector::StateStored
-    #     partition_by :cart_id
-    #     evolve CartProjection
-    #
-    #     load_context { |partition_values| MyDB.find(partition_values[:cart_id]) }
-    #     sync { |context:, **| MyDB.upsert(context) }
-    #   end
-    class StateStored < self
-      class << self
-        # Declare how to load the stored context for a partition.
-        #
-        # @yield [partition_values] runs in the reactor instance's scope
-        # @yieldreturn [Object, nil] the stored context, or +nil+ if there is none
-        def load_context(&)
-          define_method(:load_context, &)
-        end
-
-        def handle_batch(partition_values, new_messages, history: nil, replaying: false)
-          instance = new(partition_values)
-          instance.evolve(new_messages)
-          build_action_pairs(instance, new_messages, replaying:)
-        end
-
-        # @param claim [ClaimResult] claimed partition batch
-        # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
-        def handle_claim(claim)
-          values = partition_keys.to_h { |k| [k, claim.partition_value[k.to_s]] }
-          handle_batch(values, claim.messages, replaying: claim.replaying)
-        end
-      end
-
-      # @param _partition_values [Hash{Symbol => String}] partition key-value pairs
-      # @return [Object, nil] the stored context; +nil+ by default
-      def load_context(_partition_values)
-        nil
-      end
-
-      # The projection starts from the stored context when +load_context+ returns one.
+      # What this projector evolves from, built by {.evolve}: a {Selector} of
+      # its handled message types, without keys. Reactors scope it by their
+      # partition keys; {Sourced.load} by the values it's given.
       #
-      # @return [Sourced::Projection]
-      def projection
-        @projection ||= begin
-          stored = load_context(partition_values)
-          stored.nil? ? self.class.projection_class.new : self.class.projection_class.new(stored)
+      # @return [Selector]
+      def selector
+        @selector ||= Selector::NONE
+      end
+
+      # Define the initial context factory.
+      #
+      # @yieldreturn [Object] the initial context
+      # @raise [ArgumentError] if the block declares arguments: it receives none
+      def context(&blk)
+        if blk.arity.positive?
+          raise ArgumentError,
+                "#{self}.context takes a block with no arguments; " \
+                'set identifying values (ex. ids) from messages in evolve blocks'
         end
+
+        define_method(:init_context, &blk)
+      end
+
+      # @return [Array<Proc>] blocks run before each evolve handler, in order
+      def before_evolve_blocks
+        @before_evolve_blocks ||= []
+      end
+
+      # Register a block to run before the evolve handler of every message this
+      # projection handles, in the projection's scope. Messages without a
+      # handler are still skipped. Blocks run in declaration order, and
+      # subclasses inherit them.
+      #
+      # @example Stamp every order event
+      #   before_evolve do |context, evt|
+      #     context[:order_id] ||= evt.payload.order_id
+      #     context[:updated_at] = evt.created_at
+      #   end
+      #
+      # @yield [context, message]
+      # @raise [ArgumentError] without a block
+      def before_evolve(&block)
+        raise ArgumentError, "#{self}.before_evolve requires a block" unless block
+
+        before_evolve_blocks << block
+      end
+
+      # Register an evolve handler for a {Sourced::Message} subclass, or for the
+      # class an object's +to_message_class+ returns (see {Sourced::Message.to_message_class}).
+      #
+      # @param declared [Class, #to_message_class] message class to evolve from
+      # @yield [context, message] mutates +context+ for +message+
+      def evolve(declared, &block)
+        message_class = declared.to_message_class
+        handled_messages << message_class unless handled_messages.include?(message_class)
+        @selector = selector + Selector[message_class]
+        evolve_handlers[message_class] = define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
       end
     end
 
-    # Projector variant that rebuilds context from full history each time.
-    class EventSourced < self
-      class << self
-        def handle_batch(partition_values, new_messages, history:, replaying: false)
-          instance = new(partition_values)
-          instance.evolve(history.messages)
-          build_action_pairs(instance, new_messages, replaying:)
-        end
+    # @param context [Object] starting context, used instead of the +context+ block
+    def initialize(context = UNSET)
+      @context = context unless UNSET.equal?(context)
+    end
 
-        # @param claim [ClaimResult] claimed partition batch
-        # @param history [ReadResult] full partition history
-        # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
-        def handle_claim(claim, history:)
-          values = partition_keys.to_h { |k| [k, claim.partition_value[k.to_s]] }
-          handle_batch(values, claim.messages, history:, replaying: claim.replaying)
-        end
+    def init_context
+      nil
+    end
+
+    # @return [Object] current context, built by the +context+ block on first access
+    def context
+      return @context if defined?(@context)
+
+      @context = init_context
+    end
+
+    # Apply messages to context via registered handlers, each preceded by the
+    # +before_evolve+ blocks. Handlers are looked up by +msg.to_message.class+,
+    # so wrapped messages dispatch too; they receive +msg+ as given. Skips
+    # messages without a registered handler.
+    #
+    # @param messages [Sourced::Message, Array<Sourced::Message>]
+    # @return [Object] the evolved context
+    def evolve(messages)
+      handlers = self.class.evolve_handlers
+      Array(messages).each do |msg|
+        method_name = handlers[msg.to_message.class]
+        next unless method_name
+
+        self.class.before_evolve_blocks.each { |blk| instance_exec(context, msg, &blk) }
+        send(method_name, context, msg)
       end
+      context
     end
   end
 end

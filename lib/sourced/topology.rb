@@ -7,7 +7,7 @@ rescue LoadError
 end
 
 module Sourced
-  # Analyzes registered reactors (Deciders, Projectors and Machines) and builds a
+  # Analyzes registered reactors (Deciders, ReadModels and Machines) and builds a
   # flat array of node structs describing the message flow graph. Enables
   # visualization, introspection, and Event Modeling diagram generation.
   module Topology
@@ -43,7 +43,7 @@ module Sourced
 
     # Analyze registered reactors and build the topology graph.
     #
-    # @param reactors [Enumerable<Class>] reactor classes (Deciders and/or Projectors)
+    # @param reactors [Enumerable<Class>] reactor classes (Deciders and/or ReadModels)
     # @return [Array<CommandNode, EventNode, AutomationNode, ReadModelNode>]
     def self.build(reactors)
       analyzer = SourceAnalyzer.new
@@ -117,8 +117,8 @@ module Sourced
           end
         end
 
-        is_projector = reactor < Sourced::Projector
-        rm_id = is_projector ? "#{Sourced::Types::ModuleToMessageType.parse(group_id)}-rm" : nil
+        is_read_model = reactor < Sourced::ReadModel
+        rm_id = is_read_model ? "#{Sourced::Types::ModuleToMessageType.parse(group_id)}-rm" : nil
         projector_aut_ids = []
 
         if reactor.respond_to?(:handled_messages_for_react)
@@ -130,7 +130,7 @@ module Sourced
             produced_types = resolve_refs(produced_refs, reactor)
 
             aut_id = "#{evt_class.type}-#{group_id}-aut"
-            projector_aut_ids << aut_id if is_projector
+            projector_aut_ids << aut_id if is_read_model
 
             nodes << AutomationNode.new(
               type: 'automation',
@@ -138,7 +138,7 @@ module Sourced
               name: "reaction(#{evt_class.name})",
               group_id: group_id,
               group_label: group_label,
-              consumes: is_projector ? [rm_id] : [evt_class.type],
+              consumes: is_read_model ? [rm_id] : [evt_class.type],
               produces: produced_types
             )
           end
@@ -149,9 +149,9 @@ module Sourced
 
             group_type_id = Sourced::Types::ModuleToMessageType.parse(group_id)
             aut_id = "#{group_type_id}-aut"
-            projector_aut_ids << aut_id if is_projector
+            projector_aut_ids << aut_id if is_read_model
 
-            consumes = if is_projector
+            consumes = if is_read_model
               [rm_id]
             else
               catch_all_events.map(&:type)
@@ -169,7 +169,7 @@ module Sourced
           end
         end
 
-        if is_projector
+        if is_read_model
           consumes = reactor.selector.types
             .reject { |c| c < Sourced::Command }
             .map(&:type)

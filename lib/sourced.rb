@@ -205,13 +205,13 @@ module Sourced
   # +reactor_class+ must respond to +selector+, and its instances to
   # +evolve(messages)+. If it responds to +partition_keys+, only those keys of
   # +values+ are the partition, its selector is bound to them and instances are
-  # built with +new(values)+; otherwise, as for a {Sourced::Projection}, all of
+  # built with +new(values)+; otherwise, as for a {Sourced::Projector}, all of
   # +values+ are the partition, its selector is scoped by them and instances
   # are built with +new+.
   #
   # @raise [MissingPartitionKeyError] if a partition key is missing or nil
   # @example
-  #   cart, read_result = Sourced.load(CartProjection, cart_id: 'c1')
+  #   cart, read_result = Sourced.load(CartProjector, cart_id: 'c1')
   #   cart.context
   def self.load(reactor_class, store: nil, upto: nil, **values)
     store ||= self.store
@@ -269,14 +269,14 @@ require 'sourced/action_runner'
 require 'sourced/reactor_defaults'
 require 'sourced/consumer'
 require 'sourced/partition_schema'
-require 'sourced/projection'
+require 'sourced/projector'
 require 'sourced/evolve'
 require 'sourced/react'
 require 'sourced/sync'
 require 'sourced/decider'
 require 'sourced/machine'
 require 'sourced/consumer_group_machine'
-require 'sourced/projector'
+require 'sourced/read_model'
 require 'sourced/router'
 require 'sourced/worker'
 require 'sourced/stale_claim_reaper'

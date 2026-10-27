@@ -540,7 +540,7 @@ RSpec.describe Sourced::Decider do
     it "is its projection's selector, by the partition keys" do
       selector = TestDeviceDecider.selector
 
-      expect(selector).to eq(TestDeviceDecider.projection_class.selector.by(:device_id))
+      expect(selector).to eq(TestDeviceDecider.projector.selector.by(:device_id))
       expect(selector.types.map(&:type)).to include('decider_test.device.registered', 'decider_test.device.bound')
     end
   end

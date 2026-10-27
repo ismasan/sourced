@@ -1,0 +1,587 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+require 'sourced'
+
+module ProjectorTestMessages
+  ItemAdded = Sourced::Message.define('projector_test.item.added') do
+    attribute :list_id, String
+    attribute :name, String
+  end
+
+  ItemArchived = Sourced::Message.define('projector_test.item.archived') do
+    attribute :list_id, String
+    attribute :name, String
+  end
+
+  NotifyArchive = Sourced::Message.define('projector_test.notify_archive') do
+    attribute :list_id, String
+  end
+
+  DelayedNotifyArchive = Sourced::Message.define('projector_test.delayed_notify_archive') do
+    attribute :list_id, String
+  end
+end
+
+class TestItemReadModel < Sourced::ReadModel::StateStored
+  partition_by :list_id
+  consumer_group 'item_projector_test'
+
+  context do
+    { items: [], synced: false }
+  end
+
+  evolve ProjectorTestMessages::ItemAdded do |context, msg|
+    context[:items] << msg.payload.name
+  end
+
+  evolve ProjectorTestMessages::ItemArchived do |context, msg|
+    context[:items].delete(msg.payload.name)
+  end
+
+  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+    ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
+  end
+
+  sync do |context:, messages:, replaying:|
+    context[:synced] = true
+    context[:last_replaying] = replaying
+  end
+
+  after_sync do |context:, messages:, replaying:|
+    context[:after_synced] = true
+  end
+end
+
+class TestItemESReadModel < Sourced::ReadModel::EventSourced
+  partition_by :list_id
+  consumer_group 'item_es_projector_test'
+
+  context do
+    { items: [], synced: false }
+  end
+
+  evolve ProjectorTestMessages::ItemAdded do |context, msg|
+    context[:items] << msg.payload.name
+  end
+
+  evolve ProjectorTestMessages::ItemArchived do |context, msg|
+    context[:items].delete(msg.payload.name)
+  end
+
+  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+    ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
+  end
+
+  sync do |context:, messages:, replaying:|
+    context[:synced] = true
+    context[:last_replaying] = replaying
+  end
+
+  after_sync do |context:, messages:, replaying:|
+    context[:after_synced] = true
+  end
+end
+
+class TestDelayedItemReadModel < Sourced::ReadModel::StateStored
+  partition_by :list_id
+  consumer_group 'delayed_item_projector_test'
+
+  context do
+    { items: [] }
+  end
+
+  evolve ProjectorTestMessages::ItemArchived do |context, msg|
+    context[:items].delete(msg.payload.name)
+  end
+
+  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+    dispatch(ProjectorTestMessages::DelayedNotifyArchive, list_id: msg.payload.list_id)
+      .at(Time.now + 10)
+  end
+end
+
+# Reacts on replay too, by overriding the default replay gate.
+class TestReplayingItemReadModel < Sourced::ReadModel::StateStored
+  partition_by :list_id
+  consumer_group 'replaying_item_projector_test'
+
+  context do
+    { items: [] }
+  end
+
+  evolve ProjectorTestMessages::ItemArchived do |context, msg|
+    context[:items].delete(msg.payload.name)
+  end
+
+  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+    ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
+  end
+
+  def should_react?(_context, _message, replaying: false)
+    true
+  end
+end
+
+# Gates reactions per message on the payload, regardless of replaying.
+class TestSelectiveItemReadModel < Sourced::ReadModel::StateStored
+  partition_by :list_id
+  consumer_group 'selective_item_projector_test'
+
+  context do
+    { items: [] }
+  end
+
+  evolve ProjectorTestMessages::ItemArchived do |context, msg|
+    context[:items].delete(msg.payload.name)
+  end
+
+  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+    ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
+  end
+
+  def should_react?(_context, message, replaying: false)
+    message.payload.name == 'Apple'
+  end
+end
+
+RSpec.describe Sourced::ReadModel do
+  describe '.handled_messages' do
+    it 'includes evolve and react types' do
+      msgs = TestItemReadModel.handled_messages
+      expect(msgs).to include(ProjectorTestMessages::ItemAdded)
+      expect(msgs).to include(ProjectorTestMessages::ItemArchived)
+    end
+  end
+
+  describe '.handle_batch (StateStored)' do
+    it 'evolves from new_messages and includes sync and after_sync actions' do
+      msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        ),
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Banana' }), 2
+        )
+      ]
+
+      pairs = TestItemReadModel.handle_batch(['L1'], msgs)
+
+      sync_pair = pairs.last
+      sync_actions, source_msg = sync_pair
+      expect(source_msg).to eq(msgs.last)
+
+      sync_action = Array(sync_actions).find { |a| a.is_a?(Sourced::Actions::Sync) }
+      expect(sync_action).not_to be_nil
+
+      after_sync_action = Array(sync_actions).find { |a| a.is_a?(Sourced::Actions::AfterSync) }
+      expect(after_sync_action).not_to be_nil
+    end
+
+    it 'runs reactions when not replaying' do
+      msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        )
+      ]
+
+      pairs = TestItemReadModel.handle_batch(['L1'], msgs)
+
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::Actions::Append) }
+
+      expect(append_actions.size).to eq(1)
+      expect(append_actions.first.messages.first).to be_a(ProjectorTestMessages::NotifyArchive)
+    end
+
+    it 'skips reactions when replaying' do
+      msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        )
+      ]
+
+      pairs = TestItemReadModel.handle_batch(['L1'], msgs, replaying: true)
+
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::Actions::Append) }
+
+      expect(append_actions).to be_empty
+    end
+  end
+
+  describe '.handle_batch (EventSourced)' do
+    let(:guard) { Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 5) }
+
+    def make_history(messages)
+      Sourced::ReadResult.new(messages: messages, guard: guard)
+    end
+
+    it 'evolves from full history, not just new messages' do
+      history_msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        ),
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Banana' }), 2
+        ),
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 3
+        )
+      ]
+      new_msgs = [history_msgs.last]
+      history = make_history(history_msgs)
+
+      pairs = TestItemESReadModel.handle_batch(['L1'], new_msgs, history: history)
+
+      sync_pair = pairs.last
+      _sync_actions, source_msg = sync_pair
+      expect(source_msg).to eq(new_msgs.last)
+    end
+
+    it 'runs reactions only on new messages, not full history' do
+      history_msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Old' }), 1
+        ),
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'New' }), 2
+        )
+      ]
+      new_msgs = [history_msgs.last]
+      history = make_history(history_msgs)
+
+      pairs = TestItemESReadModel.handle_batch(['L1'], new_msgs, history: history)
+
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::Actions::Append) }
+
+      expect(append_actions.size).to eq(1)
+    end
+
+    it 'skips reactions when replaying' do
+      history_msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        )
+      ]
+      history = make_history(history_msgs)
+
+      pairs = TestItemESReadModel.handle_batch(['L1'], history_msgs, history: history, replaying: true)
+
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::Actions::Append) }
+
+      expect(append_actions).to be_empty
+    end
+  end
+
+  describe '.handle_claim' do
+    let(:guard) { Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 2) }
+
+    def make_claim(messages, replaying: false)
+      Sourced::ClaimResult.new(
+        offset_id: 1, key_pair_ids: [], partition_key: 'list_id:L1',
+        partition_value: { 'list_id' => 'L1' },
+        messages: messages, replaying: replaying, guard: guard
+      )
+    end
+
+    it 'evolves from claim.messages and includes sync actions' do
+      msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        ),
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Banana' }), 2
+        )
+      ]
+      claim = make_claim(msgs)
+
+      pairs = TestItemReadModel.handle_claim(claim)
+
+      # Last pair should contain sync actions
+      sync_pair = pairs.last
+      sync_actions, source_msg = sync_pair
+      expect(source_msg).to eq(msgs.last)
+
+      sync_action = Array(sync_actions).find { |a| a.is_a?(Sourced::Actions::Sync) }
+      expect(sync_action).not_to be_nil
+    end
+
+    it 'runs reactions when not replaying' do
+      msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        )
+      ]
+      claim = make_claim(msgs, replaying: false)
+
+      pairs = TestItemReadModel.handle_claim(claim)
+
+      # Should have reaction pair + sync pair
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::Actions::Append) }
+
+      expect(append_actions.size).to eq(1)
+      expect(append_actions.first.messages.first).to be_a(ProjectorTestMessages::NotifyArchive)
+    end
+
+    it 'wraps delayed reactions in an append action carrying a future-dated message' do
+      msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        )
+      ]
+      claim = make_claim(msgs, replaying: false)
+
+      pairs = TestDelayedItemReadModel.handle_claim(claim)
+
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |action| action.is_a?(Sourced::Actions::Append) }
+
+      delayed = append_actions.flat_map(&:messages)
+        .find { |m| m.is_a?(ProjectorTestMessages::DelayedNotifyArchive) }
+      expect(delayed).not_to be_nil
+      expect(delayed.created_at).to be > Time.now
+    end
+
+    it 'skips reactions when replaying' do
+      msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        )
+      ]
+      claim = make_claim(msgs, replaying: true)
+
+      pairs = TestItemReadModel.handle_claim(claim)
+
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::Actions::Append) }
+
+      expect(append_actions).to be_empty
+    end
+
+    it 'passes replaying to sync blocks' do
+      msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        )
+      ]
+      claim = make_claim(msgs, replaying: true)
+
+      pairs = TestItemReadModel.handle_claim(claim)
+
+      # Execute the sync action to verify replaying is passed through
+      sync_pair = pairs.last
+      sync_actions = Array(sync_pair.first).select { |a| a.is_a?(Sourced::Actions::Sync) }
+      expect(sync_actions).not_to be_empty
+
+      # Call the sync to verify it runs
+      sync_actions.first.call
+    end
+  end
+
+  describe 'EventSourced' do
+    let(:guard) { Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 5) }
+
+    def make_claim(messages, replaying: false)
+      Sourced::ClaimResult.new(
+        offset_id: 1, key_pair_ids: [], partition_key: 'list_id:L1',
+        partition_value: { 'list_id' => 'L1' },
+        messages: messages, replaying: replaying, guard: guard
+      )
+    end
+
+    def make_history(messages)
+      Sourced::ReadResult.new(messages: messages, guard: guard)
+    end
+
+    it 'evolves from full history, not just claim messages' do
+      history_msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        ),
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Banana' }), 2
+        ),
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 3
+        )
+      ]
+      # Claim only contains the latest message
+      claim_msgs = [history_msgs.last]
+      claim = make_claim(claim_msgs)
+      history = make_history(history_msgs)
+
+      pairs = TestItemESReadModel.handle_claim(claim, history: history)
+
+      # Sync pair should be the last one, acked against claim's last message
+      sync_pair = pairs.last
+      _sync_actions, source_msg = sync_pair
+      expect(source_msg).to eq(claim_msgs.last)
+    end
+
+    it 'runs reactions only on claim messages, not full history' do
+      history_msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Old' }), 1
+        ),
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'New' }), 2
+        )
+      ]
+      # Only the second message is in the claim
+      claim_msgs = [history_msgs.last]
+      claim = make_claim(claim_msgs, replaying: false)
+      history = make_history(history_msgs)
+
+      pairs = TestItemESReadModel.handle_claim(claim, history: history)
+
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::Actions::Append) }
+
+      # Only 1 reaction (for the claim message), not 2
+      expect(append_actions.size).to eq(1)
+      expect(append_actions.first.messages.first).to be_a(ProjectorTestMessages::NotifyArchive)
+    end
+
+    it 'skips reactions when replaying' do
+      history_msgs = [
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'Apple' }), 1
+        )
+      ]
+      claim = make_claim(history_msgs, replaying: true)
+      history = make_history(history_msgs)
+
+      pairs = TestItemESReadModel.handle_claim(claim, history: history)
+
+      append_actions = pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::Actions::Append) }
+
+      expect(append_actions).to be_empty
+    end
+
+    it 'is detected by Injector as needing history' do
+      needs = Sourced::Injector.resolve_args(TestItemESReadModel, :handle_claim)
+      expect(needs).to include(:history)
+    end
+
+    it 'StateStored is not detected as needing history' do
+      needs = Sourced::Injector.resolve_args(TestItemReadModel, :handle_claim)
+      expect(needs).not_to include(:history)
+    end
+  end
+
+  describe '#should_react?' do
+    def archived(name, position)
+      Sourced::PositionedMessage.new(
+        ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: name }), position
+      )
+    end
+
+    def reaction_messages(pairs)
+      pairs.flat_map { |actions, _| Array(actions) }
+        .select { |a| a.is_a?(Sourced::Actions::Append) }
+        .flat_map(&:messages)
+    end
+
+    it 'defaults to skipping reactions while replaying' do
+      instance = TestItemReadModel.new(['L1'])
+      msg = archived('Apple', 1)
+
+      expect(instance.should_react?(instance.context, msg, replaying: false)).to be(true)
+      expect(instance.should_react?(instance.context, msg, replaying: true)).to be(false)
+    end
+
+    it 'runs reactions on replaying batches when overridden to true' do
+      pairs = TestReplayingItemReadModel.handle_batch(['L1'], [archived('Apple', 1)], replaying: true)
+
+      expect(reaction_messages(pairs).map(&:class)).to eq([ProjectorTestMessages::NotifyArchive])
+    end
+
+    it 'gates reactions per message rather than per batch' do
+      msgs = [archived('Apple', 1), archived('Banana', 2)]
+
+      pairs = TestSelectiveItemReadModel.handle_batch(['L1'], msgs)
+
+      reactions = pairs.select { |actions, _| Array(actions).any? { |a| a.is_a?(Sourced::Actions::Append) } }
+      expect(reactions.size).to eq(1)
+      expect(reactions.first.last).to eq(msgs.first)
+    end
+
+    it 'still runs sync blocks for a batch whose reactions are all skipped' do
+      pairs = TestItemReadModel.handle_batch(['L1'], [archived('Apple', 1)], replaying: true)
+
+      sync_actions, source_msg = pairs.last
+      expect(Array(sync_actions).any? { |a| a.is_a?(Sourced::Actions::Sync) }).to be(true)
+      expect(source_msg.payload.name).to eq('Apple')
+    end
+  end
+
+  describe '.load_context (StateStored)' do
+    let(:stored) { {} }
+
+    let(:projector) do
+      db = stored
+      Class.new(Sourced::ReadModel::StateStored) do
+        partition_by :list_id
+
+        context { { list_id: nil, items: [] } }
+
+        evolve ProjectorTestMessages::ItemAdded do |context, msg|
+          context[:list_id] = msg.payload.list_id
+          context[:items] << msg.payload.name
+        end
+
+        load_context { |values| find(values[:list_id]) }
+
+        # Reactions see the evolved context, so they show what handle_batch built.
+        reaction ProjectorTestMessages::ItemArchived do |context, msg|
+          ProjectorTestMessages::NotifyArchive.new(payload: { list_id: context[:items].join(',') })
+        end
+
+        define_method(:find) { |list_id| db[list_id] }
+      end
+    end
+
+    def item_added(name) = ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: })
+
+    it 'starts from the stored context, loaded in the reactor scope' do
+      stored['L1'] = { list_id: 'L1', items: ['Stored'] }
+
+      instance = projector.new(list_id: 'L1')
+      instance.evolve([item_added('Apple')])
+      expect(instance.context).to eq(list_id: 'L1', items: %w[Stored Apple])
+    end
+
+    it 'falls back to the projection context block when nothing is stored' do
+      expect(projector.new(list_id: 'L1').context).to eq(list_id: nil, items: [])
+    end
+
+    it 'evolves the claimed batch on top of the stored context in handle_batch' do
+      stored['L1'] = { list_id: 'L1', items: ['Stored'] }
+      msgs = [
+        Sourced::PositionedMessage.new(item_added('Apple'), 1),
+        Sourced::PositionedMessage.new(
+          ProjectorTestMessages::ItemArchived.new(payload: { list_id: 'L1', name: 'x' }), 2
+        )
+      ]
+
+      pairs = projector.handle_batch({ list_id: 'L1' }, msgs)
+      notified = pairs.flat_map { |actions, _| Array(actions) }
+        .grep(Sourced::Actions::Append).flat_map(&:messages)
+
+      expect(notified.map { |m| m.payload.list_id }).to eq(['Stored,Apple'])
+    end
+  end
+
+  describe '.selector' do
+    it "is its projection's selector, by the partition keys" do
+      selector = TestItemReadModel.selector
+      expect(selector).to eq(TestItemReadModel.projector.selector.by(:list_id))
+      expect(selector.types.map(&:type)).to include('projector_test.item.added', 'projector_test.item.archived')
+    end
+  end
+end

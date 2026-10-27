@@ -52,7 +52,7 @@ class DispatchTestDecider < Sourced::Decider
   end
 end
 
-class DispatchTestProjector < Sourced::Projector::StateStored
+class DispatchTestReadModel < Sourced::ReadModel::StateStored
   partition_by :device_id
   consumer_group 'dispatch_test_projector'
 
@@ -102,7 +102,7 @@ RSpec.describe Sourced::Dispatcher do
   before do
     store.install!
     router.register(DispatchTestDecider)
-    router.register(DispatchTestProjector)
+    router.register(DispatchTestReadModel)
   end
 
   describe 'Store notifications' do
@@ -141,7 +141,7 @@ RSpec.describe Sourced::Dispatcher do
       claim = store.claim_next(
         'dispatch_test_projector',
         partition_by: ['device_id'],
-        handled_types: DispatchTestProjector.handled_messages.map(&:type),
+        handled_types: DispatchTestReadModel.handled_messages.map(&:type),
         worker_id: 'w1',
         batch_size: 2
       )
@@ -160,7 +160,7 @@ RSpec.describe Sourced::Dispatcher do
       claim = store.claim_next(
         'dispatch_test_projector',
         partition_by: ['device_id'],
-        handled_types: DispatchTestProjector.handled_messages.map(&:type),
+        handled_types: DispatchTestReadModel.handled_messages.map(&:type),
         worker_id: 'w1'
       )
 
@@ -173,7 +173,7 @@ RSpec.describe Sourced::Dispatcher do
     let(:queuer) do
       described_class.new(
         work_queue: work_queue,
-        reactors: [DispatchTestDecider, DispatchTestProjector]
+        reactors: [DispatchTestDecider, DispatchTestReadModel]
       )
     end
 
@@ -186,7 +186,7 @@ RSpec.describe Sourced::Dispatcher do
       popped << work_queue.pop
       popped << work_queue.pop
 
-      expect(popped).to contain_exactly(DispatchTestDecider, DispatchTestProjector)
+      expect(popped).to contain_exactly(DispatchTestDecider, DispatchTestReadModel)
     end
 
     it 'maps group_id to reactor for reactor_resumed' do
@@ -230,7 +230,7 @@ RSpec.describe Sourced::Dispatcher do
           DispatcherTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
         )
 
-        result = worker.tick(DispatchTestProjector)
+        result = worker.tick(DispatchTestReadModel)
         expect(result).to be true
       end
 
@@ -250,10 +250,10 @@ RSpec.describe Sourced::Dispatcher do
         )
 
         worker.instance_variable_set(:@running, true)
-        worker.drain(DispatchTestProjector)
+        worker.drain(DispatchTestReadModel)
 
         # Both partitions should have been processed — no more work
-        result = worker.tick(DispatchTestProjector)
+        result = worker.tick(DispatchTestReadModel)
         expect(result).to be false
       end
 
@@ -277,11 +277,11 @@ RSpec.describe Sourced::Dispatcher do
         )
 
         bounded_worker.instance_variable_set(:@running, true)
-        bounded_worker.drain(DispatchTestProjector)
+        bounded_worker.drain(DispatchTestReadModel)
 
         # Should have re-enqueued — pop it back
         popped = work_queue.pop
-        expect(popped).to eq(DispatchTestProjector)
+        expect(popped).to eq(DispatchTestReadModel)
       end
     end
   end
@@ -594,7 +594,7 @@ RSpec.describe Sourced::Dispatcher do
 
       # Pop from queue — should have the reactors that handle this type
       popped = work_queue.pop
-      expect([DispatchTestDecider, DispatchTestProjector]).to include(popped)
+      expect([DispatchTestDecider, DispatchTestReadModel]).to include(popped)
 
       # Worker processes the message
       worker = dispatcher.workers.first

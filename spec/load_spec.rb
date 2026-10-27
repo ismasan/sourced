@@ -37,7 +37,7 @@ class LoadTestDecider < Sourced::Decider
   end
 end
 
-class LoadTestProjection < Sourced::Projection
+class LoadTestProjector < Sourced::Projector
   context { { course_id: nil, students: [] } }
 
   evolve LoadTestMessages::StudentEnrolled do |context, evt|
@@ -46,7 +46,7 @@ class LoadTestProjection < Sourced::Projection
   end
 end
 
-class LoadTestProjector < Sourced::Projector::StateStored
+class LoadTestReadModel < Sourced::ReadModel::StateStored
   partition_by :course_id
   consumer_group 'load_test_projector'
 
@@ -280,7 +280,7 @@ RSpec.describe 'Sourced.load' do
     end
   end
 
-  describe 'loading a Projector' do
+  describe 'loading a ReadModel' do
     before do
       store.append([
         LoadTestMessages::CourseCreated.new(
@@ -299,9 +299,9 @@ RSpec.describe 'Sourced.load' do
       ])
     end
 
-    it 'evolves projector context from matching messages' do
+    it 'evolves read model context from matching messages' do
       instance, _read_result = Sourced.load(
-        LoadTestProjector, store: store,
+        LoadTestReadModel, store: store,
         course_id: 'algebra'
       )
 
@@ -311,7 +311,7 @@ RSpec.describe 'Sourced.load' do
 
   end
 
-  describe 'loading a Projection' do
+  describe 'loading a Projector' do
     before do
       store.append([
         LoadTestMessages::StudentEnrolled.new(payload: { course_id: 'algebra', student_id: 'joe' }),
@@ -321,15 +321,15 @@ RSpec.describe 'Sourced.load' do
     end
 
     it 'uses the given values as the partition' do
-      projection, read_result = Sourced.load(LoadTestProjection, store: store, course_id: 'algebra')
+      projection, read_result = Sourced.load(LoadTestProjector, store: store, course_id: 'algebra')
 
-      expect(projection).to be_a(LoadTestProjection)
+      expect(projection).to be_a(LoadTestProjector)
       expect(projection.context).to eq(course_id: 'algebra', students: %w[joe jane])
       expect(read_result.messages.size).to eq(2)
     end
 
     it 'evolves over at most upto messages' do
-      projection, _read_result = Sourced.load(LoadTestProjection, store: store, upto: 1, course_id: 'algebra')
+      projection, _read_result = Sourced.load(LoadTestProjector, store: store, upto: 1, course_id: 'algebra')
 
       expect(projection.context[:students]).to eq(['joe'])
     end
@@ -361,10 +361,10 @@ RSpec.describe 'Sourced.load' do
       }.to raise_error(Sourced::MissingPartitionKeyError, /\[:student_id\]/)
     end
 
-    it 'raises for a nil value when loading a Projection' do
+    it 'raises for a nil value when loading a Projector' do
       expect {
-        Sourced.load(LoadTestProjection, store: store, course_id: nil)
-      }.to raise_error(Sourced::MissingPartitionKeyError, /LoadTestProjection.*\[:course_id\]/)
+        Sourced.load(LoadTestProjector, store: store, course_id: nil)
+      }.to raise_error(Sourced::MissingPartitionKeyError, /LoadTestProjector.*\[:course_id\]/)
     end
   end
 end

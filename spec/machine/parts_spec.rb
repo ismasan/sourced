@@ -525,7 +525,7 @@ RSpec.describe Sourced::Machine::Part do
     end
 
     it "evolves only transitions to the part's compound state, not those straight to its sub-states" do
-      projection = Class.new(Sourced::Projection) do
+      projection = Class.new(Sourced::Projector) do
         context { [] }
         evolve(MachinePartsTest::Payroll::PendingMachine) { |context, evt| context << evt.payload.entered }
       end
@@ -536,8 +536,8 @@ RSpec.describe Sourced::Machine::Part do
       expect(projection.new.evolve(events)).to eq([%w[pending pending.queued]])
     end
 
-    it 'subscribes a projector evolving and reacting to a part to Part::State' do
-      projector = Class.new(Sourced::Projector::StateStored) do
+    it 'subscribes a read model evolving and reacting to a part to Part::State' do
+      projector = Class.new(Sourced::ReadModel::StateStored) do
         partition_by :payroll_id
         consumer_group 'parts_handler_projector'
         evolve(MachinePartsTest::Payroll::PendingMachine) { |context, _evt| context }

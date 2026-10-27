@@ -170,7 +170,7 @@ RSpec.describe Sourced::PartitionSchema do
     end
 
     it 'allows evolved events with some of the keys' do
-      reactor = Class.new(Sourced::Projector::StateStored) do
+      reactor = Class.new(Sourced::ReadModel::StateStored) do
         consumer_group 'partition_schema_projector'
         partition_by :order_id, item_id: Sourced::Types::Integer
         context { {} }
@@ -181,7 +181,7 @@ RSpec.describe Sourced::PartitionSchema do
     end
 
     it 'checks the types of the keys an evolved event declares' do
-      reactor = Class.new(Sourced::Projector::StateStored) do
+      reactor = Class.new(Sourced::ReadModel::StateStored) do
         consumer_group 'partition_schema_projector'
         partition_by :order_id, item_id: Sourced::Types::Integer
         context { {} }
@@ -202,7 +202,7 @@ RSpec.describe Sourced::PartitionSchema do
     end
 
     it 'requires a message declaring every key' do
-      reactor = Class.new(Sourced::Projector::StateStored) do
+      reactor = Class.new(Sourced::ReadModel::StateStored) do
         consumer_group 'partition_schema_projector'
         partition_by :order_id, :item_id
         context { {} }

@@ -1,17 +1,17 @@
 # frozen_string_literal: true
 
 module Sourced
-  # Evolve mixin for reactors: evolves reactor context through a {Sourced::Projection}.
+  # Evolve mixin for reactors: evolves reactor context through a {Sourced::Projector}.
   #
-  # The +context+ / +evolve+ DSL declares the reactor's projection, so evolve
+  # The +context+ / +evolve+ DSL declares the reactor's projector, so evolve
   # blocks run in the projection's scope, not the reactor's. A reactor can also
-  # adopt a standalone projection class with <tt>evolve SomeProjection</tt>.
+  # adopt a standalone projector with <tt>evolve SomeProjector</tt>.
   #
-  # Each reactor works on a projection subclass of its own (inheriting from the
-  # adopted projection, or from its parent reactor's), so inline +evolve+ blocks
-  # never change a projection class another reactor uses.
+  # Each reactor works on a projector subclass of its own (inheriting from the
+  # adopted projector, or from its parent reactor's), so inline +evolve+ blocks
+  # never change a projector another reactor uses.
   #
-  # @example Inline projection
+  # @example Inline projector
   #   class Carts < Sourced::Decider
   #     context { { items: [] } }
   #
@@ -20,9 +20,9 @@ module Sourced
   #     end
   #   end
   #
-  # @example Adopting a standalone projection
+  # @example Adopting a standalone projector
   #   class Carts < Sourced::Decider
-  #     evolve CartProjection
+  #     evolve CartProjector
   #   end
   module Evolve
     def self.included(base)
@@ -32,9 +32,9 @@ module Sourced
       base.singleton_class.prepend ClassMethods
     end
 
-    # @return [Sourced::Projection] this reactor's projection, built on first access
+    # @return [Sourced::Projector] this reactor's projection, built on first access
     def projection
-      @projection ||= self.class.projection_class.new
+      @projection ||= self.class.projector.new
     end
 
     # @return [Object] the projection's current context
@@ -53,15 +53,15 @@ module Sourced
     module ClassMethods
       def inherited(subclass)
         super
-        subclass.send(:__use_projection_class, projection_class)
+        subclass.send(:__use_projector, projector)
       end
 
-      # @return [Class<Sourced::Projection>] the projection subclass this reactor owns
-      def projection_class
-        @projection_class ||= __build_projection_class(Sourced::Projection)
+      # @return [Class<Sourced::Projector>] the projector subclass this reactor owns
+      def projector
+        @projector ||= __build_projector(Sourced::Projector)
       end
 
-      # The history the Router reads for a claimed partition: the projection's
+      # The history the Router reads for a claimed partition: the projector's
       # selector scoped by the partition keys. {Selector::NONE} (no history)
       # for an id-partitioned reactor, which declares no partition keys or
       # +partition_by :__id+.
@@ -71,24 +71,24 @@ module Sourced
         keys = partition_keys
         return Selector::NONE if keys.empty? || IdPartition.keys?(keys)
 
-        projection_class.selector.by(*keys)
+        projector.selector.by(*keys)
       end
 
-      # Define the projection's initial context factory. The block takes no arguments.
+      # Define the projector's initial context factory. The block takes no arguments.
       def context(&)
         @declares_projection = true
-        projection_class.context(&)
+        projector.context(&)
       end
 
       # Register a block on the reactor's projection to run before the evolve
-      # handler of every message it handles. See {Sourced::Projection.before_evolve}.
+      # handler of every message it handles. See {Sourced::Projector.before_evolve}.
       def before_evolve(&)
         @declares_projection = true
-        projection_class.before_evolve(&)
+        projector.before_evolve(&)
       end
 
       # Register an evolve handler on the reactor's projection, or adopt a
-      # standalone projection class.
+      # standalone projector.
       #
       # Adopting must come before this reactor's own +context+ / +evolve+ /
       # +before_evolve+ declarations, which it would otherwise discard. It replaces handlers
@@ -97,11 +97,11 @@ module Sourced
       # @overload evolve(message_class, &block)
       #   @param message_class [Class] a {Sourced::Message} subclass
       #   @yield [context, message] runs in the projection's scope
-      # @overload evolve(projection_class)
-      #   @param projection_class [Class<Sourced::Projection>] projection to adopt
+      # @overload evolve(projector)
+      #   @param projector [Class<Sourced::Projector>] projector to adopt
       # @raise [ArgumentError] when adopting after own declarations, or with a block
       def evolve(klass, &block)
-        if klass.is_a?(Class) && klass <= Sourced::Projection
+        if klass.is_a?(Class) && klass <= Sourced::Projector
           raise ArgumentError, "#{self}.evolve(#{klass}) takes no block" if block
           if @declares_projection
             raise ArgumentError,
@@ -109,24 +109,24 @@ module Sourced
           end
 
           @declares_projection = true
-          @projection_class = __build_projection_class(klass)
+          @projector = __build_projector(klass)
         else
           @declares_projection = true
-          projection_class.evolve(klass, &block)
+          projector.evolve(klass, &block)
         end
       end
 
       private
 
-      def __use_projection_class(parent)
-        @projection_class = __build_projection_class(parent)
+      def __use_projector(parent)
+        @projector = __build_projector(parent)
       end
 
-      def __build_projection_class(parent)
+      def __build_projector(parent)
         reactor = self
-        label = parent == Sourced::Projection || parent.name.nil? ? '' : "(#{parent.name})"
+        label = parent == Sourced::Projector || parent.name.nil? ? '' : "(#{parent.name})"
         Class.new(parent) do
-          define_singleton_method(:to_s) { "#{reactor}::Projection#{label}" }
+          define_singleton_method(:to_s) { "#{reactor}::Projector#{label}" }
           define_singleton_method(:inspect) { to_s }
         end
       end
