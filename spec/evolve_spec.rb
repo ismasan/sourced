@@ -62,12 +62,21 @@ RSpec.describe Sourced::Evolve do
     it 'declares them on a projection subclass the reactor owns' do
       expect(decider.projection_class.superclass).to eq(Sourced::Decider.projection_class)
       expect(decider.projection_class).to be < Sourced::Projection
-      expect(decider.handled_messages_for_evolve).to eq([EvolveTestMessages::ItemAdded])
+      expect(decider.selector.types).to eq([EvolveTestMessages::ItemAdded])
       expect(decider.new(cart_id: 'c1').projection).to be_a(decider.projection_class)
     end
 
-    it 'builds the history query from the projection types' do
-      expect(decider.context_for(cart_id: 'c1').types).to eq([EvolveTestMessages::ItemAdded])
+    it "builds its selector from the projection's, by the partition keys" do
+      expect(decider.selector).to eq(Sourced::Selector[EvolveTestMessages::ItemAdded].by(:cart_id))
+    end
+
+    it 'reads no history when id-partitioned' do
+      queue = Class.new(Sourced::Decider) do
+        exclusive
+        evolve(EvolveTestMessages::ItemAdded) { |*| }
+      end
+      expect(queue.selector).to eq(Sourced::Selector::NONE)
+      expect(queue.projection_class.selector.types).to eq([EvolveTestMessages::ItemAdded])
     end
 
     it 'runs evolve blocks in the projection scope, not the reactor scope' do
@@ -97,7 +106,7 @@ RSpec.describe Sourced::Evolve do
     it 'shares the projection between reactors' do
       [decider, projector].each do |reactor|
         expect(reactor.projection_class.superclass).to eq(EvolveTestMessages::CartProjection)
-        expect(reactor.handled_messages_for_evolve).to eq(
+        expect(reactor.selector.types).to eq(
           [EvolveTestMessages::ItemAdded, EvolveTestMessages::ItemRemoved]
         )
 
@@ -112,9 +121,9 @@ RSpec.describe Sourced::Evolve do
     it 'extends the reactor own subclass with inline evolve blocks, leaving the shared class alone' do
       decider.evolve(EvolveTestMessages::CartClosed) { |context, _| context[:closed] = true }
 
-      expect(decider.handled_messages_for_evolve).to include(EvolveTestMessages::CartClosed)
+      expect(decider.selector.types).to include(EvolveTestMessages::CartClosed)
       expect(EvolveTestMessages::CartProjection.handled_messages).not_to include(EvolveTestMessages::CartClosed)
-      expect(projector.handled_messages_for_evolve).not_to include(EvolveTestMessages::CartClosed)
+      expect(projector.selector.types).not_to include(EvolveTestMessages::CartClosed)
       expect(EvolveTestMessages::CartProjection.new.respond_to?(
         Sourced.message_method_name(Sourced::Projection::PREFIX, EvolveTestMessages::CartClosed.to_s)
       )).to be(false)
@@ -180,7 +189,7 @@ RSpec.describe Sourced::Evolve do
     it 'subclasses inherit the parent projection on a subclass of their own' do
       child = Class.new(parent)
       expect(child.projection_class.superclass).to eq(parent.projection_class)
-      expect(child.handled_messages_for_evolve).to eq([EvolveTestMessages::ItemAdded])
+      expect(child.projection_class.selector.types).to eq([EvolveTestMessages::ItemAdded])
 
       instance = child.new
       instance.evolve([added('i1')])
@@ -192,14 +201,14 @@ RSpec.describe Sourced::Evolve do
         evolve(EvolveTestMessages::CartClosed) { |context, _| context[:closed] = true }
       end
 
-      expect(child.handled_messages_for_evolve).to include(EvolveTestMessages::CartClosed)
-      expect(parent.handled_messages_for_evolve).not_to include(EvolveTestMessages::CartClosed)
+      expect(child.projection_class.selector.types).to include(EvolveTestMessages::CartClosed)
+      expect(parent.projection_class.selector.types).not_to include(EvolveTestMessages::CartClosed)
     end
 
     it 'subclasses can adopt a projection, replacing the inherited one' do
       child = Class.new(parent) { evolve EvolveTestMessages::CartProjection }
 
-      expect(child.handled_messages_for_evolve).to eq([EvolveTestMessages::ItemAdded, EvolveTestMessages::ItemRemoved])
+      expect(child.projection_class.selector.types).to eq([EvolveTestMessages::ItemAdded, EvolveTestMessages::ItemRemoved])
       expect(child.new(cart_id: 'c1').context).to eq(cart_id: nil, items: [])
     end
   end

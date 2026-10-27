@@ -536,11 +536,11 @@ RSpec.describe Sourced::Decider do
     end
   end
 
-  describe '.context_for' do
-    it 'builds a selector over handled_messages_for_evolve, bound to the partition' do
-      selector = TestDeviceDecider.context_for(device_id: 'd1')
+  describe '.selector' do
+    it "is its projection's selector, by the partition keys" do
+      selector = TestDeviceDecider.selector
 
-      expect(selector).to eq(Sourced::Selector[*TestDeviceDecider.handled_messages_for_evolve].by(:device_id).bind(device_id: 'd1'))
+      expect(selector).to eq(TestDeviceDecider.projection_class.selector.by(:device_id))
       expect(selector.types.map(&:type)).to include('decider_test.device.registered', 'decider_test.device.bound')
     end
   end

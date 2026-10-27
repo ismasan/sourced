@@ -577,10 +577,10 @@ RSpec.describe Sourced::Projector do
     end
   end
 
-  describe '.context_for' do
-    it 'builds a selector over handled_messages_for_evolve, bound to the partition' do
-      selector = TestItemProjector.context_for(list_id: 'L1')
-      expect(selector).to eq(Sourced::Selector[*TestItemProjector.handled_messages_for_evolve].by(:list_id).bind(list_id: 'L1'))
+  describe '.selector' do
+    it "is its projection's selector, by the partition keys" do
+      selector = TestItemProjector.selector
+      expect(selector).to eq(TestItemProjector.projection_class.selector.by(:list_id))
       expect(selector.types.map(&:type)).to include('projector_test.item.added', 'projector_test.item.archived')
     end
   end

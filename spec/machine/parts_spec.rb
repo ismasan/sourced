@@ -191,7 +191,7 @@ RSpec.describe Sourced::Machine::Part do
     it "are the owner's state classes, declared by the part" do
       expect(pending::Queued.machine).to be(pending)
       expect(payroll.transition_classes).to include(pending::Queued, pending::Approved, check::Checked)
-      expect(payroll.handled_messages_for_evolve).to include(pending::Queued, check::Checked)
+      expect(payroll.selector.types).to include(pending::Queued, check::Checked)
     end
 
     it "are shared by a part's placements, told apart by their paths" do
@@ -244,11 +244,11 @@ RSpec.describe Sourced::Machine::Part do
 
   describe 'evolve' do
     it "evolves the owner's context" do
-      expect(payroll.handled_messages_for_evolve).to include(pending::Accepted)
+      expect(payroll.selector.types).to include(pending::Accepted)
     end
 
     it "adds to the owner's evolve types only the events it evolves" do
-      expect(payroll.handled_messages_for_evolve).not_to include(pending::Unread)
+      expect(payroll.selector.types).not_to include(pending::Unread)
     end
 
     it 'needs a block' do

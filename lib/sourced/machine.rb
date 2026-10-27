@@ -72,19 +72,19 @@ module Sourced
     extend Definition
 
     # The machine's transitions, its children's starts and finishes, and the
-    # evolve types of its parts are evolved too, alongside the
-    # projection's evolve types. They're the machine's own, not its
-    # projection's (which has no handlers for them), so adopting a projection
-    # with +evolve SomeProjection+ keeps them. Prepended after Sourced::Evolve's
-    # class methods, so +super+ is the projection's list.
+    # evolve types of its parts are read too, alongside the projection's
+    # selector. They're the machine's own, not its projection's (which has no
+    # handlers for them), so adopting a projection with +evolve SomeProjection+
+    # keeps them. Prepended after Sourced::Evolve's class methods.
     module EvolveTypes
       # Fixed by {Machine.validate!}; computed on each call before it.
-      def handled_messages_for_evolve
-        return @__evolve_types if @__evolve_types
+      def selector
+        return @__selector if @__selector
 
         tree = self.tree
-        parts = tree.mounted_machines.flat_map { |part| part.projection_class.handled_messages }
-        (super + __transition_classes + tree.child_events + parts + handled_events).uniq
+        parts = tree.mounted_machines.map { |part| part.projection_class.selector }
+        own = Selector[*__transition_classes, *tree.child_events, *handled_events]
+        [projection_class.selector, own, *parts].reduce(:+).by(*partition_keys)
       end
     end
     singleton_class.prepend EvolveTypes
@@ -1284,7 +1284,8 @@ module Sourced
         # What the runtime reads per message, fixed now that the definition is.
         @__handled_commands = handled_commands.freeze
         @__handled_events = handled_events.freeze
-        @__evolve_types = handled_messages_for_evolve.freeze
+        @__selector = selector
+        @__evolve_set = @__selector.types.to_set.freeze
         @__start_paths = __start_paths.freeze if start_state
         @__transition_classes = __transition_classes.freeze
         @__transition_set = @__transition_classes.to_set.freeze
@@ -1324,7 +1325,7 @@ module Sourced
       #   default skips entry and exit actions, timers and joins when +true+
       # @return [Array<Array(Array<Object>, Sourced::Message)>] action/source pairs
       def handle_batch(partition_values, new_messages, history:, replaying: false)
-        types = handled_messages_for_evolve
+        types = @__evolve_set || selector.types
         evolvable = new_messages.select { |msg| types.include?(msg.to_message.class) }
         __process(partition_values, new_messages, history.messages + evolvable, guard: history.guard, replaying:)
       end

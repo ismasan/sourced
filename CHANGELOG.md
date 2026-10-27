@@ -46,7 +46,14 @@
   `Store#read(selector)` and `Store#read_all(selector)` take it, guards hold it
   (`ConsistencyGuard#selector`, formerly `#query`), and claims guard with one. Reading a selector with an unbound key raises
   `Selector::UnboundKeyError`; a selector without keys reads every message of its types.
-  `Consumer.context_for` returns a selector (`Selector::NONE` for no history).
+  Reactors declare their history as a static `selector`: `Projection.evolve` builds
+  the projection's (its handled types, no keys), and a reactor's is its projection's
+  scoped by `partition_keys` (`Selector::NONE` when id-partitioned). Machines add their
+  state classes, children's events and parts' selectors; `DurableWorkflow`s select their
+  events by `workflow_id`. The Router reads `reactor.selector.bind(**partition)`, and
+  `Sourced.load` takes anything with a `selector`. `PartitionSchema.check!` requires a
+  selector's keys to be partition keys. `ReactorDefaults` gives duck-typed reactors
+  `Selector::NONE`.
 - `Store#read` guards an empty read at `after_position`, or 0, rather than the latest
   position.
 - `Sourced.load` of a `Projection` without values reads every message of its evolve
@@ -362,6 +369,9 @@
 
 ### Removed
 
+- `context_for` (use a static `selector`) and `handled_messages_for_evolve` (use
+  `selector.types`, or `projection_class.selector.types`), including
+  `Projection.handled_messages_for_evolve`.
 - `PartitionQuery`, `QueryCondition`, `Message.to_conditions`, `Store#read_partition` and
   `Store#messages_since`: use a `Selector`. `read_all` takes a selector instead of
   `conditions:`; selector parts match the partition rule, so a message carrying none of a

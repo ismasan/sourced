@@ -79,22 +79,22 @@ module Sourced
         attribute :workflow_id, String
       end)
 
-      # Register all event classes so:
-      #  - Router claims them on our consumer group (`handled_messages`).
-      #  - `context_for(workflow_id:)` reads them as the partition's history.
-      [
+      # The workflow's events are both what the Router claims on our consumer
+      # group (`handled_messages`) and the partition's history (`selector`).
+      child.instance_variable_set(:@selector, Sourced::Selector[
         child::WorkflowStarted, child::ContextUpdated, child::WorkflowComplete,
         child::WorkflowFailed, child::StepStarted, child::StepFailed,
         child::StepComplete, child::WaitStarted, child::WaitEnded
-      ].each do |klass|
-        child.handled_messages_for_evolve << klass unless child.handled_messages_for_evolve.include?(klass)
-      end
+      ].by(:workflow_id))
     end
 
-    # Message types this consumer claims. Same set as evolve types because
+    # @return [Selector] the workflow's events, by +workflow_id+
+    def self.selector = @selector || Selector::NONE
+
+    # Message types this consumer claims. Same set as the history's because
     # every workflow event both advances state and re-triggers the workflow.
     def self.handled_messages
-      handled_messages_for_evolve
+      selector.types
     end
 
     # Define the initial context hash. Block receives no arguments.
@@ -249,8 +249,7 @@ module Sourced
       end
 
       def load
-        selector = Selector[*@klass.handled_messages_for_evolve].by(:workflow_id).bind(workflow_id: @workflow_id)
-        result = @store.read(selector)
+        result = @store.read(@klass.selector.bind(workflow_id: @workflow_id))
         @instance = @klass.new([@workflow_id])
         @instance.__replay(result.messages)
         @instance

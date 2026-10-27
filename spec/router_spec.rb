@@ -89,10 +89,10 @@ class RouterTestMixedKeysReactor
   consumer_group 'router_test_mixed_keys'
 
   def self.handled_messages = [RouterTestMessages::OrderOpened, RouterTestMessages::SomethingHappened]
-  def self.handled_messages_for_evolve = [RouterTestMessages::SomethingHappened, RouterTestMessages::OrderTouched]
+  def self.selector = Sourced::Selector[RouterTestMessages::SomethingHappened, RouterTestMessages::OrderTouched].by(:order_id, :tenant_id)
 end
 
-# Overrides context_for with a narrower selector: only SomethingHappened, by order_id.
+# Declares a narrower selector: only SomethingHappened, by order_id.
 class RouterTestCustomHistoryReactor
   extend Sourced::Consumer
   extend RouterTestHistoryRecorder
@@ -102,10 +102,10 @@ class RouterTestCustomHistoryReactor
 
   def self.handled_messages = [RouterTestMessages::OrderOpened, RouterTestMessages::SomethingHappened]
 
-  def self.context_for(attrs) = Sourced::Selector[RouterTestMessages::SomethingHappened].by(:order_id).bind(order_id: attrs[:order_id])
+  def self.selector = Sourced::Selector[RouterTestMessages::SomethingHappened].by(:order_id)
 end
 
-# Id-partitioned queue reactor with evolve types: gets no history.
+# Id-partitioned queue reactor: gets no history.
 class RouterTestQueueHistoryReactor
   extend Sourced::Consumer
   extend RouterTestHistoryRecorder
@@ -114,7 +114,6 @@ class RouterTestQueueHistoryReactor
   exclusive
 
   def self.handled_messages = [RouterTestMessages::OrderTouched]
-  def self.handled_messages_for_evolve = [RouterTestMessages::OrderTouched]
 end
 
 # Test decider for router specs
@@ -1044,8 +1043,8 @@ RSpec.describe Sourced::Router do
       expect(store.read(d2_selector).messages.size).to eq(1)
     end
 
-    it 'context_for returns no history (no evolve types)' do
-      expect(RouterTestAuditReactor.context_for(device_id: 'd1')).to eq(Sourced::Selector::NONE)
+    it 'has no history selector (no evolve types)' do
+      expect(RouterTestAuditReactor.selector).to eq(Sourced::Selector::NONE)
     end
 
     it 'works alongside deciders and projectors' do
@@ -1101,7 +1100,7 @@ RSpec.describe Sourced::Router do
       expect(t1.guard).to have_attributes(class: Sourced::ConsistencyGuard, selector: an_instance_of(Sourced::Selector))
     end
 
-    it 'reads a custom selector from a context_for override' do
+    it "reads a reactor's own selector" do
       RouterTestCustomHistoryReactor.histories.clear
       router.register(RouterTestCustomHistoryReactor)
 
@@ -1118,7 +1117,7 @@ RSpec.describe Sourced::Router do
       store.append(RouterTestMessages::OrderTouched.new(payload: { order_id: '01' }))
 
       expect(router.handle_next_for(RouterTestQueueHistoryReactor)).to be true
-      expect(RouterTestQueueHistoryReactor.context_for(__id: 'x')).to eq(Sourced::Selector::NONE)
+      expect(RouterTestQueueHistoryReactor.selector).to eq(Sourced::Selector::NONE)
       expect(RouterTestQueueHistoryReactor.histories.first.messages).to eq([])
     end
   end

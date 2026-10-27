@@ -161,9 +161,7 @@ RSpec.describe Sourced::React do
           { source: 'context' }
         end
 
-        def self.handled_messages_for_evolve
-          [ReactTestMessages::Wildcarded]
-        end
+        def self.selector = Sourced::Selector[ReactTestMessages::Wildcarded]
 
         reaction ReactTestMessages::SomethingHappened do |_context, msg|
           dispatch(ReactTestMessages::DoNext, thing_id: msg.payload.thing_id)

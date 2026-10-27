@@ -41,6 +41,7 @@ module Sourced
         subclass.handled_messages.concat(handled_messages)
         subclass.evolve_handlers.merge!(evolve_handlers)
         subclass.before_evolve_blocks.concat(before_evolve_blocks)
+        subclass.instance_variable_set(:@selector, selector)
       end
 
       # @return [Hash{Class => Symbol}] each handled message class's evolve method
@@ -53,9 +54,14 @@ module Sourced
         @handled_messages ||= []
       end
 
-      # The name reactors use for the types they evolve from, so a projection
-      # can be loaded the same way (see {Sourced.load}).
-      alias handled_messages_for_evolve handled_messages
+      # What this projection evolves from, built by {.evolve}: a {Selector} of
+      # its handled message types, without keys. Reactors scope it by their
+      # partition keys; {Sourced.load} by the values it's given.
+      #
+      # @return [Selector]
+      def selector
+        @selector ||= Selector::NONE
+      end
 
       # Define the initial context factory.
       #
@@ -103,6 +109,7 @@ module Sourced
       def evolve(declared, &block)
         message_class = declared.to_message_class
         handled_messages << message_class unless handled_messages.include?(message_class)
+        @selector = selector + Selector[message_class]
         evolve_handlers[message_class] = define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
       end
     end

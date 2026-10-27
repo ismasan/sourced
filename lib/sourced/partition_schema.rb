@@ -18,6 +18,8 @@ module Sourced
   #   (Plumb subtyping: +String.present+ passes for +String+, +Integer+ doesn't).
   # * At least one handled message declares every key, or no partition is
   #   ever created.
+  # * The history selector's keys are partition keys: binding takes their
+  #   values from the claimed partition.
   #
   # Id-partitioned reactors (no schema) aren't checked.
   module PartitionSchema
@@ -40,8 +42,9 @@ module Sourced
 
         reactor.public_send(method).each { |klass| roles[klass] ||= role }
       end
-      evolved = reactor.respond_to?(:handled_messages_for_evolve) ? reactor.handled_messages_for_evolve : Plumb::BLANK_ARRAY
-      messages = (full.keys + reactor.handled_messages + evolved).uniq
+      selector = reactor.respond_to?(:selector) ? reactor.selector : Selector::NONE
+      check_selector_keys!(reactor, schema, selector, error)
+      messages = (full.keys + reactor.handled_messages + selector.types).uniq
       return if messages.empty?
 
       complete = false
@@ -72,6 +75,14 @@ module Sourced
       return {} unless klass.respond_to?(:payload_attribute_names) && klass.payload_attribute_names.any?
 
       klass::Payload._schema.to_h.to_h { |key, type| [key.to_sym, [type, key.optional?]] }
+    end
+
+    private def check_selector_keys!(reactor, schema, selector, error)
+      foreign = selector.keys - schema.keys
+      return if foreign.empty?
+
+      raise error, "#{reactor}: its selector is scoped by #{foreign.join(', ')}, which aren't partition keys " \
+                   "(#{schema.keys.join(', ')}), so a claim can't bind them"
     end
 
     private def check_types!(reactor, schema, klass, role, attributes, error)

@@ -197,16 +197,17 @@ module Sourced
     HandleResult.new(command: command, reactor: instance, events: correlated_events)
   end
 
-  # Load a reactor or projection instance from its event history: what a
-  # {Selector} of its evolve types, scoped by the partition, selects.
+  # Load a reactor or projection instance from its event history: what its
+  # {Selector} selects, bound to the partition.
   # Pass +upto:+ (partition-local rank) to evolve over at most the first N matching
   # messages in the partition — useful for time-travel, deterministic replay, or debugging.
   #
-  # +reactor_class+ must respond to +handled_messages_for_evolve+, and its
-  # instances to +evolve(messages)+. If it responds to +partition_keys+, only
-  # those keys of +values+ are the partition and instances are built with
-  # +new(values)+; otherwise, as for a {Sourced::Projection}, all of +values+ are
-  # the partition and instances are built with +new+.
+  # +reactor_class+ must respond to +selector+, and its instances to
+  # +evolve(messages)+. If it responds to +partition_keys+, only those keys of
+  # +values+ are the partition, its selector is bound to them and instances are
+  # built with +new(values)+; otherwise, as for a {Sourced::Projection}, all of
+  # +values+ are the partition, its selector is scoped by them and instances
+  # are built with +new+.
   #
   # @raise [MissingPartitionKeyError] if a partition key is missing or nil
   # @example
@@ -221,8 +222,8 @@ module Sourced
       raise MissingPartitionKeyError, "#{reactor_class} can't be loaded without values for partition keys #{missing.inspect}"
     end
 
-    selector = Selector[*reactor_class.handled_messages_for_evolve].by(*partition_attrs.keys).bind(**partition_attrs)
-    read_result = store.read(selector, limit: upto)
+    selector = partitioned ? reactor_class.selector : reactor_class.selector.by(*partition_attrs.keys)
+    read_result = store.read(selector.bind(**partition_attrs), limit: upto)
     instance = partitioned ? reactor_class.new(values) : reactor_class.new
 
     instance.evolve(read_result.messages)

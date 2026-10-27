@@ -68,7 +68,7 @@ module Sourced
       def on_reset = nil
 
       # No history.
-      def context_for(_attrs) = Selector::NONE
+      def selector = Selector::NONE
     end
   end
 end

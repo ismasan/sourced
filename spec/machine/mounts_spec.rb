@@ -356,7 +356,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
       expect(region.parent.key).to eq(MM::MountedOrder::Placed)
       expect(region.nodes.keys).to eq([:initial, pay::Authorizing, pay::Captured, pay::Expired])
       expect(machine.handled_commands).to include(pay::StartPayment, pay::Capture)
-      expect(machine.handled_messages_for_evolve).to include(pay::PaymentInfoAdded, authorizing)
+      expect(machine.selector.types).to include(pay::PaymentInfoAdded, authorizing)
     end
 
     it "types the part's messages and states under the owner's prefix" do

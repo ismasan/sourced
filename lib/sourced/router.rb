@@ -60,7 +60,7 @@ module Sourced
     # Register a reactor. Reactors are duck-typed: only +handled_messages+ and
     # +handle_claim+ are required. Optional methods (+group_id+ — defaults to the
     # class name normalized by {Types::GroupId}, +group_label+ — the class name,
-    # +partition_keys+, +exclusive?+, +context_for+, lifecycle hooks)
+    # +partition_keys+, +exclusive?+, +selector+, lifecycle hooks)
     # get defaults so a plain class (e.g. a Sidereal Commander adapter) can
     # register without depending on Sourced.
     #
@@ -95,7 +95,7 @@ module Sourced
         kwargs = {}
         if @needs_history[reactor_class]
           attrs = claim.partition_value.transform_keys(&:to_sym)
-          kwargs[:history] = store.read(reactor_class.context_for(attrs))
+          kwargs[:history] = store.read(reactor_class.selector.bind(**attrs))
         end
 
         action_pairs = reactor_class.handle_claim(claim, **kwargs)

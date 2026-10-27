@@ -97,8 +97,8 @@ module Sourced
           end
         end
 
-        if reactor.respond_to?(:handled_messages_for_evolve)
-          reactor.handled_messages_for_evolve.each do |evt_class|
+        if reactor.respond_to?(:selector)
+          reactor.selector.types.each do |evt_class|
             next if evt_class < Sourced::Command
 
             evt_type = evt_class.type
@@ -170,7 +170,7 @@ module Sourced
         end
 
         if is_projector
-          consumes = reactor.handled_messages_for_evolve
+          consumes = reactor.selector.types
             .reject { |c| c < Sourced::Command }
             .map(&:type)
 

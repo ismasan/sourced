@@ -17,7 +17,7 @@ module Sourced
       end
 
       # Messages to claim: commands to decide on + events to react to.
-      # Evolve types are NOT included — they are only for context_for().
+      # Evolve types are NOT included — they are only for the history selector.
       #
       # @return [Array<Class>] command and reaction message classes
       def handled_messages

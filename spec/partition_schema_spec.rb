@@ -212,6 +212,29 @@ RSpec.describe Sourced::PartitionSchema do
         .to raise_error(Sourced::DefinitionError, /no handled message declares every partition key order_id, item_id/)
     end
 
+    it "requires the selector's keys to be partition keys" do
+      reactor = Class.new do
+        extend Sourced::Consumer
+        consumer_group 'partition_schema_selector'
+        partition_by :order_id
+        def self.handled_messages = [PartitionSchemaTest::PlaceOrder]
+        def self.selector = Sourced::Selector[PartitionSchemaTest::OrderNoted].by(:order_id, :note)
+      end
+      expect { described_class.check!(reactor) }
+        .to raise_error(Sourced::DefinitionError, /selector is scoped by note, which aren't partition keys/)
+    end
+
+    it 'allows a selector scoped by fewer keys' do
+      reactor = Class.new do
+        extend Sourced::Consumer
+        consumer_group 'partition_schema_narrow_selector'
+        partition_by :order_id, :note
+        def self.handled_messages = [PartitionSchemaTest::OrderNoted]
+        def self.selector = Sourced::Selector[PartitionSchemaTest::OrderNoted].by(:order_id)
+      end
+      expect { described_class.check!(reactor) }.not_to raise_error
+    end
+
     it 'skips id-partitioned reactors and reactors without a schema' do
       queue = Class.new do
         extend Sourced::Consumer

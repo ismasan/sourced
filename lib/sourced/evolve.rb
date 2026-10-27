@@ -27,8 +27,8 @@ module Sourced
   module Evolve
     def self.included(base)
       super
-      # Prepended so these win over Consumer's default +handled_messages_for_evolve+,
-      # whichever order the reactor includes Evolve and extends Consumer in.
+      # Prepended so these win over Consumer's default +selector+, whichever
+      # order the reactor includes Evolve and extends Consumer in.
       base.singleton_class.prepend ClassMethods
     end
 
@@ -61,9 +61,17 @@ module Sourced
         @projection_class ||= __build_projection_class(Sourced::Projection)
       end
 
-      # @return [Array<Class>] message classes this reactor's projection evolves from
-      def handled_messages_for_evolve
-        projection_class.handled_messages
+      # The history the Router reads for a claimed partition: the projection's
+      # selector scoped by the partition keys. {Selector::NONE} (no history)
+      # for an id-partitioned reactor, which declares no partition keys or
+      # +partition_by :__id+.
+      #
+      # @return [Selector]
+      def selector
+        keys = partition_keys
+        return Selector::NONE if keys.empty? || IdPartition.keys?(keys)
+
+        projection_class.selector.by(*keys)
       end
 
       # Define the projection's initial context factory. The block takes no arguments.

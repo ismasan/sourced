@@ -125,8 +125,14 @@ RSpec.describe Sourced::Projection do
       ])
     end
 
-    it 'exposes them as handled_messages_for_evolve too' do
-      expect(projection_class.handled_messages_for_evolve).to equal(projection_class.handled_messages)
+    it 'builds a selector of them, without keys' do
+      expect(projection_class.selector).to eq(Sourced::Selector[ProjectionTestMessages::ItemAdded, ProjectionTestMessages::ItemRemoved])
+    end
+
+    it 'gives subclasses its selector, and keeps theirs apart' do
+      subclass = Class.new(projection_class) { evolve(ProjectionTestMessages::Unhandled) { |_, _| nil } }
+      expect(subclass.selector.types).to include(ProjectionTestMessages::ItemAdded, ProjectionTestMessages::Unhandled)
+      expect(projection_class.selector.types).not_to include(ProjectionTestMessages::Unhandled)
     end
 
     it 'rejects context blocks that take arguments' do

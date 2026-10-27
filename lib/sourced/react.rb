@@ -172,7 +172,7 @@ module Sourced
       def reaction(*args, &block)
         case args
         in []
-          handled_messages_for_evolve.each do |message_class|
+          selector.types.each do |message_class|
             next if reaction_handlers.key?(message_class)
 
             catch_all_react_events << message_class
