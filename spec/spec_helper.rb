@@ -4,6 +4,7 @@ require 'sourced'
 require 'logger'
 require 'timecop'
 require 'sourced/testing/rspec'
+require 'debug'
 
 ENV['ENVIRONMENT'] ||= 'test'
 
