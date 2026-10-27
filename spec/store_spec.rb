@@ -493,7 +493,7 @@ RSpec.describe Sourced::Store do
       msg1 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
       store.append(msg1)
 
-      guard = Sourced::ConsistencyGuard.new(query: cond, last_position: store.latest_position)
+      guard = Sourced::ConsistencyGuard.new(selector: cond, last_position: store.latest_position)
 
       msg2 = StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
       pos = store.append(msg2, guard: guard)
@@ -914,7 +914,7 @@ RSpec.describe Sourced::Store do
     it 'returns a ConsistencyGuard over the selector' do
       _results, guard = store.read(dev1)
       expect(guard).to be_a(Sourced::ConsistencyGuard)
-      expect(guard.query).to eq(dev1)
+      expect(guard.selector).to eq(dev1)
     end
 
     it 'guard last_position reflects the last result position' do
@@ -1052,7 +1052,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'raises for a guard over a selector with unbound keys' do
-      guard = Sourced::ConsistencyGuard.new(query: Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), last_position: 0)
+      guard = Sourced::ConsistencyGuard.new(selector: Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), last_position: 0)
       expect {
         store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'X' }), guard:)
       }.to raise_error(Sourced::Selector::UnboundKeyError)
@@ -1125,7 +1125,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'in' })   # asset part
       ]
       appended.each do |msg|
-        guard = Sourced::ConsistencyGuard.new(query: selector, last_position: store.latest_position)
+        guard = Sourced::ConsistencyGuard.new(selector: selector, last_position: store.latest_position)
         store.append(msg)
         selected = store.read(selector, after_position: guard.last_position).messages.any?
         conflicts = begin
@@ -1533,7 +1533,7 @@ RSpec.describe Sourced::Store do
       expect(result.messages.size).to eq(1)
       expect(result.messages.first).to be_a(StoreTestMessages::DeviceRegistered)
       expect(result.messages.first.position).to eq(1)
-      expect(result.guard).to have_attributes(class: Sourced::ConsistencyGuard, query: an_instance_of(Sourced::Selector))
+      expect(result.guard).to have_attributes(class: Sourced::ConsistencyGuard, selector: an_instance_of(Sourced::Selector))
     end
 
     it 'returns multiple pending messages for same partition' do
@@ -1709,7 +1709,7 @@ RSpec.describe Sourced::Store do
       result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
 
       expect(result.guard).to eq(Sourced::ConsistencyGuard.new(
-        query: Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1'),
+        selector: Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1'),
         last_position: result.messages.last.position
       ))
     end
@@ -2129,7 +2129,7 @@ RSpec.describe Sourced::Store do
       result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
 
       expect(result.guard).to eq(Sourced::ConsistencyGuard.new(
-        query: Sourced::Selector[*handled_types.map { Sourced::Message.registry[it] }]
+        selector: Sourced::Selector[*handled_types.map { Sourced::Message.registry[it] }]
           .by(:course_name, :user_id).bind(course_name: 'Algebra', user_id: 'joe'),
         last_position: result.messages.last.position
       ))
@@ -2523,7 +2523,7 @@ RSpec.describe Sourced::Store do
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
 
       claim = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w1')
-      expect(claim.guard).to eq(Sourced::ConsistencyGuard.new(query: Sourced::Selector::NONE, last_position: claim.messages.last.position))
+      expect(claim.guard).to eq(Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: claim.messages.last.position))
 
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' }))
       expect(store.db).not_to receive(:fetch)
@@ -3524,7 +3524,7 @@ RSpec.describe Sourced::Store do
     it 'reads the same messages with a selector bound to the partition' do
       read = store.read(selector.bind(**partition))
       expect(notes(read.messages)).to eq(['a', :touched, 'c'])
-      expect(read.guard).to eq(Sourced::ConsistencyGuard.new(query: selector.bind(order_id: '01', tenant_id: 't1'), last_position: 4))
+      expect(read.guard).to eq(Sourced::ConsistencyGuard.new(selector: selector.bind(order_id: '01', tenant_id: 't1'), last_position: 4))
     end
 
     it 'reads a partition whose tag key_pair does not exist yet: only the foreign event' do

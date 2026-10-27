@@ -472,8 +472,8 @@ RSpec.describe Sourced::Message do
   describe Sourced::ConsistencyGuard do
     it 'is a Data struct with query and last_position' do
       selector = Sourced::Selector[TestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1')
-      guard = Sourced::ConsistencyGuard.new(query: selector, last_position: 42)
-      expect(guard.query).to eq(selector)
+      guard = Sourced::ConsistencyGuard.new(selector: selector, last_position: 42)
+      expect(guard.selector).to eq(selector)
       expect(guard.last_position).to eq(42)
     end
   end

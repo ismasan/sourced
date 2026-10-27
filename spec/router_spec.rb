@@ -1098,7 +1098,7 @@ RSpec.describe Sourced::Router do
       t1, t2 = RouterTestMixedKeysReactor.histories
       expect(notes(t1)).to eq(['a', :touched, 'c'])
       expect(notes(t2)).to eq(['b', :touched])
-      expect(t1.guard).to have_attributes(class: Sourced::ConsistencyGuard, query: an_instance_of(Sourced::Selector))
+      expect(t1.guard).to have_attributes(class: Sourced::ConsistencyGuard, selector: an_instance_of(Sourced::Selector))
     end
 
     it 'reads a custom selector from a context_for override' do

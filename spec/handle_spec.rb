@@ -334,7 +334,7 @@ RSpec.describe 'Sourced.handle!' do
 
       expect(store).to have_received(:append).with(
         anything,
-        guard: having_attributes(class: Sourced::ConsistencyGuard, query: an_instance_of(Sourced::Selector))
+        guard: having_attributes(class: Sourced::ConsistencyGuard, selector: an_instance_of(Sourced::Selector))
       )
     end
   end

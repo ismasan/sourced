@@ -43,8 +43,8 @@
   message types scoped by partition keys (`Selector[A, B].by(:course_id)`), with values
   bound to those keys (`.bind(course_id: 'c1')`). `+` combines selectors, including ones
   with different keys, which the store reads in one query under one `ConsistencyGuard`.
-  `Store#read(selector)` and `Store#read_all(selector)` take it, guards hold it, and claims
-  guard with one. Reading a selector with an unbound key raises
+  `Store#read(selector)` and `Store#read_all(selector)` take it, guards hold it
+  (`ConsistencyGuard#selector`, formerly `#query`), and claims guard with one. Reading a selector with an unbound key raises
   `Selector::UnboundKeyError`; a selector without keys reads every message of its types.
   `Consumer.context_for` returns a selector (`Selector::NONE` for no history).
 - `Store#read` guards an empty read at `after_position`, or 0, rather than the latest

@@ -539,7 +539,7 @@ module Sourced
       selector.bound!
       messages = select_messages(selector, after: after_position, limit:)
       last_position = messages.empty? ? (after_position || 0) : messages.last.position
-      ReadResult.new(messages:, guard: ConsistencyGuard.new(query: selector, last_position:))
+      ReadResult.new(messages:, guard: ConsistencyGuard.new(selector:, last_position:))
     end
 
     # The SQL {#read} runs for +selector+, for inspecting or explaining a read
@@ -806,7 +806,7 @@ module Sourced
       # one message, so a queue claim has nothing to guard.
       last_pos = messages.last.position
       guard_selector = IdPartition.keys?(partition_value.keys) ? Selector::NONE : selector
-      guard = ConsistencyGuard.new(query: guard_selector, last_position: last_pos)
+      guard = ConsistencyGuard.new(selector: guard_selector, last_position: last_pos)
 
       # replaying: true when all messages are at or below the highest position
       # ever acked by this consumer group (i.e. they've been processed before).
@@ -1655,8 +1655,8 @@ module Sourced
     # @return [Boolean]
     # @raise [Selector::UnboundKeyError] for a selector with unbound keys
     def check_conflicts(guard)
-      guard.query.bound!
-      candidates, filter = selector_sql(guard.query, after: guard.last_position)
+      guard.selector.bound!
+      candidates, filter = selector_sql(guard.selector, after: guard.last_position)
       return false unless candidates
 
       # Joined rather than IN, so the scan stops at the first match instead of

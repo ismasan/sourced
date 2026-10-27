@@ -23,13 +23,13 @@ module Sourced
     def keys?(keys) = keys.size == 1 && keys.first.to_s == KEY
   end
 
-  # Optimistic concurrency: detects messages +query+ selects appended after
+  # Optimistic concurrency: detects messages +selector+ selects appended after
   # +last_position+. Returned by {Store#read} and {Store#claim_next}; pass to
   # {Store#append} via +guard:+. {Selector::NONE} guards nothing.
   #
-  # @!attribute query [Selector] what {Store#read} read
+  # @!attribute selector [Selector] what {Store#read} read
   # @!attribute last_position [Integer]
-  ConsistencyGuard = Data.define(:query, :last_position)
+  ConsistencyGuard = Data.define(:selector, :last_position)
 
   class Message
     # The class-level counterpart of {#to_message}: what handler declarations
