@@ -168,30 +168,6 @@ RSpec.describe Sourced::Message do
     end
   end
 
-  describe '.to_conditions' do
-    it 'returns one condition with only attributes the message class has' do
-      conditions = TestMessages::DeviceRegistered.to_conditions(device_id: 'dev-1', asset_id: 'asset-1')
-      expect(conditions.size).to eq(1)
-      expect(conditions.first.message_type).to eq('device.registered')
-      expect(conditions.first.attrs).to eq({ device_id: 'dev-1' })
-    end
-
-    it 'includes all matching attributes in one condition' do
-      conditions = TestMessages::DeviceRegistered.to_conditions(device_id: 'dev-1', name: 'Sensor A')
-      expect(conditions.size).to eq(1)
-      expect(conditions.first.attrs).to eq({ device_id: 'dev-1', name: 'Sensor A' })
-    end
-
-    it 'returns empty array when no attributes match' do
-      conditions = TestMessages::DeviceRegistered.to_conditions(course_name: 'Algebra')
-      expect(conditions).to eq([])
-    end
-
-    it 'returns empty array when no attributes are given' do
-      expect(TestMessages::DeviceRegistered.to_conditions).to eq([])
-    end
-  end
-
   describe '#tags' do
     it 'defaults to empty, on classes from .define and on Command / Event subclasses' do
       expect(TestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'A' }).tags).to eq({})
@@ -495,9 +471,9 @@ RSpec.describe Sourced::Message do
 
   describe Sourced::ConsistencyGuard do
     it 'is a Data struct with query and last_position' do
-      conditions = [Sourced::QueryCondition.new(message_type: 'device.registered', attrs: { device_id: 'dev-1' })]
-      guard = Sourced::ConsistencyGuard.new(query: conditions, last_position: 42)
-      expect(guard.query).to eq(conditions)
+      selector = Sourced::Selector[TestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1')
+      guard = Sourced::ConsistencyGuard.new(query: selector, last_position: 42)
+      expect(guard.query).to eq(selector)
       expect(guard.last_position).to eq(42)
     end
   end
@@ -521,25 +497,6 @@ RSpec.describe Sourced::Message do
     it 'Message.registry can look up types from subclass registries' do
       expect(Sourced::Message.registry['test.do_something']).to eq(test_cmd)
       expect(Sourced::Message.registry['test.something_happened']).to eq(test_evt)
-    end
-  end
-
-  describe Sourced::QueryCondition do
-    it 'is a Data struct with message_type and attrs hash' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'device.registered',
-        attrs: { device_id: 'dev-1' }
-      )
-      expect(cond.message_type).to eq('device.registered')
-      expect(cond.attrs).to eq({ device_id: 'dev-1' })
-    end
-
-    it 'supports multiple attrs for compound conditions' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'seat.selected',
-        attrs: { showing_id: 'show-1', seat_id: 'C7' }
-      )
-      expect(cond.attrs).to eq({ showing_id: 'show-1', seat_id: 'C7' })
     end
   end
 end

@@ -197,8 +197,8 @@ module Sourced
     HandleResult.new(command: command, reactor: instance, events: correlated_events)
   end
 
-  # Load a reactor or projection instance from its event history using
-  # AND-filtered partition reads.
+  # Load a reactor or projection instance from its event history: what a
+  # {Selector} of its evolve types, scoped by the partition, selects.
   # Pass +upto:+ (partition-local rank) to evolve over at most the first N matching
   # messages in the partition — useful for time-travel, deterministic replay, or debugging.
   #
@@ -221,8 +221,8 @@ module Sourced
       raise MissingPartitionKeyError, "#{reactor_class} can't be loaded without values for partition keys #{missing.inspect}"
     end
 
-    handled_types = reactor_class.handled_messages_for_evolve.map(&:type).uniq
-    read_result = store.read_partition(partition_attrs, handled_types:, upto: upto)
+    selector = Selector[*reactor_class.handled_messages_for_evolve].by(*partition_attrs.keys).bind(**partition_attrs)
+    read_result = store.read(selector, limit: upto)
     instance = partitioned ? reactor_class.new(values) : reactor_class.new
 
     instance.evolve(read_result.messages)

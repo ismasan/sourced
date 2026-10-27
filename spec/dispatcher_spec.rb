@@ -627,8 +627,8 @@ RSpec.describe Sourced::Dispatcher do
         expect(store.update_schedule!).to eq(1)
       end
 
-      conds = DispatcherTestMessages::DelayedNotify.to_conditions(device_id: 'd1')
-      result = store.read(conds)
+      selector = Sourced::Selector[DispatcherTestMessages::DelayedNotify].by(:device_id).bind(device_id: 'd1')
+      result = store.read(selector)
       expect(result.messages.map(&:class)).to include(DispatcherTestMessages::DelayedNotify)
     end
   end

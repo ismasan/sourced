@@ -64,7 +64,6 @@ module Sourced
       :transaction,
       :append,
       :read,
-      :read_partition,
       :claim_next,
       :ack,
       :release,

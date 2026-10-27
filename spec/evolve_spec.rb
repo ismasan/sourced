@@ -67,7 +67,7 @@ RSpec.describe Sourced::Evolve do
     end
 
     it 'builds the history query from the projection types' do
-      expect(decider.context_for(cart_id: 'c1').types).to eq([EvolveTestMessages::ItemAdded.type])
+      expect(decider.context_for(cart_id: 'c1').types).to eq([EvolveTestMessages::ItemAdded])
     end
 
     it 'runs evolve blocks in the projection scope, not the reactor scope' do

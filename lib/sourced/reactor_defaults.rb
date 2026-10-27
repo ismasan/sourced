@@ -67,8 +67,8 @@ module Sourced
       def on_start = nil
       def on_reset = nil
 
-      # No history query conditions.
-      def context_for(_attrs) = []
+      # No history.
+      def context_for(_attrs) = Selector::NONE
     end
   end
 end

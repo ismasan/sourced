@@ -36,7 +36,7 @@ RSpec.describe Sourced::ActionRunner do
       interpreter.run(hash_signal, source, after_syncs)
       interpreter.run(object_signal, source, after_syncs)
 
-      appended = store.read(InterpreterTestMessages::ThingDone.to_conditions(thing_id: 't1')).messages
+      appended = store.read(Sourced::Selector[InterpreterTestMessages::ThingDone].by(:thing_id).bind(thing_id: 't1')).messages
       expect(appended.size).to eq(2)
       # Both correlated from the source command
       expect(appended.map(&:causation_id).uniq).to eq([source.id])
@@ -50,7 +50,7 @@ RSpec.describe Sourced::ActionRunner do
 
       interpreter.run({ type: :append, messages: [tagged] }, source, after_syncs)
 
-      appended = store.read(Sourced::QueryCondition.new(message_type: tagged.type, attrs: { batch_id: 'b1' })).messages
+      appended = store.read(Sourced::Selector[InterpreterTestMessages::ThingDone].by(:batch_id).bind(batch_id: 'b1')).messages
       expect(appended.map(&:id)).to eq([tagged.id])
       expect(appended.first.tags).to eq(batch_id: 'b1')
       expect(appended.first.causation_id).to eq(source.id)
@@ -58,20 +58,20 @@ RSpec.describe Sourced::ActionRunner do
   end
 
   describe 'guarded appends within one batch' do
-    let(:conditions) { InterpreterTestMessages::ThingDone.to_conditions(thing_id: 't1') }
+    let(:selector) { Sourced::Selector[InterpreterTestMessages::ThingDone].by(:thing_id).bind(thing_id: 't1') }
 
     it 'raises the guard floor to its own earlier appends, so a batch does not conflict with itself' do
-      guard = store.read(conditions).guard # read once, before any append — as a claim does
+      guard = store.read(selector).guard # read once, before any append — as a claim does
 
       interpreter.run({ type: :append, messages: [new_event], guard: guard }, source, after_syncs)
       expect { interpreter.run({ type: :append, messages: [new_event], guard: guard }, source, after_syncs) }
         .not_to raise_error
 
-      expect(store.read(conditions).messages.size).to eq(2)
+      expect(store.read(selector).messages.size).to eq(2)
     end
 
     it 'still reports a write by someone else after its last append' do
-      guard = store.read(conditions).guard
+      guard = store.read(selector).guard
       interpreter.run({ type: :append, messages: [new_event], guard: guard }, source, after_syncs)
       store.append(new_event) # a concurrent writer, not this runner
 
@@ -80,7 +80,7 @@ RSpec.describe Sourced::ActionRunner do
     end
 
     it 'does not take a scheduled append as its floor' do
-      guard = store.read(conditions).guard
+      guard = store.read(selector).guard
       later = InterpreterTestMessages::ThingDone.new(payload: { thing_id: 't1' }).at(Time.now + 3600)
       interpreter.run({ type: :append, messages: [later], guard: guard }, source, after_syncs)
       store.append(new_event) # concurrent writer after the scheduled one
@@ -121,7 +121,7 @@ RSpec.describe Sourced::ActionRunner do
       interpreter.run_pair(signals, source, after_syncs)
       after_syncs.each(&:call)
 
-      stored = store.read(InterpreterTestMessages::ThingDone.to_conditions(thing_id: 't1')).messages
+      stored = store.read(Sourced::Selector[InterpreterTestMessages::ThingDone].by(:thing_id).bind(thing_id: 't1')).messages
       expect(seen_sync).to eq(stored)
       expect(seen_after).to eq(stored)
       expect(seen_sync.first.causation_id).to eq(source.id)

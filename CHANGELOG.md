@@ -39,6 +39,19 @@
   Claims only ever needed those: an offset from another type waited for one, which
   creates it anyway. Groups that share partition keys but handle different types write
   and scan fewer offsets.
+- **`Sourced::Selector` is what the store reads.** A selector is a frozen value of
+  message types scoped by partition keys (`Selector[A, B].by(:course_id)`), with values
+  bound to those keys (`.bind(course_id: 'c1')`). `+` combines selectors, including ones
+  with different keys, which the store reads in one query under one `ConsistencyGuard`.
+  `Store#read(selector)` and `Store#read_all(selector)` take it, guards hold it, and claims
+  guard with one. Reading a selector with an unbound key raises
+  `Selector::UnboundKeyError`; a selector without keys reads every message of its types.
+  `Consumer.context_for` returns a selector (`Selector::NONE` for no history).
+- `Store#read` guards an empty read at `after_position`, or 0, rather than the latest
+  position.
+- `Sourced.load` of a `Projection` without values reads every message of its evolve
+  types, rather than none.
+
 - **Consumer group status changes follow `ConsumerGroupMachine`.** `GroupUpdater` places the
   machine at the group's status and context and moves it; the store reads and writes the row
   in one write transaction (`BEGIN IMMEDIATE`).
@@ -346,6 +359,13 @@
 - `DurableWorkflow` workflow context and step outputs are typed `Types::JSONData`
   rather than `Types::Any`: values must be JSON-native, checked at append time
   rather than silently coerced to Strings on the way back out.
+
+### Removed
+
+- `PartitionQuery`, `QueryCondition`, `Message.to_conditions`, `Store#read_partition` and
+  `Store#messages_since`: use a `Selector`. `read_all` takes a selector instead of
+  `conditions:`; selector parts match the partition rule, so a message carrying none of a
+  keyed part's keys isn't selected, and one carrying only some of them is.
 
 ## [0.1.0] - 2024-09-27
 

@@ -7,7 +7,7 @@ Sourced is a Ruby library for aggregateless, stream-less event sourcing. Events 
 ## Core Concepts
 
 - **No streams or aggregates** — all messages share a single append-only log with auto-increment positions.
-- **Partitioning by attributes** — reactors declare which payload attributes define their consistency boundary (e.g. `partition_by :course_id`). The store uses these to build query conditions and claim work.
+- **Partitioning by attributes** — reactors declare which payload attributes define their consistency boundary (e.g. `partition_by :course_id`). The store uses these to build the selectors it reads and to claim work.
 - **Decide → Evolve → React** — reactors handle commands, evolve context from history, and react to events.
 - **Optimistic concurrency** — reads return a `ConsistencyGuard` that detects conflicting writes at append time.
 
@@ -91,7 +91,7 @@ end
 event = CourseScheduled.new(payload: { starts_on: Date.new(2026, 1, 2), ... })
 store.append(event)
 
-messages, = store.read(CourseScheduled.to_conditions(course_id: 'c1'))
+messages, = store.read(Sourced::Selector[CourseScheduled].by(:course_id).bind(course_id: 'c1'))
 messages.first.payload.starts_on   # => #<Date 2026-01-02>
 ```
 
@@ -125,23 +125,43 @@ cmd = CreateCourse.new(payload: { course_id: 'c1', course_name: 'Algebra' })
 position = store.append(cmd)  # returns the assigned position
 ```
 
-### Reading with query conditions
+### Reading with selectors
+
+A `Sourced::Selector` describes what to read: message types, the partition keys
+that scope them, and the values bound to those keys. A message of one of the
+types is selected when every one of the keys it carries (in its payload or tags)
+has the bound value, so a message carrying only some of the keys is read into
+every partition sharing them.
 
 ```ruby
-# Build conditions for a specific course
-conditions = CourseCreated.to_conditions(course_id: 'c1')
-# => [QueryCondition('courses.created', attrs: { course_id: 'c1' })]
+# The messages for course c1
+selector = Sourced::Selector[CourseCreated, StudentEnrolled].by(:course_id).bind(course_id: 'c1')
 
-# Read matching messages
-result = store.read(conditions)
+result = store.read(selector)
 result.messages  # => [PositionedMessage, ...]
 result.guard     # => ConsistencyGuard (for optimistic concurrency)
 ```
 
+Selectors are frozen values and compose with `+`, which reads what either side
+selects, even with different keys. One read and one guard cover them all:
+
+```ruby
+selector = Sourced::Selector[CourseCreated].by(:course_id) +
+           Sourced::Selector[UserRegistered].by(:user_id)
+
+store.read(selector.bind(course_id: 'c1', user_id: 'u1'))
+```
+
+`bind` ignores values for keys a selector doesn't have, and can be called in
+steps. Reading a selector with a key that has no value raises
+`Sourced::Selector::UnboundKeyError`: to read every value of a key, leave it
+out of `by`. A selector without keys (`Sourced::Selector[CourseCreated]`) reads
+every message of its types.
+
 ### Optimistic concurrency
 
 ```ruby
-result = store.read(conditions)
+result = store.read(selector)
 
 # ... later, append with conflict detection
 store.append(new_events, guard: result.guard)
@@ -164,20 +184,9 @@ store.update_schedule!  # => number of messages promoted
 
 There is no separate scheduling method — appending a future-dated message *is* scheduling it. In a reaction handler, `dispatch(Cmd, ...).at(time)` produces a future-dated message, so the same `append` pipeline schedules it — see [Reactions](#reactions).
 
-### Partition reads
-
-`read_partition` uses AND semantics — a message is included only when every partition attribute it declares matches the given value.
-
-```ruby
-result = store.read_partition(
-  { course_id: 'c1' },
-  handled_types: ['courses.created', 'courses.enrolled']
-)
-```
-
 ### Browsing the global log
 
-`read_all` paginates the entire message log, without requiring query conditions or partition attributes. It returns a `ReadAllResult` with `messages` and `last_position` (the current max position in the store), so clients know whether more pages exist.
+`read_all` paginates the entire message log, or only what a selector selects (`store.read_all(Sourced::Selector[CourseCreated], limit: 20)`). It returns a `ReadAllResult` with `messages` and `last_position` (the current max position in the store), so clients know whether more pages exist.
 
 ```ruby
 # First page (default limit: 50, ascending order)

@@ -92,7 +92,7 @@ class RouterTestMixedKeysReactor
   def self.handled_messages_for_evolve = [RouterTestMessages::SomethingHappened, RouterTestMessages::OrderTouched]
 end
 
-# Overrides context_for with conditions: only SomethingHappened declaring order_id.
+# Overrides context_for with a narrower selector: only SomethingHappened, by order_id.
 class RouterTestCustomHistoryReactor
   extend Sourced::Consumer
   extend RouterTestHistoryRecorder
@@ -102,7 +102,7 @@ class RouterTestCustomHistoryReactor
 
   def self.handled_messages = [RouterTestMessages::OrderOpened, RouterTestMessages::SomethingHappened]
 
-  def self.context_for(attrs) = RouterTestMessages::SomethingHappened.to_conditions(order_id: attrs[:order_id])
+  def self.context_for(attrs) = Sourced::Selector[RouterTestMessages::SomethingHappened].by(:order_id).bind(order_id: attrs[:order_id])
 end
 
 # Id-partitioned queue reactor with evolve types: gets no history.
@@ -524,8 +524,8 @@ RSpec.describe Sourced::Router do
       expect(result).to be true
 
       # DeviceBound event should have been appended to store
-      conds = RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
-      read_result = store.read(conds)
+      selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id).bind(device_id: 'd1')
+      read_result = store.read(selector)
       expect(read_result.messages.size).to eq(1)
       expect(read_result.messages.first).to be_a(RouterTestMessages::DeviceBound)
     end
@@ -543,9 +543,9 @@ RSpec.describe Sourced::Router do
       # Drain: the bound event's deferred reaction takes one more claim.
       5.times { break unless router.handle_next_for(RouterTestDecider) }
 
-      renamed = store.read(RouterTestMessages::DeviceRenamed.to_conditions(device_id: 'd1')).messages
+      renamed = store.read(Sourced::Selector[RouterTestMessages::DeviceRenamed].by(:device_id).bind(device_id: 'd1')).messages
       expect(renamed.map { |m| m.payload.name }).to eq(['Sensor A', 'Sensor B'])
-      bound = store.read(RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')).messages
+      bound = store.read(Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id).bind(device_id: 'd1')).messages
       expect(bound.size).to eq(1)
     end
 
@@ -801,8 +801,8 @@ RSpec.describe Sourced::Router do
       router.drain
 
       # Decider should have produced DeviceBound
-      conds = RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
-      read_result = store.read(conds)
+      selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id).bind(device_id: 'd1')
+      read_result = store.read(selector)
       expect(read_result.messages.size).to eq(1)
 
       # Projector should have processed DeviceRegistered and DeviceBound
@@ -826,8 +826,8 @@ RSpec.describe Sourced::Router do
       router.drain
 
       # Read the DeviceBound event
-      conds = RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
-      bound = store.read(conds).messages.find { |m| m.is_a?(RouterTestMessages::DeviceBound) }
+      selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id).bind(device_id: 'd1')
+      bound = store.read(selector).messages.find { |m| m.is_a?(RouterTestMessages::DeviceBound) }
 
       expect(bound).not_to be_nil
       expect(bound.causation_id).to eq(cmd.id)
@@ -844,12 +844,12 @@ RSpec.describe Sourced::Router do
       router.drain
 
       # Read the DeviceBound event (produced by command handler)
-      bound_conds = RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
-      bound = store.read(bound_conds).messages.find { |m| m.is_a?(RouterTestMessages::DeviceBound) }
+      bound_selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id).bind(device_id: 'd1')
+      bound = store.read(bound_selector).messages.find { |m| m.is_a?(RouterTestMessages::DeviceBound) }
 
       # Read the NotifyBound reaction message (produced by reaction handler)
-      notify_conds = RouterTestMessages::NotifyBound.to_conditions(device_id: 'd1')
-      notify = store.read(notify_conds).messages.find { |m| m.is_a?(RouterTestMessages::NotifyBound) }
+      notify_selector = Sourced::Selector[RouterTestMessages::NotifyBound].by(:device_id).bind(device_id: 'd1')
+      notify = store.read(notify_selector).messages.find { |m| m.is_a?(RouterTestMessages::NotifyBound) }
 
       expect(notify).not_to be_nil
       # Reaction is correlated with the event, not the command
@@ -1011,8 +1011,8 @@ RSpec.describe Sourced::Router do
       router.drain
 
       # Audit message should have been appended
-      conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
-      audits = store.read(conds).messages
+      selector = Sourced::Selector[RouterTestMessages::DeviceAudited].by(:device_id).bind(device_id: 'd1')
+      audits = store.read(selector).messages
       expect(audits.size).to eq(1)
       expect(audits.first).to be_a(RouterTestMessages::DeviceAudited)
       expect(audits.first.payload.event_type).to eq('router_test.device.registered')
@@ -1024,8 +1024,8 @@ RSpec.describe Sourced::Router do
 
       router.drain
 
-      conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
-      audit = store.read(conds).messages.first
+      selector = Sourced::Selector[RouterTestMessages::DeviceAudited].by(:device_id).bind(device_id: 'd1')
+      audit = store.read(selector).messages.first
 
       expect(audit.causation_id).to eq(reg.id)
       expect(audit.correlation_id).to eq(reg.correlation_id)
@@ -1037,15 +1037,15 @@ RSpec.describe Sourced::Router do
 
       router.drain
 
-      d1_conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
-      d2_conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd2')
+      d1_selector = Sourced::Selector[RouterTestMessages::DeviceAudited].by(:device_id).bind(device_id: 'd1')
+      d2_selector = Sourced::Selector[RouterTestMessages::DeviceAudited].by(:device_id).bind(device_id: 'd2')
 
-      expect(store.read(d1_conds).messages.size).to eq(1)
-      expect(store.read(d2_conds).messages.size).to eq(1)
+      expect(store.read(d1_selector).messages.size).to eq(1)
+      expect(store.read(d2_selector).messages.size).to eq(1)
     end
 
-    it 'context_for returns empty conditions (no evolve types)' do
-      expect(RouterTestAuditReactor.context_for(device_id: 'd1')).to eq([])
+    it 'context_for returns no history (no evolve types)' do
+      expect(RouterTestAuditReactor.context_for(device_id: 'd1')).to eq(Sourced::Selector::NONE)
     end
 
     it 'works alongside deciders and projectors' do
@@ -1060,8 +1060,8 @@ RSpec.describe Sourced::Router do
       router.drain
 
       # Audit reactor sees DeviceRegistered and DeviceBound
-      conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
-      audits = store.read(conds).messages
+      selector = Sourced::Selector[RouterTestMessages::DeviceAudited].by(:device_id).bind(device_id: 'd1')
+      audits = store.read(selector).messages
       types = audits.map { |m| m.payload.event_type }.sort
 
       expect(types).to eq([
@@ -1098,10 +1098,10 @@ RSpec.describe Sourced::Router do
       t1, t2 = RouterTestMixedKeysReactor.histories
       expect(notes(t1)).to eq(['a', :touched, 'c'])
       expect(notes(t2)).to eq(['b', :touched])
-      expect(t1.guard).to have_attributes(class: Sourced::ConsistencyGuard, query: an_instance_of(Sourced::PartitionQuery))
+      expect(t1.guard).to have_attributes(class: Sourced::ConsistencyGuard, query: an_instance_of(Sourced::Selector))
     end
 
-    it 'reads custom conditions from a context_for override' do
+    it 'reads a custom selector from a context_for override' do
       RouterTestCustomHistoryReactor.histories.clear
       router.register(RouterTestCustomHistoryReactor)
 
@@ -1118,7 +1118,7 @@ RSpec.describe Sourced::Router do
       store.append(RouterTestMessages::OrderTouched.new(payload: { order_id: '01' }))
 
       expect(router.handle_next_for(RouterTestQueueHistoryReactor)).to be true
-      expect(RouterTestQueueHistoryReactor.context_for(__id: 'x')).to eq([])
+      expect(RouterTestQueueHistoryReactor.context_for(__id: 'x')).to eq(Sourced::Selector::NONE)
       expect(RouterTestQueueHistoryReactor.histories.first.messages).to eq([])
     end
   end
@@ -1159,7 +1159,7 @@ RSpec.describe Sourced::Router do
 
       router.handle_next_for(RouterTestQueueWorker)
 
-      remaining = store.read(RouterTestMessages::QueueJob.to_conditions(queue_id: 'q1')).messages
+      remaining = store.read(Sourced::Selector[RouterTestMessages::QueueJob].by(:queue_id).bind(queue_id: 'q1')).messages
       expect(remaining.map { |m| m.payload.name }).to eq(%w[fail c])
     end
 
@@ -1170,7 +1170,7 @@ RSpec.describe Sourced::Router do
 
       router.handle_next_for(RouterTestQueueWorker)
 
-      remaining = store.read(RouterTestMessages::QueueJob.to_conditions(queue_id: 'q1')).messages
+      remaining = store.read(Sourced::Selector[RouterTestMessages::QueueJob].by(:queue_id).bind(queue_id: 'q1')).messages
       expect(remaining.map { |m| m.payload.name }).to eq(%w[fail])
     end
 

@@ -329,7 +329,7 @@ RSpec.describe Sourced::Decider do
       store = Sourced::Store.new(Sequel.sqlite)
       store.install!
       store.append(reg)
-      history = store.read(DeciderTestMessages::DeviceRegistered.to_conditions(device_id: 'd1'))
+      history = store.read(Sourced::Selector[DeciderTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'd1'))
       pairs = decider.handle_batch({ device_id: 'd1' }, [cmd_positioned], history:)
 
       after_syncs = []
@@ -337,7 +337,7 @@ RSpec.describe Sourced::Decider do
       pairs.each { |signals, source| runner.run_pair(signals, source, after_syncs) }
       after_syncs.each(&:call)
 
-      stored = store.read(DeciderTestMessages::DeviceBound.to_conditions(device_id: 'd1')).messages
+      stored = store.read(Sourced::Selector[DeciderTestMessages::DeviceBound].by(:device_id).bind(device_id: 'd1')).messages
       expect(stored.size).to eq(1)
       expect(seen_sync).to eq(stored)
       expect(seen_after).to eq(stored)
@@ -537,13 +537,11 @@ RSpec.describe Sourced::Decider do
   end
 
   describe '.context_for' do
-    it 'builds a partition query over handled_messages_for_evolve' do
-      query = TestDeviceDecider.context_for(device_id: 'd1')
+    it 'builds a selector over handled_messages_for_evolve, bound to the partition' do
+      selector = TestDeviceDecider.context_for(device_id: 'd1')
 
-      expect(query).to be_a(Sourced::PartitionQuery)
-      expect(query.attrs).to eq('device_id' => 'd1')
-      expect(query.types).to include('decider_test.device.registered')
-      expect(query.types).to include('decider_test.device.bound')
+      expect(selector).to eq(Sourced::Selector[*TestDeviceDecider.handled_messages_for_evolve].by(:device_id).bind(device_id: 'd1'))
+      expect(selector.types.map(&:type)).to include('decider_test.device.registered', 'decider_test.device.bound')
     end
   end
 

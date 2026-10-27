@@ -334,7 +334,7 @@ RSpec.describe 'Sourced.handle!' do
 
       expect(store).to have_received(:append).with(
         anything,
-        guard: having_attributes(class: Sourced::ConsistencyGuard, query: an_instance_of(Sourced::PartitionQuery))
+        guard: having_attributes(class: Sourced::ConsistencyGuard, query: an_instance_of(Sourced::Selector))
       )
     end
   end
@@ -371,7 +371,7 @@ RSpec.describe 'Sourced.handle!' do
     end
 
     it 'does not conflict with a concurrent append to another tenant' do
-      allow(store).to receive(:read_partition).and_wrap_original do |original, *args, **kwargs|
+      allow(store).to receive(:read).and_wrap_original do |original, *args, **kwargs|
         original.call(*args, **kwargs).tap { store.append(happened('concurrent', 't2')) }
       end
 
@@ -379,7 +379,7 @@ RSpec.describe 'Sourced.handle!' do
     end
 
     it 'conflicts with a concurrent append to its tenant' do
-      allow(store).to receive(:read_partition).and_wrap_original do |original, *args, **kwargs|
+      allow(store).to receive(:read).and_wrap_original do |original, *args, **kwargs|
         original.call(*args, **kwargs).tap { store.append(happened('concurrent', 't1')) }
       end
 
@@ -402,7 +402,7 @@ RSpec.describe 'Sourced.handle!' do
 
       nil while router.handle_next_for(HandleMixedTestDecider, worker_id: 'w-1')
 
-      counted = store.read(HandleMixedTestMessages::NotesCounted.to_conditions(order_id: '01', tenant_id: 't1')).messages
+      counted = store.read(Sourced::Selector[HandleMixedTestMessages::NotesCounted].by(:order_id, :tenant_id).bind(order_id: '01', tenant_id: 't1')).messages
       expect(counted.map { |e| e.payload.count }).to eq([3])
     end
   end

@@ -685,7 +685,7 @@ RSpec.describe 'Sourced.config' do
 
     it 'uses the configured store when store: is not provided' do
       Sourced.start!
-      expect(Sourced.store).to receive(:read_partition).and_call_original
+      expect(Sourced.store).to receive(:read).and_call_original
 
       instance, read_result = Sourced.load(decider_class, thing_id: 'abc')
 

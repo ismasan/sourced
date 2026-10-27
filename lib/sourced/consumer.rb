@@ -250,23 +250,23 @@ module Sourced
     end
 
     # Message types this consumer evolves from. Used by {#context_for}
-    # to build query conditions for history reads.
+    # to build the history selector.
     # Defaults to empty; overridden by Sourced::Evolve mixin.
     def handled_messages_for_evolve
       @handled_messages_for_evolve ||= []
     end
 
-    # The history query {Router} reads for a claimed partition: a
-    # {PartitionQuery} over the evolve types, matching messages as the claim
-    # does. Empty (no history) when the reactor evolves nothing or is
-    # id-partitioned. Override to return custom +QueryCondition+s instead.
+    # The history {Router} reads for a claimed partition: a {Selector} of the
+    # evolve types bound to the partition, matching messages as the claim does.
+    # {Selector::NONE} (no history) when the reactor evolves nothing or is
+    # id-partitioned.
     #
     # @param partition_attrs [Hash{Symbol => String}]
-    # @return [PartitionQuery, Array<QueryCondition>]
+    # @return [Selector]
     def context_for(partition_attrs)
-      return Plumb::BLANK_ARRAY if handled_messages_for_evolve.empty? || IdPartition.keys?(partition_attrs.keys)
+      return Selector::NONE if handled_messages_for_evolve.empty? || IdPartition.keys?(partition_attrs.keys)
 
-      PartitionQuery.new(attrs: partition_attrs, types: handled_messages_for_evolve.map(&:type))
+      Selector[*handled_messages_for_evolve].by(*partition_attrs.keys).bind(**partition_attrs)
     end
 
     # Called by {Router#stop_consumer_group} after the group is marked as stopped.

@@ -188,7 +188,7 @@ module Sourced
     end
 
     # Router entry point. Drops claim.messages from the read history (the
-    # router's +store.read(conditions)+ returns the full partition, including
+    # router's +store.read(selector)+ returns the full partition, including
     # messages being claimed) and delegates to {.handle_batch}.
     def self.handle_claim(claim, history:)
       values = claim.partition_value.transform_keys(&:to_sym)
@@ -249,8 +249,8 @@ module Sourced
       end
 
       def load
-        handled_types = @klass.handled_messages_for_evolve.map(&:type).uniq
-        result = @store.read_partition({ workflow_id: @workflow_id }, handled_types:)
+        selector = Selector[*@klass.handled_messages_for_evolve].by(:workflow_id).bind(workflow_id: @workflow_id)
+        result = @store.read(selector)
         @instance = @klass.new([@workflow_id])
         @instance.__replay(result.messages)
         @instance
