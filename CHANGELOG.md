@@ -6,6 +6,15 @@
   domain context when the timer starts: `after ->(ctx) { ctx[:sos_delay] } => SendSOS`.
   It returns seconds or a duration string; anything else (`nil` included) raises
   `Machine::TimerError` in the reaction. `to_h` renders it as `delay: nil, computed: <name>`.
+- **Selector assertions.** `is_empty`, `includes(T)`, `excludes(T)`, `starts_with(T)` and
+  `ends_with(T)` say what must hold of what a selector selects, in order, combined with
+  `+` (and), `|` (or) and `~` (not). An assertion covers its selector where it's
+  attached. `Selector#holds?(messages)` evaluates it; `start` / `advance(state,
+  messages)` / `accepts?(state)` evaluate it incrementally. Each assertion is a
+  deterministic finite automaton (`Selector#automaton`), so defining one that never or
+  always holds raises `Selector::AssertionError`, and `Selector#to_mermaid` draws its
+  minimal automaton. `Selector#selects?(message)` is the store's partition rule in Ruby.
+  The store reads and guards a selector's parts only.
 - **Pattern matching on machines.** Machine instances, `Machine::Configuration`s and views
   match states in `case` / `in` and `case` / `when`: a state, or a part, matches where it's
   active (`State.===`, `Part.===`, as `in?`), and Hash patterns name regions at their

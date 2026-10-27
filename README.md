@@ -158,6 +158,48 @@ steps. Reading a selector with a key that has no value raises
 out of `by`. A selector without keys (`Sourced::Selector[CourseCreated]`) reads
 every message of its types.
 
+### Asserting history
+
+A selector can also say what must hold of what it selects, in order. Assertions
+are declarative: the store reads and guards the selector as usual, and
+`holds?` evaluates the assertion over the messages it read.
+
+```ruby
+lifecycle = Sourced::Selector[OrderCancelled, OrderReopened].by(:order_id)
+cancelled = lifecycle.ends_with(OrderCancelled)
+paid      = Sourced::Selector[PaymentReceived].by(:order_id).includes(PaymentReceived)
+
+shippable = (paid + ~cancelled).bind(order_id: 'o1')
+shippable.holds?(store.read(shippable).messages) # => true or false
+```
+
+The built-ins are `is_empty`, `includes(T)`, `excludes(T)`, `starts_with(T)` and
+`ends_with(T)`, over the types the selector reads (another type raises). `+` is
+*and*, `|` is *or* and `~` is *not*. An assertion covers what its selector
+selects at the point it's attached, so later reads don't change it:
+`cancelled + Sourced::Selector[ItemAdded].by(:order_id)` still asks whether the
+last of the order's cancellations and reopenings is a cancellation. Attach it
+after the `+` to ask about everything: `(a + b).ends_with(T)`.
+
+Each assertion is a small state machine. `start`, `advance(state, messages)` and
+`accepts?(state)` evaluate it incrementally, so a state stored with a read
+model can be advanced with new messages only. Defining an assertion that can
+never hold (`includes(X).excludes(X)`), or always holds, raises
+`Sourced::Selector::AssertionError`. `to_mermaid` draws the minimal state
+machine, each state `valid` (the assertion holds) or `invalid`. States sharing
+a label differ in what can happen next. For `~cancelled`:
+
+```mermaid
+stateDiagram-v2
+    state "valid" as s0
+    state "invalid" as s1
+    [*] --> s0
+    s0 --> s1: OrderCancelled
+    s0 --> s0: OrderReopened
+    s1 --> s1: OrderCancelled
+    s1 --> s0: OrderReopened
+```
+
 ### Optimistic concurrency
 
 ```ruby
