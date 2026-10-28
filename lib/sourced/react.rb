@@ -53,7 +53,7 @@ module Sourced
     #   end
     #
     # +context+ is the reactor's context with +message+ already applied. In
-    # read models the whole claimed batch has been applied, not just +message+.
+    # materializers the whole claimed batch has been applied, not just +message+.
     #
     # @param context [Object] reactor context
     # @param message [Sourced::Message] the message about to be reacted to

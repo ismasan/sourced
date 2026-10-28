@@ -86,7 +86,7 @@ module Sourced
       #
       # The block receives the same keyword arguments as the reactor's
       # action-building step (e.g. +context:+, +messages:+, +events:+
-      # for deciders, or +context:+, +messages:+, +replaying:+ for read models).
+      # for deciders, or +context:+, +messages:+, +replaying:+ for materializers).
       #
       # @yield [**args] side-effect block executed within the transaction
       # @return [void]

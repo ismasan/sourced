@@ -1,16 +1,16 @@
 # frozen_string_literal: true
 
 module Sourced
-  # Reactor base class for read models: projections a reactor persists as it
-  # claims the events its projector evolves from.
-  class ReadModel
+  # Reactor base class that materializes read models: for each partition it
+  # claims, it runs its projector over the claimed events and persists the projection.
+  class Materializer
     include Sourced::Evolve
     include Sourced::React
     include Sourced::Sync
     extend Sourced::Consumer
 
     class << self
-      # ReadModels claim events they evolve from + events they react to.
+      # Materializers claim events they evolve from + events they react to.
       #
       # @return [Array<Class>] evolved and reacted-to message classes
       def handled_messages
@@ -48,14 +48,14 @@ module Sourced
       @partition_values = partition_values
     end
 
-    # ReadModel variant that evolves only the claimed messages on top of stored context.
+    # Materializer variant that evolves only the claimed messages on top of stored context.
     #
     # The stored context is loaded by the +load_context+ block, which runs in the
     # reactor's scope and so may read a database. When it returns +nil+ (or
     # isn't declared), the projection's +context+ block builds the initial context.
     #
     # @example
-    #   class CartListing < Sourced::ReadModel::StateStored
+    #   class CartListing < Sourced::Materializer::StateStored
     #     partition_by :cart_id
     #     evolve CartProjector
     #
@@ -103,7 +103,7 @@ module Sourced
       end
     end
 
-    # ReadModel variant that rebuilds context from full history each time.
+    # Materializer variant that rebuilds context from full history each time.
     class EventSourced < self
       class << self
         def handle_batch(partition_values, new_messages, history:, replaying: false)

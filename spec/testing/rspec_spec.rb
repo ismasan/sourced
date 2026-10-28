@@ -98,7 +98,7 @@ class GWTTestSimpleDecider < Sourced::Decider
   end
 end
 
-class GWTTestStateStoredReadModel < Sourced::ReadModel::StateStored
+class GWTTestStateStoredMaterializer < Sourced::Materializer::StateStored
   partition_by :list_id
   consumer_group 'gwt_test_ss_projector'
 
@@ -123,7 +123,7 @@ class GWTTestStateStoredReadModel < Sourced::ReadModel::StateStored
   end
 end
 
-class GWTTestEventSourcedReadModel < Sourced::ReadModel::EventSourced
+class GWTTestEventSourcedMaterializer < Sourced::Materializer::EventSourced
   partition_by :list_id
   consumer_group 'gwt_test_es_projector'
 
@@ -293,12 +293,12 @@ RSpec.describe Sourced::Testing::RSpec do
     end
   end
 
-  describe 'ReadModel (StateStored)' do
+  describe 'Materializer (StateStored)' do
     # A subclass whose hooks record what they were handed and how often.
     let(:recording_projector) do
       seen = []
       calls = []
-      Class.new(GWTTestStateStoredReadModel).tap do |klass|
+      Class.new(GWTTestStateStoredMaterializer).tap do |klass|
         klass.consumer_group 'gwt_test_ss_projector_recording'
         klass.after_sync { |messages:, **| seen.concat(messages); calls << :after_sync }
         klass.sync { |**| calls << :sync }
@@ -320,7 +320,7 @@ RSpec.describe Sourced::Testing::RSpec do
     end
 
     it 'starts context from load_context' do
-      projector = Class.new(GWTTestStateStoredReadModel) do
+      projector = Class.new(GWTTestStateStoredMaterializer) do
         load_context { |values| { list_id: values[:list_id], items: ['Stored'] } }
       end
 
@@ -329,11 +329,11 @@ RSpec.describe Sourced::Testing::RSpec do
         .then { |r| expect(r.context[:items]).to eq(%w[Stored Apple]) }
     end
 
-    it 'refuses when: a read model consumes events that already exist' do
+    it 'refuses when: a materializer consumes events that already exist' do
       expect {
-        with_reactor(GWTTestStateStoredReadModel, list_id: 'L1')
+        with_reactor(GWTTestStateStoredMaterializer, list_id: 'L1')
           .when(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-      }.to raise_error(ArgumentError, /read model.*given/)
+      }.to raise_error(ArgumentError, /materializer.*given/)
     end
 
     it 'then! runs each hook once, with or without a block' do
@@ -350,28 +350,28 @@ RSpec.describe Sourced::Testing::RSpec do
     end
 
     it 'given events → then block asserts evolved context' do
-      with_reactor(GWTTestStateStoredReadModel, list_id: 'L1')
+      with_reactor(GWTTestStateStoredMaterializer, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .then { |r| expect(r.context[:items]).to eq(['Apple']) }
     end
 
     it 'then! runs sync actions before yielding context' do
-      with_reactor(GWTTestStateStoredReadModel, list_id: 'L1')
+      with_reactor(GWTTestStateStoredMaterializer, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .then! { |r| expect(r.context[:synced]).to be true }
     end
 
     it 'then! runs after_sync actions before yielding context' do
-      with_reactor(GWTTestStateStoredReadModel, list_id: 'L1')
+      with_reactor(GWTTestStateStoredMaterializer, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .then! { |r| expect(r.context[:after_synced]).to be true }
     end
   end
 
-  describe 'ReadModel (EventSourced)' do
+  describe 'Materializer (EventSourced)' do
     it 'given events are both history and batch: context evolves and hooks see them' do
       seen = []
-      klass = Class.new(GWTTestEventSourcedReadModel) do
+      klass = Class.new(GWTTestEventSourcedMaterializer) do
         consumer_group 'gwt_test_es_projector_recording'
         after_sync { |context:, messages:, **| seen << [context[:items].dup, messages.size] }
       end
@@ -385,20 +385,20 @@ RSpec.describe Sourced::Testing::RSpec do
     end
 
     it 'given events → then block asserts evolved context' do
-      with_reactor(GWTTestEventSourcedReadModel, list_id: 'L1')
+      with_reactor(GWTTestEventSourcedMaterializer, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Banana')
         .then { |r| expect(r.context[:items]).to eq(['Apple', 'Banana']) }
     end
 
     it 'then! runs sync actions before yielding context' do
-      with_reactor(GWTTestEventSourcedReadModel, list_id: 'L1')
+      with_reactor(GWTTestEventSourcedMaterializer, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .then! { |r| expect(r.context[:synced]).to be true }
     end
 
     it 'then! runs after_sync actions before yielding context' do
-      with_reactor(GWTTestEventSourcedReadModel, list_id: 'L1')
+      with_reactor(GWTTestEventSourcedMaterializer, list_id: 'L1')
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .then! { |r| expect(r.context[:after_synced]).to be true }
     end

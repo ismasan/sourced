@@ -52,7 +52,7 @@ class DispatchTestDecider < Sourced::Decider
   end
 end
 
-class DispatchTestReadModel < Sourced::ReadModel::StateStored
+class DispatchTestMaterializer < Sourced::Materializer::StateStored
   partition_by :device_id
   consumer_group 'dispatch_test_projector'
 
@@ -102,7 +102,7 @@ RSpec.describe Sourced::Dispatcher do
   before do
     store.install!
     router.register(DispatchTestDecider)
-    router.register(DispatchTestReadModel)
+    router.register(DispatchTestMaterializer)
   end
 
   describe 'Store notifications' do
@@ -140,7 +140,7 @@ RSpec.describe Sourced::Dispatcher do
 
       claim = store.claim_next(
         'dispatch_test_projector',
-        DispatchTestReadModel.claim_selector,
+        DispatchTestMaterializer.claim_selector,
         worker_id: 'w1',
         batch_size: 2
       )
@@ -158,7 +158,7 @@ RSpec.describe Sourced::Dispatcher do
 
       claim = store.claim_next(
         'dispatch_test_projector',
-        DispatchTestReadModel.claim_selector,
+        DispatchTestMaterializer.claim_selector,
         worker_id: 'w1'
       )
 
@@ -171,7 +171,7 @@ RSpec.describe Sourced::Dispatcher do
     let(:queuer) do
       described_class.new(
         work_queue: work_queue,
-        reactors: [DispatchTestDecider, DispatchTestReadModel]
+        reactors: [DispatchTestDecider, DispatchTestMaterializer]
       )
     end
 
@@ -184,7 +184,7 @@ RSpec.describe Sourced::Dispatcher do
       popped << work_queue.pop
       popped << work_queue.pop
 
-      expect(popped).to contain_exactly(DispatchTestDecider, DispatchTestReadModel)
+      expect(popped).to contain_exactly(DispatchTestDecider, DispatchTestMaterializer)
     end
 
     it 'maps group_id to reactor for reactor_resumed' do
@@ -228,7 +228,7 @@ RSpec.describe Sourced::Dispatcher do
           DispatcherTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
         )
 
-        result = worker.tick(DispatchTestReadModel)
+        result = worker.tick(DispatchTestMaterializer)
         expect(result).to be true
       end
 
@@ -248,10 +248,10 @@ RSpec.describe Sourced::Dispatcher do
         )
 
         worker.instance_variable_set(:@running, true)
-        worker.drain(DispatchTestReadModel)
+        worker.drain(DispatchTestMaterializer)
 
         # Both partitions should have been processed — no more work
-        result = worker.tick(DispatchTestReadModel)
+        result = worker.tick(DispatchTestMaterializer)
         expect(result).to be false
       end
 
@@ -275,11 +275,11 @@ RSpec.describe Sourced::Dispatcher do
         )
 
         bounded_worker.instance_variable_set(:@running, true)
-        bounded_worker.drain(DispatchTestReadModel)
+        bounded_worker.drain(DispatchTestMaterializer)
 
         # Should have re-enqueued — pop it back
         popped = work_queue.pop
-        expect(popped).to eq(DispatchTestReadModel)
+        expect(popped).to eq(DispatchTestMaterializer)
       end
     end
   end
@@ -592,7 +592,7 @@ RSpec.describe Sourced::Dispatcher do
 
       # Pop from queue — should have the reactors that handle this type
       popped = work_queue.pop
-      expect([DispatchTestDecider, DispatchTestReadModel]).to include(popped)
+      expect([DispatchTestDecider, DispatchTestMaterializer]).to include(popped)
 
       # Worker processes the message
       worker = dispatcher.workers.first

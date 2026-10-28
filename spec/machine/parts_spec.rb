@@ -536,8 +536,8 @@ RSpec.describe Sourced::Machine::Part do
       expect(projection.new.evolve(events)).to eq([%w[pending pending.queued]])
     end
 
-    it 'subscribes a read model evolving and reacting to a part to Part::State' do
-      projector = Class.new(Sourced::ReadModel::StateStored) do
+    it 'subscribes a materializer evolving and reacting to a part to Part::State' do
+      projector = Class.new(Sourced::Materializer::StateStored) do
         partition_by :payroll_id
         consumer_group 'parts_handler_projector'
         evolve(MachinePartsTest::Payroll::PendingMachine) { |context, _evt| context }

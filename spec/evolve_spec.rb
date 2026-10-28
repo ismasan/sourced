@@ -112,7 +112,7 @@ RSpec.describe Sourced::Evolve do
     end
 
     let(:projector) do
-      Class.new(Sourced::ReadModel::EventSourced) do
+      Class.new(Sourced::Materializer::EventSourced) do
         partition_by :cart_id
         evolve EvolveTestMessages::CartProjector
       end

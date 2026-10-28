@@ -46,7 +46,7 @@ class LoadTestProjector < Sourced::Projector
   end
 end
 
-class LoadTestReadModel < Sourced::ReadModel::StateStored
+class LoadTestMaterializer < Sourced::Materializer::StateStored
   partition_by :course_id
   consumer_group 'load_test_projector'
 
@@ -280,7 +280,7 @@ RSpec.describe 'Sourced.load' do
     end
   end
 
-  describe 'loading a ReadModel' do
+  describe 'loading a Materializer' do
     before do
       store.append([
         LoadTestMessages::CourseCreated.new(
@@ -299,9 +299,9 @@ RSpec.describe 'Sourced.load' do
       ])
     end
 
-    it 'evolves read model context from matching messages' do
+    it 'evolves materializer context from matching messages' do
       instance, _read_result = Sourced.load(
-        LoadTestReadModel, store: store,
+        LoadTestMaterializer, store: store,
         course_id: 'algebra'
       )
 

@@ -35,7 +35,7 @@ module RouterTestMessages
     attribute :name, String
   end
 
-  # ReadModel messages
+  # Materializer messages
   DeviceListed = Sourced::Message.define('router_test.device.listed') do
     attribute :device_id, String
   end
@@ -152,7 +152,7 @@ class RouterTestDecider < Sourced::Decider
 end
 
 # Test projector for router specs
-class RouterTestReadModel < Sourced::ReadModel::StateStored
+class RouterTestMaterializer < Sourced::Materializer::StateStored
   partition_by :device_id
   consumer_group 'router_test_projector'
 
@@ -447,13 +447,13 @@ RSpec.describe Sourced::Router do
       expect(router.reactors).to include(RouterTestDecider)
     end
 
-    it 'detects history: for decider, none for read model' do
+    it 'detects history: for decider, none for materializer' do
       router.register(RouterTestDecider)
-      router.register(RouterTestReadModel)
+      router.register(RouterTestMaterializer)
 
       # Decider needs history, projector does not
       expect(router.instance_variable_get(:@needs_history)[RouterTestDecider]).to be true
-      expect(router.instance_variable_get(:@needs_history)[RouterTestReadModel]).to be false
+      expect(router.instance_variable_get(:@needs_history)[RouterTestMaterializer]).to be false
     end
 
     it 'passes partition_keys to register_consumer_group' do
@@ -467,7 +467,7 @@ RSpec.describe Sourced::Router do
   describe '#handle_next_for' do
     before do
       router.register(RouterTestDecider)
-      router.register(RouterTestReadModel)
+      router.register(RouterTestMaterializer)
     end
 
     it 'returns false when no work available' do
@@ -513,13 +513,13 @@ RSpec.describe Sourced::Router do
       expect(bound.size).to eq(1)
     end
 
-    it 'reads history for decider, skips history for read model' do
+    it 'reads history for decider, skips history for materializer' do
       store.append(
         RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       )
 
-      # ReadModel should process without history
-      result = router.handle_next_for(RouterTestReadModel)
+      # Materializer should process without history
+      result = router.handle_next_for(RouterTestMaterializer)
       expect(result).to be true
     end
 
@@ -750,7 +750,7 @@ RSpec.describe Sourced::Router do
   describe '#drain' do
     before do
       router.register(RouterTestDecider)
-      router.register(RouterTestReadModel)
+      router.register(RouterTestMaterializer)
     end
 
     it 'processes all reactors until no work remains' do
@@ -768,15 +768,15 @@ RSpec.describe Sourced::Router do
       read_result = store.read(selector)
       expect(read_result.messages.size).to eq(1)
 
-      # ReadModel should have processed DeviceRegistered and DeviceBound
+      # Materializer should have processed DeviceRegistered and DeviceBound
       # (it handles both via evolve)
     end
   end
 
-  describe 'full integration: append commands → Decider → events → ReadModel' do
+  describe 'full integration: append commands → Decider → events → Materializer' do
     before do
       router.register(RouterTestDecider)
-      router.register(RouterTestReadModel)
+      router.register(RouterTestMaterializer)
     end
 
     it 'events are correlated with the command that produced them' do
@@ -826,7 +826,7 @@ RSpec.describe Sourced::Router do
   describe 'consumer group lifecycle' do
     before do
       router.register(RouterTestDecider)
-      router.register(RouterTestReadModel)
+      router.register(RouterTestMaterializer)
     end
 
     describe '#stop_consumer_group' do
@@ -954,15 +954,15 @@ RSpec.describe Sourced::Router do
 
     describe 'no-op default callbacks' do
       it 'works fine when reactor does not override callbacks' do
-        # RouterTestReadModel has no custom callbacks — should not raise
-        expect { router.stop_consumer_group(RouterTestReadModel) }.not_to raise_error
-        expect { router.reset_consumer_group(RouterTestReadModel) }.not_to raise_error
-        expect { router.start_consumer_group(RouterTestReadModel) }.not_to raise_error
+        # RouterTestMaterializer has no custom callbacks — should not raise
+        expect { router.stop_consumer_group(RouterTestMaterializer) }.not_to raise_error
+        expect { router.reset_consumer_group(RouterTestMaterializer) }.not_to raise_error
+        expect { router.start_consumer_group(RouterTestMaterializer) }.not_to raise_error
       end
     end
   end
 
-  describe 'simple Consumer reactor (no Decider/ReadModel)' do
+  describe 'simple Consumer reactor (no Decider/Materializer)' do
     before do
       router.register(RouterTestAuditReactor)
     end

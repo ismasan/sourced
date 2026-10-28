@@ -12,7 +12,7 @@ module Sourced
       #
       # Works with any reactor that responds to the standard
       # <tt>handle_batch(partition_values, new_messages, history:, replaying:)</tt>
-      # contract (Deciders, ReadModels, DurableWorkflows), and with projectors:
+      # contract (Deciders, Materializers, DurableWorkflows), and with projectors:
       # classes with no +handle_batch+ whose instances +evolve+ messages, built
       # with +new+ (ex. {Sourced::Projector} subclasses).
       #
@@ -27,8 +27,8 @@ module Sourced
       #     .when(BindDevice, device_id: 'd1', asset_id: 'a1')
       #     .then(DeviceBound, device_id: 'd1', asset_id: 'a1')
       #
-      # @example ReadModel — assert context via block
-      #   with_reactor(MyReadModel, list_id: 'L1')
+      # @example Materializer — assert context via block
+      #   with_reactor(MyMaterializer, list_id: 'L1')
       #     .given(ItemAdded, list_id: 'L1', name: 'Apple')
       #     .then { |r| expect(r.context[:items]).to eq(['Apple']) }
       #
@@ -43,7 +43,7 @@ module Sourced
       # Uniform result yielded to +.then+ / +.then!+ block callbacks.
       # Gives access to both the reactor's produced action pairs / messages
       # (what deciders typically assert on) and the evolved context (what
-      # read models typically assert on).
+      # materializers typically assert on).
       RunResult = Data.define(:pairs, :messages, :context)
 
       class MessageMatcher
@@ -154,19 +154,19 @@ module Sourced
         # The batch of new messages to process via +handle_batch+. Can be
         # called multiple times to supply several messages.
         #
-        # Not for read models or projectors: they consume events that already
+        # Not for materializers or projectors: they consume events that already
         # exist, so the events they process go to {#given}, and there is
         # nothing to dispatch. See {#run_handle_batch}.
         #
         # @param klass_or_instance [Class, Sourced::Message]
         # @param payload [Hash]
         # @return [self]
-        # @raise [ArgumentError] on a read model or projector
+        # @raise [ArgumentError] on a materializer or projector
         def when(klass_or_instance = nil, **payload)
           raise 'test case already asserted' if @asserted
-          if read_model? || projector?
+          if materializer? || projector?
             raise ArgumentError,
-                  "#{@reactor_class} is a #{projector? ? 'projector' : 'read model'}: " \
+                  "#{@reactor_class} is a #{projector? ? 'projector' : 'materializer'}: " \
                   'it consumes events that already exist, ' \
                   'so pass them to `given` and assert with `then`/`then!`'
           end
@@ -261,10 +261,10 @@ module Sourced
         # Drive the reactor's +handle_batch+ the way the router does.
         #
         # A decider is given its history and decides on the batch, so
-        # {#given} is the history and {#when} the batch. A read model has no
+        # {#given} is the history and {#when} the batch. A materializer has no
         # such split: in production every message it consumes arrives as the
         # batch, and its history — read unbounded — includes that batch. So
-        # for a read model the {#given} messages are both, and its hooks see
+        # for a materializer the {#given} messages are both, and its hooks see
         # them as +messages:+ exactly as they would in production.
         #
         # A projector has no +handle_batch+: it evolves the {#given}
@@ -279,14 +279,14 @@ module Sourced
           history = Sourced::ReadResult.new(messages: @given_messages, guard: guard)
           @reactor_class.handle_batch(
             @partition_values,
-            read_model? ? @given_messages : @when_messages,
+            materializer? ? @given_messages : @when_messages,
             history: history,
             replaying: false
           )
         end
 
-        def read_model?
-          @reactor_class <= Sourced::ReadModel
+        def materializer?
+          @reactor_class <= Sourced::Materializer
         end
 
         def machine? = (@reactor_class <= Sourced::Machine) || false
@@ -342,7 +342,7 @@ module Sourced
 
         # Build an instance and evolve it with all known messages so the
         # caller can assert on context regardless of reactor type. For reactors
-        # whose +handle_batch+ evolves its own instance (Decider, ReadModel,
+        # whose +handle_batch+ evolves its own instance (Decider, Materializer,
         # DurableWorkflow), this is an independent, predictable computation.
         # When +sync+ is true, also runs the reactor's Sync / AfterSync
         # blocks against this instance so their context mutations are visible,
@@ -359,7 +359,7 @@ module Sourced
 
         # Invoke Sync / AfterSync blocks against +instance+. Per-block
         # kwarg signatures vary by reactor type (deciders expect +events:+,
-        # read models expect +replaying:+); we inspect each block's
+        # materializers expect +replaying:+); we inspect each block's
         # parameters and pass only what it declares. +events:+ carries the
         # appended messages, correlated, as the runner would bind them.
         def run_sync_on(instance, messages, appended)

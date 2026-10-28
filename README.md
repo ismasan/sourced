@@ -53,7 +53,7 @@ data StudentNotified {
 }
 ```
 
-In Sourced, a [Decider](#deciders) handles `EnrolStudent` and appends `StudentEnrolled` to the log, a [read model](#read-models) evolves `CourseRoster` from it, and the read model's [reaction](#reactions) dispatches `NotifyStudent`, which another reactor handles in turn.
+In Sourced, a [Decider](#deciders) handles `EnrolStudent` and appends `StudentEnrolled` to the log, a [materializer](#materializers) evolves the `CourseRoster` read model from it, and the materializer's [reaction](#reactions) dispatches `NotifyStudent`, which another reactor handles in turn.
 
 ## Messages
 
@@ -282,7 +282,7 @@ store.read_all(limit: 20).to_enum.lazy.select { |m|
 Sourced provides four reactor base classes that share the same lifecycle (claim → evolve → handle → append → ack) and the same consumer-group machinery:
 
 - [Deciders](#deciders) — handle commands, enforce invariants, produce events
-- [Read models](#read-models) — build read models by consuming events
+- [Materializers](#materializers) — build read models by consuming events, and persist them
 - [Durable workflows](#durable-workflows) — imperative orchestrations whose steps are memoised across re-entries
 - [Machines](#machines) — statecharts: commands accepted per state, parallel regions, timers and child machines
 
@@ -476,16 +476,16 @@ decider, read_result = Sourced.load(CourseDecider, course_name: 'Algebra')
 decider.context  # => { name_taken: true }
 ```
 
-### Read models
+### Materializers
 
-`Sourced::ReadModel` reactors consume events to build read models: projections they persist. Two flavours:
+`Sourced::Materializer` reactors build read models: for each partition they claim, they run their projector over the claimed events and persist the projection. Two flavours:
 
-#### EventSourced read model
+#### EventSourced materializer
 
 Rebuilds context from full history on every batch (like deciders).
 
 ```ruby
-class CourseCatalogReadModel < Sourced::ReadModel::EventSourced
+class CourseCatalogReadModel < Sourced::Materializer::EventSourced
   partition_by :course_id
 
   context do
@@ -517,12 +517,12 @@ class CourseCatalogReadModel < Sourced::ReadModel::EventSourced
 end
 ```
 
-#### StateStored read model
+#### StateStored materializer
 
 Loads persisted context via the `load_context` block, evolves only new (unprocessed) messages on top of it. `load_context` runs in the reactor's scope, so it can read your storage; when it returns `nil`, the `context` block builds the initial context.
 
 ```ruby
-class MyReadModel < Sourced::ReadModel::StateStored
+class MyReadModel < Sourced::Materializer::StateStored
   partition_by :course_id
 
   context do
@@ -692,7 +692,7 @@ class Carts < Sourced::Decider
   end
 end
 
-class CartListing < Sourced::ReadModel::EventSourced
+class CartListing < Sourced::Materializer::EventSourced
   partition_by :cart_id
   evolve CartProjector
 
@@ -702,14 +702,14 @@ end
 
 Each reactor works on a projector subclass of its own, so its extra `evolve` blocks never leak into the shared class or other reactors. `evolve SomeProjector` must come before the reactor's own `context` / `evolve` declarations.
 
-`Sourced.load` reads a projection's context straight from the log, with no read model. The attributes you pass are its partition:
+`Sourced.load` reads a projection's context straight from the log, with no materializer. The attributes you pass are its partition:
 
 ```ruby
 cart, read_result = Sourced.load(CartProjector, cart_id: 'c1')
 cart.context # => { cart_id: 'c1', items: [...] }
 ```
 
-This reads the partition's whole history on every call, so it suits small partitions; persist larger ones with a read model.
+This reads the partition's whole history on every call, so it suits small partitions; persist larger ones with a materializer.
 
 ### Machines
 
@@ -919,7 +919,7 @@ An instance's `machine` is a configuration too, read live: it changes as the ins
 A projection can keep the paths without loading the machine at all: each state event's `exited` and `entered` paths update them, ex. for every record a listing shows:
 
 ```ruby
-class OrderListing < Sourced::ReadModel::StateStored
+class OrderListing < Sourced::Materializer::StateStored
   partition_by :order_id
 
   context { {} }
@@ -1158,7 +1158,7 @@ end
 
 ### Reactions
 
-Both deciders and read models can react to events to produce follow-up messages, enabling workflow orchestration. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
+Both deciders and materializers can react to events to produce follow-up messages, enabling workflow orchestration. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
 
 ```ruby
 class EnrolmentDecider < Sourced::Decider
@@ -1206,7 +1206,7 @@ Reactions are skipped during replay (when `replaying: true`), so side effects do
 
 ### Sync and After-Sync Blocks
 
-Both deciders and read models support `sync` and `after_sync` blocks for running side effects during message processing.
+Both deciders and materializers support `sync` and `after_sync` blocks for running side effects during message processing.
 
 - **`sync`** blocks run **inside** the store transaction, alongside event persistence and offset acknowledgement. Use them for writes that must be atomic with the event append (e.g. updating a database projection).
 - **`after_sync`** blocks run **after** the transaction commits. Use them for side effects that should only happen if the commit succeeds (e.g. sending emails, HTTP calls, pushing to external queues).
@@ -1216,7 +1216,7 @@ Both receive the same keyword arguments as the reactor's action-building step:
 | Reactor type | Keyword arguments                     |
 |--------------|---------------------------------------|
 | Decider      | `context:`, `messages:`, `events:`      |
-| ReadModel    | `context:`, `messages:`, `replaying:`   |
+| Materializer | `context:`, `messages:`, `replaying:`   |
 
 ```ruby
 class OrderDecider < Sourced::Decider
@@ -1260,7 +1260,7 @@ Sourced.register(Booking)
 
 ## The reactor protocol
 
-Deciders, read models and workflows are conveniences over a small duck-typed protocol. **Any class that responds to `claim_selector` and `handle_claim` is a reactor** — it can be registered and driven by the runtime without subclassing or even depending on Sourced. This is how a message handler from another framework can run on Sourced as a durable queue.
+Deciders, materializers and workflows are conveniences over a small duck-typed protocol. **Any class that responds to `claim_selector` and `handle_claim` is a reactor** — it can be registered and driven by the runtime without subclassing or even depending on Sourced. This is how a message handler from another framework can run on Sourced as a durable queue.
 
 ```ruby
 class MyWorker
@@ -1293,7 +1293,7 @@ A **signal** is inert data — a plain `Hash` or a `Sourced::Actions` value obje
 | `{ type: :after_sync, work: -> { } }` | run a side effect after commit |
 | `{ type: :ack, delete: false }` | acknowledge the source message; `delete: true` removes it (see below) |
 
-The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name, normalized), `group_label` (the class name), `exclusive?` (`false`), `history_selector` (the history it reads, bound to each claimed partition: none), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate. Built-in reactors derive their `claim_selector` from their DSL: a Decider claims its commands and the events it reacts to, a read model what it evolves from and reacts to, both by their `partition_by` keys.
+The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name, normalized), `group_label` (the class name), `exclusive?` (`false`), `history_selector` (the history it reads, bound to each claimed partition: none), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate. Built-in reactors derive their `claim_selector` from their DSL: a Decider claims its commands and the events it reacts to, a materializer what it evolves from and reacts to, both by their `partition_by` keys.
 
 ## Delete-on-ack queues
 
@@ -1736,7 +1736,7 @@ offsets, total_count = store.read_offsets(group_id: 'course_decider')
 
 ## Topology introspection
 
-`Sourced.topology` analyses all registered reactors (deciders, read models and machines) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for read models). Each node has at least `type`, `id`, `name`, `group_id`, `group_label` (its reactor's class name, for display), and depending on kind, `consumes` / `produces` / `schema`.
+`Sourced.topology` analyses all registered reactors (deciders, materializers and machines) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for materializers' read models). Each node has at least `type`, `id`, `name`, `group_id`, `group_label` (its reactor's class name, for display), and depending on kind, `consumes` / `produces` / `schema`.
 
 ```ruby
 Sourced.register(CourseDecider)
@@ -1790,7 +1790,7 @@ result.reactor.to_h                  # status after the command, including the e
 
 ## Testing
 
-Sourced ships with RSpec helpers for Given-When-Then testing of deciders, read models and projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
+Sourced ships with RSpec helpers for Given-When-Then testing of deciders, materializers and projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
 
 ```ruby
 require 'sourced/testing/rspec'
@@ -1873,9 +1873,9 @@ it 'runs sync block' do
 end
 ```
 
-### Testing read models
+### Testing materializers
 
-Read models use `.given` (events to evolve) and `.then` with a block that receives a result whose `context` is the projected context. `.when` is not supported — read models don't handle commands.
+Materializers use `.given` (events to evolve) and `.then` with a block that receives a result whose `context` is the projected context. `.when` is not supported — materializers don't handle commands.
 
 #### StateStored
 
@@ -1947,7 +1947,7 @@ end
 
 See `examples/app/` for a complete Sinatra application with:
 - Two deciders (course creation with name uniqueness, student enrolment with capacity limits)
-- An event-sourced read model writing JSON files
+- An event-sourced materializer writing JSON files
 - Synchronous command handling via `Sourced.handle!` in HTTP endpoints
 - Background worker processing in the same process as the web server
 

@@ -23,7 +23,7 @@ module ProjectorTestMessages
   end
 end
 
-class TestItemReadModel < Sourced::ReadModel::StateStored
+class TestItemMaterializer < Sourced::Materializer::StateStored
   partition_by :list_id
   consumer_group 'item_projector_test'
 
@@ -53,7 +53,7 @@ class TestItemReadModel < Sourced::ReadModel::StateStored
   end
 end
 
-class TestItemESReadModel < Sourced::ReadModel::EventSourced
+class TestItemESMaterializer < Sourced::Materializer::EventSourced
   partition_by :list_id
   consumer_group 'item_es_projector_test'
 
@@ -83,7 +83,7 @@ class TestItemESReadModel < Sourced::ReadModel::EventSourced
   end
 end
 
-class TestDelayedItemReadModel < Sourced::ReadModel::StateStored
+class TestDelayedItemMaterializer < Sourced::Materializer::StateStored
   partition_by :list_id
   consumer_group 'delayed_item_projector_test'
 
@@ -102,7 +102,7 @@ class TestDelayedItemReadModel < Sourced::ReadModel::StateStored
 end
 
 # Reacts on replay too, by overriding the default replay gate.
-class TestReplayingItemReadModel < Sourced::ReadModel::StateStored
+class TestReplayingItemMaterializer < Sourced::Materializer::StateStored
   partition_by :list_id
   consumer_group 'replaying_item_projector_test'
 
@@ -124,7 +124,7 @@ class TestReplayingItemReadModel < Sourced::ReadModel::StateStored
 end
 
 # Gates reactions per message on the payload, regardless of replaying.
-class TestSelectiveItemReadModel < Sourced::ReadModel::StateStored
+class TestSelectiveItemMaterializer < Sourced::Materializer::StateStored
   partition_by :list_id
   consumer_group 'selective_item_projector_test'
 
@@ -145,10 +145,10 @@ class TestSelectiveItemReadModel < Sourced::ReadModel::StateStored
   end
 end
 
-RSpec.describe Sourced::ReadModel do
+RSpec.describe Sourced::Materializer do
   describe '.handled_messages' do
     it 'includes evolve and react types' do
-      msgs = TestItemReadModel.handled_messages
+      msgs = TestItemMaterializer.handled_messages
       expect(msgs).to include(ProjectorTestMessages::ItemAdded)
       expect(msgs).to include(ProjectorTestMessages::ItemArchived)
     end
@@ -165,7 +165,7 @@ RSpec.describe Sourced::ReadModel do
         )
       ]
 
-      pairs = TestItemReadModel.handle_batch(['L1'], msgs)
+      pairs = TestItemMaterializer.handle_batch(['L1'], msgs)
 
       sync_pair = pairs.last
       sync_actions, source_msg = sync_pair
@@ -185,7 +185,7 @@ RSpec.describe Sourced::ReadModel do
         )
       ]
 
-      pairs = TestItemReadModel.handle_batch(['L1'], msgs)
+      pairs = TestItemMaterializer.handle_batch(['L1'], msgs)
 
       append_actions = pairs.flat_map { |actions, _| Array(actions) }
         .select { |a| a.is_a?(Sourced::Actions::Append) }
@@ -201,7 +201,7 @@ RSpec.describe Sourced::ReadModel do
         )
       ]
 
-      pairs = TestItemReadModel.handle_batch(['L1'], msgs, replaying: true)
+      pairs = TestItemMaterializer.handle_batch(['L1'], msgs, replaying: true)
 
       append_actions = pairs.flat_map { |actions, _| Array(actions) }
         .select { |a| a.is_a?(Sourced::Actions::Append) }
@@ -232,7 +232,7 @@ RSpec.describe Sourced::ReadModel do
       new_msgs = [history_msgs.last]
       history = make_history(history_msgs)
 
-      pairs = TestItemESReadModel.handle_batch(['L1'], new_msgs, history: history)
+      pairs = TestItemESMaterializer.handle_batch(['L1'], new_msgs, history: history)
 
       sync_pair = pairs.last
       _sync_actions, source_msg = sync_pair
@@ -251,7 +251,7 @@ RSpec.describe Sourced::ReadModel do
       new_msgs = [history_msgs.last]
       history = make_history(history_msgs)
 
-      pairs = TestItemESReadModel.handle_batch(['L1'], new_msgs, history: history)
+      pairs = TestItemESMaterializer.handle_batch(['L1'], new_msgs, history: history)
 
       append_actions = pairs.flat_map { |actions, _| Array(actions) }
         .select { |a| a.is_a?(Sourced::Actions::Append) }
@@ -267,7 +267,7 @@ RSpec.describe Sourced::ReadModel do
       ]
       history = make_history(history_msgs)
 
-      pairs = TestItemESReadModel.handle_batch(['L1'], history_msgs, history: history, replaying: true)
+      pairs = TestItemESMaterializer.handle_batch(['L1'], history_msgs, history: history, replaying: true)
 
       append_actions = pairs.flat_map { |actions, _| Array(actions) }
         .select { |a| a.is_a?(Sourced::Actions::Append) }
@@ -298,7 +298,7 @@ RSpec.describe Sourced::ReadModel do
       ]
       claim = make_claim(msgs)
 
-      pairs = TestItemReadModel.handle_claim(claim)
+      pairs = TestItemMaterializer.handle_claim(claim)
 
       # Last pair should contain sync actions
       sync_pair = pairs.last
@@ -317,7 +317,7 @@ RSpec.describe Sourced::ReadModel do
       ]
       claim = make_claim(msgs, replaying: false)
 
-      pairs = TestItemReadModel.handle_claim(claim)
+      pairs = TestItemMaterializer.handle_claim(claim)
 
       # Should have reaction pair + sync pair
       append_actions = pairs.flat_map { |actions, _| Array(actions) }
@@ -335,7 +335,7 @@ RSpec.describe Sourced::ReadModel do
       ]
       claim = make_claim(msgs, replaying: false)
 
-      pairs = TestDelayedItemReadModel.handle_claim(claim)
+      pairs = TestDelayedItemMaterializer.handle_claim(claim)
 
       append_actions = pairs.flat_map { |actions, _| Array(actions) }
         .select { |action| action.is_a?(Sourced::Actions::Append) }
@@ -354,7 +354,7 @@ RSpec.describe Sourced::ReadModel do
       ]
       claim = make_claim(msgs, replaying: true)
 
-      pairs = TestItemReadModel.handle_claim(claim)
+      pairs = TestItemMaterializer.handle_claim(claim)
 
       append_actions = pairs.flat_map { |actions, _| Array(actions) }
         .select { |a| a.is_a?(Sourced::Actions::Append) }
@@ -370,7 +370,7 @@ RSpec.describe Sourced::ReadModel do
       ]
       claim = make_claim(msgs, replaying: true)
 
-      pairs = TestItemReadModel.handle_claim(claim)
+      pairs = TestItemMaterializer.handle_claim(claim)
 
       # Execute the sync action to verify replaying is passed through
       sync_pair = pairs.last
@@ -414,7 +414,7 @@ RSpec.describe Sourced::ReadModel do
       claim = make_claim(claim_msgs)
       history = make_history(history_msgs)
 
-      pairs = TestItemESReadModel.handle_claim(claim, history: history)
+      pairs = TestItemESMaterializer.handle_claim(claim, history: history)
 
       # Sync pair should be the last one, acked against claim's last message
       sync_pair = pairs.last
@@ -436,7 +436,7 @@ RSpec.describe Sourced::ReadModel do
       claim = make_claim(claim_msgs, replaying: false)
       history = make_history(history_msgs)
 
-      pairs = TestItemESReadModel.handle_claim(claim, history: history)
+      pairs = TestItemESMaterializer.handle_claim(claim, history: history)
 
       append_actions = pairs.flat_map { |actions, _| Array(actions) }
         .select { |a| a.is_a?(Sourced::Actions::Append) }
@@ -455,7 +455,7 @@ RSpec.describe Sourced::ReadModel do
       claim = make_claim(history_msgs, replaying: true)
       history = make_history(history_msgs)
 
-      pairs = TestItemESReadModel.handle_claim(claim, history: history)
+      pairs = TestItemESMaterializer.handle_claim(claim, history: history)
 
       append_actions = pairs.flat_map { |actions, _| Array(actions) }
         .select { |a| a.is_a?(Sourced::Actions::Append) }
@@ -464,12 +464,12 @@ RSpec.describe Sourced::ReadModel do
     end
 
     it 'is detected by Injector as needing history' do
-      needs = Sourced::Injector.resolve_args(TestItemESReadModel, :handle_claim)
+      needs = Sourced::Injector.resolve_args(TestItemESMaterializer, :handle_claim)
       expect(needs).to include(:history)
     end
 
     it 'StateStored is not detected as needing history' do
-      needs = Sourced::Injector.resolve_args(TestItemReadModel, :handle_claim)
+      needs = Sourced::Injector.resolve_args(TestItemMaterializer, :handle_claim)
       expect(needs).not_to include(:history)
     end
   end
@@ -488,7 +488,7 @@ RSpec.describe Sourced::ReadModel do
     end
 
     it 'defaults to skipping reactions while replaying' do
-      instance = TestItemReadModel.new(['L1'])
+      instance = TestItemMaterializer.new(['L1'])
       msg = archived('Apple', 1)
 
       expect(instance.should_react?(instance.context, msg, replaying: false)).to be(true)
@@ -496,7 +496,7 @@ RSpec.describe Sourced::ReadModel do
     end
 
     it 'runs reactions on replaying batches when overridden to true' do
-      pairs = TestReplayingItemReadModel.handle_batch(['L1'], [archived('Apple', 1)], replaying: true)
+      pairs = TestReplayingItemMaterializer.handle_batch(['L1'], [archived('Apple', 1)], replaying: true)
 
       expect(reaction_messages(pairs).map(&:class)).to eq([ProjectorTestMessages::NotifyArchive])
     end
@@ -504,7 +504,7 @@ RSpec.describe Sourced::ReadModel do
     it 'gates reactions per message rather than per batch' do
       msgs = [archived('Apple', 1), archived('Banana', 2)]
 
-      pairs = TestSelectiveItemReadModel.handle_batch(['L1'], msgs)
+      pairs = TestSelectiveItemMaterializer.handle_batch(['L1'], msgs)
 
       reactions = pairs.select { |actions, _| Array(actions).any? { |a| a.is_a?(Sourced::Actions::Append) } }
       expect(reactions.size).to eq(1)
@@ -512,7 +512,7 @@ RSpec.describe Sourced::ReadModel do
     end
 
     it 'still runs sync blocks for a batch whose reactions are all skipped' do
-      pairs = TestItemReadModel.handle_batch(['L1'], [archived('Apple', 1)], replaying: true)
+      pairs = TestItemMaterializer.handle_batch(['L1'], [archived('Apple', 1)], replaying: true)
 
       sync_actions, source_msg = pairs.last
       expect(Array(sync_actions).any? { |a| a.is_a?(Sourced::Actions::Sync) }).to be(true)
@@ -525,7 +525,7 @@ RSpec.describe Sourced::ReadModel do
 
     let(:projector) do
       db = stored
-      Class.new(Sourced::ReadModel::StateStored) do
+      Class.new(Sourced::Materializer::StateStored) do
         partition_by :list_id
 
         context { { list_id: nil, items: [] } }
@@ -579,8 +579,8 @@ RSpec.describe Sourced::ReadModel do
 
   describe '.history_selector' do
     it "is its projection's selector, by the partition keys" do
-      selector = TestItemReadModel.history_selector
-      expect(selector).to eq(TestItemReadModel.projector.selector.by(:list_id))
+      selector = TestItemMaterializer.history_selector
+      expect(selector).to eq(TestItemMaterializer.projector.selector.by(:list_id))
       expect(selector.types.map(&:type)).to include('projector_test.item.added', 'projector_test.item.archived')
     end
   end

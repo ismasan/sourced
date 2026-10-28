@@ -81,10 +81,10 @@ module TopologyTest
     end
   end
 
-  # --- ReadModel (StateStored, no reactions) ---
-  class WidgetListReadModel < Sourced::ReadModel::StateStored
+  # --- Materializer (StateStored, no reactions) ---
+  class WidgetListMaterializer < Sourced::Materializer::StateStored
     partition_by :widget_id
-    consumer_group 'TopologyTest::WidgetListReadModel'
+    consumer_group 'TopologyTest::WidgetListMaterializer'
 
     context { { items: [] } }
 
@@ -93,10 +93,10 @@ module TopologyTest
     end
   end
 
-  # --- ReadModel partitioned by message id (exclusive, no partition_by) ---
-  class QueueReadModel < Sourced::ReadModel::StateStored
+  # --- Materializer partitioned by message id (exclusive, no partition_by) ---
+  class QueueMaterializer < Sourced::Materializer::StateStored
     exclusive
-    consumer_group 'TopologyTest::QueueReadModel'
+    consumer_group 'TopologyTest::QueueMaterializer'
 
     context { { items: [] } }
 
@@ -105,10 +105,10 @@ module TopologyTest
     end
   end
 
-  # --- ReadModel (EventSourced, with catch-all reaction) ---
-  class ReactingReadModel < Sourced::ReadModel::EventSourced
+  # --- Materializer (EventSourced, with catch-all reaction) ---
+  class ReactingMaterializer < Sourced::Materializer::EventSourced
     partition_by :widget_id
-    consumer_group 'TopologyTest::ReactingReadModel'
+    consumer_group 'TopologyTest::ReactingMaterializer'
 
     context { { items: [] } }
 
@@ -121,10 +121,10 @@ module TopologyTest
     end
   end
 
-  # --- ReadModel with specific + catch-all reactions ---
-  class MixedReactingReadModel < Sourced::ReadModel::EventSourced
+  # --- Materializer with specific + catch-all reactions ---
+  class MixedReactingMaterializer < Sourced::Materializer::EventSourced
     partition_by :widget_id
-    consumer_group 'TopologyTest::MixedReactingReadModel'
+    consumer_group 'TopologyTest::MixedReactingMaterializer'
 
     context { { items: [] } }
 
@@ -261,8 +261,8 @@ RSpec.describe Sourced::Topology do
     end
   end
 
-  context 'with WidgetListReadModel (no reactions)' do
-    let(:reactors) { [TopologyTest::WidgetListReadModel] }
+  context 'with WidgetListMaterializer (no reactions)' do
+    let(:reactors) { [TopologyTest::WidgetListMaterializer] }
 
     it 'does not build command nodes' do
       expect(find_nodes_by_type('command')).to be_empty
@@ -278,42 +278,42 @@ RSpec.describe Sourced::Topology do
     end
 
     it 'builds a readmodel node' do
-      node = find_node('topology_test.widget_list_read_model-rm')
+      node = find_node('topology_test.widget_list_materializer-rm')
       expect(node).not_to be_nil
       expect(node.type).to eq('readmodel')
     end
 
     it 'sets correct name and group_id on readmodel node' do
-      node = find_node('topology_test.widget_list_read_model-rm')
-      expect(node.name).to eq('TopologyTest::WidgetListReadModel')
-      expect(node.group_id).to eq('topology_test.widget_list_read_model')
+      node = find_node('topology_test.widget_list_materializer-rm')
+      expect(node.name).to eq('TopologyTest::WidgetListMaterializer')
+      expect(node.group_id).to eq('topology_test.widget_list_materializer')
     end
 
     it 'readmodel consumes the evolved event types' do
-      node = find_node('topology_test.widget_list_read_model-rm')
+      node = find_node('topology_test.widget_list_materializer-rm')
       expect(node.consumes).to eq(['ccc_topo.widget_created'])
     end
 
     it 'readmodel produces nothing when there are no reactions' do
-      node = find_node('topology_test.widget_list_read_model-rm')
+      node = find_node('topology_test.widget_list_materializer-rm')
       expect(node.produces).to eq([])
     end
   end
 
-  context 'with a read model partitioned by message id' do
-    let(:reactors) { [TopologyTest::QueueReadModel] }
+  context 'with a materializer partitioned by message id' do
+    let(:reactors) { [TopologyTest::QueueMaterializer] }
 
     it 'consumes the evolved event types, which it has no history selector for' do
-      expect(TopologyTest::QueueReadModel.history_selector).to eq(Sourced::Selector::NONE)
-      expect(find_node('topology_test.queue_read_model-rm').consumes).to eq(['ccc_topo.widget_archived'])
+      expect(TopologyTest::QueueMaterializer.history_selector).to eq(Sourced::Selector::NONE)
+      expect(find_node('topology_test.queue_materializer-rm').consumes).to eq(['ccc_topo.widget_archived'])
       expect(find_nodes_by_type('event').map(&:id)).to eq(['ccc_topo.widget_archived'])
     end
   end
 
-  context 'with ReactingReadModel (catch-all reaction)' do
-    let(:reactors) { [TopologyTest::ReactingReadModel] }
-    let(:rm_id) { 'topology_test.reacting_read_model-rm' }
-    let(:aut_id) { 'topology_test.reacting_read_model-aut' }
+  context 'with ReactingMaterializer (catch-all reaction)' do
+    let(:reactors) { [TopologyTest::ReactingMaterializer] }
+    let(:rm_id) { 'topology_test.reacting_materializer-rm' }
+    let(:aut_id) { 'topology_test.reacting_materializer-aut' }
 
     it 'builds a readmodel node' do
       node = find_node(rm_id)
@@ -336,7 +336,7 @@ RSpec.describe Sourced::Topology do
       expect(aut_nodes.size).to eq(1)
       node = aut_nodes.first
       expect(node.id).to eq(aut_id)
-      expect(node.name).to eq('reaction(TopologyTest::ReactingReadModel)')
+      expect(node.name).to eq('reaction(TopologyTest::ReactingMaterializer)')
     end
 
     it 'automation node consumes the readmodel' do
@@ -350,11 +350,11 @@ RSpec.describe Sourced::Topology do
     end
   end
 
-  context 'with MixedReactingReadModel (specific + catch-all reactions)' do
-    let(:reactors) { [TopologyTest::MixedReactingReadModel] }
-    let(:rm_id) { 'topology_test.mixed_reacting_read_model-rm' }
-    let(:specific_aut_id) { 'ccc_topo.widget_created-topology_test.mixed_reacting_read_model-aut' }
-    let(:catchall_aut_id) { 'topology_test.mixed_reacting_read_model-aut' }
+  context 'with MixedReactingMaterializer (specific + catch-all reactions)' do
+    let(:reactors) { [TopologyTest::MixedReactingMaterializer] }
+    let(:rm_id) { 'topology_test.mixed_reacting_materializer-rm' }
+    let(:specific_aut_id) { 'ccc_topo.widget_created-topology_test.mixed_reacting_materializer-aut' }
+    let(:catchall_aut_id) { 'topology_test.mixed_reacting_materializer-aut' }
 
     it 'builds two automation nodes: one specific and one catch-all' do
       aut_nodes = find_nodes_by_type('automation')
@@ -368,7 +368,7 @@ RSpec.describe Sourced::Topology do
 
     it 'catch-all automation is named after the reactor' do
       node = find_node(catchall_aut_id)
-      expect(node.name).to eq('reaction(TopologyTest::MixedReactingReadModel)')
+      expect(node.name).to eq('reaction(TopologyTest::MixedReactingMaterializer)')
     end
 
     it 'both automation nodes consume the readmodel' do
@@ -395,7 +395,7 @@ RSpec.describe Sourced::Topology do
   end
 
   context 'event deduplication across reactors' do
-    let(:reactors) { [TopologyTest::WidgetDecider, TopologyTest::WidgetListReadModel] }
+    let(:reactors) { [TopologyTest::WidgetDecider, TopologyTest::WidgetListMaterializer] }
 
     it 'deduplicates event nodes by type string' do
       evt_nodes = find_nodes_by_type('event').select { |n| n.id == 'ccc_topo.widget_created' }
@@ -427,8 +427,8 @@ RSpec.describe Sourced::Topology do
       [
         TopologyTest::WidgetDecider,
         TopologyTest::NotifierDecider,
-        TopologyTest::WidgetListReadModel,
-        TopologyTest::ReactingReadModel,
+        TopologyTest::WidgetListMaterializer,
+        TopologyTest::ReactingMaterializer,
         TopologyTest::SchedulingDecider
       ]
     end

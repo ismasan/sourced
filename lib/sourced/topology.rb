@@ -7,7 +7,7 @@ rescue LoadError
 end
 
 module Sourced
-  # Analyzes registered reactors (Deciders, ReadModels and Machines) and builds a
+  # Analyzes registered reactors (Deciders, Materializers and Machines) and builds a
   # flat array of node structs describing the message flow graph. Enables
   # visualization, introspection, and Event Modeling diagram generation.
   module Topology
@@ -43,7 +43,7 @@ module Sourced
 
     # Analyze registered reactors and build the topology graph.
     #
-    # @param reactors [Enumerable<Class>] reactor classes (Deciders and/or ReadModels)
+    # @param reactors [Enumerable<Class>] reactor classes (Deciders and/or Materializers)
     # @return [Array<CommandNode, EventNode, AutomationNode, ReadModelNode>]
     def self.build(reactors)
       analyzer = SourceAnalyzer.new
@@ -117,7 +117,7 @@ module Sourced
           end
         end
 
-        is_read_model = reactor < Sourced::ReadModel
+        is_read_model = reactor < Sourced::Materializer
         rm_id = is_read_model ? "#{Sourced::Types::ModuleToMessageType.parse(group_id)}-rm" : nil
         projector_aut_ids = []
 
