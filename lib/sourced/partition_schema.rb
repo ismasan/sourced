@@ -20,6 +20,8 @@ module Sourced
   #   ever created.
   # * The history selector's keys are partition keys: binding takes their
   #   values from the claimed partition.
+  # * The claim selector's keys are the partition keys: they're what a claim's
+  #   partition has values for.
   #
   # Id-partitioned reactors (no schema) aren't checked.
   module PartitionSchema
@@ -44,6 +46,7 @@ module Sourced
       end
       selector = reactor.respond_to?(:selector) ? reactor.selector : Selector::NONE
       check_selector_keys!(reactor, schema, selector, error)
+      check_claim_keys!(reactor, schema, error)
       messages = (full.keys + reactor.handled_messages + selector.types).uniq
       return if messages.empty?
 
@@ -83,6 +86,16 @@ module Sourced
 
       raise error, "#{reactor}: its selector is scoped by #{foreign.join(', ')}, which aren't partition keys " \
                    "(#{schema.keys.join(', ')}), so a claim can't bind them"
+    end
+
+    private def check_claim_keys!(reactor, schema, error)
+      return unless reactor.respond_to?(:claim_selector)
+
+      claim_selector = reactor.claim_selector
+      return if claim_selector.none? || claim_selector.keys.sort == schema.keys.sort
+
+      raise error, "#{reactor}: its claim_selector is scoped by #{claim_selector.keys.join(', ')}, " \
+                   "not its partition keys (#{schema.keys.join(', ')})"
     end
 
     private def check_types!(reactor, schema, klass, role, attributes, error)

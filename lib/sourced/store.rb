@@ -557,22 +557,22 @@ module Sourced
     end
 
     # Register a consumer group. Idempotent.
-    # When +partition_by+ is provided, offsets are created eagerly during {#append}
-    # instead of lazily via discovery in {#claim_next}, from messages of
-    # +handled_types+ when given (only those can make a partition claimable).
+    # With a +selector+, the one the group claims with (see {#claim_next}),
+    # offsets are created eagerly during {#append} for its partition keys,
+    # from messages of its types (only those can make a partition claimable),
+    # instead of lazily via discovery in {#claim_next}, and an id-partitioned
+    # group's types are indexed by message id.
     #
     # @param group_id [String] unique identifier for the consumer group
+    # @param selector [Selector, nil] the group's claim selector
     # @param label [String, nil] the name the group is shown under (its reactor's
     #   class name). Updated on every registration, so it follows a renamed class.
-    # @param partition_by [Array<String, Symbol>, nil] attribute names defining partitions
     # @param exclusive [Boolean] when true, the group exclusively owns its message
     #   types and uses queue (delete-on-ack) semantics
-    # @param handled_types [Array<String>] message type strings this group consumes.
-    #   Used to derive per-type index basis (:id for id-partitioned groups), and
-    #   to create eager offsets only from messages of these types.
     # @return [void]
-    def register_consumer_group(group_id, label: nil, partition_by: nil, exclusive: false, handled_types: [])
-      partition_by_sorted = partition_by ? Array(partition_by).map(&:to_s).sort : nil
+    # @raise [ArgumentError] for a selector that can't be claimed (see {#claim_next})
+    def register_consumer_group(group_id, selector = nil, label: nil, exclusive: false)
+      partition_by_sorted = selector && !selector.none? ? claim_keys(selector) : nil
       partition_by_json = partition_by_sorted ? JSON.dump(partition_by_sorted) : nil
       now = Time.now.iso8601
       db.run(<<~SQL)
@@ -585,14 +585,14 @@ module Sourced
       # indexed by id so they are claimable regardless of which code path appends
       # them (append, handle!, workflows, scheduled-message promotion).
       if partition_by_sorted && IdPartition.keys?(partition_by_sorted)
-        Array(handled_types).each { |t| @type_index_basis[t] = :id }
+        selector.types.each { |t| @type_index_basis[t.type] = :id }
       end
 
       # Cache for hot-path use in append
       cg = db[@consumer_groups_table].where(group_id: group_id).first
       @registered_groups[group_id] = {
         cg_id: cg[:id], partition_by: partition_by_sorted, exclusive: exclusive,
-        types: Array(handled_types).empty? ? nil : Array(handled_types).to_set.freeze
+        types: selector && !selector.types.empty? ? selector.types.map(&:type).to_set.freeze : nil
       }
     end
 
@@ -688,13 +688,18 @@ module Sourced
 
     # Claim the next available partition for processing.
     #
-    # Bootstraps partition offsets (discovering new partitions from messages with
-    # ALL +partition_by+ attributes), finds the unclaimed partition with the earliest
-    # pending message, claims it, and fetches messages using conditional AND semantics.
+    # +selector+ is unbound, its parts by the same partition keys, ex.
+    # <tt>Selector[ItemAdded, OrderPlaced].by(:order_id)</tt>: its keys are the
+    # group's partitions, its types the messages it handles. Its assertion is
+    # ignored.
     #
-    # Returns a {ConsistencyGuard} over a {Selector} of +handled_types+ bound to
-    # the partition alongside the messages ({Selector::NONE} for id-partitioned
-    # queue claims). +handled_types+ must be registered message types.
+    # Bootstraps partition offsets (discovering new partitions from messages with
+    # ALL the partition keys), finds the unclaimed partition with the earliest
+    # pending message, claims it, and fetches what +selector+, bound to the
+    # partition, selects.
+    #
+    # Returns a {ConsistencyGuard} over that bound selector alongside the
+    # messages ({Selector::NONE} for id-partitioned queue claims).
     #
     # The +replaying+ flag indicates whether the returned messages have been
     # processed by this consumer group before. A message is replaying when its
@@ -703,13 +708,16 @@ module Sourced
     # messages are correctly flagged as replaying.
     #
     # @param group_id [String] consumer group identifier
-    # @param partition_by [String, Array<String>] attribute name(s) defining partitions
-    # @param handled_types [Array<String>] message type strings this consumer handles
+    # @param selector [Selector] what the group claims
     # @param worker_id [String] identifier for the claiming worker
     # @param batch_size [Integer, nil] max messages to fetch per claim (nil = unlimited)
-    # @return [Hash, nil] +{ offset_id:, key_pair_ids:, partition_key:, partition_value:, messages:, replaying:, guard: }+ or nil
-    def claim_next(group_id, partition_by:, handled_types:, worker_id:, batch_size: nil)
-      partition_by = Array(partition_by).sort
+    # @return [ClaimResult, nil] nil when there's nothing to claim, or for {Selector::NONE}
+    # @raise [ArgumentError] unless every part of +selector+ has the same keys, none bound
+    def claim_next(group_id, selector, worker_id:, batch_size: nil)
+      return nil if selector.none?
+
+      partition_by = claim_keys(selector)
+      handled_types = selector.types.map(&:type)
       now = Time.now.iso8601
       cg = db[@consumer_groups_table]
         .where(group_id: group_id, status: CLAIMABLE)
@@ -791,7 +799,7 @@ module Sourced
       key_pair_ids = key_pairs.map(&:first)
       partition_value = key_pairs.to_h { |_, name, value| [name, value] }
 
-      selector = claim_selector(group_id, handled_types, partition_value)
+      selector = Selector.new(parts: selector.parts).bind(**partition_value)
       key_pair_index = key_pairs.to_h { |id, name, value| [[name, value], id] }
       messages = select_messages(selector, after: claimed[:last_position], limit: batch_size, key_pair_index:)
 
@@ -801,7 +809,7 @@ module Sourced
         return nil
       end
 
-      # The guard covers handled_types (not just fetched messages), so message
+      # The guard covers the selector's types (not just fetched messages), so message
       # types that haven't appeared yet are conflicts too. An id partition holds
       # one message, so a queue claim has nothing to guard.
       last_pos = messages.last.position
@@ -1500,18 +1508,22 @@ module Sourced
       { offset_id: offset[:id], partition_key: offset[:partition_key], last_position: offset[:last_position] }
     end
 
-    # The claimed partition as a selector over the group's handled types.
+    # A claim selector's partition keys: one offset per tuple of their values.
     #
-    # @param group_id [String]
-    # @param handled_types [Array<String>]
-    # @param partition_value [Hash{String => String}]
-    # @return [Selector]
-    def claim_selector(group_id, handled_types, partition_value)
-      classes = handled_types.map do |type|
-        Sourced::Message.registry[type] or
-          raise ArgumentError, "consumer group #{group_id.inspect} handles #{type.inspect}, which no message class is registered as"
+    # @param selector [Selector]
+    # @return [Array<String>] sorted
+    # @raise [ArgumentError] unless every part has the same keys, none bound
+    def claim_keys(selector)
+      keys = selector.parts.map(&:keys).uniq
+      if keys.size > 1
+        raise ArgumentError, "#{selector.inspect} can't be claimed: its parts must all have the same partition keys"
       end
-      Selector[*classes].by(*partition_value.keys).bind(**partition_value)
+      raise ArgumentError, "#{selector.inspect} can't be claimed: it has no partition keys" if keys.first.empty?
+      unless selector.parts.all? { |p| p.values.empty? }
+        raise ArgumentError, "#{selector.inspect} can't be claimed: claims bind its keys to each partition's values"
+      end
+
+      keys.first.map(&:to_s)
     end
 
     # The messages +selector+ selects, in position order.

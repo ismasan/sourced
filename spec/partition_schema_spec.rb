@@ -224,6 +224,29 @@ RSpec.describe Sourced::PartitionSchema do
         .to raise_error(Sourced::DefinitionError, /selector is scoped by note, which aren't partition keys/)
     end
 
+    it "requires the claim selector's keys to be the partition keys" do
+      reactor = Class.new do
+        extend Sourced::Consumer
+        consumer_group 'partition_schema_claim_selector'
+        partition_by :order_id, :note
+        def self.handled_messages = [PartitionSchemaTest::OrderNoted]
+        def self.claim_selector = Sourced::Selector[PartitionSchemaTest::OrderNoted].by(:order_id)
+      end
+      expect { described_class.check!(reactor) }
+        .to raise_error(Sourced::DefinitionError, /claim_selector is scoped by order_id, not its partition keys \(order_id, note\)/)
+    end
+
+    it 'allows a claim selector with the partition keys' do
+      reactor = Class.new do
+        extend Sourced::Consumer
+        consumer_group 'partition_schema_own_claim_selector'
+        partition_by :order_id, :note
+        def self.handled_messages = [PartitionSchemaTest::OrderNoted]
+        def self.claim_selector = Sourced::Selector[PartitionSchemaTest::OrderNoted].by(:note, :order_id)
+      end
+      expect { described_class.check!(reactor) }.not_to raise_error
+    end
+
     it 'allows a selector scoped by fewer keys' do
       reactor = Class.new do
         extend Sourced::Consumer

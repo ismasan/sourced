@@ -71,6 +71,17 @@
   `Sourced.load` takes anything with a `selector`. `PartitionSchema.check!` requires a
   selector's keys to be partition keys. `ReactorDefaults` gives duck-typed reactors
   `Selector::NONE`.
+- **Claims take a selector.** `Store#claim_next(group_id, selector, worker_id:,
+  batch_size:)` and `Store#register_consumer_group(group_id, selector, label:,
+  exclusive:)` take an unbound selector whose parts all have the same partition keys,
+  ex. `Selector[ItemAdded, OrderPlaced].by(:order_id)`, instead of `partition_by:` and
+  `handled_types:`; other selectors raise `ArgumentError`. Its keys are the group's
+  partitions and its types the messages it claims; a claim's guard holds it bound to
+  the partition. Reactors declare it as `claim_selector`, which `ReactorDefaults`
+  fills in as `Selector[*handled_messages].by(*partition_keys)`, or `.by(:__id)`
+  without partition keys, and the Router claims and registers groups with it. `PartitionSchema.check!` requires a
+  custom one's keys to be the partition keys.
+  Message types no longer need to be in `Sourced::Message.registry` to be claimed.
 - `Store#read` guards an empty read at `after_position`, or 0, rather than the latest
   position.
 - `Sourced.load` of a `Projection` without values reads every message of its evolve

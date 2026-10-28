@@ -583,8 +583,7 @@ RSpec.describe Sourced::Router do
       # Offset should be released (not advanced) — can re-claim
       claim = store.claim_next(
         'router_test_decider',
-        partition_by: ['device_id'],
-        handled_types: RouterTestDecider.handled_messages.map(&:type),
+        RouterTestDecider.claim_selector,
         worker_id: 'w-1'
       )
       expect(claim).not_to be_nil
@@ -980,7 +979,7 @@ RSpec.describe Sourced::Router do
       end
 
       it 'raises for an unregistered reactor class, even one whose group exists in the store' do
-        store.register_consumer_group(RouterTestQueueWorker.group_id, partition_by: ['queue_id'])
+        store.register_consumer_group(RouterTestQueueWorker.group_id, RouterTestQueueWorker.claim_selector)
 
         expect {
           router.stop_consumer_group(RouterTestQueueWorker)
@@ -1119,6 +1118,36 @@ RSpec.describe Sourced::Router do
       expect(router.handle_next_for(RouterTestQueueHistoryReactor)).to be true
       expect(RouterTestQueueHistoryReactor.selector).to eq(Sourced::Selector::NONE)
       expect(RouterTestQueueHistoryReactor.histories.first.messages).to eq([])
+    end
+  end
+
+  describe 'claim selectors' do
+    it "defaults to the handled messages by the reactor's partition keys" do
+      expect(RouterTestDecider.claim_selector)
+        .to eq(Sourced::Selector[*RouterTestDecider.handled_messages].by(:device_id))
+    end
+
+    it 'defaults to partitions by message id without partition keys' do
+      expect(RouterTestQueueHistoryReactor.claim_selector)
+        .to eq(Sourced::Selector[*RouterTestQueueHistoryReactor.handled_messages].by(:__id))
+    end
+
+    it "claims with the reactor's own claim selector" do
+      reactor = Class.new do
+        extend Sourced::Consumer
+        consumer_group 'router_test_narrow_claims'
+        partition_by :device_id
+        def self.handled_messages = [RouterTestMessages::DeviceRegistered, RouterTestMessages::DeviceRenamed]
+        def self.claim_selector = Sourced::Selector[RouterTestMessages::DeviceRegistered].by(:device_id)
+        def self.handle_claim(claim) = claim.messages.map { |m| [Sourced::Actions::OK, m] }
+      end
+      router.register(reactor)
+
+      store.append(RouterTestMessages::DeviceRenamed.new(payload: { device_id: 'd1', name: 'B' }))
+      expect(router.handle_next_for(reactor)).to be false
+
+      store.append(RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'A' }))
+      expect(router.handle_next_for(reactor)).to be true
     end
   end
 
@@ -1270,8 +1299,7 @@ RSpec.describe Sourced::Router do
 
       # after reactivating the group, the retained message is re-claimable
       store.start_consumer_group('fake_commander')
-      claim = store.claim_next('fake_commander', partition_by: ['__id'],
-        handled_types: ['router_q.do_thing'], worker_id: 'w2')
+      claim = store.claim_next('fake_commander', Sourced::Selector[RouterQueueMessages::DoThing].by(:__id), worker_id: 'w2')
       expect(claim.messages.size).to eq(1)
     end
   end

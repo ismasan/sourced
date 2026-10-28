@@ -15,6 +15,8 @@ module Sourced
     extend self
 
     KEY = '__id'
+    # The id partition's keys.
+    KEYS = [KEY.to_sym].freeze
 
     # Whether +keys+ (a +partition_by+, or a claimed partition's keys) are the id partition.
     #

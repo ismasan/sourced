@@ -69,6 +69,14 @@ module Sourced
 
       # No history.
       def selector = Selector::NONE
+
+      # What the Router claims: the handled messages, partitioned by the
+      # partition keys, or by message id (+__id+) when there are none (only
+      # exclusive reactors may be; the Router checks).
+      def claim_selector
+        keys = partition_keys
+        Selector[*handled_messages].by(*(keys.empty? ? IdPartition::KEYS : keys))
+      end
     end
   end
 end

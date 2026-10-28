@@ -5,6 +5,16 @@ require 'sourced/error_strategy'
 
 module Sourced
   class Router
+    # A registered reactor's consumer group, read once when it's added, so its
+    # registration and every claim use the same selector.
+    #
+    # @!attribute claim_selector [Selector] what the group claims
+    # @!attribute exclusive [Boolean] whether it solely owns its message types
+    Group = Data.define(:claim_selector, :exclusive) do
+      # @return [Array<String>]
+      def handled_types = claim_selector.types.map(&:type)
+    end
+
     # Raised for a reactor class, or group_id, that isn't registered with this router
     class UnregisteredReactorError < Sourced::Error
       def initialize(reactor_or_id, reactors)
@@ -36,7 +46,7 @@ module Sourced
       @error_strategy = error_strategy
       @reactors = []
       @needs_history = {}
-      # Consumer group arguments, by reactor: { partition_by:, exclusive:, handled_types: }
+      # {Group}s, by reactor
       @groups = {}
       reactors.each { |reactor| add(reactor) }
     end
@@ -60,7 +70,7 @@ module Sourced
     # Register a reactor. Reactors are duck-typed: only +handled_messages+ and
     # +handle_claim+ are required. Optional methods (+group_id+ — defaults to the
     # class name normalized by {Types::GroupId}, +group_label+ — the class name,
-    # +partition_keys+, +exclusive?+, +selector+, lifecycle hooks)
+    # +partition_keys+, +exclusive?+, +selector+, +claim_selector+, lifecycle hooks)
     # get defaults so a plain class (e.g. a Sidereal Commander adapter) can
     # register without depending on Sourced.
     #
@@ -82,13 +92,7 @@ module Sourced
       group_id = reactor_class.group_id
       group = @groups.fetch(reactor_class) { raise UnregisteredReactorError.new(reactor_class, @reactors) }
 
-      claim = store.claim_next(
-        group_id,
-        partition_by: group[:partition_by],
-        handled_types: group[:handled_types],
-        worker_id: worker_id,
-        batch_size: batch_size
-      )
+      claim = store.claim_next(group_id, group.claim_selector, worker_id:, batch_size:)
       return false unless claim
 
       begin
@@ -223,15 +227,14 @@ module Sourced
         raise ArgumentError, "Cannot register #{reactor_class}: #{existing} already uses group_id #{reactor_class.group_id.inspect}"
       end
 
-      exclusive = reactor_class.exclusive?
-      partition_keys = effective_partition_keys(reactor_class)
+      group = Group.new(claim_selector: reactor_class.claim_selector, exclusive: reactor_class.exclusive?)
 
       # id-partitioning (declared as `partition_by :__id`, or implied by omitting
       # partition_by) indexes messages by Message#id (key name "__id", chosen to
       # not collide with a payload attribute) and must be sole-owned, so it is only
       # allowed for exclusive reactors. This keeps id-indexing safe: a type is only
       # id-indexed when its lone exclusive owner is id-partitioned.
-      if IdPartition.keys?(partition_keys) && !exclusive
+      if IdPartition.keys?(group.claim_selector.keys) && !group.exclusive
         raise ArgumentError,
           "#{reactor_class} must declare `partition_by`. (Only an `exclusive` reactor may " \
           "be id-partitioned — one partition per message — whether by omitting " \
@@ -239,17 +242,19 @@ module Sourced
       end
 
       PartitionSchema.check!(reactor_class)
-      handled_types = reactor_class.handled_messages.map(&:type).uniq
-      validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
+      validate_exclusive_ownership!(reactor_class, group)
       validate_command_ownership!(reactor_class)
 
       @reactors << reactor_class
-      @groups[reactor_class] = { partition_by: partition_keys.map(&:to_s), exclusive:, handled_types: }
+      @groups[reactor_class] = group
       @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
     end
 
     def register_consumer_group(reactor_class)
-      store.register_consumer_group(reactor_class.group_id, label: reactor_class.group_label, **@groups.fetch(reactor_class))
+      group = @groups.fetch(reactor_class)
+      store.register_consumer_group(
+        reactor_class.group_id, group.claim_selector, label: reactor_class.group_label, exclusive: group.exclusive
+      )
     end
 
     # A reactor's own +on_exception+ handles its errors; otherwise this router's
@@ -268,28 +273,20 @@ module Sourced
       store.logger.warn "Sourced: #{e.message}, ignoring"
     end
 
-    # A registered reactor's effective partition keys: its declared keys, or
-    # +[:__id]+ (partition by Message#id) for an exclusive reactor that declared
-    # none (validated when the reactor is added).
-    def effective_partition_keys(reactor)
-      keys = Array(reactor.partition_keys)
-      keys.empty? ? [IdPartition::KEY.to_sym] : keys
-    end
-
     # Enforce that an exclusive reactor is the sole handler of its message types.
     # A message deleted once the exclusive reactor acks it must not be needed by
     # any other reactor.
     #
     # @raise [ArgumentError] on a message-type overlap involving an exclusive reactor
-    def validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
+    def validate_exclusive_ownership!(reactor_class, group)
       @reactors.each do |existing|
-        existing_exclusive = @groups.fetch(existing)[:exclusive]
-        next unless exclusive || existing_exclusive
+        existing_group = @groups.fetch(existing)
+        next unless group.exclusive || existing_group.exclusive
 
-        overlap = handled_types & @groups.fetch(existing)[:handled_types]
+        overlap = group.handled_types & existing_group.handled_types
         next if overlap.empty?
 
-        offender = exclusive ? reactor_class : existing
+        offender = group.exclusive ? reactor_class : existing
         raise ArgumentError, <<~MSG.strip
           Cannot register #{reactor_class}: exclusive reactor #{offender} requires sole ownership of its message types, but #{reactor_class} and #{existing} both handle: #{overlap.sort.join(', ')}
         MSG

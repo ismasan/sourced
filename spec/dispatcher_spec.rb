@@ -140,8 +140,7 @@ RSpec.describe Sourced::Dispatcher do
 
       claim = store.claim_next(
         'dispatch_test_projector',
-        partition_by: ['device_id'],
-        handled_types: DispatchTestReadModel.handled_messages.map(&:type),
+        DispatchTestReadModel.claim_selector,
         worker_id: 'w1',
         batch_size: 2
       )
@@ -159,8 +158,7 @@ RSpec.describe Sourced::Dispatcher do
 
       claim = store.claim_next(
         'dispatch_test_projector',
-        partition_by: ['device_id'],
-        handled_types: DispatchTestReadModel.handled_messages.map(&:type),
+        DispatchTestReadModel.claim_selector,
         worker_id: 'w1'
       )
 
