@@ -93,14 +93,20 @@ module Sourced
       end
     end
 
-    # A selector of one part, without keys.
+    # A selector of one part, without keys, or scoped by and bound to +values+
+    # (see {#by}).
+    #
+    # @example
+    #   Selector[E1, E2, account_id: 1] # Selector[E1, E2].by(account_id: 1)
     #
     # @param types [Array<#to_message_class>]
+    # @param values [Hash{Symbol => Object}]
     # @return [Selector] {NONE} for no types
-    def self.[](*types)
+    def self.[](*types, **values)
       return NONE if types.empty?
 
-      new(parts: [Part.new(types: types.map(&:to_message_class), keys: [], values: {})])
+      selector = new(parts: [Part.new(types: types.map(&:to_message_class), keys: [], values: {})])
+      values.empty? ? selector : selector.by(**values)
     end
 
     # Parts with the same keys and values merge, and are kept in a canonical
@@ -114,13 +120,19 @@ module Sourced
       super(parts: merged.freeze, assertion:)
     end
 
-    # Scope every part by +keys+, in addition to its own.
+    # Scope every part by +keys+, in addition to its own, and by the keys of
+    # +values+, bound to them.
+    #
+    # @example
+    #   Selector[E1].by(account_id: 1) # Selector[E1].by(:account_id).bind(account_id: 1)
     #
     # @param keys [Array<Symbol, String>]
+    # @param values [Hash{Symbol => Object}] see {#bind}
     # @return [Selector]
-    def by(*keys)
-      keys = keys.map(&:to_sym)
-      with(parts: parts.map { |p| p.by(keys) }, assertion: assertion.map_scopes { |scope| scope.by(*keys) })
+    def by(*keys, **values)
+      keys = (keys + values.keys).map(&:to_sym)
+      scoped = with(parts: parts.map { |p| p.by(keys) }, assertion: assertion.map_scopes { |scope| scope.by(*keys) })
+      values.empty? ? scoped : scoped.bind(**values)
     end
 
     # Scope every part by message id: one partition per message, an

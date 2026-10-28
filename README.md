@@ -153,7 +153,10 @@ store.read(selector.bind(course_id: 'c1', user_id: 'u1'))
 ```
 
 `bind` ignores values for keys a selector doesn't have, and can be called in
-steps. Reading a selector with a key that has no value raises
+steps. `by` and `Selector[]` also take values, scoping and binding in one go:
+`Sourced::Selector[CourseCreated, StudentEnrolled, course_id: 'c1']` is
+`Sourced::Selector[CourseCreated, StudentEnrolled].by(course_id: 'c1')`, which is
+the first example's `.by(:course_id).bind(course_id: 'c1')`. Reading a selector with a key that has no value raises
 `Sourced::Selector::UnboundKeyError`: to read every value of a key, leave it
 out of `by`. A selector without keys (`Sourced::Selector[CourseCreated]`) reads
 every message of its types.

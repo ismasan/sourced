@@ -6,6 +6,8 @@
   domain context when the timer starts: `after ->(ctx) { ctx[:sos_delay] } => SendSOS`.
   It returns seconds or a duration string; anything else (`nil` included) raises
   `Machine::TimerError` in the reaction. `to_h` renders it as `delay: nil, computed: <name>`.
+- `Selector#by(**values)` scopes by the values' keys and binds them, and
+  `Selector[A, B, key: value]` is shorthand for `Selector[A, B].by(key: value)`.
 - **Selector assertions.** `is_empty`, `includes(T)`, `excludes(T)`, `starts_with(T)` and
   `ends_with(T)` say what must hold of what a selector selects, in order, combined with
   `+` (and), `|` (or) and `~` (not). An assertion covers its selector where it's

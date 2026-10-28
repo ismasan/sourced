@@ -47,6 +47,30 @@ RSpec.describe Sourced::Selector do
     end
   end
 
+  describe '#by with values' do
+    it 'scopes by their keys and binds them' do
+      expect(described_class[SelectorTestMessages::E1, SelectorTestMessages::E2].by(account_id: 1, user_id: 2))
+        .to eq(described_class[SelectorTestMessages::E1, SelectorTestMessages::E2].by(:account_id, :user_id).bind(account_id: 1, user_id: 2))
+    end
+
+    it 'takes keys and values together, leaving the keys unbound' do
+      selector = described_class[SelectorTestMessages::E1].by(:user_id, account_id: 1)
+      expect(selector.keys).to eq(%i[account_id user_id])
+      expect(selector.unbound_keys).to eq([:user_id])
+    end
+  end
+
+  describe '.[] with values' do
+    it 'is shorthand for #by with them' do
+      expect(described_class[SelectorTestMessages::E1, SelectorTestMessages::E2, account_id: 1, user_id: 2])
+        .to eq(described_class[SelectorTestMessages::E1, SelectorTestMessages::E2].by(account_id: 1, user_id: 2))
+    end
+
+    it 'is NONE without types' do
+      expect(described_class[account_id: 1]).to eq(Sourced::Selector::NONE)
+    end
+  end
+
   describe '#by_message_id' do
     it 'scopes every part by the reserved message id key' do
       selector = described_class[SelectorTestMessages::E1].by_message_id
