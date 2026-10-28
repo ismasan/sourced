@@ -93,6 +93,18 @@ module TopologyTest
     end
   end
 
+  # --- ReadModel partitioned by message id (exclusive, no partition_by) ---
+  class QueueReadModel < Sourced::ReadModel::StateStored
+    exclusive
+    consumer_group 'TopologyTest::QueueReadModel'
+
+    context { { items: [] } }
+
+    evolve WidgetArchived do |context, msg|
+      context[:items] << msg.payload.widget_id
+    end
+  end
+
   # --- ReadModel (EventSourced, with catch-all reaction) ---
   class ReactingReadModel < Sourced::ReadModel::EventSourced
     partition_by :widget_id
@@ -285,6 +297,16 @@ RSpec.describe Sourced::Topology do
     it 'readmodel produces nothing when there are no reactions' do
       node = find_node('topology_test.widget_list_read_model-rm')
       expect(node.produces).to eq([])
+    end
+  end
+
+  context 'with a read model partitioned by message id' do
+    let(:reactors) { [TopologyTest::QueueReadModel] }
+
+    it 'consumes the evolved event types, which it has no history selector for' do
+      expect(TopologyTest::QueueReadModel.selector).to eq(Sourced::Selector::NONE)
+      expect(find_node('topology_test.queue_read_model-rm').consumes).to eq(['ccc_topo.widget_archived'])
+      expect(find_nodes_by_type('event').map(&:id)).to eq(['ccc_topo.widget_archived'])
     end
   end
 

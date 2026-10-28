@@ -78,13 +78,18 @@ module Sourced
     # keeps them. Prepended after Sourced::Evolve's class methods.
     module EvolveTypes
       # Fixed by {Machine.validate!}; computed on each call before it.
-      def selector
-        return @__selector if @__selector
+      def evolve_selector
+        return @__evolve_selector if @__evolve_selector
 
         tree = self.tree
         parts = tree.mounted_machines.map { |part| part.projector.selector }
         own = Selector[*__transition_classes, *tree.child_events, *handled_events]
-        [projector.selector, own, *parts].reduce(:+).by(*partition_keys)
+        [projector.selector, own, *parts].reduce(:+)
+      end
+
+      # Fixed by {Machine.validate!}; computed on each call before it.
+      def selector
+        @__selector || evolve_selector.by(*partition_keys)
       end
     end
     singleton_class.prepend EvolveTypes
@@ -1284,6 +1289,7 @@ module Sourced
         # What the runtime reads per message, fixed now that the definition is.
         @__handled_commands = handled_commands.freeze
         @__handled_events = handled_events.freeze
+        @__evolve_selector = evolve_selector
         @__selector = selector
         @__evolve_set = @__selector.types.to_set.freeze
         @__start_paths = __start_paths.freeze if start_state

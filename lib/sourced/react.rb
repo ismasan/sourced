@@ -172,7 +172,9 @@ module Sourced
       def reaction(*args, &block)
         case args
         in []
-          selector.types.each do |message_class|
+          # What it evolves from, however it's partitioned (see Evolve.evolve_selector).
+          evolved = respond_to?(:evolve_selector) ? evolve_selector : selector
+          evolved.types.each do |message_class|
             next if reaction_handlers.key?(message_class)
 
             catch_all_react_events << message_class

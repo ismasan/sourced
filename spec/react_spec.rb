@@ -237,6 +237,23 @@ RSpec.describe Sourced::React do
       ])
     end
 
+    it 'reacts to every evolved type with a catch-all, whatever the partitioning' do
+      queue = Class.new(Sourced::ReadModel::StateStored) do
+        exclusive
+        consumer_group 'react_test.catch_all_queue'
+        evolve(ReactTestMessages::Wildcarded) { |*| }
+        reaction { |*| }
+      end
+      early = Class.new(Sourced::Decider) do
+        evolve(ReactTestMessages::Wildcarded) { |*| }
+        reaction { |*| }
+        partition_by :thing_id
+      end
+
+      expect(queue.catch_all_react_events).to eq(Set[ReactTestMessages::Wildcarded])
+      expect(early.catch_all_react_events).to eq(Set[ReactTestMessages::Wildcarded])
+    end
+
     it 'supports reactions registered for multiple message classes' do
       instance = dsl_reactor_class.new
 

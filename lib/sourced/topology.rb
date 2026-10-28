@@ -98,7 +98,7 @@ module Sourced
         end
 
         if reactor.respond_to?(:selector)
-          reactor.selector.types.each do |evt_class|
+          evolved(reactor).each do |evt_class|
             next if evt_class < Sourced::Command
 
             evt_type = evt_class.type
@@ -170,7 +170,7 @@ module Sourced
         end
 
         if is_read_model
-          consumes = reactor.selector.types
+          consumes = evolved(reactor)
             .reject { |c| c < Sourced::Command }
             .map(&:type)
 
@@ -366,6 +366,13 @@ module Sourced
       reached
     end
 
+    # What +reactor+ evolves from, however it's partitioned: its
+    # +evolve_selector+'s types, or its history selector's.
+    # @api private
+    def self.evolved(reactor)
+      (reactor.respond_to?(:evolve_selector) ? reactor.evolve_selector : reactor.selector).types
+    end
+
     # @api private
     def self.add_event_node(event_nodes, command_ids, evt_class, group_id, group_label)
       return unless evt_class
@@ -473,7 +480,7 @@ module Sourced
       {}
     end
 
-    private_class_method :add_machine, :machine_block_produces, :machine_transitions, :exits?, :branch, :eventless_closure, :add_event_node,
+    private_class_method :evolved, :add_machine, :machine_block_produces, :machine_transitions, :exits?, :branch, :eventless_closure, :add_event_node,
                          :resolve_refs, :resolve_ref, :resolve_symbol_ref,
                          :resolve_const_ref, :resolve_const_path_ref,
                          :resolve_const_index_ref,

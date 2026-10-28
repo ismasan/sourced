@@ -70,6 +70,21 @@ RSpec.describe Sourced::Evolve do
       expect(decider.selector).to eq(Sourced::Selector[EvolveTestMessages::ItemAdded].by(:cart_id))
     end
 
+    it 'builds its selector once, and again after its evolve types or partition keys change' do
+      reactor = Class.new(Sourced::Decider) do
+        partition_by :cart_id
+        evolve(EvolveTestMessages::ItemAdded) { |*| }
+      end
+      first = reactor.selector
+      expect(reactor.selector).to equal(first)
+
+      reactor.evolve(EvolveTestMessages::CartClosed) { |*| }
+      expect(reactor.selector.types).to eq([EvolveTestMessages::CartClosed, EvolveTestMessages::ItemAdded].sort_by(&:type))
+
+      reactor.partition_by :cart_id, :user_id
+      expect(reactor.selector.keys).to eq(%i[cart_id user_id])
+    end
+
     it 'reads no history when id-partitioned' do
       queue = Class.new(Sourced::Decider) do
         exclusive

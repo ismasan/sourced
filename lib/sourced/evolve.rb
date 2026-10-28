@@ -61,17 +61,31 @@ module Sourced
         @projector ||= __build_projector(Sourced::Projector)
       end
 
-      # The history the Router reads for a claimed partition: the projector's
-      # selector scoped by the partition keys. {Selector::NONE} (no history)
-      # for an id-partitioned reactor, which declares no partition keys or
+      # What the reactor evolves from, without its partition: its projector's
+      # selector. What it reacts to with a catch-all +reaction+, and what
+      # Topology draws, however it's partitioned.
+      #
+      # @return [Selector]
+      def evolve_selector = projector.selector
+
+      # The history the Router reads for a claimed partition: {#evolve_selector}
+      # scoped by the partition keys. {Selector::NONE} (no history) for an
+      # id-partitioned reactor, which declares no partition keys or
       # +partition_by :__id+.
+      #
+      # Memoised while its inputs are the same objects: +evolve+ and
+      # +partition_by+ replace them.
       #
       # @return [Selector]
       def selector
+        source = evolve_selector
         keys = partition_keys
-        return Selector::NONE if keys.empty? || IdPartition.keys?(keys)
+        return @__history_selector if @__history_source.equal?(source) && @__history_keys.equal?(keys)
 
-        projector.selector.by(*keys)
+        selector = keys.empty? || IdPartition.keys?(keys) ? Selector::NONE : source.by(*keys)
+        @__history_source = source
+        @__history_keys = keys
+        @__history_selector = selector
       end
 
       # Define the projector's initial context factory. The block takes no arguments.
