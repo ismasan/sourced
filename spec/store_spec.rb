@@ -1143,7 +1143,11 @@ RSpec.describe Sourced::Store do
           .by(:device_id, :asset_id).bind(device_id: 'dev-1', asset_id: 'asset-1'),
         notes.by(:device_id).bind(device_id: 'dev-1') + notes.by(:asset_id).bind(asset_id: 'asset-1'),
         notes + Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-2'),
-        notes.by(:device_id, :asset_id).bind(device_id: 'dev-1', asset_id: 'asset-404')
+        notes.by(:device_id, :asset_id).bind(device_id: 'dev-1', asset_id: 'asset-404'),
+        # a note tagged device_id: dev-1 is a candidate of the device part, but
+        # not of its types, and carries none of the asset part's keys
+        Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1') +
+          notes.by(:asset_id).bind(asset_id: 'asset-1')
       ]
       log = store.read_all(limit: 100).messages
 

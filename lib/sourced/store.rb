@@ -1569,6 +1569,8 @@ module Sourced
     # SQL for what +selector+ selects within a position range: candidate
     # positions, and the condition over candidate messages +m+ that narrows them.
     # Each part contributes its candidates and its condition; parts are OR'd.
+    # Candidates are pooled, so a part's condition holds only for messages the
+    # part selects, wherever they came from (see {#partition_filter_sql}).
     #
     # A keyed part's candidates are the positions indexed under any of its
     # key_pairs, bounded in the (key_pair_id, message_position) index, so a read
@@ -1612,7 +1614,7 @@ module Sourced
           SELECT message_position AS position FROM #{@message_key_pairs_table}
           WHERE key_pair_id IN (#{kp_ids_list})#{position_range_sql('message_position', after, through)}
         SQL
-        conditions << partition_filter_sql(kp_ids, part.keys, part.type_names)
+        conditions << partition_filter_sql(kp_ids, part.keys, part.type_names, own_candidates: selector.parts.size == 1)
       end
 
       return nil if candidates.empty?
@@ -1641,21 +1643,31 @@ module Sourced
         .to_h { |r| [[r[:name], r[:value]], r[:id]] }
     end
 
-    # A keyed part's condition, over candidate messages +m+ from {#selector_sql}.
-    # Candidates carry at least one of the part's key_pairs, so a message
-    # qualifies unless it carries one of the part's keys with another value
-    # (including a value whose key_pair didn't exist when the ids were resolved).
+    # A keyed part's condition, over candidate messages +m+ from {#selector_sql}:
+    # the message carries at least one of the part's key_pairs, and none of the
+    # part's keys with another value (including a value whose key_pair didn't
+    # exist when the ids were resolved). A part's own candidates carry one of
+    # its key_pairs, so when they're the only candidates (+own_candidates+),
+    # that half is left out.
     #
     # @param key_pair_ids [Array<Integer>] the part's key_pairs that exist
     # @param attr_names [Array<Symbol, String>] all the part's keys
     # @param handled_types [Array<String>]
-    def partition_filter_sql(key_pair_ids, attr_names, handled_types)
+    # @param own_candidates [Boolean] whether every candidate is the part's
+    def partition_filter_sql(key_pair_ids, attr_names, handled_types, own_candidates: false)
       kp_ids_list = key_pair_ids.map { |id| db.literal(id) }.join(', ')
       names_list = attr_names.map { |n| db.literal(n.to_s) }.join(', ')
       types_list = handled_types.map { |t| db.literal(t) }.join(', ')
+      carries = own_candidates ? '' : <<~SQL
+        AND EXISTS (
+          SELECT 1 FROM #{@message_key_pairs_table} own
+          WHERE own.message_position = m.position AND own.key_pair_id IN (#{kp_ids_list})
+        )
+      SQL
 
       <<~SQL
         m.message_type IN (#{types_list})
+          #{carries}
           AND NOT EXISTS (
             SELECT 1 FROM #{@message_key_pairs_table} mkp
             JOIN #{@key_pairs_table} kp ON kp.id = mkp.key_pair_id
