@@ -97,7 +97,7 @@ module Sourced
           end
         end
 
-        if reactor.respond_to?(:selector)
+        if reactor.respond_to?(:history_selector)
           evolved(reactor).each do |evt_class|
             next if evt_class < Sourced::Command
 
@@ -370,7 +370,7 @@ module Sourced
     # +evolve_selector+'s types, or its history selector's.
     # @api private
     def self.evolved(reactor)
-      (reactor.respond_to?(:evolve_selector) ? reactor.evolve_selector : reactor.selector).types
+      (reactor.respond_to?(:evolve_selector) ? reactor.evolve_selector : reactor.history_selector).types
     end
 
     # @api private

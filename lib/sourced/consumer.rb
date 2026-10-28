@@ -254,7 +254,7 @@ module Sourced
     # by Sourced::Evolve.
     #
     # @return [Selector]
-    def selector
+    def history_selector
       Selector::NONE
     end
 

@@ -536,9 +536,9 @@ RSpec.describe Sourced::Decider do
     end
   end
 
-  describe '.selector' do
+  describe '.history_selector' do
     it "is its projection's selector, by the partition keys" do
-      selector = TestDeviceDecider.selector
+      selector = TestDeviceDecider.history_selector
 
       expect(selector).to eq(TestDeviceDecider.projector.selector.by(:device_id))
       expect(selector.types.map(&:type)).to include('decider_test.device.registered', 'decider_test.device.bound')

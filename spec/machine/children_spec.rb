@@ -455,13 +455,13 @@ module MachineChildrenTest
         expect(wrap.(log).first.class).to be(Wrapped)
 
         order = OrderMachine.new(order_id: 'o1')
-        order.evolve(wrap.(log.select { |m| OrderMachine.selector.types.include?(m.to_message.class) }))
+        order.evolve(wrap.(log.select { |m| OrderMachine.history_selector.types.include?(m.to_message.class) }))
         expect(order.machine.value).to eq(OrderMachine::Placed)
         expect(order.machine.children(LineItemMachine).to_h { |ref| [ref.keys[:line_id], [ref.state, ref.final?]] })
           .to eq('l1' => [LineItemMachine::Picked, true], 'l2' => [LineItemMachine::Added, false])
 
         l2 = LineItemMachine.new(order_id: 'o1', line_id: 'l2')
-        l2.evolve(wrap.(log.select { |m| m.payload.to_h[:line_id] == 'l2' && LineItemMachine.selector.types.include?(m.to_message.class) }))
+        l2.evolve(wrap.(log.select { |m| m.payload.to_h[:line_id] == 'l2' && LineItemMachine.history_selector.types.include?(m.to_message.class) }))
         expect(l2.machine.value).to eq(LineItemMachine::Added)
         stop = Wrapped.new(LineItemMachine::Stop.new(payload: { order_id: 'o1', line_id: 'l2' }))
         expect(l2.handles_command?(stop)).to be(true)
@@ -673,7 +673,7 @@ module MachineChildrenTest
       it "are the owner's children" do
         expect(AccountMachine.tree.children).to eq([SessionMachine])
         expect(AccountMachine.tree.spawned(SessionMachine).stop_on.map(&:path)).to eq(['suspended'])
-        expect(AccountMachine.selector.types).to include(SessionMachine::Started, SessionMachine::Finished)
+        expect(AccountMachine.history_selector.types).to include(SessionMachine::Started, SessionMachine::Finished)
         expect(Sourced::ReactorDefaults.expand(AccountMachine)).to eq([AccountMachine, SessionMachine])
       end
 

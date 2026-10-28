@@ -212,7 +212,7 @@ RSpec.describe Sourced::Machine do
     end
 
     it 'evolves its transitions and evolve types' do
-      expect(CartMachine.selector.types).to contain_exactly(
+      expect(CartMachine.history_selector.types).to contain_exactly(
         CartMachine::Open, CartMachine::Rejected, CartMachine::Ordered, CartMachine::Paid, CartOpened, ItemAdded
       )
     end
@@ -300,7 +300,7 @@ RSpec.describe Sourced::Machine do
       ].each do |declare|
         expect(&declare).to raise_error(Sourced::Machine::DefinitionError, /declared after the machine was validated/)
       end
-      expect(m.selector.types).not_to include(late)
+      expect(m.history_selector.types).not_to include(late)
     end
 
     it 'locks a part once its owner is validated' do
@@ -352,7 +352,7 @@ RSpec.describe Sourced::Machine do
       end
 
       expect(m.projector.handled_messages).to eq([ItemAdded])
-      expect(m.selector.types).to contain_exactly(ItemAdded, m::Open)
+      expect(m.history_selector.types).to contain_exactly(ItemAdded, m::Open)
     end
   end
 
@@ -1060,9 +1060,9 @@ RSpec.describe Sourced::Machine do
 
       m.validate!
       expect(m.handled_commands).to be_frozen.and eq([Ping])
-      expect(m.selector).to equal(m.selector)
-      expect(m.selector.types).to include(m::Pinged)
-      expect(m.selector.parts.map(&:keys).uniq).to eq([m.partition_keys])
+      expect(m.history_selector).to equal(m.history_selector)
+      expect(m.history_selector.types).to include(m::Pinged)
+      expect(m.history_selector.parts.map(&:keys).uniq).to eq([m.partition_keys])
       expect(m.transition_classes).to be_frozen
     end
 

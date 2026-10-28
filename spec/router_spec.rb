@@ -89,7 +89,7 @@ class RouterTestMixedKeysReactor
   consumer_group 'router_test_mixed_keys'
 
   def self.handled_messages = [RouterTestMessages::OrderOpened, RouterTestMessages::SomethingHappened]
-  def self.selector = Sourced::Selector[RouterTestMessages::SomethingHappened, RouterTestMessages::OrderTouched].by(:order_id, :tenant_id)
+  def self.history_selector = Sourced::Selector[RouterTestMessages::SomethingHappened, RouterTestMessages::OrderTouched].by(:order_id, :tenant_id)
 end
 
 # Declares a narrower selector: only SomethingHappened, by order_id.
@@ -102,7 +102,7 @@ class RouterTestCustomHistoryReactor
 
   def self.handled_messages = [RouterTestMessages::OrderOpened, RouterTestMessages::SomethingHappened]
 
-  def self.selector = Sourced::Selector[RouterTestMessages::SomethingHappened].by(:order_id)
+  def self.history_selector = Sourced::Selector[RouterTestMessages::SomethingHappened].by(:order_id)
 end
 
 # Id-partitioned queue reactor: gets no history.
@@ -367,7 +367,7 @@ RSpec.describe Sourced::Router do
       reactor = Class.new do
         def self.group_id = 'router_test_unbindable'
         def self.claim_selector = Sourced::Selector[RouterTestMessages::DeviceRegistered].by(:device_id)
-        def self.selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id, :asset_id)
+        def self.history_selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id, :asset_id)
         def self.handle_claim(_claim, history:) = []
       end
 
@@ -1008,7 +1008,7 @@ RSpec.describe Sourced::Router do
     end
 
     it 'has no history selector (no evolve types)' do
-      expect(RouterTestAuditReactor.selector).to eq(Sourced::Selector::NONE)
+      expect(RouterTestAuditReactor.history_selector).to eq(Sourced::Selector::NONE)
     end
 
     it 'works alongside deciders and projectors' do
@@ -1081,7 +1081,7 @@ RSpec.describe Sourced::Router do
       store.append(RouterTestMessages::OrderTouched.new(payload: { order_id: '01' }))
 
       expect(router.handle_next_for(RouterTestQueueHistoryReactor)).to be true
-      expect(RouterTestQueueHistoryReactor.selector).to eq(Sourced::Selector::NONE)
+      expect(RouterTestQueueHistoryReactor.history_selector).to eq(Sourced::Selector::NONE)
       expect(RouterTestQueueHistoryReactor.histories.first.messages).to eq([])
     end
   end

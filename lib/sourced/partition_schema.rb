@@ -32,7 +32,7 @@ module Sourced
 
     # @param reactor [#partition_schema] +partition_schema+ is a +Plumb::HashClass+; its
     #   roles come from +handled_commands+ / +handled_events+ / +handled_messages_for_react+,
-    #   its messages from those, +claim_selector+ and +selector+, where it has them
+    #   its messages from those, +claim_selector+ and +history_selector+, where it has them
     # @param error [Class] the exception class to raise
     # @raise [DefinitionError]
     # @return [void]
@@ -47,7 +47,7 @@ module Sourced
 
         reactor.public_send(method).each { |klass| roles[klass] ||= role }
       end
-      selector = reactor.respond_to?(:selector) ? reactor.selector : Selector::NONE
+      selector = reactor.respond_to?(:history_selector) ? reactor.history_selector : Selector::NONE
       check_selector_keys!(reactor, schema, selector, error)
       check_claim_keys!(reactor, schema, error)
       claimed = reactor.respond_to?(:claim_selector) ? reactor.claim_selector.types : Plumb::BLANK_ARRAY
@@ -88,7 +88,7 @@ module Sourced
       foreign = selector.keys - schema.keys
       return if foreign.empty?
 
-      raise error, "#{reactor}: its selector is scoped by #{foreign.join(', ')}, which aren't partition keys " \
+      raise error, "#{reactor}: its history_selector is scoped by #{foreign.join(', ')}, which aren't partition keys " \
                    "(#{schema.keys.join(', ')}), so a claim can't bind them"
     end
 

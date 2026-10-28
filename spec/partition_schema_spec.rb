@@ -218,7 +218,7 @@ RSpec.describe Sourced::PartitionSchema do
         consumer_group 'partition_schema_selector'
         partition_by :order_id
         def self.handled_messages = [PartitionSchemaTest::PlaceOrder]
-        def self.selector = Sourced::Selector[PartitionSchemaTest::OrderNoted].by(:order_id, :note)
+        def self.history_selector = Sourced::Selector[PartitionSchemaTest::OrderNoted].by(:order_id, :note)
       end
       expect { described_class.check!(reactor) }
         .to raise_error(Sourced::DefinitionError, /selector is scoped by note, which aren't partition keys/)
@@ -253,7 +253,7 @@ RSpec.describe Sourced::PartitionSchema do
         consumer_group 'partition_schema_narrow_selector'
         partition_by :order_id, :note
         def self.handled_messages = [PartitionSchemaTest::OrderNoted]
-        def self.selector = Sourced::Selector[PartitionSchemaTest::OrderNoted].by(:order_id)
+        def self.history_selector = Sourced::Selector[PartitionSchemaTest::OrderNoted].by(:order_id)
       end
       expect { described_class.check!(reactor) }.not_to raise_error
     end

@@ -577,9 +577,9 @@ RSpec.describe Sourced::ReadModel do
     end
   end
 
-  describe '.selector' do
+  describe '.history_selector' do
     it "is its projection's selector, by the partition keys" do
-      selector = TestItemReadModel.selector
+      selector = TestItemReadModel.history_selector
       expect(selector).to eq(TestItemReadModel.projector.selector.by(:list_id))
       expect(selector.types.map(&:type)).to include('projector_test.item.added', 'projector_test.item.archived')
     end

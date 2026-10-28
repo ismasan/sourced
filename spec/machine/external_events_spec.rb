@@ -241,8 +241,8 @@ RSpec.describe 'Sourced::Machine external events' do
 
     it 'claims and evolves the events it declares' do
       expect(MX::OrderMachine.handled_messages).to include(MX::PaymentCaptured, MX::PaymentFailed)
-      expect(MX::OrderMachine.selector.types).to include(MX::PaymentCaptured, MX::PaymentFailed)
-      expect(MX::OrderMachine.selector.types.count(MX::PaymentCaptured)).to eq(1)
+      expect(MX::OrderMachine.history_selector.types).to include(MX::PaymentCaptured, MX::PaymentFailed)
+      expect(MX::OrderMachine.history_selector.types.count(MX::PaymentCaptured)).to eq(1)
       expect(MX::OrderMachine.handled_commands).not_to include(MX::PaymentCaptured)
     end
 

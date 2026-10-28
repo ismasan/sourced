@@ -304,7 +304,7 @@ RSpec.describe Sourced::Topology do
     let(:reactors) { [TopologyTest::QueueReadModel] }
 
     it 'consumes the evolved event types, which it has no history selector for' do
-      expect(TopologyTest::QueueReadModel.selector).to eq(Sourced::Selector::NONE)
+      expect(TopologyTest::QueueReadModel.history_selector).to eq(Sourced::Selector::NONE)
       expect(find_node('topology_test.queue_read_model-rm').consumes).to eq(['ccc_topo.widget_archived'])
       expect(find_nodes_by_type('event').map(&:id)).to eq(['ccc_topo.widget_archived'])
     end

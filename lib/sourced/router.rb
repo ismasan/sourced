@@ -70,7 +70,7 @@ module Sourced
     # Register a reactor. Reactors are duck-typed: only +claim_selector+ and
     # +handle_claim+ are required. Optional methods (+group_id+ — defaults to the
     # class name normalized by {Types::GroupId}, +group_label+ — the class name,
-    # +exclusive?+, +selector+, lifecycle hooks)
+    # +exclusive?+, +history_selector+, lifecycle hooks)
     # get defaults so a plain class (e.g. a Sidereal Commander adapter) can
     # register without depending on Sourced.
     #
@@ -99,7 +99,7 @@ module Sourced
         kwargs = {}
         if @needs_history[reactor_class]
           attrs = claim.partition_value.transform_keys(&:to_sym)
-          kwargs[:history] = store.read(reactor_class.selector.bind(**attrs))
+          kwargs[:history] = store.read(reactor_class.history_selector.bind(**attrs))
         end
 
         action_pairs = reactor_class.handle_claim(claim, **kwargs)
@@ -292,15 +292,15 @@ module Sourced
       end
     end
 
-    # A claim's history is the reactor's +selector+ bound to the claimed
+    # A claim's history is the reactor's +history_selector+ bound to the claimed
     # partition, so its keys must be the claim selector's.
     #
     # @raise [DefinitionError]
     def validate_history_keys!(reactor_class, group)
-      unbound = reactor_class.selector.keys - group.claim_selector.keys
+      unbound = reactor_class.history_selector.keys - group.claim_selector.keys
       return if unbound.empty?
 
-      raise DefinitionError, "#{reactor_class}: its selector is scoped by #{unbound.join(', ')}, which its " \
+      raise DefinitionError, "#{reactor_class}: its history_selector is scoped by #{unbound.join(', ')}, which its " \
                              "claim_selector (#{group.claim_selector.keys.join(', ')}) doesn't partition by, so a claim can't bind them"
     end
 

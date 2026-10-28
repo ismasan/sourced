@@ -173,7 +173,7 @@ module Sourced
         case args
         in []
           # What it evolves from, however it's partitioned (see Evolve.evolve_selector).
-          evolved = respond_to?(:evolve_selector) ? evolve_selector : selector
+          evolved = respond_to?(:evolve_selector) ? evolve_selector : history_selector
           evolved.types.each do |message_class|
             next if reaction_handlers.key?(message_class)
 

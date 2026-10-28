@@ -1293,7 +1293,7 @@ A **signal** is inert data — a plain `Hash` or a `Sourced::Actions` value obje
 | `{ type: :after_sync, work: -> { } }` | run a side effect after commit |
 | `{ type: :ack, delete: false }` | acknowledge the source message; `delete: true` removes it (see below) |
 
-The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name, normalized), `group_label` (the class name), `exclusive?` (`false`), `selector` (the history it reads, bound to each claimed partition: none), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate. Built-in reactors derive their `claim_selector` from their DSL: a Decider claims its commands and the events it reacts to, a read model what it evolves from and reacts to, both by their `partition_by` keys.
+The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name, normalized), `group_label` (the class name), `exclusive?` (`false`), `history_selector` (the history it reads, bound to each claimed partition: none), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate. Built-in reactors derive their `claim_selector` from their DSL: a Decider claims its commands and the events it reacts to, a read model what it evolves from and reacts to, both by their `partition_by` keys.
 
 ## Delete-on-ack queues
 

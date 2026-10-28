@@ -206,12 +206,12 @@ module Sourced
   # Pass +upto:+ (partition-local rank) to evolve over at most the first N matching
   # messages in the partition — useful for time-travel, deterministic replay, or debugging.
   #
-  # +reactor_class+ must respond to +selector+, and its instances to
-  # +evolve(messages)+. If it responds to +claim_selector+ (a reactor), its
-  # selectors' keys of +values+ are the partition, its selector is bound to them and instances are
-  # built with +new(values)+; otherwise, as for a {Sourced::Projector}, all of
-  # +values+ are the partition, its selector is scoped by them and instances
-  # are built with +new+.
+  # +reactor_class+'s instances must respond to +evolve(messages)+. If it
+  # responds to +claim_selector+ (a reactor), its selectors' keys of +values+
+  # are the partition, its +history_selector+ is bound to them and instances
+  # are built with +new(values)+; otherwise, as for a {Sourced::Projector}, all
+  # of +values+ are the partition, its +selector+ is scoped by them and
+  # instances are built with +new+.
   #
   # @raise [MissingPartitionKeyError] if a partition key is missing or nil
   # @example
@@ -226,7 +226,7 @@ module Sourced
       raise MissingPartitionKeyError, "#{reactor_class} can't be loaded without values for partition keys #{missing.inspect}"
     end
 
-    selector = partitioned ? reactor_class.selector.bind(**partition_attrs) : reactor_class.selector.by(**partition_attrs)
+    selector = partitioned ? reactor_class.history_selector.bind(**partition_attrs) : reactor_class.selector.by(**partition_attrs)
     read_result = store.read(selector, limit: upto)
     instance = partitioned ? reactor_class.new(values) : reactor_class.new
 
@@ -240,7 +240,7 @@ module Sourced
   # none when it's partitioned by message id.
   private_class_method def self.partition_keys_of(reactor_class)
     keys = reactor_class.claim_selector.keys
-    keys |= reactor_class.selector.keys if reactor_class.respond_to?(:selector)
+    keys |= reactor_class.history_selector.keys if reactor_class.respond_to?(:history_selector)
     IdPartition.keys?(keys) ? Plumb::BLANK_ARRAY : keys
   end
 

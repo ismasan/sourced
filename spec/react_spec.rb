@@ -161,7 +161,7 @@ RSpec.describe Sourced::React do
           { source: 'context' }
         end
 
-        def self.selector = Sourced::Selector[ReactTestMessages::Wildcarded]
+        def self.history_selector = Sourced::Selector[ReactTestMessages::Wildcarded]
 
         reaction ReactTestMessages::SomethingHappened do |_context, msg|
           dispatch(ReactTestMessages::DoNext, thing_id: msg.payload.thing_id)

@@ -102,7 +102,7 @@ RSpec.describe 'Sourced::Machine state classes of parts' do
         order::Placed, payment::Authorizing, payment::Captured, order::ReviewMachine::Reviewed
       ])
       expect(order.handled_messages).to include(payment::Authorizing, payment::Captured, order::ReviewMachine::Reviewed)
-      expect(order.selector.types).to include(payment::Authorizing)
+      expect(order.history_selector.types).to include(payment::Authorizing)
     end
 
     it 'are what the owner appends, evolves and claims' do

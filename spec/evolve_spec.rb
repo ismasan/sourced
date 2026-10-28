@@ -62,12 +62,12 @@ RSpec.describe Sourced::Evolve do
     it 'declares them on a projection subclass the reactor owns' do
       expect(decider.projector.superclass).to eq(Sourced::Decider.projector)
       expect(decider.projector).to be < Sourced::Projector
-      expect(decider.selector.types).to eq([EvolveTestMessages::ItemAdded])
+      expect(decider.history_selector.types).to eq([EvolveTestMessages::ItemAdded])
       expect(decider.new(cart_id: 'c1').projection).to be_a(decider.projector)
     end
 
     it "builds its selector from the projection's, by the partition keys" do
-      expect(decider.selector).to eq(Sourced::Selector[EvolveTestMessages::ItemAdded].by(:cart_id))
+      expect(decider.history_selector).to eq(Sourced::Selector[EvolveTestMessages::ItemAdded].by(:cart_id))
     end
 
     it 'builds its selector once, and again after its evolve types or partition keys change' do
@@ -75,14 +75,14 @@ RSpec.describe Sourced::Evolve do
         partition_by :cart_id
         evolve(EvolveTestMessages::ItemAdded) { |*| }
       end
-      first = reactor.selector
-      expect(reactor.selector).to equal(first)
+      first = reactor.history_selector
+      expect(reactor.history_selector).to equal(first)
 
       reactor.evolve(EvolveTestMessages::CartClosed) { |*| }
-      expect(reactor.selector.types).to eq([EvolveTestMessages::CartClosed, EvolveTestMessages::ItemAdded].sort_by(&:type))
+      expect(reactor.history_selector.types).to eq([EvolveTestMessages::CartClosed, EvolveTestMessages::ItemAdded].sort_by(&:type))
 
       reactor.partition_by :cart_id, :user_id
-      expect(reactor.selector.keys).to eq(%i[cart_id user_id])
+      expect(reactor.history_selector.keys).to eq(%i[cart_id user_id])
     end
 
     it 'reads no history when id-partitioned' do
@@ -90,7 +90,7 @@ RSpec.describe Sourced::Evolve do
         exclusive
         evolve(EvolveTestMessages::ItemAdded) { |*| }
       end
-      expect(queue.selector).to eq(Sourced::Selector::NONE)
+      expect(queue.history_selector).to eq(Sourced::Selector::NONE)
       expect(queue.projector.selector.types).to eq([EvolveTestMessages::ItemAdded])
     end
 
@@ -121,7 +121,7 @@ RSpec.describe Sourced::Evolve do
     it 'shares the projection between reactors' do
       [decider, projector].each do |reactor|
         expect(reactor.projector.superclass).to eq(EvolveTestMessages::CartProjector)
-        expect(reactor.selector.types).to eq(
+        expect(reactor.history_selector.types).to eq(
           [EvolveTestMessages::ItemAdded, EvolveTestMessages::ItemRemoved]
         )
 
@@ -136,9 +136,9 @@ RSpec.describe Sourced::Evolve do
     it 'extends the reactor own subclass with inline evolve blocks, leaving the shared class alone' do
       decider.evolve(EvolveTestMessages::CartClosed) { |context, _| context[:closed] = true }
 
-      expect(decider.selector.types).to include(EvolveTestMessages::CartClosed)
+      expect(decider.history_selector.types).to include(EvolveTestMessages::CartClosed)
       expect(EvolveTestMessages::CartProjector.handled_messages).not_to include(EvolveTestMessages::CartClosed)
-      expect(projector.selector.types).not_to include(EvolveTestMessages::CartClosed)
+      expect(projector.history_selector.types).not_to include(EvolveTestMessages::CartClosed)
       expect(EvolveTestMessages::CartProjector.new.respond_to?(
         Sourced.message_method_name(Sourced::Projector::PREFIX, EvolveTestMessages::CartClosed.to_s)
       )).to be(false)

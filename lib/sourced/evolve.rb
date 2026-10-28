@@ -27,7 +27,7 @@ module Sourced
   module Evolve
     def self.included(base)
       super
-      # Prepended so these win over Consumer's default +selector+, whichever
+      # Prepended so these win over Consumer's default +history_selector+, whichever
       # order the reactor includes Evolve and extends Consumer in.
       base.singleton_class.prepend ClassMethods
     end
@@ -77,15 +77,15 @@ module Sourced
       # +partition_by+ replace them.
       #
       # @return [Selector]
-      def selector
+      def history_selector
         source = evolve_selector
         keys = partition_keys
-        return @__history_selector if @__history_source.equal?(source) && @__history_keys.equal?(keys)
+        memo_source, memo_keys, memo = @__history_memo
+        return memo if memo_source.equal?(source) && memo_keys.equal?(keys)
 
         selector = keys.empty? || IdPartition.keys?(keys) ? Selector::NONE : source.by(*keys)
-        @__history_source = source
-        @__history_keys = keys
-        @__history_selector = selector
+        @__history_memo = [source, keys, selector]
+        selector
       end
 
       # Define the projector's initial context factory. The block takes no arguments.

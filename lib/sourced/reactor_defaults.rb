@@ -63,7 +63,7 @@ module Sourced
       def on_reset = nil
 
       # No history.
-      def selector = Selector::NONE
+      def history_selector = Selector::NONE
     end
   end
 end
