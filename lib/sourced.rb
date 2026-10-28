@@ -157,7 +157,7 @@ module Sourced
   def self.handle!(reactor_class, command, store: nil)
     keys = partition_keys_of(reactor_class)
     partition_attrs = extract_partition_attrs(command, keys)
-    values = keys.map { |k| partition_attrs[k]&.to_s }
+    values = keys.to_h { |k| [k, partition_attrs[k]&.to_s] }
 
     unless command.valid?
       return HandleResult.new(command: command, reactor: reactor_class.new(values), events: [])
@@ -226,8 +226,8 @@ module Sourced
       raise MissingPartitionKeyError, "#{reactor_class} can't be loaded without values for partition keys #{missing.inspect}"
     end
 
-    selector = partitioned ? reactor_class.selector : reactor_class.selector.by(*partition_attrs.keys)
-    read_result = store.read(selector.bind(**partition_attrs), limit: upto)
+    selector = partitioned ? reactor_class.selector.bind(**partition_attrs) : reactor_class.selector.by(**partition_attrs)
+    read_result = store.read(selector, limit: upto)
     instance = partitioned ? reactor_class.new(values) : reactor_class.new
 
     instance.evolve(read_result.messages)

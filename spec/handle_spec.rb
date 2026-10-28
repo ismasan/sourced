@@ -406,6 +406,24 @@ RSpec.describe 'Sourced.handle!' do
     end
   end
 
+  it 'builds a reactor that reads no history with its partition values by key' do
+    reactor = Class.new do
+      class << self
+        attr_accessor :built_with
+      end
+      def self.group_id = 'handle_test.built_with'
+      def self.claim_selector = Sourced::Selector[HandleUncheckedMessages::AddNote].by(:user_id, :device_id)
+      def self.handle_claim(claim) = []
+
+      def initialize(values) = self.class.built_with = values
+      def decide(_cmd) = []
+    end
+    command = HandleUncheckedMessages::AddNote.new(payload: { text: 'x' }).with_tags(user_id: 'u1', device_id: 'd1')
+
+    Sourced.handle!(reactor, command, store:)
+    expect(reactor.built_with).to eq(device_id: 'd1', user_id: 'u1')
+  end
+
   it 'raises when a partition key is in neither the payload nor the tags, appending nothing' do
     expect {
       Sourced.handle!(HandleUncheckedReactor, HandleUncheckedMessages::AddNote.new(payload: { text: 'x' }), store: store)
