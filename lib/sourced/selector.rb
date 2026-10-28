@@ -161,8 +161,11 @@ module Sourced
     # @raise [AssertionError] when the combined assertion never or always holds
     def +(other)
       combined = with(parts: parts + other.parts, assertion: Assertion.and(assertion, other.assertion))
-      # Unchanged from an operand, which was checked when it was built: every
-      # public path that sets an assertion goes through #checked.
+      # Unchanged from an operand, which was checked when its assertion was
+      # built (the built-ins, +, | and ~ go through #checked), so a check would
+      # find the same. #by and #bind change scopes without checking: bind is on
+      # the claim path, so an assertion that never (or always) holds only once
+      # its keys are bound isn't caught.
       return combined if combined.assertion == assertion || combined.assertion == other.assertion
 
       combined.checked
