@@ -53,7 +53,7 @@ data StudentNotified {
 }
 ```
 
-In Sourced, a [Decider](#deciders) handles `EnrolStudent` and appends `StudentEnrolled` to the log, a [materializer](#materializers) evolves the `CourseRoster` read model from it, and the materializer's [reaction](#reactions) dispatches `NotifyStudent`, which another reactor handles in turn.
+In Sourced, a [Decider](#deciders) handles `EnrolStudent` and appends `StudentEnrolled` to the log, a [projector](#projectors) evolves the `CourseRoster` read model from it, and the projector's [reaction](#reactions) dispatches `NotifyStudent`, which another reactor handles in turn.
 
 ## Messages
 
@@ -282,7 +282,7 @@ store.read_all(limit: 20).to_enum.lazy.select { |m|
 Sourced provides four reactor base classes that share the same lifecycle (claim → evolve → handle → append → ack) and the same consumer-group machinery:
 
 - [Deciders](#deciders) — handle commands, enforce invariants, produce events
-- [Materializers](#materializers) — build read models by consuming events, and persist them
+- [Projectors](#projectors) — build read models by consuming events, and persist them
 - [Durable workflows](#durable-workflows) — imperative orchestrations whose steps are memoised across re-entries
 - [Machines](#machines) — statecharts: commands accepted per state, parallel regions, timers and child machines
 
@@ -476,16 +476,16 @@ decider, read_result = Sourced.load(CourseDecider, course_name: 'Algebra')
 decider.context  # => { name_taken: true }
 ```
 
-### Materializers
+### Projectors
 
-`Sourced::Materializer` reactors build read models: for each partition they claim, they run their projector over the claimed events and persist the projection. Two flavours:
+`Sourced::Projector` reactors build read models: for each partition they claim, they run their [inline projector](#inline-projectors) over the claimed events and persist the projection. Two flavours:
 
-#### EventSourced materializer
+#### EventSourced projector
 
 Rebuilds context from full history on every batch (like deciders).
 
 ```ruby
-class CourseCatalogReadModel < Sourced::Materializer::EventSourced
+class CourseCatalogReadModel < Sourced::Projector::EventSourced
   partition_by :course_id
 
   context do
@@ -517,12 +517,12 @@ class CourseCatalogReadModel < Sourced::Materializer::EventSourced
 end
 ```
 
-#### StateStored materializer
+#### StateStored projector
 
 Loads persisted context via the `load_context` block, evolves only new (unprocessed) messages on top of it. `load_context` runs in the reactor's scope, so it can read your storage; when it returns `nil`, the `context` block builds the initial context.
 
 ```ruby
-class MyReadModel < Sourced::Materializer::StateStored
+class MyReadModel < Sourced::Projector::StateStored
   partition_by :course_id
 
   context do
@@ -630,16 +630,16 @@ def execute
 end
 ```
 
-### Projectors
+### Inline projectors
 
-A reactor's `context` and `evolve` declarations define a projector, a `Sourced::Projector` subclass: the definition of how a projection, a plain in-memory object, builds context from events. A projector knows nothing about stores, partitions, commands or side effects. A reactor's projector is `Reactor.projector`, and its built-up projection is `reactor.projection`. Evolve blocks run in the projection's scope, so they can't reach the reactor's methods or collaborators, such as a database.
+A reactor's `context` and `evolve` declarations define an inline projector, a `Sourced::Projector::Inline` subclass: the definition of how a projection, a plain in-memory object, builds context from events. An inline projector knows nothing about stores, partitions, commands or side effects. A reactor's inline projector is `Reactor.projector`, and its built-up projection is `reactor.projection`. Evolve blocks run in the projection's scope, so they can't reach the reactor's methods or collaborators, such as a database.
 
 A projection's context is a function of the events it evolves. The `context` block takes no arguments: identifying values, such as a cart's id, come from the events, so set them in `evolve` blocks, or once in a `before_evolve` block (below) when any of several events can come first. A `context` block that declares arguments (`context { |values| ... }`, even `|_|`) raises `ArgumentError` when the class loads.
 
-A projector can also be its own class, unit-tested on its own and shared between reactors:
+An inline projector can also be its own class, unit-tested on its own and shared between reactors:
 
 ```ruby
-class CartProjector < Sourced::Projector
+class CartProjector < Sourced::Projector::Inline
   context do
     { cart_id: nil, items: [] }
   end
@@ -660,7 +660,7 @@ Handlers (`evolve`, `reaction`, `command`) are declared for a message class, or 
 `before_evolve` runs a block before the handler of every event the projection handles (events without a handler are still skipped), for changes common to all of them:
 
 ```ruby
-class CartProjector < Sourced::Projector
+class CartProjector < Sourced::Projector::Inline
   context { { cart_id: nil, items: [], updated_at: nil } }
 
   before_evolve do |context, event|
@@ -692,7 +692,7 @@ class Carts < Sourced::Decider
   end
 end
 
-class CartListing < Sourced::Materializer::EventSourced
+class CartListing < Sourced::Projector::EventSourced
   partition_by :cart_id
   evolve CartProjector
 
@@ -700,16 +700,16 @@ class CartListing < Sourced::Materializer::EventSourced
 end
 ```
 
-Each reactor works on a projector subclass of its own, so its extra `evolve` blocks never leak into the shared class or other reactors. `evolve SomeProjector` must come before the reactor's own `context` / `evolve` declarations.
+Each reactor works on an inline projector subclass of its own, so its extra `evolve` blocks never leak into the shared class or other reactors. `evolve SomeProjector` must come before the reactor's own `context` / `evolve` declarations.
 
-`Sourced.load` reads a projection's context straight from the log, with no materializer. The attributes you pass are its partition:
+`Sourced.load` reads a projection's context straight from the log, without a reactor. The attributes you pass are its partition:
 
 ```ruby
 cart, read_result = Sourced.load(CartProjector, cart_id: 'c1')
 cart.context # => { cart_id: 'c1', items: [...] }
 ```
 
-This reads the partition's whole history on every call, so it suits small partitions; persist larger ones with a materializer.
+This reads the partition's whole history on every call, so it suits small partitions; persist larger ones with a [projector](#projectors).
 
 ### Machines
 
@@ -919,7 +919,7 @@ An instance's `machine` is a configuration too, read live: it changes as the ins
 A projection can keep the paths without loading the machine at all: each state event's `exited` and `entered` paths update them, ex. for every record a listing shows:
 
 ```ruby
-class OrderListing < Sourced::Materializer::StateStored
+class OrderListing < Sourced::Projector::StateStored
   partition_by :order_id
 
   context { {} }
@@ -1158,7 +1158,7 @@ end
 
 ### Reactions
 
-Both deciders and materializers can react to events to produce follow-up messages, enabling workflow orchestration. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
+Both deciders and projectors can react to events to produce follow-up messages, enabling workflow orchestration. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
 
 ```ruby
 class EnrolmentDecider < Sourced::Decider
@@ -1206,7 +1206,7 @@ Reactions are skipped during replay (when `replaying: true`), so side effects do
 
 ### Sync and After-Sync Blocks
 
-Both deciders and materializers support `sync` and `after_sync` blocks for running side effects during message processing.
+Both deciders and projectors support `sync` and `after_sync` blocks for running side effects during message processing.
 
 - **`sync`** blocks run **inside** the store transaction, alongside event persistence and offset acknowledgement. Use them for writes that must be atomic with the event append (e.g. updating a database projection).
 - **`after_sync`** blocks run **after** the transaction commits. Use them for side effects that should only happen if the commit succeeds (e.g. sending emails, HTTP calls, pushing to external queues).
@@ -1216,7 +1216,7 @@ Both receive the same keyword arguments as the reactor's action-building step:
 | Reactor type | Keyword arguments                     |
 |--------------|---------------------------------------|
 | Decider      | `context:`, `messages:`, `events:`      |
-| Materializer | `context:`, `messages:`, `replaying:`   |
+| Projector    | `context:`, `messages:`, `replaying:`   |
 
 ```ruby
 class OrderDecider < Sourced::Decider
@@ -1260,7 +1260,7 @@ Sourced.register(Booking)
 
 ## The reactor protocol
 
-Deciders, materializers and workflows are conveniences over a small duck-typed protocol. **Any class that responds to `claim_selector` and `handle_claim` is a reactor** — it can be registered and driven by the runtime without subclassing or even depending on Sourced. This is how a message handler from another framework can run on Sourced as a durable queue.
+Deciders, projectors and workflows are conveniences over a small duck-typed protocol. **Any class that responds to `claim_selector` and `handle_claim` is a reactor** — it can be registered and driven by the runtime without subclassing or even depending on Sourced. This is how a message handler from another framework can run on Sourced as a durable queue.
 
 ```ruby
 class MyWorker
@@ -1293,7 +1293,7 @@ A **signal** is inert data — a plain `Hash` or a `Sourced::Actions` value obje
 | `{ type: :after_sync, work: -> { } }` | run a side effect after commit |
 | `{ type: :ack, delete: false }` | acknowledge the source message; `delete: true` removes it (see below) |
 
-The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name, normalized), `group_label` (the class name), `exclusive?` (`false`), `history_selector` (the history it reads, bound to each claimed partition: none), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate. Built-in reactors derive their `claim_selector` from their DSL: a Decider claims its commands and the events it reacts to, a materializer what it evolves from and reacts to, both by their `partition_by` keys.
+The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name, normalized), `group_label` (the class name), `exclusive?` (`false`), `history_selector` (the history it reads, bound to each claimed partition: none), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate. Built-in reactors derive their `claim_selector` from their DSL: a Decider claims its commands and the events it reacts to, a projector what it evolves from and reacts to, both by their `partition_by` keys.
 
 ## Delete-on-ack queues
 
@@ -1736,7 +1736,7 @@ offsets, total_count = store.read_offsets(group_id: 'course_decider')
 
 ## Topology introspection
 
-`Sourced.topology` analyses all registered reactors (deciders, materializers and machines) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for materializers' read models). Each node has at least `type`, `id`, `name`, `group_id`, `group_label` (its reactor's class name, for display), and depending on kind, `consumes` / `produces` / `schema`.
+`Sourced.topology` analyses all registered reactors (deciders, projectors and machines) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for projectors' read models). Each node has at least `type`, `id`, `name`, `group_id`, `group_label` (its reactor's class name, for display), and depending on kind, `consumes` / `produces` / `schema`.
 
 ```ruby
 Sourced.register(CourseDecider)
@@ -1790,7 +1790,7 @@ result.reactor.to_h                  # status after the command, including the e
 
 ## Testing
 
-Sourced ships with RSpec helpers for Given-When-Then testing of deciders, materializers and projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
+Sourced ships with RSpec helpers for Given-When-Then testing of deciders, projectors and inline projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
 
 ```ruby
 require 'sourced/testing/rspec'
@@ -1873,9 +1873,9 @@ it 'runs sync block' do
 end
 ```
 
-### Testing materializers
+### Testing projectors
 
-Materializers use `.given` (events to evolve) and `.then` with a block that receives a result whose `context` is the projected context. `.when` is not supported — materializers don't handle commands.
+Projectors use `.given` (events to evolve) and `.then` with a block that receives a result whose `context` is the projected context. `.when` is not supported — projectors don't handle commands.
 
 #### StateStored
 
@@ -1922,9 +1922,9 @@ RSpec.describe CatalogReadModel do
 end
 ```
 
-### Testing projectors
+### Testing inline projectors
 
-A bare `Sourced::Projector` takes the same `.given` / `.then` chain: the helper builds it, evolves the given messages, and yields the result. Projectors take no partition attributes and produce no messages, so passing attributes, `.when` and expected messages raise; an exception class asserts an error raised while evolving.
+A bare `Sourced::Projector::Inline` takes the same `.given` / `.then` chain: the helper builds it, evolves the given messages, and yields the result. Inline projectors take no partition attributes and produce no messages, so passing attributes, `.when` and expected messages raise; an exception class asserts an error raised while evolving.
 
 ```ruby
 RSpec.describe CartProjector do
@@ -1947,7 +1947,7 @@ end
 
 See `examples/app/` for a complete Sinatra application with:
 - Two deciders (course creation with name uniqueness, student enrolment with capacity limits)
-- An event-sourced materializer writing JSON files
+- An event-sourced projector writing JSON files
 - Synchronous command handling via `Sourced.handle!` in HTTP endpoints
 - Background worker processing in the same process as the web server
 

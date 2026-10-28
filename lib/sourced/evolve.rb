@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Sourced
-  # Evolve mixin for reactors: evolves reactor context through a {Sourced::Projector}.
+  # Evolve mixin for reactors: evolves reactor context through a {Sourced::Projector::Inline}.
   #
   # The +context+ / +evolve+ DSL declares the reactor's projector, so evolve
   # blocks run in the projection's scope, not the reactor's. A reactor can also
@@ -32,7 +32,7 @@ module Sourced
       base.singleton_class.prepend ClassMethods
     end
 
-    # @return [Sourced::Projector] this reactor's projection, built on first access
+    # @return [Sourced::Projector::Inline] this reactor's projection, built on first access
     def projection
       @projection ||= self.class.projector.new
     end
@@ -56,9 +56,9 @@ module Sourced
         subclass.send(:__use_projector, projector)
       end
 
-      # @return [Class<Sourced::Projector>] the projector subclass this reactor owns
+      # @return [Class<Sourced::Projector::Inline>] the projector subclass this reactor owns
       def projector
-        @projector ||= __build_projector(Sourced::Projector)
+        @projector ||= __build_projector(Sourced::Projector::Inline)
       end
 
       # What the reactor evolves from, without its partition: its projector's
@@ -95,7 +95,7 @@ module Sourced
       end
 
       # Register a block on the reactor's projection to run before the evolve
-      # handler of every message it handles. See {Sourced::Projector.before_evolve}.
+      # handler of every message it handles. See {Sourced::Projector::Inline.before_evolve}.
       def before_evolve(&)
         @declares_projection = true
         projector.before_evolve(&)
@@ -112,10 +112,10 @@ module Sourced
       #   @param message_class [Class] a {Sourced::Message} subclass
       #   @yield [context, message] runs in the projection's scope
       # @overload evolve(projector)
-      #   @param projector [Class<Sourced::Projector>] projector to adopt
+      #   @param projector [Class<Sourced::Projector::Inline>] projector to adopt
       # @raise [ArgumentError] when adopting after own declarations, or with a block
       def evolve(klass, &block)
-        if klass.is_a?(Class) && klass <= Sourced::Projector
+        if klass.is_a?(Class) && klass <= Sourced::Projector::Inline
           raise ArgumentError, "#{self}.evolve(#{klass}) takes no block" if block
           if @declares_projection
             raise ArgumentError,
@@ -138,7 +138,7 @@ module Sourced
 
       def __build_projector(parent)
         reactor = self
-        label = parent == Sourced::Projector || parent.name.nil? ? '' : "(#{parent.name})"
+        label = parent == Sourced::Projector::Inline || parent.name.nil? ? '' : "(#{parent.name})"
         Class.new(parent) do
           define_singleton_method(:to_s) { "#{reactor}::Projector#{label}" }
           define_singleton_method(:inspect) { to_s }

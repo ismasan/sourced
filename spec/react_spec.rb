@@ -238,7 +238,7 @@ RSpec.describe Sourced::React do
     end
 
     it 'reacts to every evolved type with a catch-all, whatever the partitioning' do
-      queue = Class.new(Sourced::Materializer::StateStored) do
+      queue = Class.new(Sourced::Projector::StateStored) do
         exclusive
         consumer_group 'react_test.catch_all_queue'
         evolve(ReactTestMessages::Wildcarded) { |*| }

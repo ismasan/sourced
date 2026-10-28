@@ -12,7 +12,7 @@ module StaleClaimReaperTestMessages
   end
 end
 
-class ReaperTestMaterializer < Sourced::Materializer::StateStored
+class ReaperTestProjector < Sourced::Projector::StateStored
   partition_by :device_id
   consumer_group 'reaper_test_projector'
 

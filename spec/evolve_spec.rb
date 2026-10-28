@@ -18,7 +18,7 @@ module EvolveTestMessages
     attribute :cart_id, String
   end
 
-  class CartProjector < Sourced::Projector
+  class CartProjector < Sourced::Projector::Inline
     context do
       { cart_id: nil, items: [] }
     end
@@ -61,7 +61,7 @@ RSpec.describe Sourced::Evolve do
 
     it 'declares them on a projection subclass the reactor owns' do
       expect(decider.projector.superclass).to eq(Sourced::Decider.projector)
-      expect(decider.projector).to be < Sourced::Projector
+      expect(decider.projector).to be < Sourced::Projector::Inline
       expect(decider.history_selector.types).to eq([EvolveTestMessages::ItemAdded])
       expect(decider.new(cart_id: 'c1').projection).to be_a(decider.projector)
     end
@@ -112,7 +112,7 @@ RSpec.describe Sourced::Evolve do
     end
 
     let(:projector) do
-      Class.new(Sourced::Materializer::EventSourced) do
+      Class.new(Sourced::Projector::EventSourced) do
         partition_by :cart_id
         evolve EvolveTestMessages::CartProjector
       end
@@ -140,7 +140,7 @@ RSpec.describe Sourced::Evolve do
       expect(EvolveTestMessages::CartProjector.handled_messages).not_to include(EvolveTestMessages::CartClosed)
       expect(projector.history_selector.types).not_to include(EvolveTestMessages::CartClosed)
       expect(EvolveTestMessages::CartProjector.new.respond_to?(
-        Sourced.message_method_name(Sourced::Projector::PREFIX, EvolveTestMessages::CartClosed.to_s)
+        Sourced.message_method_name(Sourced::Projector::Inline::PREFIX, EvolveTestMessages::CartClosed.to_s)
       )).to be(false)
     end
 

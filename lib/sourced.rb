@@ -209,7 +209,7 @@ module Sourced
   # +reactor_class+'s instances must respond to +evolve(messages)+. If it
   # responds to +claim_selector+ (a reactor), its selectors' keys of +values+
   # are the partition, its +history_selector+ is bound to them and instances
-  # are built with +new(values)+; otherwise, as for a {Sourced::Projector}, all
+  # are built with +new(values)+; otherwise, as for a {Sourced::Projector::Inline}, all
   # of +values+ are the partition, its +selector+ is scoped by them and
   # instances are built with +new+.
   #
@@ -282,14 +282,14 @@ require 'sourced/action_runner'
 require 'sourced/reactor_defaults'
 require 'sourced/consumer'
 require 'sourced/partition_schema'
-require 'sourced/projector'
+require 'sourced/projector/inline'
 require 'sourced/evolve'
 require 'sourced/react'
 require 'sourced/sync'
 require 'sourced/decider'
 require 'sourced/machine'
 require 'sourced/consumer_group_machine'
-require 'sourced/materializer'
+require 'sourced/projector'
 require 'sourced/router'
 require 'sourced/worker'
 require 'sourced/stale_claim_reaper'

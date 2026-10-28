@@ -133,7 +133,7 @@ module Sourced
 
       # The part's evolve blocks, which its owner runs on its context.
       # @api private
-      def self.projector = @projector ||= Class.new(Sourced::Projector)
+      def self.projector = @projector ||= Class.new(Sourced::Projector::Inline)
 
       # Lock the part's DSL once its owner has read it.
       # @api private

@@ -12,13 +12,13 @@ module Sourced
       #
       # Works with any reactor that responds to the standard
       # <tt>handle_batch(partition_values, new_messages, history:, replaying:)</tt>
-      # contract (Deciders, Materializers, DurableWorkflows), and with projectors:
+      # contract (Deciders, Projectors, DurableWorkflows), and with inline projectors:
       # classes with no +handle_batch+ whose instances +evolve+ messages, built
-      # with +new+ (ex. {Sourced::Projector} subclasses).
+      # with +new+ (ex. {Sourced::Projector::Inline} subclasses).
       #
-      # @param reactor_class [Class] a reactor or projector
+      # @param reactor_class [Class] a reactor or inline projector
       # @param partition_attrs [Hash] partition key-value pairs (e.g. device_id: 'd1');
-      #   none for a projector, which takes no partition values
+      #   none for an inline projector, which takes no partition values
       # @return [GWT]
       #
       # @example Decider
@@ -27,12 +27,12 @@ module Sourced
       #     .when(BindDevice, device_id: 'd1', asset_id: 'a1')
       #     .then(DeviceBound, device_id: 'd1', asset_id: 'a1')
       #
-      # @example Materializer — assert context via block
-      #   with_reactor(MyMaterializer, list_id: 'L1')
+      # @example Projector — assert context via block
+      #   with_reactor(MyProjector, list_id: 'L1')
       #     .given(ItemAdded, list_id: 'L1', name: 'Apple')
       #     .then { |r| expect(r.context[:items]).to eq(['Apple']) }
       #
-      # @example Projector — evolve given messages, assert context via block
+      # @example Inline projector — evolve given messages, assert context via block
       #   with_reactor(CartProjector)
       #     .given(ItemAdded, cart_id: 'c1', item_id: 'i1')
       #     .then { |r| expect(r.context[:items]).to eq(['i1']) }
@@ -43,7 +43,7 @@ module Sourced
       # Uniform result yielded to +.then+ / +.then!+ block callbacks.
       # Gives access to both the reactor's produced action pairs / messages
       # (what deciders typically assert on) and the evolved context (what
-      # materializers typically assert on).
+      # projectors typically assert on).
       RunResult = Data.define(:pairs, :messages, :context)
 
       class MessageMatcher
@@ -89,8 +89,8 @@ module Sourced
       class GWT
         def initialize(reactor_class, **partition_attrs)
           @reactor_class = reactor_class
-          if projector? && partition_attrs.any?
-            raise ArgumentError, "#{reactor_class} is a projector: it takes no partition values"
+          if inline_projector? && partition_attrs.any?
+            raise ArgumentError, "#{reactor_class} is an inline projector: it takes no partition values"
           end
           # What Router registration would reject fails the spec too.
           reactor_class.validate! if reactor_class.respond_to?(:validate!)
@@ -154,19 +154,19 @@ module Sourced
         # The batch of new messages to process via +handle_batch+. Can be
         # called multiple times to supply several messages.
         #
-        # Not for materializers or projectors: they consume events that already
+        # Not for projectors or inline projectors: they consume events that already
         # exist, so the events they process go to {#given}, and there is
         # nothing to dispatch. See {#run_handle_batch}.
         #
         # @param klass_or_instance [Class, Sourced::Message]
         # @param payload [Hash]
         # @return [self]
-        # @raise [ArgumentError] on a materializer or projector
+        # @raise [ArgumentError] on a projector or inline projector
         def when(klass_or_instance = nil, **payload)
           raise 'test case already asserted' if @asserted
-          if materializer? || projector?
+          if projector? || inline_projector?
             raise ArgumentError,
-                  "#{@reactor_class} is a #{projector? ? 'projector' : 'materializer'}: " \
+                  "#{@reactor_class} is #{inline_projector? ? 'an inline projector' : 'a projector'}: " \
                   'it consumes events that already exist, ' \
                   'so pass them to `given` and assert with `then`/`then!`'
           end
@@ -219,9 +219,9 @@ module Sourced
             return self
           end
 
-          if projector? && !build_expected(*expected).empty?
+          if inline_projector? && !build_expected(*expected).empty?
             raise ArgumentError,
-                  "#{@reactor_class} is a projector: it produces no messages, " \
+                  "#{@reactor_class} is an inline projector: it produces no messages, " \
                   'so assert its context with a `then` block'
           end
 
@@ -261,16 +261,16 @@ module Sourced
         # Drive the reactor's +handle_batch+ the way the router does.
         #
         # A decider is given its history and decides on the batch, so
-        # {#given} is the history and {#when} the batch. A materializer has no
+        # {#given} is the history and {#when} the batch. A projector has no
         # such split: in production every message it consumes arrives as the
         # batch, and its history — read unbounded — includes that batch. So
-        # for a materializer the {#given} messages are both, and its hooks see
+        # for a projector the {#given} messages are both, and its hooks see
         # them as +messages:+ exactly as they would in production.
         #
-        # A projector has no +handle_batch+: it evolves the {#given}
+        # An inline projector has no +handle_batch+: it evolves the {#given}
         # messages and produces nothing, so evolve errors still surface here.
         def run_handle_batch
-          if projector?
+          if inline_projector?
             @reactor_class.new.evolve(@given_messages)
             return []
           end
@@ -279,14 +279,14 @@ module Sourced
           history = Sourced::ReadResult.new(messages: @given_messages, guard: guard)
           @reactor_class.handle_batch(
             @partition_values,
-            materializer? ? @given_messages : @when_messages,
+            projector? ? @given_messages : @when_messages,
             history: history,
             replaying: false
           )
         end
 
-        def materializer?
-          @reactor_class <= Sourced::Materializer
+        def projector?
+          @reactor_class <= Sourced::Projector
         end
 
         def machine? = (@reactor_class <= Sourced::Machine) || false
@@ -317,7 +317,7 @@ module Sourced
 
         # A projection has no +handle_batch+ to drive: the helper builds it with
         # +new+ and evolves the {#given} messages.
-        def projector?
+        def inline_projector?
           !@reactor_class.respond_to?(:handle_batch) && @reactor_class.method_defined?(:evolve)
         end
 
@@ -342,13 +342,13 @@ module Sourced
 
         # Build an instance and evolve it with all known messages so the
         # caller can assert on context regardless of reactor type. For reactors
-        # whose +handle_batch+ evolves its own instance (Decider, Materializer,
+        # whose +handle_batch+ evolves its own instance (Decider, Projector,
         # DurableWorkflow), this is an independent, predictable computation.
         # When +sync+ is true, also runs the reactor's Sync / AfterSync
         # blocks against this instance so their context mutations are visible,
         # handing them the messages the +pairs+ would have appended.
         def compute_context(pairs, sync: false)
-          instance = projector? ? @reactor_class.new : @reactor_class.new(@partition_values)
+          instance = inline_projector? ? @reactor_class.new : @reactor_class.new(@partition_values)
           return nil unless instance.respond_to?(:evolve) && instance.respond_to?(:context)
 
           messages = @given_messages + @when_messages
@@ -359,7 +359,7 @@ module Sourced
 
         # Invoke Sync / AfterSync blocks against +instance+. Per-block
         # kwarg signatures vary by reactor type (deciders expect +events:+,
-        # materializers expect +replaying:+); we inspect each block's
+        # projectors expect +replaying:+); we inspect each block's
         # parameters and pass only what it declares. +events:+ carries the
         # appended messages, correlated, as the runner would bind them.
         def run_sync_on(instance, messages, appended)

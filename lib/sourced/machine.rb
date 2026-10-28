@@ -1368,7 +1368,7 @@ module Sourced
       # @raise [Sourced::MissingPartitionKeyError] if a partition key is missing or nil
       # @raise [UnresolvablePathError] if a path doesn't resolve
       # @raise [ArgumentError] for an initial position, a state in an inactive region, or two states in one region
-      def at(paths, context = Projector::UNSET, **partition_values)
+      def at(paths, context = Projector::Inline::UNSET, **partition_values)
         missing = partition_keys.select { |key| partition_values[key].nil? }
         if missing.any?
           raise Sourced::MissingPartitionKeyError, "#{self} can't be placed without values for partition keys #{missing.inspect}"
@@ -1729,8 +1729,8 @@ module Sourced
     # Place a fresh instance at +paths+, on +context+: see {.at}.
     # @api private
     # @return [self]
-    def __place(paths, context = Projector::UNSET)
-      @projection = self.class.projector.new(context) unless Projector::UNSET.equal?(context)
+    def __place(paths, context = Projector::Inline::UNSET)
+      @projection = self.class.projector.new(context) unless Projector::Inline::UNSET.equal?(context)
       @runtime.place(paths)
       moved!
       self

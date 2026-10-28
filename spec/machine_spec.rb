@@ -294,7 +294,7 @@ RSpec.describe Sourced::Machine do
       [
         -> { m.context { {} } },
         -> { m.evolve(late) { |_s, _e| nil } },
-        -> { m.evolve(Class.new(Sourced::Projector)) },
+        -> { m.evolve(Class.new(Sourced::Projector::Inline)) },
         -> { m.before_evolve { |_s, _e| nil } },
         -> { m.reaction(late) { |_s, _e| nil } }
       ].each do |declare|
@@ -341,7 +341,7 @@ RSpec.describe Sourced::Machine do
     end
 
     it 'keeps its transitions out of its projection, so adopting one keeps them' do
-      items = Class.new(Sourced::Projector) do
+      items = Class.new(Sourced::Projector::Inline) do
         context { CartState.new }
         evolve(ItemAdded) { |cart, evt| cart.add(evt.payload.sku, evt.payload.qty, evt.payload.unit_price) }
       end

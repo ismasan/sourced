@@ -53,7 +53,7 @@ module Sourced
     #   end
     #
     # +context+ is the reactor's context with +message+ already applied. In
-    # materializers the whole claimed batch has been applied, not just +message+.
+    # projectors the whole claimed batch has been applied, not just +message+.
     #
     # @param context [Object] reactor context
     # @param message [Sourced::Message] the message about to be reacted to
