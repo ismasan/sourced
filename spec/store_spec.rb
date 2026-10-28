@@ -2218,6 +2218,46 @@ RSpec.describe Sourced::Store do
     end
   end
 
+  describe '#claim_next (messages carrying some of the partition keys)' do
+    let(:group_id) { 'partial-keys-test' }
+    let(:selector) do
+      Sourced::Selector[StoreTestMessages::UserJoinedCourse, StoreTestMessages::CourseClosed].by(:course_name, :user_id)
+    end
+
+    before do
+      store.register_consumer_group(group_id, selector)
+      %w[joe jake].each do |user_id|
+        store.append(StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: }))
+      end
+      while (claim = store.claim_next(group_id, selector, worker_id: 'w-1'))
+        store.ack(group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
+      end
+    end
+
+    def drain
+      claims = []
+      while (claim = store.claim_next(group_id, selector, worker_id: 'w-1'))
+        claims << claim
+        store.ack(group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
+      end
+      claims
+    end
+
+    it 'claims every partition the message is in, on its own' do
+      store.append(StoreTestMessages::CourseClosed.new(payload: { course_name: 'Algebra' }))
+
+      claims = drain
+      expect(claims.map { |c| c.partition_value['user_id'] }).to contain_exactly('joe', 'jake')
+      expect(claims.map { |c| c.messages.map(&:type) }).to all(eq([StoreTestMessages::CourseClosed.type]))
+    end
+
+    it 'claims no partition when the key it carries has another value' do
+      store.append(StoreTestMessages::CourseClosed.new(payload: { course_name: 'Physics' }))
+
+      expect(drain).to be_empty
+    end
+  end
+
   describe '#claim_next (composite partition — cross-partition false positives)' do
     let(:group_id) { 'cross-partition-test' }
     let(:selector) { Sourced::Selector[StoreTestMessages::UserJoinedCourse].by(:course_name, :user_id) }

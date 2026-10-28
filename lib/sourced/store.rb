@@ -749,10 +749,10 @@ module Sourced
         scan_version = cg[:last_nil_types_max_pos]
         return nil if scan_version.negative?
 
-        claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+        claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
         unless claimed
           discover_new_partitions(cg[:id], partition_by, handled_types)
-          claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+          claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
         end
 
         unless claimed
@@ -778,11 +778,11 @@ module Sourced
 
         has_offsets = db[@offsets_table].where(consumer_group_id: cg[:id]).limit(1).any?
         if has_offsets && types_max_pos <= cg[:discovery_position]
-          claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+          claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
         end
         unless claimed
           discover_new_partitions(cg[:id], partition_by, handled_types)
-          claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+          claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
         end
 
         unless claimed
@@ -1452,27 +1452,26 @@ module Sourced
     end
 
     # Find the next unclaimed partition with pending messages and claim it.
-    # Uses OR joins for candidate detection (any matching key_pair), then
-    # a NOT EXISTS clause to exclude messages that conflict on a shared
-    # attribute name (same name, different value). This gives AND semantics:
-    # a message only counts as pending for a partition when every attribute
-    # it shares with the partition has the same value.
+    # A message is pending for a partition when it's in it by the partition
+    # rule the claim then reads with (see {#partition_filter_sql}): it carries
+    # at least one of the offset's key pairs, and no partition key with
+    # another value. So a message carrying only some of the keys wakes every
+    # partition sharing them.
     #
     # @param cg_id [Integer] consumer group internal ID
+    # @param partition_by [Array<String>] the partition keys
     # @param handled_types [Array<String>] message type strings
     # @param worker_id [String] claiming worker identifier
     # @return [Hash, nil] +{ offset_id:, partition_key:, last_position: }+ or nil
-    def find_and_claim_partition(cg_id, handled_types, worker_id)
+    def find_and_claim_partition(cg_id, partition_by, handled_types, worker_id)
       types_list = handled_types.map { |t| db.literal(t) }.join(', ')
+      names_list = partition_by.map { |n| db.literal(n) }.join(', ')
 
       # Single query for the lowest-last_position unclaimed offset that has a
-      # pending message. A correlated EXISTS applies the AND-match (a message
-      # qualifies only when it is indexed under *every* one of the offset's
-      # key_pairs), and both joins are index-backed
-      # (message_key_pairs(key_pair_id, message_position), offset_key_pairs PK).
-      # This replaces an N-round-trip Ruby loop — one subquery per unclaimed
-      # offset — which mattered once the eager path stopped short-circuiting and
-      # scans on every poll.
+      # pending message: one indexed under one of the offset's key_pairs
+      # (message_key_pairs(key_pair_id, message_position)), with no key_pair
+      # under a partition key that isn't the offset's (message_key_pairs PK,
+      # key_pairs PK, offset_key_pairs PK).
       offset = db.fetch(<<~SQL).first
         SELECT o.id, o.partition_key, o.last_position
         FROM #{@offsets_table} o
@@ -1486,10 +1485,17 @@ module Sourced
             WHERE okp.offset_id = o.id
               AND m.position > o.last_position
               AND m.message_type IN (#{types_list})
-            GROUP BY m.position
-            HAVING COUNT(*) = (
-              SELECT COUNT(*) FROM #{@offset_key_pairs_table} WHERE offset_id = o.id
-            )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM #{@message_key_pairs_table} other
+                JOIN #{@key_pairs_table} kp ON kp.id = other.key_pair_id
+                WHERE other.message_position = m.position
+                  AND kp.name IN (#{names_list})
+                  AND NOT EXISTS (
+                    SELECT 1 FROM #{@offset_key_pairs_table} own
+                    WHERE own.offset_id = o.id AND own.key_pair_id = other.key_pair_id
+                  )
+              )
           )
         ORDER BY o.last_position
         LIMIT 1
