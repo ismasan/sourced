@@ -75,7 +75,9 @@ Sequel.migration do
       String :claimed_by
 
       index %i[consumer_group_id partition_key], unique: true, name: 'idx_<%= prefix %>_ccc_offsets_cg_pk'
-      index %i[consumer_group_id claimed], name: 'idx_<%= prefix %>_ccc_offsets_cg_claimed'
+      # Claims walk a group's unclaimed offsets in last_position order and stop
+      # at the first with pending work (Store#find_and_claim_partition).
+      index %i[consumer_group_id claimed last_position], name: 'idx_<%= prefix %>_ccc_offsets_cg_claimed_pos'
     end
 
     create_table?(:<%= offset_key_pairs_table %>) do
