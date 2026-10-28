@@ -149,17 +149,21 @@ module Sourced
   end
 
   # Handle a command synchronously: validate, load history, decide, append, ACK.
+  # The command's partition is +reactor_class+'s selectors' keys (none for an
+  # id-partitioned reactor); its instances respond to +decide(command)+
+  # (see {Decider}).
   #
   # @raise [CommandNotHandledError] if the loaded reactor's +#handles_command?+ is false
   def self.handle!(reactor_class, command, store: nil)
-    partition_attrs = extract_partition_attrs(command, reactor_class)
-    values = reactor_class.partition_keys.map { |k| partition_attrs[k]&.to_s }
+    keys = partition_keys_of(reactor_class)
+    partition_attrs = extract_partition_attrs(command, keys)
+    values = keys.map { |k| partition_attrs[k]&.to_s }
 
     unless command.valid?
       return HandleResult.new(command: command, reactor: reactor_class.new(values), events: [])
     end
 
-    missing = reactor_class.partition_keys - partition_attrs.keys
+    missing = keys - partition_attrs.keys
     if missing.any?
       raise MissingPartitionKeyError,
             "#{command.type} has no value for #{reactor_class}'s partition keys #{missing.inspect} " \
@@ -203,8 +207,8 @@ module Sourced
   # messages in the partition — useful for time-travel, deterministic replay, or debugging.
   #
   # +reactor_class+ must respond to +selector+, and its instances to
-  # +evolve(messages)+. If it responds to +partition_keys+, only those keys of
-  # +values+ are the partition, its selector is bound to them and instances are
+  # +evolve(messages)+. If it responds to +claim_selector+ (a reactor), its
+  # selectors' keys of +values+ are the partition, its selector is bound to them and instances are
   # built with +new(values)+; otherwise, as for a {Sourced::Projector}, all of
   # +values+ are the partition, its selector is scoped by them and instances
   # are built with +new+.
@@ -215,8 +219,8 @@ module Sourced
   #   cart.context
   def self.load(reactor_class, store: nil, upto: nil, **values)
     store ||= self.store
-    partitioned = reactor_class.respond_to?(:partition_keys)
-    partition_attrs = partitioned ? reactor_class.partition_keys.to_h { |k| [k, values[k]] } : values
+    partitioned = reactor_class.respond_to?(:claim_selector)
+    partition_attrs = partitioned ? partition_keys_of(reactor_class).to_h { |k| [k, values[k]] } : values
     missing = partition_attrs.filter_map { |k, v| k if v.nil? }
     if missing.any?
       raise MissingPartitionKeyError, "#{reactor_class} can't be loaded without values for partition keys #{missing.inspect}"
@@ -231,9 +235,18 @@ module Sourced
     [instance, read_result]
   end
 
+  # A reactor's partition keys: its claim and history selectors' (a selector
+  # without types has none, ex. a decider's history when it evolves nothing),
+  # none when it's partitioned by message id.
+  private_class_method def self.partition_keys_of(reactor_class)
+    keys = reactor_class.claim_selector.keys
+    keys |= reactor_class.selector.keys if reactor_class.respond_to?(:selector)
+    IdPartition.keys?(keys) ? Plumb::BLANK_ARRAY : keys
+  end
+
   # Partition values from the command's payload, or else its tags.
-  private_class_method def self.extract_partition_attrs(command, reactor_class)
-    reactor_class.partition_keys.each_with_object({}) do |key, h|
+  private_class_method def self.extract_partition_attrs(command, keys)
+    keys.each_with_object({}) do |key, h|
       value = command.payload&.respond_to?(key) ? command.payload.send(key) : nil
       value = command.tags[key] if value.nil?
       h[key] = value unless value.nil?

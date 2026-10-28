@@ -2533,7 +2533,7 @@ RSpec.describe Sourced::Store do
   end
 
   describe 'append(index_by: :id) and id-partitioning' do
-    let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:__id) }
+    let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered].by_message_id }
 
     it 'indexes only the message id, not payload attributes' do
       store.append(

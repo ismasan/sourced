@@ -47,6 +47,14 @@ RSpec.describe Sourced::Selector do
     end
   end
 
+  describe '#by_message_id' do
+    it 'scopes every part by the reserved message id key' do
+      selector = described_class[SelectorTestMessages::E1].by_message_id
+      expect(selector.keys).to eq([:__id])
+      expect(Sourced::IdPartition.keys?(selector.keys)).to be true
+    end
+  end
+
   describe '#bind' do
     it 'binds stringified values to the keys of every part, ignoring others' do
       selector = (described_class[SelectorTestMessages::E1].by(:account_id) + described_class[SelectorTestMessages::E3].by(:user_id))

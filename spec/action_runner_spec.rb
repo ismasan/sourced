@@ -168,7 +168,7 @@ RSpec.describe Sourced::ActionRunner do
 
   describe 'index_by resolution (delegated to the store)' do
     it 'indexes appended messages by id when their type is registered id-partitioned' do
-      store.register_consumer_group('q', Sourced::Selector[InterpreterTestMessages::ThingDone].by(:__id), exclusive: true)
+      store.register_consumer_group('q', Sourced::Selector[InterpreterTestMessages::ThingDone].by_message_id, exclusive: true)
 
       interpreter.run({ type: :append, messages: [new_event] }, source, after_syncs)
 

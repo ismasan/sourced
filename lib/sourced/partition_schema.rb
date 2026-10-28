@@ -2,8 +2,9 @@
 
 module Sourced
   # Checks a reactor's handled messages against its +partition_schema+
-  # (see {Consumer#partition_by}). The {Router} runs it for every reactor that
-  # declares one, so hand-defined messages are held to the same keys and types
+  # (see {Consumer#partition_by}). Built-in reactors run it from +validate!+
+  # ({Consumer.validate!}, {Machine.validate!}), which the {Router} calls when
+  # adding them, so hand-defined messages are held to the same keys and types
   # as those built with {Consumer#Command} / {Consumer#Event}.
   #
   # The store reads a message into a partition when every partition key it
@@ -29,7 +30,9 @@ module Sourced
 
     FULL_ROLES = { handled_commands: 'command', handled_events: 'on event', handled_messages_for_react: 'reaction' }.freeze
 
-    # @param reactor [#partition_schema, #handled_messages] +partition_schema+ is a +Plumb::HashClass+
+    # @param reactor [#partition_schema] +partition_schema+ is a +Plumb::HashClass+; its
+    #   roles come from +handled_commands+ / +handled_events+ / +handled_messages_for_react+,
+    #   its messages from those, +claim_selector+ and +selector+, where it has them
     # @param error [Class] the exception class to raise
     # @raise [DefinitionError]
     # @return [void]
@@ -47,7 +50,8 @@ module Sourced
       selector = reactor.respond_to?(:selector) ? reactor.selector : Selector::NONE
       check_selector_keys!(reactor, schema, selector, error)
       check_claim_keys!(reactor, schema, error)
-      messages = (full.keys + reactor.handled_messages + selector.types).uniq
+      claimed = reactor.respond_to?(:claim_selector) ? reactor.claim_selector.types : Plumb::BLANK_ARRAY
+      messages = (full.keys + claimed + selector.types).uniq
       return if messages.empty?
 
       complete = false

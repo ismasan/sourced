@@ -1257,12 +1257,13 @@ Sourced.register(Booking)
 
 ## The reactor protocol
 
-Deciders, read models and workflows are conveniences over a small duck-typed protocol. **Any class that responds to `handled_messages` and `handle_claim` is a reactor** — it can be registered and driven by the runtime without subclassing or even depending on Sourced. This is how a message handler from another framework can run on Sourced as a durable queue.
+Deciders, read models and workflows are conveniences over a small duck-typed protocol. **Any class that responds to `claim_selector` and `handle_claim` is a reactor** — it can be registered and driven by the runtime without subclassing or even depending on Sourced. This is how a message handler from another framework can run on Sourced as a durable queue.
 
 ```ruby
 class MyWorker
-  # The message types this reactor claims.
-  def self.handled_messages = [DoThing]
+  # What this reactor claims, and is woken for: DoThing messages, partitioned
+  # by their order_id. The runtime knows reactors only by their selectors.
+  def self.claim_selector = Sourced::Selector[DoThing].by(:order_id)
 
   # Process a claimed batch. Return one [signals, source_message] pair per
   # message: `signals` is one action signal (or a list of them), and
@@ -1289,7 +1290,7 @@ A **signal** is inert data — a plain `Hash` or a `Sourced::Actions` value obje
 | `{ type: :after_sync, work: -> { } }` | run a side effect after commit |
 | `{ type: :ack, delete: false }` | acknowledge the source message; `delete: true` removes it (see below) |
 
-The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name, normalized), `group_label` (the class name), `partition_keys` (`[]`), `exclusive?` (`false`), `selector` (the history it reads: none), `claim_selector` (what it claims: its handled messages, by its partition keys or else by message id), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate.
+The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name, normalized), `group_label` (the class name), `exclusive?` (`false`), `selector` (the history it reads, bound to each claimed partition: none), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate. Built-in reactors derive their `claim_selector` from their DSL: a Decider claims its commands and the events it reacts to, a read model what it evolves from and reacts to, both by their `partition_by` keys.
 
 ## Delete-on-ack queues
 
@@ -1297,17 +1298,17 @@ By default the log is append-only and each reactor keeps its own offset cursor, 
 
 Two ingredients:
 
-- **`exclusive`** — declares the reactor the *sole owner* of its handled message types. The Router raises if another registered reactor also handles one of them, so nothing is left consuming a message the queue deletes. It is a routing marker only — it does not itself delete anything.
+- **`exclusive`** — declares the reactor the *sole owner* of the message types it claims. The Router raises if another registered reactor also claims one of them, so nothing is left consuming a message the queue deletes. It is a routing marker only — it does not itself delete anything.
 - **`delete: true`** on an `:ack` signal — the *only* thing that deletes the source message. Deletion is never implied by partitioning or exclusivity, so forgetting a `partition_by` can never silently drop a message.
 
-An `exclusive` reactor with **no `partition_by`** is partitioned by `Message#id` — one partition per message: a concurrent, unordered queue (the id is indexed under the reserved key `__id`). Id-partitioning is only allowed for `exclusive` reactors; non-exclusive ones must declare a real `partition_by`.
+An `exclusive` reactor claiming **by `__id`** is partitioned by `Message#id` — one partition per message: a concurrent, unordered queue (the id is indexed under the reserved key `__id`). A `Sourced::Consumer` with no `partition_by` claims that way. Id-partitioning is only allowed for `exclusive` reactors; non-exclusive ones must claim by real partition keys.
 
 ```ruby
-# A concurrent, delete-on-ack job queue. No partition_by → one partition per
+# A concurrent, delete-on-ack job queue. Claimed by __id → one partition per
 # message, so jobs run in parallel and unordered. No Sourced base class needed.
 class Jobs
-  def self.exclusive?      = true
-  def self.handled_messages = [RunJob]
+  def self.exclusive?     = true
+  def self.claim_selector = Sourced::Selector[RunJob].by_message_id
 
   def self.handle_claim(claim)
     claim.messages.map do |cmd|
@@ -1963,7 +1964,7 @@ See `examples/app/` for a complete Sinatra application with:
 | `store` | `Sourced::Config::StoreInterface` | `Sourced::Store` over `db`. Sets itself up on start |
 | `store.table_prefix` | `String` (an identifier) | `'sourced'`: tables are named `sourced_messages`, ... |
 | `store.install_tables` | `Boolean` | `false`: whether the store creates its tables on start. Apps use a [migration](#database-setup) |
-| `reactors.*` | `#handled_messages`, `#handle_claim` | one per `Sourced.register` |
+| `reactors.*` | `#claim_selector`, `#handle_claim` | one per `Sourced.register` |
 | `router` | `Sourced::Router` | routes to `reactors.*`, using `store` and `error_strategy` |
 | `topology` | `Array` | the message-flow graph of `reactors.*`, built on each read |
 | `workers.count` | `Integer` (0 or more) | `2` |

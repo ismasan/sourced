@@ -258,6 +258,25 @@ module Sourced
       Selector::NONE
     end
 
+    # What the Router claims, and wakes the reactor for: its +handled_messages+,
+    # partitioned by its partition keys, or by message id (+__id+) when it
+    # declares none (only exclusive reactors may be; the Router checks).
+    #
+    # @return [Selector]
+    def claim_selector
+      selector = Selector[*handled_messages]
+      partition_keys.empty? ? selector.by_message_id : selector.by(*partition_keys)
+    end
+
+    # Check the reactor's messages against its partition schema (see
+    # {PartitionSchema}). The Router runs it when the reactor is added.
+    #
+    # @raise [DefinitionError]
+    # @return [void]
+    def validate!
+      PartitionSchema.check!(self)
+    end
+
     # Called by {Router#stop_consumer_group} after the group is marked as stopped.
     # Override in reactor classes to run cleanup logic on stop.
     #

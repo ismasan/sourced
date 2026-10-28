@@ -67,10 +67,10 @@ module Sourced
       self
     end
 
-    # Register a reactor. Reactors are duck-typed: only +handled_messages+ and
+    # Register a reactor. Reactors are duck-typed: only +claim_selector+ and
     # +handle_claim+ are required. Optional methods (+group_id+ — defaults to the
     # class name normalized by {Types::GroupId}, +group_label+ — the class name,
-    # +partition_keys+, +exclusive?+, +selector+, +claim_selector+, lifecycle hooks)
+    # +exclusive?+, +selector+, lifecycle hooks)
     # get defaults so a plain class (e.g. a Sidereal Commander adapter) can
     # register without depending on Sourced.
     #
@@ -241,9 +241,8 @@ module Sourced
           "partition_by or declaring `partition_by :__id`.)"
       end
 
-      PartitionSchema.check!(reactor_class)
+      validate_history_keys!(reactor_class, group)
       validate_exclusive_ownership!(reactor_class, group)
-      validate_command_ownership!(reactor_class)
 
       @reactors << reactor_class
       @groups[reactor_class] = group
@@ -293,27 +292,16 @@ module Sourced
       end
     end
 
-    # A command has one handler: two reactors handling it would decide it twice.
-    # Events don't count, since any number of reactors may consume them.
-    def validate_command_ownership!(reactor_class)
-      commands = handled_command_types(reactor_class)
-      return if commands.empty?
+    # A claim's history is the reactor's +selector+ bound to the claimed
+    # partition, so its keys must be the claim selector's.
+    #
+    # @raise [DefinitionError]
+    def validate_history_keys!(reactor_class, group)
+      unbound = reactor_class.selector.keys - group.claim_selector.keys
+      return if unbound.empty?
 
-      @reactors.each do |existing|
-        overlap = commands & handled_command_types(existing)
-        next if overlap.empty?
-
-        raise ArgumentError, <<~MSG.strip
-          Cannot register #{reactor_class}: a command has one handler, but #{reactor_class} and #{existing} both handle: #{overlap.sort.join(', ')}
-        MSG
-      end
-    end
-
-    # The messages a reactor handles as commands: its +handled_commands+, if it has any.
-    def handled_command_types(reactor_class)
-      return Plumb::BLANK_ARRAY unless reactor_class.respond_to?(:handled_commands)
-
-      reactor_class.handled_commands.map(&:type).uniq
+      raise DefinitionError, "#{reactor_class}: its selector is scoped by #{unbound.join(', ')}, which its " \
+                             "claim_selector (#{group.claim_selector.keys.join(', ')}) doesn't partition by, so a claim can't bind them"
     end
 
     # Normalize a pair's +signals+ into an array, without Hash-splatting a single

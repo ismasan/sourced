@@ -123,6 +123,12 @@ module Sourced
       with(parts: parts.map { |p| p.by(keys) }, assertion: assertion.map_scopes { |scope| scope.by(*keys) })
     end
 
+    # Scope every part by message id: one partition per message, an
+    # id-partitioned queue's claims (see {IdPartition}).
+    #
+    # @return [Selector]
+    def by_message_id = by(IdPartition::KEY)
+
     # Bind values to the still-unbound keys of every part. Values for keys a part
     # doesn't have are ignored, so a narrower selector binds from a wider
     # partition. Binding can be partial, and happen in steps.

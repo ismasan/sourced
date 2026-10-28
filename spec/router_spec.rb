@@ -243,7 +243,7 @@ class FakeCommander
 
   # no .group_id → Router defaults it to the class name, normalized ('fake_commander')
   def self.exclusive? = true
-  def self.handled_messages = HANDLED
+  def self.claim_selector = Sourced::Selector[*HANDLED].by_message_id
 
   def self.handle_claim(claim)
     claim.messages.map do |cmd|
@@ -268,7 +268,7 @@ end
 # Same as FakeCommander but NOT exclusive — invalid (no partition_keys).
 class NonExclusiveCommander
   def self.group_id = 'non_exclusive_commander'
-  def self.handled_messages = [RouterQueueMessages::DoThing]
+  def self.claim_selector = Sourced::Selector[RouterQueueMessages::DoThing].by_message_id
   def self.handle_claim(claim) = []
 end
 
@@ -311,8 +311,7 @@ RSpec.describe Sourced::Router do
       twin = Class.new do
         def self.name = 'RouterTestTwin'
         def self.group_id = 'router_test_decider'
-        def self.partition_keys = [:device_id]
-        def self.handled_messages = [RouterTestMessages::DeviceRegistered]
+        def self.claim_selector = Sourced::Selector[RouterTestMessages::DeviceRegistered].by(:device_id)
         def self.handle_claim(_claim) = []
       end
 
@@ -325,8 +324,7 @@ RSpec.describe Sourced::Router do
       odd = Class.new do
         def self.name = 'RouterTestOdd'
         def self.group_id = 'Router::Odd'
-        def self.partition_keys = [:device_id]
-        def self.handled_messages = [RouterTestMessages::DeviceRegistered]
+        def self.claim_selector = Sourced::Selector[RouterTestMessages::DeviceRegistered].by(:device_id)
         def self.handle_claim(_claim) = []
       end
     
@@ -343,10 +341,9 @@ RSpec.describe Sourced::Router do
 
     it 'validates exclusive ownership' do
       rival = Class.new do
-        def self.handled_messages = RouterTestQueueWorker.handled_messages
+        def self.claim_selector = RouterTestQueueWorker.claim_selector
         def self.handle_claim(_claim) = []
         def self.group_id = 'rival'
-        def self.partition_keys = [:queue_id]
       end
 
       expect {
@@ -354,7 +351,7 @@ RSpec.describe Sourced::Router do
       }.to raise_error(ArgumentError, /exclusive reactor/)
     end
 
-    it 'raises for two deciders handling the same command type' do
+    it 'allows two reactors handling the same command type' do
       rival = Class.new(Sourced::Decider) do
         consumer_group 'rival'
         partition_by :device_id
@@ -363,51 +360,20 @@ RSpec.describe Sourced::Router do
 
       expect {
         Sourced::Router.new(store:, reactors: [RouterTestDecider, rival])
-      }.to raise_error(ArgumentError, /and RouterTestDecider both handle: router_test.bind_device/)
-    end
-
-    it 'raises for two duck-typed reactors declaring the same handled command' do
-      handler = ->(group) {
-        Class.new do
-          define_singleton_method(:group_id) { group }
-          def self.partition_keys = [:n]
-          def self.handled_messages = [RouterQueueMessages::DoThing]
-          def self.handled_commands = [RouterQueueMessages::DoThing]
-          def self.handle_claim(_claim) = []
-        end
-      }
-
-      expect {
-        Sourced::Router.new(store:, reactors: [handler.('one'), handler.('two')])
-      }.to raise_error(ArgumentError, /both handle: router_q.do_thing/)
-    end
-
-    it 'allows two reactors handling the same messages when they declare no handled_commands' do
-      handler = ->(group) {
-        Class.new do
-          define_singleton_method(:group_id) { group }
-          def self.partition_keys = [:n]
-          def self.handled_messages = [RouterQueueMessages::DoThing]
-          def self.handle_claim(_claim) = []
-        end
-      }
-
-      expect {
-        Sourced::Router.new(store:, reactors: [handler.('one'), handler.('two')])
       }.not_to raise_error
     end
 
-    it 'allows two reactors handling the same event types' do
-      listener = Class.new do
-        def self.group_id = 'listener'
-        def self.partition_keys = [:device_id]
-        def self.handled_messages = [RouterTestMessages::DeviceRegistered, RouterTestMessages::DeviceBound]
-        def self.handle_claim(_claim) = []
+    it "raises for a history selector keyed by what the claim selector doesn't partition by" do
+      reactor = Class.new do
+        def self.group_id = 'router_test_unbindable'
+        def self.claim_selector = Sourced::Selector[RouterTestMessages::DeviceRegistered].by(:device_id)
+        def self.selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id, :asset_id)
+        def self.handle_claim(_claim, history:) = []
       end
 
       expect {
-        Sourced::Router.new(store:, reactors: [RouterTestDecider, listener])
-      }.not_to raise_error
+        Sourced::Router.new(store:, reactors: [reactor])
+      }.to raise_error(Sourced::DefinitionError, /selector is scoped by asset_id, which its claim_selector \(device_id\) doesn't partition by/)
     end
   end
 
@@ -442,8 +408,7 @@ RSpec.describe Sourced::Router do
     let(:failing) do
       Class.new do
         def self.name = 'RouterTestFailing'
-        def self.handled_messages = [RouterTestMessages::DeviceRegistered]
-        def self.partition_keys = [:device_id]
+        def self.claim_selector = Sourced::Selector[RouterTestMessages::DeviceRegistered].by(:device_id)
         def self.handle_claim(_claim) = raise('boom')
       end
     end
@@ -1129,7 +1094,7 @@ RSpec.describe Sourced::Router do
 
     it 'defaults to partitions by message id without partition keys' do
       expect(RouterTestQueueHistoryReactor.claim_selector)
-        .to eq(Sourced::Selector[*RouterTestQueueHistoryReactor.handled_messages].by(:__id))
+        .to eq(Sourced::Selector[*RouterTestQueueHistoryReactor.handled_messages].by_message_id)
     end
 
     it "claims with the reactor's own claim selector" do
@@ -1299,7 +1264,7 @@ RSpec.describe Sourced::Router do
 
       # after reactivating the group, the retained message is re-claimable
       store.start_consumer_group('fake_commander')
-      claim = store.claim_next('fake_commander', Sourced::Selector[RouterQueueMessages::DoThing].by(:__id), worker_id: 'w2')
+      claim = store.claim_next('fake_commander', Sourced::Selector[RouterQueueMessages::DoThing].by_message_id, worker_id: 'w2')
       expect(claim.messages.size).to eq(1)
     end
   end

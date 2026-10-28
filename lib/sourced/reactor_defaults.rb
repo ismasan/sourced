@@ -55,11 +55,6 @@ module Sourced
       # Sourced::Consumer#group_label).
       def group_label = name || group_id
 
-      # No partition keys declared. The Router treats an empty set as an
-      # id-partitioned queue for exclusive reactors, and an error otherwise —
-      # absence of keys never implies deletion.
-      def partition_keys = []
-
       # Not the exclusive owner of its message types (routing concern only).
       def exclusive? = false
 
@@ -69,14 +64,6 @@ module Sourced
 
       # No history.
       def selector = Selector::NONE
-
-      # What the Router claims: the handled messages, partitioned by the
-      # partition keys, or by message id (+__id+) when there are none (only
-      # exclusive reactors may be; the Router checks).
-      def claim_selector
-        keys = partition_keys
-        Selector[*handled_messages].by(*(keys.empty? ? IdPartition::KEYS : keys))
-      end
     end
   end
 end

@@ -23,7 +23,7 @@ module HandleTestMessages
     attribute :device_id, String
   end
 
-  # Handled by HandleTestReactingDecider: a command has one handler.
+  # Handled by HandleTestReactingDecider.
   RegisterDevice = Sourced::Command.define('handle_test.register_device') do
     attribute :device_id, String
     attribute :name, String
@@ -69,8 +69,7 @@ module HandleUncheckedMessages
 end
 
 class HandleUncheckedReactor
-  def self.partition_keys = [:device_id]
-  def self.handled_messages = [HandleUncheckedMessages::AddNote]
+  def self.claim_selector = Sourced::Selector[HandleUncheckedMessages::AddNote].by(:device_id)
   def self.handle_claim(claim) = claim.messages.map { |m| [Sourced::Actions::OK, m] }
 
   def initialize(_values); end

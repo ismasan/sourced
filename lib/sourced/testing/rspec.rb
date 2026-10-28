@@ -93,7 +93,7 @@ module Sourced
             raise ArgumentError, "#{reactor_class} is a projector: it takes no partition values"
           end
           # What Router registration would reject fails the spec too.
-          Sourced::PartitionSchema.check!(reactor_class)
+          reactor_class.validate! if reactor_class.respond_to?(:validate!)
 
           @partition_values = partition_attrs
           @given_messages = []

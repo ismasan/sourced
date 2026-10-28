@@ -39,8 +39,8 @@ module Sourced
       REACTOR_RESUMED = 'reactor_resumed'
 
       # @param work_queue [WorkQueue] queue to push signaled reactors onto
-      # @param reactors [Array<Class>] reactor classes whose +handled_messages+
-      #   define the type-to-reactor mapping
+      # @param reactors [Array<Class>] reactor classes whose +claim_selector+
+      #   types define the type-to-reactor mapping
       def initialize(work_queue:, reactors:)
         @work_queue = work_queue
         @type_to_reactors = build_type_lookup(reactors)
@@ -70,9 +70,7 @@ module Sourced
       def build_type_lookup(reactors)
         lookup = Hash.new { |h, k| h[k] = [] }
         reactors.each do |reactor|
-          reactor.handled_messages.map(&:type).uniq.each do |type|
-            lookup[type] << reactor
-          end
+          reactor.claim_selector.types.each { |klass| lookup[klass.type] << reactor }
         end
         lookup
       end
@@ -136,7 +134,7 @@ module Sourced
       @batch_size = batch_size
       @max_drain_rounds = max_drain_rounds
       @shutdown_timeout = shutdown_timeout
-      @reactors = router.reactors.select { |r| r.handled_messages.any? }.to_a.freeze
+      @reactors = router.reactors.reject { |r| r.claim_selector.none? }.to_a.freeze
       @run = nil
       @queue_switch = nil
       @running = false

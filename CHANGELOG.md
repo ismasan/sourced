@@ -78,10 +78,22 @@
   `handled_types:`; other selectors raise `ArgumentError`. Its keys are the group's
   partitions and its types the messages it claims; a claim's guard holds it bound to
   the partition. Reactors declare it as `claim_selector`, which `ReactorDefaults`
-  fills in as `Selector[*handled_messages].by(*partition_keys)`, or `.by(:__id)`
+  fills in as `Selector[*handled_messages].by(*partition_keys)`, or `.by_message_id`
   without partition keys, and the Router claims and registers groups with it. `PartitionSchema.check!` requires a
   custom one's keys to be the partition keys.
   Message types no longer need to be in `Sourced::Message.registry` to be claimed.
+- **The runtime knows reactors by their selectors.** The reactor protocol is
+  `claim_selector` (what it claims and is woken for) and `handle_claim`, plus the
+  optional `selector` (history) and defaults; `handled_messages` and `partition_keys`
+  are no longer part of it: `Sourced::Consumer` derives `claim_selector` from them, and
+  `Sourced.handle!` / `load` take the partition from `claim_selector.keys`.
+  `Selector#by_message_id` scopes a selector by message id, for id-partitioned queues. The Dispatcher wakes
+  reactors by their claim selector's types. The Router no longer rejects two reactors
+  handling the same command: commands and events are just messages to it, and
+  `exclusive` is how a reactor owns its types. It raises `DefinitionError` when a
+  history selector has keys the claim selector doesn't partition by. Role checks
+  (commands, reactions and `on` events declare every key) run from built-in reactors'
+  `validate!` (`Consumer.validate!` runs `PartitionSchema.check!`).
 - `Store#read` guards an empty read at `after_position`, or 0, rather than the latest
   position.
 - `Sourced.load` of a `Projection` without values reads every message of its evolve
