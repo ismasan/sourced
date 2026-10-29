@@ -190,7 +190,8 @@ model can be advanced with new messages only. Defining an assertion that can
 never hold (`includes(X).excludes(X)`), or always holds, raises
 `Sourced::Selector::AssertionError`. `to_mermaid` draws the minimal state
 machine, each state `valid` (the assertion holds) or `invalid`. States sharing
-a label differ in what can happen next. For `~cancelled`:
+a label differ in what can happen next. A selector without an assertion draws
+one `valid` state that every message it selects keeps. For `~cancelled`:
 
 ```mermaid
 stateDiagram-v2

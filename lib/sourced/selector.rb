@@ -264,17 +264,14 @@ module Sourced
     # @raise [UnboundKeyError] unless {#bound?}
     def holds?(messages) = accepts?(advance(start, messages))
 
-    # @return [Automaton] its assertion's reachable states
-    def automaton = Automaton.new(assertion)
+    # @return [Automaton] its assertion's reachable states (without an
+    #   assertion, one accepting state over the types it selects)
+    def automaton = Automaton.new(assertion, parts)
 
     # @return [String] a Mermaid +stateDiagram-v2+ of its assertion's minimal
-    #   automaton, its states +valid+ (the assertion holds) or +invalid+
-    # @raise [ArgumentError] without an assertion
-    def to_mermaid
-      raise ArgumentError, "#{inspect} has no assertion to draw" if assertion == Assertion::TRUE
-
-      automaton.to_mermaid
-    end
+    #   automaton, its states +valid+ (the assertion holds) or +invalid+. Without
+    #   an assertion, one +valid+ state that every message it selects keeps.
+    def to_mermaid = automaton.to_mermaid
 
     # @return [Boolean] whether every key of every part has a value
     def bound? = parts.all?(&:bound?)

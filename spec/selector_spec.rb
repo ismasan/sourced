@@ -484,8 +484,15 @@ RSpec.describe Sourced::Selector, 'assertions' do
       expect(s.automaton.minimal_blocks.size).to eq(2)
     end
 
-    it 'raises without an assertion' do
-      expect { lifecycle.to_mermaid }.to raise_error(ArgumentError, /no assertion/)
+    it 'draws one valid state that every selected message keeps, without an assertion' do
+      expect(lifecycle.to_mermaid).to eq(<<~MERMAID.chomp)
+        stateDiagram-v2
+            classDef accepting font-weight:bold,stroke-width:3px
+            state "valid" as s0
+            [*] --> s0
+            s0 --> s0: Cancelled, Reopened
+            class s0 accepting
+      MERMAID
     end
   end
 

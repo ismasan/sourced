@@ -46,9 +46,12 @@ module Sourced
       attr_reader :accepting
 
       # @param assertion [Assertion]
-      def initialize(assertion)
+      # @param parts [Array<Selector::Part>] what the alphabet is over when the
+      #   assertion has no leaves (the selector's own parts); leaves bring their scopes'
+      def initialize(assertion, parts = Plumb::BLANK_ARRAY)
         @assertion = assertion
         @leaves = assertion.leaves
+        @parts = @leaves.empty? ? parts : @leaves.flat_map { |leaf| leaf.scope.parts }
         @alphabet = build_alphabet
         @initial = leaves.map(&:initial).freeze
         explore
@@ -113,10 +116,8 @@ module Sourced
 
       def build_alphabet
         signatures = Hash.new { |h, k| h[k] = [] }
-        leaves.each do |leaf|
-          leaf.scope.parts.each do |part|
-            part.types.each { |type| signatures[type] |= [[part.keys, part.values]] }
-          end
+        @parts.each do |part|
+          part.types.each { |type| signatures[type] |= [[part.keys, part.values]] }
         end
         signatures.flat_map do |type, sigs|
           (1..sigs.size).flat_map do |n|
