@@ -86,11 +86,6 @@ module Sourced
         own = Selector[*__transition_classes, *tree.child_events, *handled_events]
         [projector.selector, own, *parts].reduce(:+)
       end
-
-      # Fixed by {Machine.validate!}; computed on each call before it.
-      def history_selector
-        @__history_selector || evolve_selector.by(*partition_keys)
-      end
     end
     singleton_class.prepend EvolveTypes
 
@@ -1290,8 +1285,7 @@ module Sourced
         @__handled_commands = handled_commands.freeze
         @__handled_events = handled_events.freeze
         @__evolve_selector = evolve_selector
-        @__history_selector = history_selector
-        @__evolve_set = @__history_selector.types.to_set.freeze
+        @__evolve_set = @__evolve_selector.types.to_set.freeze
         @__start_paths = __start_paths.freeze if start_state
         @__transition_classes = __transition_classes.freeze
         @__transition_set = @__transition_classes.to_set.freeze
@@ -1331,7 +1325,7 @@ module Sourced
       #   default skips entry and exit actions, timers and joins when +true+
       # @return [Array<Array(Array<Object>, Sourced::Message)>] action/source pairs
       def handle_batch(partition_values, new_messages, history:, replaying: false)
-        types = @__evolve_set || history_selector.types
+        types = @__evolve_set || evolve_selector.types
         evolvable = new_messages.select { |msg| types.include?(msg.to_message.class) }
         __process(partition_values, new_messages, history.messages + evolvable, guard: history.guard, replaying:)
       end

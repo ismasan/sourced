@@ -6,13 +6,15 @@ require 'sourced/error_strategy'
 module Sourced
   class Router
     # A registered reactor's consumer group, read once when it's added, so its
-    # registration and every claim use the same selector.
+    # registration and every claim use the same selectors.
     #
     # @!attribute claim_selector [Selector] what the group claims
+    # @!attribute history_selector [Selector] what a claim reads as history, bound to its partition
+    # @!attribute needs_history [Boolean] whether the reactor's +handle_claim+ takes +history:+
     # @!attribute exclusive [Boolean] whether it solely owns its message types
-    Group = Data.define(:claim_selector, :exclusive) do
+    Group = Data.define(:claim_selector, :history_selector, :needs_history, :exclusive) do
       # @return [Array<String>]
-      def handled_types = claim_selector.types.map(&:type)
+      def handled_types = claim_selector.type_names
     end
 
     # Raised for a reactor class, or group_id, that isn't registered with this router
@@ -45,7 +47,6 @@ module Sourced
       @store = store
       @error_strategy = error_strategy
       @reactors = []
-      @needs_history = {}
       # {Group}s, by reactor
       @groups = {}
       reactors.each { |reactor| add(reactor) }
@@ -97,9 +98,9 @@ module Sourced
 
       begin
         kwargs = {}
-        if @needs_history[reactor_class]
+        if group.needs_history
           attrs = claim.partition_value.transform_keys(&:to_sym)
-          kwargs[:history] = store.read(reactor_class.history_selector.bind(**attrs))
+          kwargs[:history] = store.read(group.history_selector.bind(**attrs))
         end
 
         action_pairs = reactor_class.handle_claim(claim, **kwargs)
@@ -227,7 +228,12 @@ module Sourced
         raise ArgumentError, "Cannot register #{reactor_class}: #{existing} already uses group_id #{reactor_class.group_id.inspect}"
       end
 
-      group = Group.new(claim_selector: reactor_class.claim_selector, exclusive: reactor_class.exclusive?)
+      group = Group.new(
+        claim_selector: reactor_class.claim_selector,
+        history_selector: reactor_class.history_selector,
+        needs_history: Injector.resolve_args(reactor_class, :handle_claim).include?(:history),
+        exclusive: reactor_class.exclusive?
+      )
 
       # id-partitioning (declared as `partition_by :__id`, or implied by omitting
       # partition_by) indexes messages by Message#id (key name "__id", chosen to
@@ -246,7 +252,6 @@ module Sourced
 
       @reactors << reactor_class
       @groups[reactor_class] = group
-      @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
     end
 
     def register_consumer_group(reactor_class)
@@ -297,7 +302,7 @@ module Sourced
     #
     # @raise [DefinitionError]
     def validate_history_keys!(reactor_class, group)
-      unbound = reactor_class.history_selector.keys - group.claim_selector.keys
+      unbound = group.history_selector.keys - group.claim_selector.keys
       return if unbound.empty?
 
       raise DefinitionError, "#{reactor_class}: its history_selector is scoped by #{unbound.join(', ')}, which its " \

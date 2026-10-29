@@ -315,8 +315,8 @@ module Sourced
           end
         end
 
-        # A projection has no +handle_batch+ to drive: the helper builds it with
-        # +new+ and evolves the {#given} messages.
+        # An inline projector has no +handle_batch+ to drive: the helper builds a
+        # projection with +new+ and evolves the {#given} messages.
         def inline_projector?
           !@reactor_class.respond_to?(:handle_batch) && @reactor_class.method_defined?(:evolve)
         end

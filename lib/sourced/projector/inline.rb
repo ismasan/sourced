@@ -45,7 +45,6 @@ module Sourced
           subclass.handled_messages.concat(handled_messages)
           subclass.evolve_handlers.merge!(evolve_handlers)
           subclass.before_evolve_blocks.concat(before_evolve_blocks)
-          subclass.instance_variable_set(:@selector, selector)
         end
 
         # @return [Hash{Class => Symbol}] each handled message class's evolve method
@@ -64,7 +63,7 @@ module Sourced
         #
         # @return [Selector]
         def selector
-          @selector ||= Selector::NONE
+          @selector ||= Selector[*handled_messages]
         end
 
         # Define the initial context factory.
@@ -112,8 +111,10 @@ module Sourced
         # @yield [context, message] mutates +context+ for +message+
         def evolve(declared, &block)
           message_class = declared.to_message_class
-          handled_messages << message_class unless handled_messages.include?(message_class)
-          @selector = selector + Selector[message_class]
+          unless handled_messages.include?(message_class)
+            handled_messages << message_class
+            @selector = nil
+          end
           evolve_handlers[message_class] = define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
         end
       end

@@ -30,9 +30,9 @@ module Sourced
 
     FULL_ROLES = { handled_commands: 'command', handled_events: 'on event', handled_messages_for_react: 'reaction' }.freeze
 
-    # @param reactor [#partition_schema] +partition_schema+ is a +Plumb::HashClass+; its
-    #   roles come from +handled_commands+ / +handled_events+ / +handled_messages_for_react+,
-    #   its messages from those, +claim_selector+ and +history_selector+, where it has them
+    # @param reactor [#partition_schema, #claim_selector, #history_selector] +partition_schema+
+    #   is a +Plumb::HashClass+; its roles come from +handled_commands+ / +handled_events+ /
+    #   +handled_messages_for_react+ where it has them, its messages from those and its selectors
     # @param error [Class] the exception class to raise
     # @raise [DefinitionError]
     # @return [void]
@@ -47,11 +47,10 @@ module Sourced
 
         reactor.public_send(method).each { |klass| roles[klass] ||= role }
       end
-      selector = reactor.respond_to?(:history_selector) ? reactor.history_selector : Selector::NONE
+      selector = reactor.history_selector
       check_selector_keys!(reactor, schema, selector, error)
       check_claim_keys!(reactor, schema, error)
-      claimed = reactor.respond_to?(:claim_selector) ? reactor.claim_selector.types : Plumb::BLANK_ARRAY
-      messages = (full.keys + claimed + selector.types).uniq
+      messages = (full.keys + reactor.claim_selector.types + selector.types).uniq
       return if messages.empty?
 
       complete = false
@@ -93,8 +92,6 @@ module Sourced
     end
 
     private def check_claim_keys!(reactor, schema, error)
-      return unless reactor.respond_to?(:claim_selector)
-
       claim_selector = reactor.claim_selector
       return if claim_selector.none? || claim_selector.keys.sort == schema.keys.sort
 

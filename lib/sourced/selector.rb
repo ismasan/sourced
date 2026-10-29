@@ -296,6 +296,9 @@ module Sourced
     # @return [Array<Class<Message>>] every part's types
     def types = parts.flat_map(&:types).uniq
 
+    # @return [Array<String>] every part's type strings
+    def type_names = types.map(&:type)
+
     # @return [Array<Symbol>] every part's keys
     def keys = parts.flat_map(&:keys).uniq
 

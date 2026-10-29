@@ -717,7 +717,7 @@ module Sourced
       return nil if selector.none?
 
       partition_by = claim_keys(selector)
-      handled_types = selector.types.map(&:type)
+      handled_types = selector.type_names
       now = Time.now.iso8601
       cg = db[@consumer_groups_table]
         .where(group_id: group_id, status: CLAIMABLE)

@@ -73,19 +73,10 @@ module Sourced
       # id-partitioned reactor, which declares no partition keys or
       # +partition_by :__id+.
       #
-      # Memoised while its inputs are the same objects: +evolve+ and
-      # +partition_by+ replace them.
-      #
       # @return [Selector]
       def history_selector
-        source = evolve_selector
         keys = partition_keys
-        memo_source, memo_keys, memo = @__history_memo
-        return memo if memo_source.equal?(source) && memo_keys.equal?(keys)
-
-        selector = keys.empty? || IdPartition.keys?(keys) ? Selector::NONE : source.by(*keys)
-        @__history_memo = [source, keys, selector]
-        selector
+        keys.empty? || IdPartition.keys?(keys) ? Selector::NONE : evolve_selector.by(*keys)
       end
 
       # Define the projector's initial context factory. The block takes no arguments.

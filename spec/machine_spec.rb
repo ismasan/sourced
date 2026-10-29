@@ -1060,7 +1060,7 @@ RSpec.describe Sourced::Machine do
 
       m.validate!
       expect(m.handled_commands).to be_frozen.and eq([Ping])
-      expect(m.history_selector).to equal(m.history_selector)
+      expect(m.evolve_selector).to equal(m.evolve_selector)
       expect(m.history_selector.types).to include(m::Pinged)
       expect(m.history_selector.parts.map(&:keys).uniq).to eq([m.partition_keys])
       expect(m.transition_classes).to be_frozen

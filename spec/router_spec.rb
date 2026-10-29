@@ -447,15 +447,6 @@ RSpec.describe Sourced::Router do
       expect(router.reactors).to include(RouterTestDecider)
     end
 
-    it 'detects history: for decider, none for projector' do
-      router.register(RouterTestDecider)
-      router.register(RouterTestProjector)
-
-      # Decider needs history, projector does not
-      expect(router.instance_variable_get(:@needs_history)[RouterTestDecider]).to be true
-      expect(router.instance_variable_get(:@needs_history)[RouterTestProjector]).to be false
-    end
-
     it 'passes partition_keys to register_consumer_group' do
       router.register(RouterTestDecider)
 
