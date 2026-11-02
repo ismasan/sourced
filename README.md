@@ -706,20 +706,33 @@ class OrderMachine < Sourced::Machine
   # Domain context, as in a Decider: any object, mutated by evolve handlers.
   # Like any projection's, the context block takes no arguments.
   context { OrderState.new }
+  # Evolve data context with event history for this machine
   evolve(OrderPlaced) { |order, evt| order.total = evt.payload.total }
   evolve(PaymentInfoAdded) { |order, evt| order.card = evt.payload.card }
   evolve(ItemPacked) { |order, evt| order.packed << evt.payload.sku }
 
+  # The initial state (a new machine)
   initial do
+    # What commands are allowed in this state
+    # what state they transition to
+    # and an optional block to validate or append custom data events
     command PlaceOrder => Placed do |_order, cmd|
       event OrderPlaced, total: cmd.payload.total # data, appended before the transition
     end
   end
 
-  state Placed do # has regions: they're all active while Placed is
+  # The Placed state has "regions"
+  # ie sub-states that can both be active at the same time
+  state Placed do
+    # Allow the CancelOrder command which transitions to Cancelled
+    # No custom block needed here
     command CancelOrder => Cancelled
 
+    # The :payment region is an embedded state machine with its own lifecycle
+    # A payment can start its payment workflow, or rejected
     region :payment do
+      # On its initial state, a payment accepts the StartPayment command
+      # which is validated and can lead to Paying or Rejected states
       initial do
         command StartPayment => Paying | Rejected do |order, cmd|
           if order.total.positive?
@@ -732,9 +745,19 @@ class OrderMachine < Sourced::Machine
       end
 
       state Paying do
+        # When a payment transitions to Paying
+        # it immediately dispatches the ChargeCard command (handling not shown here)
         entry { |order, _evt| dispatch ChargeCard, card: order.card }  # order_id filled in
+
+        # Schedule an ExpirePayment command to be dispatched in one hour
+        # If by the time the command arrives the machine has moved on from the Paying state
+        # the ExpirePayment command is just ignored
         after('1h' => ExpirePayment)        # order_id filled in
+
+        # React to external events appended by other reactors
         on PaymentCaptured => Paid          # appended by a payments reactor
+
+        # Cancel the payment when ExpirePayment is dispatched, either manually or by the 1hr schedule above
         command ExpirePayment => Cancelled  # an ancestor region's state: exits both regions
       end
 
@@ -742,6 +765,7 @@ class OrderMachine < Sourced::Machine
       final Paid
     end
 
+    # Shipping has its own life cycle
     region :shipping do
       initial do
         command PackItem => Packed | nil do |order, cmd| # | nil: may stay put
@@ -753,9 +777,11 @@ class OrderMachine < Sourced::Machine
       final Shipped
     end
 
-    done Completed # once every region is final
+    # Once every region is final, transition the machine to this state
+    done Completed
   end
 
+  # The two states that "finish" this machine's life cycle
   final Completed
   final Cancelled
 end
