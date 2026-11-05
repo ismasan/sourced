@@ -983,9 +983,13 @@ module Sourced
     #
     # An offset is drained when it is currently unclaimed, it has at least one
     # partition key (only partitioned offsets are reaped — a non-partitioned
-    # group's single offset is kept), and no remaining message matches all of its
-    # partition key_pairs (AND semantics). A retain (non-deleting) reactor's
-    # partitions always have messages, so they are never matched here.
+    # group's single offset is kept), and no remaining message carries any of
+    # its key pairs. That keeps every offset whose partition still has messages
+    # (they carry its values), and some whose remaining messages are in other
+    # partitions sharing one of its values, until those are deleted too: an
+    # exact check would compare each candidate message's other keys, and scan
+    # every message sharing a low-cardinality value. A retain (non-deleting)
+    # reactor's partitions always have messages, so they are never matched here.
     #
     # The reap race is benign: if a new message arrives for a just-reaped
     # partition, {#claim_next} re-discovers and recreates the offset on the next
@@ -1004,12 +1008,7 @@ module Sourced
             SELECT 1
             FROM #{@offset_key_pairs_table} okp
             JOIN #{@message_key_pairs_table} mkp ON okp.key_pair_id = mkp.key_pair_id
-            JOIN #{@messages_table} m ON mkp.message_position = m.position
             WHERE okp.offset_id = o.id
-            GROUP BY m.position
-            HAVING COUNT(*) = (
-              SELECT COUNT(*) FROM #{@offset_key_pairs_table} WHERE offset_id = o.id
-            )
           )
       SQL
 

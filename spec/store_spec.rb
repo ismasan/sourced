@@ -2574,6 +2574,39 @@ RSpec.describe Sourced::Store do
       expect(store.release_drained_offsets).to eq(0)
       expect(db[:sourced_offsets].count).to eq(1)
     end
+
+    context 'with several partition keys' do
+      let(:selector) do
+        Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::DeviceBound].by(:device_id, :asset_id)
+      end
+
+      before { store.register_consumer_group('binding_group', selector) }
+
+      def delete_bindings
+        store.delete_messages(db[:sourced_messages].where(message_type: StoreTestMessages::DeviceBound.type).select_map(:position))
+      end
+
+      it 'keeps an offset whose partition still has a message carrying some of its keys' do
+        store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+        store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }))
+        delete_bindings
+
+        expect(store.release_drained_offsets).to eq(0)
+        expect(db[:sourced_offsets].count).to eq(1)
+      end
+
+      it 'keeps an offset while messages of other partitions share one of its values' do
+        store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }))
+        store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-2' }))
+        store.delete_messages(db[:sourced_messages].where(message_type: StoreTestMessages::DeviceBound.type).select_map(:position).take(1))
+
+        expect(store.release_drained_offsets).to eq(0)
+        expect(db[:sourced_offsets].count).to eq(2)
+
+        delete_bindings
+        expect(store.release_drained_offsets).to eq(2)
+      end
+    end
   end
 
   describe 'append(index_by: :id) and id-partitioning' do
