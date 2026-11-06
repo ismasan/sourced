@@ -400,7 +400,7 @@ module Sourced
 
           # Only immediate messages advance offsets; scheduled ones get offsets
           # when promoted (re-appended) by #update_schedule!.
-          ensure_offsets_for_registered_groups(indexed_keys)
+          ensure_offsets_for_registered_groups(to_append.map(&:type), indexed_keys)
         end
 
         # Announce once the messages are visible: after the *outermost*
@@ -599,7 +599,8 @@ module Sourced
 
     # Register a consumer group. Idempotent.
     # When +partition_by+ is provided, offsets are created eagerly during {#append}
-    # instead of lazily via discovery in {#claim_next}.
+    # instead of lazily via discovery in {#claim_next}, from messages of
+    # +handled_types+ when given (only those can make a partition claimable).
     #
     # @param group_id [String] unique identifier for the consumer group
     # @param label [String, nil] the name the group is shown under (its reactor's
@@ -608,7 +609,8 @@ module Sourced
     # @param exclusive [Boolean] when true, the group exclusively owns its message
     #   types and uses queue (delete-on-ack) semantics
     # @param handled_types [Array<String>] message type strings this group consumes.
-    #   Used to derive per-type index basis (:id for id-partitioned groups).
+    #   Used to derive per-type index basis (:id for id-partitioned groups), and
+    #   to create eager offsets only from messages of these types.
     # @return [void]
     def register_consumer_group(group_id, label: nil, partition_by: nil, exclusive: false, handled_types: [])
       partition_by_sorted = partition_by ? Array(partition_by).map(&:to_s).sort : nil
@@ -629,7 +631,10 @@ module Sourced
 
       # Cache for hot-path use in append
       cg = db[@consumer_groups_table].where(group_id: group_id).first
-      @registered_groups[group_id] = { cg_id: cg[:id], partition_by: partition_by_sorted, exclusive: exclusive }
+      @registered_groups[group_id] = {
+        cg_id: cg[:id], partition_by: partition_by_sorted, exclusive: exclusive,
+        types: Array(handled_types).empty? ? nil : Array(handled_types).to_set.freeze
+      }
     end
 
     # Whether the consumer group exists and workers claim it: it's active or
@@ -1276,13 +1281,18 @@ module Sourced
       end
     end
 
-    # Create offsets eagerly for all registered consumer groups.
+    # Create offsets eagerly for all registered consumer groups, for each
+    # appended message that carries all of a group's partition keys and is one
+    # of its handled types (any type when it registered none). A claim needs a
+    # message of its types carrying every key, so an offset from another type
+    # would wait for one, which creates it anyway.
     # Called inside the append transaction after messages and key_pairs are inserted.
     #
+    # @param types [Array<String>] each appended message's type
     # @param indexed_keys [Array<Array<Array(String, String)>>] each appended
     #   message's {#effective_keys}, as indexed
     # @return [void]
-    def ensure_offsets_for_registered_groups(indexed_keys)
+    def ensure_offsets_for_registered_groups(types, indexed_keys)
       return if @registered_groups.empty?
 
       # Collect partition attribute names across eagerly-offset groups.
@@ -1305,9 +1315,12 @@ module Sourced
         partition_by = group_info[:partition_by]
 
         cg_id = group_info[:cg_id]
+        group_types = group_info[:types]
         seen = Set.new
 
-        indexed_keys.each do |pairs|
+        indexed_keys.each_with_index do |pairs, i|
+          next if group_types && !group_types.include?(types[i])
+
           keys = pairs.to_h  # {"__id"=>"…", "device_id"=>"dev-1", "name"=>"A"}
           next unless partition_by.all? { |attr| keys.key?(attr) }
 
