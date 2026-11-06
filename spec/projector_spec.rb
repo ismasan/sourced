@@ -577,6 +577,54 @@ RSpec.describe Sourced::Projector do
     end
   end
 
+  describe 'a selector source (StateStored)' do
+    let(:stored) { {} }
+
+    def build(with_load_context:)
+      db = stored
+      Class.new(Sourced::Projector::StateStored) do
+        partition_by :list_id
+        evolve Sourced::Selector[ProjectorTestMessages::ItemAdded, ProjectorTestMessages::ItemArchived]
+
+        load_context { |values| db[values[:list_id]] } if with_load_context
+
+        # Reactions see the evolved context: the messages, as names.
+        reaction ProjectorTestMessages::ItemArchived do |messages, _msg|
+          ProjectorTestMessages::NotifyArchive.new(payload: { list_id: messages.map { it.payload.name }.join(',') })
+        end
+      end
+    end
+
+    def positioned(klass, name, position)
+      Sourced::PositionedMessage.new(klass.new(payload: { list_id: 'L1', name: }), position)
+    end
+
+    def notified(projector)
+      batch = [positioned(ProjectorTestMessages::ItemAdded, 'Apple', 3),
+               positioned(ProjectorTestMessages::ItemArchived, 'Apple', 4)]
+      projector.handle_batch({ list_id: 'L1' }, batch)
+        .flat_map { |actions, _| Array(actions) }
+        .grep(Sourced::Actions::Append).flat_map(&:messages)
+        .map { it.payload.list_id }
+    end
+
+    it "claims the selector's types" do
+      expect(build(with_load_context: false).handled_messages)
+        .to eq([ProjectorTestMessages::ItemAdded, ProjectorTestMessages::ItemArchived])
+    end
+
+    it 'evolves the claimed batch alone without load_context' do
+      expect(notified(build(with_load_context: false))).to eq(['Apple,Apple'])
+    end
+
+    it 'evolves the claimed batch on top of the messages load_context returns' do
+      stored['L1'] = [ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Stored' })]
+
+      expect(notified(build(with_load_context: true))).to eq(['Stored,Apple,Apple'])
+      expect(stored['L1'].size).to eq(1)
+    end
+  end
+
   describe '.history_selector' do
     it "is its projection's selector, by the partition keys" do
       selector = TestItemProjector.history_selector
