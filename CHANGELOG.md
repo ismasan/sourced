@@ -30,6 +30,11 @@
 
 ### Changed
 
+- Appends create a consumer group's eager offsets only from messages of the types it
+  handles (`register_consumer_group(handled_types:)`; any type when it gives none).
+  Claims only ever needed those: an offset from another type waited for one, which
+  creates it anyway. Groups that share partition keys but handle different types write
+  and scan fewer offsets.
 - **Consumer group status changes follow `ConsumerGroupMachine`.** `GroupUpdater` places the
   machine at the group's status and context and moves it; the store reads and writes the row
   in one write transaction (`BEGIN IMMEDIATE`).

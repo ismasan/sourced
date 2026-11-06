@@ -3111,6 +3111,33 @@ RSpec.describe Sourced::Store do
       expect(offsets).to be_empty
     end
 
+    it 'skips messages of types the group does not handle' do
+      store.register_consumer_group(
+        group_id, partition_by: [:device_id], handled_types: [StoreTestMessages::DeviceRegistered.type]
+      )
+
+      # DeviceBound carries device_id, but the group doesn't handle it
+      store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }))
+      expect(db[:sourced_offsets].all).to be_empty
+
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+      expect(db[:sourced_offsets].select_map(:partition_key)).to eq(['device_id:dev-1'])
+    end
+
+    it 'claims the same partitions as discovery, whether registered before or after the messages' do
+      types = [StoreTestMessages::DeviceRegistered.type]
+      store.register_consumer_group('before', partition_by: %i[device_id asset_id], handled_types: types)
+
+      # (dev-1, asset-1) is known only from DeviceBound, which neither group handles
+      store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }))
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+      store.register_consumer_group('after', partition_by: %i[device_id asset_id], handled_types: types)
+
+      %w[before after].each do |g|
+        expect(store.claim_next(g, partition_by: %w[device_id asset_id], handled_types: types, worker_id: 'w-1')).to be_nil
+      end
+    end
+
     it 'creates offsets for composite partitions' do
       store.register_consumer_group(group_id, partition_by: [:course_name, :user_id])
 
