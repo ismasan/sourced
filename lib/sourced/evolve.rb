@@ -1,15 +1,25 @@
 # frozen_string_literal: true
 
 module Sourced
-  # Evolve mixin for reactors: evolves reactor context through a {Sourced::Projector::Inline}.
+  # What a reactor reads its history through: a {Selector} (its context is the
+  # messages it selects) or a {Projector::Inline} subclass (its context is the
+  # projection's). It answers the selector the reactor reads, scoped to the
+  # partition, and the projector the reactor evolves. See {Evolve}.
+  SourceInterface = Types::Interface[:selector, :to_projector]
+
+  # Evolve mixin for reactors: evolves reactor context through its
+  # {ClassMethods#source source}.
   #
-  # The +context+ / +evolve+ DSL declares the reactor's projector, so evolve
+  # By default the source is a {Sourced::Projector::Inline} subclass of the
+  # reactor's own, which the +context+ / +evolve+ DSL declares, so evolve
   # blocks run in the projection's scope, not the reactor's. A reactor can also
-  # adopt a standalone projector with <tt>evolve SomeProjector</tt>.
+  # adopt a standalone source with <tt>evolve SomeSource</tt>: a projector, or
+  # (for a Decider) a {Selector}.
   #
-  # Each reactor works on a projector subclass of its own (inheriting from the
-  # adopted projector, or from its parent reactor's), so inline +evolve+ blocks
-  # never change a projector another reactor uses.
+  # Each reactor works on a projector subclass of its own (of its source's
+  # +to_projector+, or its parent reactor's projector), so inline +evolve+
+  # blocks never change a projector another reactor uses. A selector's
+  # projector takes no inline declarations.
   #
   # @example Inline projector
   #   class Carts < Sourced::Decider
@@ -24,6 +34,12 @@ module Sourced
   #   class Carts < Sourced::Decider
   #     evolve CartProjector
   #   end
+  #
+  # @example Reading through a selector: the context is the messages
+  #   class Carts < Sourced::Decider
+  #     partition_by :cart_id
+  #     evolve Sourced::Selector[CartStarted, CartClosed].excludes(CartClosed)
+  #   end
   module Evolve
     def self.included(base)
       super
@@ -32,7 +48,8 @@ module Sourced
       base.singleton_class.prepend ClassMethods
     end
 
-    # @return [Sourced::Projector::Inline] this reactor's projection, built on first access
+    # @return [Sourced::Projector::Inline, Selector::Projection] this reactor's
+    #   projection, built on first access
     def projection
       @projection ||= self.class.projector.new
     end
@@ -53,30 +70,45 @@ module Sourced
     module ClassMethods
       def inherited(subclass)
         super
-        subclass.send(:__use_projector, projector)
+        subclass.send(:__use_source, @source, projector)
       end
 
-      # @return [Class<Sourced::Projector::Inline>] the projector subclass this reactor owns
+      # What the reactor reads its history through: the source it adopted with
+      # {#evolve}, else its own {#projector}.
+      #
+      # @return [SourceInterface]
+      def source = @source || projector
+
+      # The projector this reactor owns and its projections are built from: a
+      # subclass of its source's +to_projector+ (an inline projector, or a
+      # {Selector::Projection}), or of its parent reactor's.
+      #
+      # @return [Class<Sourced::Projector::Inline>, Class<Selector::Projection>]
       def projector
         @projector ||= __build_projector(Sourced::Projector::Inline)
       end
 
       # What the reactor evolves from, without its partition: its projector's
-      # selector. What it reacts to with a catch-all +reaction+, and what
-      # Topology draws, however it's partitioned.
+      # selector (a selector source's, as given). What it reacts to with a
+      # catch-all +reaction+, and what Topology draws, however it's partitioned.
       #
       # @return [Selector]
       def evolve_selector = projector.selector
 
       # The history the Router reads for a claimed partition: {#evolve_selector}
-      # scoped by the partition keys. {Selector::NONE} (no history) for an
+      # with its parts that have no keys scoped by the partition keys
+      # ({Selector#by_default}), and the others as declared (a selector
+      # source's parts with keys of their own, which {PartitionSchema.check!}
+      # holds to partition keys). {Selector::NONE} (no history) for an
       # id-partitioned reactor, which declares no partition keys or
       # +partition_by :__id+.
       #
       # @return [Selector]
       def history_selector
         keys = partition_keys
-        keys.empty? || IdPartition.keys?(keys) ? Selector::NONE : evolve_selector.by(*keys)
+        return Selector::NONE if keys.empty? || IdPartition.keys?(keys)
+
+        evolve_selector.by_default(*keys)
       end
 
       # Define the projector's initial context factory. The block takes no arguments.
@@ -93,43 +125,50 @@ module Sourced
       end
 
       # Register an evolve handler on the reactor's projection, or adopt a
-      # standalone projector.
+      # standalone source.
       #
       # Adopting must come before this reactor's own +context+ / +evolve+ /
-      # +before_evolve+ declarations, which it would otherwise discard. It replaces handlers
-      # inherited from a parent reactor.
+      # +before_evolve+ declarations, which it would otherwise discard. It replaces
+      # the source inherited from a parent reactor.
       #
       # @overload evolve(message_class, &block)
       #   @param message_class [Class] a {Sourced::Message} subclass
       #   @yield [context, message] runs in the projection's scope
-      # @overload evolve(projector)
-      #   @param projector [Class<Sourced::Projector::Inline>] projector to adopt
-      # @raise [ArgumentError] when adopting after own declarations, or with a block
-      def evolve(klass, &block)
-        if klass.is_a?(Class) && klass <= Sourced::Projector::Inline
-          raise ArgumentError, "#{self}.evolve(#{klass}) takes no block" if block
-          if @declares_projection
-            raise ArgumentError,
-                  "#{self}.evolve(#{klass}) must come before #{self}'s own context/evolve/before_evolve declarations"
-          end
-
-          @declares_projection = true
-          @projector = __build_projector(klass)
+      #   @raise [ArgumentError] for a selector source, which takes no handlers
+      # @overload evolve(source)
+      #   @param source [SourceInterface] an inline projector, or a {Selector}
+      # @raise [ArgumentError] when adopting after own declarations, or with a
+      #   block
+      def evolve(declared, &block)
+        if SourceInterface === declared
+          __adopt!(declared, block)
         else
           @declares_projection = true
-          projector.evolve(klass, &block)
+          projector.evolve(declared, &block)
         end
       end
 
       private
 
-      def __use_projector(parent)
+      def __adopt!(source, block)
+        raise ArgumentError, "#{self}.evolve(#{source.inspect}) takes no block" if block
+
+        if @declares_projection
+          raise ArgumentError, "#{self}.evolve(#{source.inspect}) must come before #{self}'s own " \
+                               'context/evolve/before_evolve declarations'
+        end
+        @declares_projection = true
+        __use_source(source, source.to_projector)
+      end
+
+      def __use_source(source, parent)
+        @source = source
         @projector = __build_projector(parent)
       end
 
       def __build_projector(parent)
         reactor = self
-        label = parent == Sourced::Projector::Inline || parent.name.nil? ? '' : "(#{parent.name})"
+        label = parent.name.nil? || parent == Sourced::Projector::Inline ? '' : "(#{parent.name})"
         Class.new(parent) do
           define_singleton_method(:to_s) { "#{reactor}::Projector#{label}" }
           define_singleton_method(:inspect) { to_s }

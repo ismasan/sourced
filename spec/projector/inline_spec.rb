@@ -119,7 +119,7 @@ RSpec.describe Sourced::Projector::Inline do
   describe '.evolve' do
     it 'tracks registered classes once' do
       projector.evolve(ProjectionTestMessages::ItemAdded) { |_, _| nil }
-      expect(projector.handled_messages).to eq([
+      expect(projector.selector.types).to eq([
         ProjectionTestMessages::ItemAdded,
         ProjectionTestMessages::ItemRemoved
       ])
@@ -154,18 +154,16 @@ RSpec.describe Sourced::Projector::Inline do
       declared.define_singleton_method(:to_message_class) { ProjectionTestMessages::Unhandled }
       projector.evolve(declared) { |context, msg| context[:foo] = msg.payload.foo }
 
-      expect(projector.handled_messages).to include(ProjectionTestMessages::Unhandled)
+      expect(projector.selector.types).to include(ProjectionTestMessages::Unhandled)
       projection = projector.new
       projection.evolve(ProjectionTestMessages::Unhandled.new(payload: { foo: 'bar' }))
       expect(projection.context[:foo]).to eq('bar')
     end
   end
 
-  describe '.project' do
-    it "evolves a new projection, returning its context" do
-      expect(projector.project([added('i1', 'Apple'), added('i2', 'Pear')]))
-        .to eq(items: [{ id: 'i1', name: 'Apple' }, { id: 'i2', name: 'Pear' }])
-      expect(projector.project([])).to eq(items: [])
+  describe '.to_projector' do
+    it 'is itself, as a source' do
+      expect(projector.to_projector).to be(projector)
     end
   end
 
@@ -210,7 +208,7 @@ RSpec.describe Sourced::Projector::Inline do
   describe 'inheritance' do
     it 'subclasses inherit the context block and handlers' do
       subclass = Class.new(projector)
-      expect(subclass.handled_messages).to eq(projector.handled_messages)
+      expect(subclass.selector.types).to eq(projector.selector.types)
 
       projection = subclass.new
       projection.evolve([added('i1', 'Apple')])
@@ -222,8 +220,8 @@ RSpec.describe Sourced::Projector::Inline do
         evolve(ProjectionTestMessages::Unhandled) { |context, _| context[:seen] = true }
       end
 
-      expect(subclass.handled_messages).to include(ProjectionTestMessages::Unhandled)
-      expect(projector.handled_messages).not_to include(ProjectionTestMessages::Unhandled)
+      expect(subclass.selector.types).to include(ProjectionTestMessages::Unhandled)
+      expect(projector.selector.types).not_to include(ProjectionTestMessages::Unhandled)
     end
   end
 end

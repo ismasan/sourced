@@ -42,7 +42,6 @@ module Sourced
       class << self
         def inherited(subclass)
           super
-          subclass.handled_messages.concat(handled_messages)
           subclass.evolve_handlers.merge!(evolve_handlers)
           subclass.before_evolve_blocks.concat(before_evolve_blocks)
         end
@@ -52,26 +51,19 @@ module Sourced
           @evolve_handlers ||= {}
         end
 
-        # @return [Array<Class>] message classes this projection evolves from
-        def handled_messages
-          @handled_messages ||= []
-        end
-
         # What this projector evolves from, built by {.evolve}: a {Selector} of
-        # its handled message types, without keys. Reactors scope it by their
-        # partition keys; {Sourced.load} by the values it's given.
+        # the message types it has handlers for, without keys. Reactors scope it
+        # by their partition keys; {Sourced.load} by the values it's given.
         #
         # @return [Selector]
         def selector
-          @selector ||= Selector[*handled_messages]
+          @selector ||= Selector[*evolve_handlers.keys]
         end
 
-        # A projection's context after +messages+, from the +context+ block:
-        # what a source reading {.selector} hands on (see {Selector#project}).
+        # A source's projector (see {SourceInterface}): an inline projector is its own.
         #
-        # @param messages [Array<Sourced::Message>]
-        # @return [Object] the evolved context
-        def project(messages) = new.evolve(messages)
+        # @return [self]
+        def to_projector = self
 
         # Define the initial context factory.
         #
@@ -118,10 +110,7 @@ module Sourced
         # @yield [context, message] mutates +context+ for +message+
         def evolve(declared, &block)
           message_class = declared.to_message_class
-          unless handled_messages.include?(message_class)
-            handled_messages << message_class
-            @selector = nil
-          end
+          @selector = nil unless evolve_handlers.key?(message_class)
           evolve_handlers[message_class] = define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
         end
       end

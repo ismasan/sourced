@@ -284,6 +284,14 @@ RSpec.describe Sourced::Machine::Part do
       expect { owner.validate! }.to raise_error(Sourced::Machine::DefinitionError, /Accepted is evolved by both #{Regexp.escape(owner.to_s)} and /)
     end
 
+    it 'raises when its owner reads through a selector, whose context is its messages' do
+      owner.evolve(Sourced::Selector[evt])
+      owner.state(evolving_part(owner, 'one', evt))
+
+      expect { owner.validate! }
+        .to raise_error(Sourced::Machine::DefinitionError, /evolves on .*'s context, but .* reads through #<Sourced/)
+    end
+
     it 'raises when another part evolves the same event' do
       owner.state(evolving_part(owner, 'one', evt))
       owner.state(evolving_part(owner, 'two', evt))
@@ -531,7 +539,7 @@ RSpec.describe Sourced::Machine::Part do
       end
       events = decided
 
-      expect(projection.handled_messages).to eq([pending::State])
+      expect(projection.selector.types).to eq([pending::State])
       expect(events.map(&:class)).to include(pending::State, pending::Approved)
       expect(projection.new.evolve(events)).to eq([%w[pending pending.queued]])
     end

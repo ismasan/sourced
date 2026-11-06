@@ -71,6 +71,23 @@ RSpec.describe Sourced::Selector do
     end
   end
 
+  describe '#by_default' do
+    it 'scopes the parts without keys, leaving keyed parts as declared' do
+      selector = described_class[SelectorTestMessages::E1] + described_class[SelectorTestMessages::E3].by(:user_id)
+
+      expected = described_class[SelectorTestMessages::E1].by(:account_id) +
+                 described_class[SelectorTestMessages::E3].by(:user_id)
+      expect(selector.by_default(:account_id)).to eq(expected)
+    end
+
+    it 'scopes assertions with their parts' do
+      selector = described_class[SelectorTestMessages::E1, SelectorTestMessages::E2].excludes(SelectorTestMessages::E2)
+
+      expect(selector.by_default(:account_id)).to eq(selector.by(:account_id))
+      expect(selector.by(:account_id).by_default(:user_id)).to eq(selector.by(:account_id))
+    end
+  end
+
   describe '#by_message_id' do
     it 'scopes every part by the reserved message id key' do
       selector = described_class[SelectorTestMessages::E1].by_message_id
@@ -138,12 +155,16 @@ RSpec.describe Sourced::Selector do
   end
 
   describe 'as a source' do
-    it 'is its own selector, and projects messages as given' do
+    it 'is its own selector, with a projector whose context is the messages of its types' do
       selector = described_class[SelectorTestMessages::E1].by(:account_id)
-      messages = [SelectorTestMessages::E1.new(payload: { account_id: 'a1' })]
+      e1 = SelectorTestMessages::E1.new(payload: { account_id: 'a1' })
+      e3 = SelectorTestMessages::E3.new(payload: { user_id: 'u1' })
 
       expect(selector.selector).to be(selector)
-      expect(selector.project(messages)).to eq(messages)
+      expect(selector.to_projector).to be < described_class::Projection
+      expect(selector.to_projector.selector).to be(selector)
+      expect(selector.to_projector.new.evolve([e1, e3])).to eq([e1])
+      expect(selector.to_projector.new([e1]).context).to eq([e1])
     end
   end
 

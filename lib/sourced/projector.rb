@@ -15,7 +15,7 @@ module Sourced
       #
       # @return [Array<Class>] evolved and reacted-to message classes
       def handled_messages
-        (projector.handled_messages + handled_messages_for_react).uniq
+        (projector.selector.types + handled_messages_for_react).uniq
       end
 
       private

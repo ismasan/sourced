@@ -135,6 +135,24 @@ module Sourced
       values.empty? ? scoped : scoped.bind(**values)
     end
 
+    # Scope the parts without keys of their own by +keys+, leaving the others
+    # (and their assertions) as declared: what a reactor reads for a partition
+    # from a source whose parts may have keys of their own.
+    #
+    # @example
+    #   (Selector[E1] + Selector[E3].by(:user_id)).by_default(:account_id)
+    #   # => Selector[E1].by(:account_id) + Selector[E3].by(:user_id)
+    #
+    # @param keys [Array<Symbol, String>]
+    # @return [Selector]
+    def by_default(*keys)
+      keys = keys.map(&:to_sym)
+      with(
+        parts: parts.map { |p| p.keys.empty? ? p.by(keys) : p },
+        assertion: assertion.map_scopes { |scope| scope.by_default(*keys) }
+      )
+    end
+
     # Scope every part by message id: one partition per message, an
     # id-partitioned queue's claims (see {IdPartition}).
     #
@@ -273,16 +291,16 @@ module Sourced
     #   an assertion, one +valid+ state that every message it selects keeps.
     def to_mermaid = automaton.to_mermaid
 
-    # A selector is a source for what reads one (ex. a {Decision}), as an
-    # inline projector is: it reads its own {#selector} and hands on its
-    # {#project}ion of what it read.
+    # A selector is a source for what reads one (a reactor, see {Evolve}), as
+    # an inline projector is: it reads its own {#selector}, and evolves
+    # through {#to_projector}.
     #
     # @return [self]
     def selector = self
 
-    # @param messages [Array<Message>] what it selected, in position order
-    # @return [Array<Message>] +messages+, as given
-    def project(messages) = messages
+    # @return [Class<Projection>] a projector whose context is the messages of
+    #   its types
+    def to_projector = Projection.for(self)
 
     # @return [Boolean] whether every key of every part has a value
     def bound? = parts.all?(&:bound?)
@@ -368,6 +386,7 @@ end
 
 require 'sourced/selector/assertion'
 require 'sourced/selector/automaton'
+require 'sourced/selector/projection'
 
 module Sourced
   class Selector

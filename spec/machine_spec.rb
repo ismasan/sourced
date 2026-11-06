@@ -204,6 +204,43 @@ RSpec.describe Sourced::Machine do
   let(:item_added) { ItemAdded.new(payload: { cart_id: 'c1', sku: 'A1', qty: 2, unit_price: 50 }) }
   let(:ordered) { moved(CartMachine, 'machine_test.checkout', from: 'open', to: 'ordered', exited: %w[open], cart_id: 'c1') }
 
+  describe 'a selector source' do
+    let(:selecting) do
+      machine do
+        evolve Sourced::Selector[ItemAdded]
+
+        initial { command OpenCart => :open }
+
+        state :open do
+          command AddItem do |_items, cmd|
+            event ItemAdded, sku: cmd.payload.sku, qty: cmd.payload.qty, unit_price: cmd.payload.unit_price
+          end
+
+          command Checkout => :ordered do |items, _cmd|
+            event CheckedOut, total: items.sum { it.payload.qty * it.payload.unit_price }
+          end
+        end
+
+        final :ordered
+      end
+    end
+
+    it 'gives handlers the messages it selects, as its context' do
+      instance = selecting.at(['open'], [item_added], cart_id: 'c1')
+      events = instance.decide(AddItem.new(payload: { cart_id: 'c1', sku: 'B2', qty: 1, unit_price: 10 }))
+      events += instance.decide(Checkout.new(payload: { cart_id: 'c1' }))
+
+      expect(events.grep(CheckedOut).map { it.payload.total }).to eq([110])
+      expect(instance.context.map { it.payload.sku }).to eq(%w[A1 B2])
+      expect(instance.machine.paths).to eq(['ordered'])
+    end
+
+    it 'reads its messages and its own state events in the partition' do
+      expect(selecting.history_selector.types).to include(ItemAdded, selecting::Open, selecting::Ordered)
+      expect(selecting.history_selector.parts.map(&:keys).uniq).to eq([[:cart_id]])
+    end
+  end
+
   describe 'routing' do
     it 'claims every accepted command and its transitions' do
       expect(CartMachine.handled_commands).to contain_exactly(OpenCart, AddItem, Checkout, Reopen, Pay)
@@ -351,7 +388,7 @@ RSpec.describe Sourced::Machine do
         evolve items
       end
 
-      expect(m.projector.handled_messages).to eq([ItemAdded])
+      expect(m.projector.selector.types).to eq([ItemAdded])
       expect(m.history_selector.types).to contain_exactly(ItemAdded, m::Open)
     end
   end

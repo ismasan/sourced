@@ -10,6 +10,10 @@ module Sourced
 
     PREFIX = 'sourced_decide'
 
+    # Raised when a command handler emits an event carrying another
+    # partition's value for one of the partition keys.
+    InvalidEventError = Class.new(Error)
+
     class << self
       # @return [Array<Class>] command message classes handled by this decider
       def handled_commands
@@ -198,11 +202,30 @@ module Sourced
     #   command RegisterDevice do |_context, cmd|
     #     event DeviceRegistered, device_id: cmd.payload.device_id
     #   end
+    # @raise [InvalidEventError] when the event carries another partition's
+    #   value for a partition key
     def event(event_class, payload = {})
       evt = event_class.new(payload: payload)
+      check_partition!(evt)
       @uncommitted_events << evt
       evolve([evt])
       evt
+    end
+
+    private
+
+    # What the decider emits belongs to its partition: an event carrying a
+    # partition key with another value would be read into another partition.
+    def check_partition!(evt)
+      pairs = evt.extracted_keys.to_h
+      self.class.partition_keys.each do |key|
+        value = pairs[key.to_s]
+        expected = partition_values[key]
+        next if value.nil? || expected.nil? || value == expected.to_s
+
+        raise InvalidEventError, "#{self.class}: #{evt.class} has #{key} #{value.inspect}, but is emitted in " \
+                                 "the partition where #{key} is #{expected.to_s.inspect}"
+      end
     end
   end
 end

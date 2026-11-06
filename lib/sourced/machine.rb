@@ -1424,7 +1424,7 @@ module Sourced
       # @api private
       def __region_projectors
         @__region_projectors ||
-          tree.mounted_machines.map(&:projector).reject { |klass| klass.handled_messages.empty? }
+          tree.mounted_machines.map(&:projector).reject { |klass| klass.selector.none? }
       end
 
       # What a parent's +Started+ enters: this machine's start, and its default configuration.
@@ -1535,11 +1535,19 @@ module Sourced
         end
       end
 
-      # A part's evolve blocks are ours: one per message class, across us and our parts.
+      # A part's evolve blocks are ours: one per message class, across us and our
+      # parts. They run on our context, so it's an inline projector's.
       def __check_part_evolves!(tree)
-        evolved = projector.handled_messages.to_h { |klass| [klass, self] }
+        evolving = tree.mounted_machines.reject { |part| part.projector.selector.none? }
+        if evolving.any? && !(projector <= Projector::Inline)
+          raise DefinitionError, "#{self}: #{evolving.join(', ')} evolve#{'s' if evolving.one?} on #{self}'s " \
+                                 "context, but #{self} reads through #{source.inspect}, whose context is " \
+                                 'its messages'
+        end
+
+        evolved = projector.selector.types.to_h { |klass| [klass, self] }
         tree.mounted_machines.each do |part|
-          part.projector.handled_messages.each do |klass|
+          part.projector.selector.types.each do |klass|
             raise DefinitionError, "#{self}: #{klass} is evolved by both #{evolved[klass]} and #{part}" if evolved.key?(klass)
 
             evolved[klass] = part
