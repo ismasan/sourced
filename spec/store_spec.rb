@@ -3248,10 +3248,10 @@ RSpec.describe Sourced::Store do
       expect(offsets).to be_empty
     end
 
-    it 'skips messages of types the group does not handle' do
+    it 'skips messages of types the group does not claim' do
       store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
-      # DeviceBound carries device_id, but the group doesn't handle it
+      # DeviceBound carries device_id, but the group doesn't claim it
       store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }))
       expect(db[:sourced_offsets].all).to be_empty
 
@@ -3259,18 +3259,18 @@ RSpec.describe Sourced::Store do
       expect(db[:sourced_offsets].select_map(:partition_key)).to eq(['device_id:dev-1'])
     end
 
-    it 'claims the same partitions as discovery, whether registered before or after the messages' do
+    it 'claims the partitions discovery finds, whether registered before or after the messages' do
+      # Claims only DeviceRegistered, which carries device_id but not asset_id.
+      # The (dev-1, asset-1) partition is known only from DeviceBound, which it doesn't claim.
       selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id, :asset_id)
       store.register_consumer_group('before', selector)
 
-      # (dev-1, asset-1) is known only from DeviceBound, which neither group handles
       store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }))
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
       store.register_consumer_group('after', selector)
 
-      %w[before after].each do |g|
-        expect(store.claim_next(g, selector, worker_id: 'w-1')).to be_nil
-      end
+      expect(store.claim_next('before', selector, worker_id: 'w-1')).to be_nil
+      expect(store.claim_next('after', selector, worker_id: 'w-1')).to be_nil
     end
 
     it 'creates offsets for composite partitions' do

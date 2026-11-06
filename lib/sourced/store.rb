@@ -558,9 +558,8 @@ module Sourced
 
     # Register a consumer group. Idempotent.
     # With a +selector+, the one the group claims with (see {#claim_next}),
-    # offsets are created eagerly during {#append} for its partition keys,
-    # from messages of its types (only those can make a partition claimable),
-    # instead of lazily via discovery in {#claim_next}, and an id-partitioned
+    # offsets are created eagerly during {#append} for its partition keys, from
+    # messages of its types (as discovery in {#claim_next} does), and an id-partitioned
     # group's types are indexed by message id.
     #
     # @param group_id [String] unique identifier for the consumer group
@@ -592,7 +591,7 @@ module Sourced
       cg = db[@consumer_groups_table].where(group_id: group_id).first
       @registered_groups[group_id] = {
         cg_id: cg[:id], partition_by: partition_by_sorted, exclusive: exclusive,
-        types: selector && !selector.types.empty? ? selector.types.map(&:type).to_set.freeze : nil
+        types: selector ? selector.type_names.to_set.freeze : Set.new.freeze
       }
     end
 
@@ -1248,10 +1247,9 @@ module Sourced
     end
 
     # Create offsets eagerly for all registered consumer groups, for each
-    # appended message that carries all of a group's partition keys and is one
-    # of its handled types (any type when it registered none). A claim needs a
-    # message of its types carrying every key, so an offset from another type
-    # would wait for one, which creates it anyway.
+    # appended message of a group's types that carries all of its partition keys.
+    # These are the partitions {#discover_new_partitions} finds, so a group sees
+    # the same ones whether it was registered before the messages or after.
     # Called inside the append transaction after messages and key_pairs are inserted.
     #
     # @param types [Array<String>] each appended message's type
@@ -1285,7 +1283,7 @@ module Sourced
         seen = Set.new
 
         indexed_keys.each_with_index do |pairs, i|
-          next if group_types && !group_types.include?(types[i])
+          next unless group_info[:types].include?(types[i])
 
           keys = pairs.to_h  # {"__id"=>"…", "device_id"=>"dev-1", "name"=>"A"}
           next unless partition_by.all? { |attr| keys.key?(attr) }
