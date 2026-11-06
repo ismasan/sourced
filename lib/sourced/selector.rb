@@ -273,6 +273,17 @@ module Sourced
     #   an assertion, one +valid+ state that every message it selects keeps.
     def to_mermaid = automaton.to_mermaid
 
+    # A selector is a source for what reads one (ex. a {Decision}), as an
+    # inline projector is: it reads its own {#selector} and hands on its
+    # {#project}ion of what it read.
+    #
+    # @return [self]
+    def selector = self
+
+    # @param messages [Array<Message>] what it selected, in position order
+    # @return [Array<Message>] +messages+, as given
+    def project(messages) = messages
+
     # @return [Boolean] whether every key of every part has a value
     def bound? = parts.all?(&:bound?)
 

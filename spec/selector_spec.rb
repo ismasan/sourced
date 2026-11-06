@@ -137,6 +137,16 @@ RSpec.describe Sourced::Selector do
     end
   end
 
+  describe 'as a source' do
+    it 'is its own selector, and projects messages as given' do
+      selector = described_class[SelectorTestMessages::E1].by(:account_id)
+      messages = [SelectorTestMessages::E1.new(payload: { account_id: 'a1' })]
+
+      expect(selector.selector).to be(selector)
+      expect(selector.project(messages)).to eq(messages)
+    end
+  end
+
   describe '#inspect' do
     it 'shows each part as its types and scope, unbound keys as ?' do
       selector = (described_class[SelectorTestMessages::E2, SelectorTestMessages::E1].by(:account_id, :user_id) +

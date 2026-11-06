@@ -161,6 +161,14 @@ RSpec.describe Sourced::Projector::Inline do
     end
   end
 
+  describe '.project' do
+    it "evolves a new projection, returning its context" do
+      expect(projector.project([added('i1', 'Apple'), added('i2', 'Pear')]))
+        .to eq(items: [{ id: 'i1', name: 'Apple' }, { id: 'i2', name: 'Pear' }])
+      expect(projector.project([])).to eq(items: [])
+    end
+  end
+
   describe '.before_evolve' do
     let(:stamped) do
       Class.new(projector) do

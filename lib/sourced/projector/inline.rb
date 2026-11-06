@@ -66,6 +66,13 @@ module Sourced
           @selector ||= Selector[*handled_messages]
         end
 
+        # A projection's context after +messages+, from the +context+ block:
+        # what a source reading {.selector} hands on (see {Selector#project}).
+        #
+        # @param messages [Array<Sourced::Message>]
+        # @return [Object] the evolved context
+        def project(messages) = new.evolve(messages)
+
         # Define the initial context factory.
         #
         # @yieldreturn [Object] the initial context
