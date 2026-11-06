@@ -43,7 +43,7 @@ class TestDeviceDecider < Sourced::Decider
     context[:bound] = true
   end
 
-  command DeciderTestMessages::BindDevice do |context, cmd|
+  command DeciderTestMessages::BindDevice => DeciderTestMessages::DeviceBound do |context, cmd|
     raise 'Not found' unless context[:exists]
     raise 'Already bound' if context[:bound]
     event DeciderTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
@@ -72,7 +72,7 @@ class TestDelayedReactionDecider < Sourced::Decider
     context[:bound] = true
   end
 
-  command DeciderTestMessages::BindDevice do |context, cmd|
+  command DeciderTestMessages::BindDevice => DeciderTestMessages::DeviceBound do |context, cmd|
     raise 'Not found' unless context[:exists]
     raise 'Already bound' if context[:bound]
     event DeciderTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
@@ -153,7 +153,7 @@ RSpec.describe Sourced::Decider do
       declared.define_singleton_method(:to_message_class) { DeciderTestMessages::NotifyBound }
       decider = Class.new(Sourced::Decider) do
         partition_by :device_id
-        command(declared) { |_context, cmd| event DeciderTestMessages::DeviceRegistered, device_id: cmd.payload.device_id }
+        command(declared => DeciderTestMessages::DeviceRegistered) { |_context, cmd| event DeciderTestMessages::DeviceRegistered, device_id: cmd.payload.device_id }
       end
       cmd = DeciderTestMessages::NotifyBound.new(payload: { device_id: 'd1' })
       wrapped = Struct.new(:to_message) { def payload = to_message.payload }.new(cmd)
@@ -164,8 +164,70 @@ RSpec.describe Sourced::Decider do
     end
 
     it 'takes only what answers to_message_class' do
-      expect { Class.new(Sourced::Decider) { command(:bind) {} } }
+      expect { Class.new(Sourced::Decider) { command(:bind => nil) {} } }
         .to raise_error(NoMethodError, /to_message_class/)
+    end
+  end
+
+  describe 'declared outputs' do
+    let(:bound) { DeciderTestMessages::DeviceBound }
+    let(:notify) { DeciderTestMessages::NotifyBound }
+    let(:bind) { DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' }) }
+
+    def decider_with(outputs, &handler)
+      Class.new(Sourced::Decider) do
+        partition_by :device_id
+        command(DeciderTestMessages::BindDevice => outputs, &handler)
+      end
+    end
+
+    def decide(decider) = decider.new(device_id: 'd1').decide(bind)
+
+    it 'requires one Command => outputs pair' do
+      cmd = DeciderTestMessages::BindDevice
+      expect { Class.new(Sourced::Decider) { command(cmd) { nil } } }
+        .to raise_error(ArgumentError, /takes one Command => outputs pair/)
+      expect { Class.new(Sourced::Decider) { command(cmd => nil, Object => nil) { nil } } }
+        .to raise_error(ArgumentError, /takes one Command => outputs pair/)
+      expect { decider_with('nope') { nil } }.to raise_error(ArgumentError, /BindDevice: "nope" isn't a message class/)
+    end
+
+    it 'flattens unions, with nil for "may emit none"' do
+      decider = decider_with(bound | notify | nil) { |*| nil }
+
+      expect(decider.command_outputs[DeciderTestMessages::BindDevice])
+        .to have_attributes(messages: [bound, notify], optional: true)
+      expect(decider.produced_messages).to eq([bound, notify])
+      expect(decide(decider)).to eq([])
+    end
+
+    it 'emits several declared messages' do
+      decider = decider_with(bound | notify) do |_, cmd|
+        event DeciderTestMessages::NotifyBound, device_id: cmd.payload.device_id
+        event DeciderTestMessages::DeviceBound, **cmd.payload.to_h
+      end
+
+      expect(decide(decider).map(&:class)).to eq([notify, bound])
+    end
+
+    it "raises when the handler emits a message its command doesn't declare" do
+      decider = decider_with(bound) do |_, cmd|
+        event DeciderTestMessages::NotifyBound, device_id: cmd.payload.device_id
+      end
+
+      expect { decide(decider) }
+        .to raise_error(Sourced::Decider::UndeclaredEventError, /emitted .*NotifyBound, which its command doesn't/)
+    end
+
+    it 'raises when the handler emits nothing, unless its outputs include nil' do
+      expect { decide(decider_with(bound) { |*| nil }) }
+        .to raise_error(Sourced::Decider::UndeclaredEventError, /emitted nothing; declare .* \| nil/)
+    end
+
+    it 'is inherited' do
+      child = Class.new(decider_with(bound) { |*| nil })
+
+      expect(child.command_outputs[DeciderTestMessages::BindDevice].messages).to eq([bound])
     end
   end
 

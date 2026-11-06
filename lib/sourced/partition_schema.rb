@@ -12,7 +12,9 @@ module Sourced
   # The rules, per role:
   #
   # * Commands, reactions and a machine's +on+ events pick out one partition:
-  #   they must declare every key, as required attributes.
+  #   they must declare every key, as required attributes. So must a Decider's
+  #   declared outputs, which are appended to the partition: with only some
+  #   keys, they'd be read into every partition sharing them.
   # * Any other handled message must declare at least one key, or no
   #   partition ever reads it.
   # * Every key a message declares must be the schema's type, or stricter
@@ -28,7 +30,10 @@ module Sourced
   module PartitionSchema
     extend self
 
-    FULL_ROLES = { handled_commands: 'command', handled_events: 'on event', handled_messages_for_react: 'reaction' }.freeze
+    FULL_ROLES = {
+      handled_commands: 'command', handled_events: 'on event', handled_messages_for_react: 'reaction',
+      produced_messages: 'output'
+    }.freeze
 
     # @param reactor [#partition_schema, #claim_selector, #history_selector] +partition_schema+
     #   is a +Plumb::HashClass+; its roles come from +handled_commands+ / +handled_events+ /

@@ -48,12 +48,12 @@ class HandleTestDecider < Sourced::Decider
     context[:active] = true
   end
 
-  command HandleTestMessages::CreateDevice do |context, cmd|
+  command HandleTestMessages::CreateDevice => HandleTestMessages::DeviceCreated do |context, cmd|
     raise 'Already exists' if context[:exists]
     event HandleTestMessages::DeviceCreated, device_id: cmd.payload.device_id, name: cmd.payload.name
   end
 
-  command HandleTestMessages::ActivateDevice do |context, cmd|
+  command HandleTestMessages::ActivateDevice => HandleTestMessages::DeviceActivated do |context, cmd|
     raise 'Not found' unless context[:exists]
     raise 'Already active' if context[:active]
     event HandleTestMessages::DeviceActivated, device_id: cmd.payload.device_id
@@ -115,7 +115,7 @@ class HandleMixedTestDecider < Sourced::Decider
     context[:touched] = true
   end
 
-  command HandleMixedTestMessages::AddNote do |context, cmd|
+  command HandleMixedTestMessages::AddNote => HandleMixedTestMessages::NotesCounted do |context, cmd|
     event HandleMixedTestMessages::NotesCounted,
           order_id: cmd.payload.order_id, tenant_id: cmd.payload.tenant_id, count: context[:notes].size + 1
   end
@@ -125,7 +125,7 @@ class HandleTestReactingDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'handle_test_reacting_decider'
 
-  command HandleTestMessages::RegisterDevice do |_context, cmd|
+  command HandleTestMessages::RegisterDevice => HandleTestMessages::DeviceCreated do |_context, cmd|
     event HandleTestMessages::DeviceCreated, device_id: cmd.payload.device_id, name: cmd.payload.name
   end
 

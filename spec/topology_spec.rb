@@ -53,11 +53,11 @@ module TopologyTest
       context[:exists] = false
     end
 
-    command CreateWidget do |_context, cmd|
+    command CreateWidget => WidgetCreated do |_context, cmd|
       event WidgetCreated, widget_id: cmd.payload.widget_id, name: cmd.payload.name
     end
 
-    command ArchiveWidget do |_context, _cmd|
+    command ArchiveWidget => WidgetArchived do |_context, _cmd|
       event WidgetArchived, widget_id: 'x'
     end
 
@@ -76,7 +76,7 @@ module TopologyTest
       context[:notified] = true
     end
 
-    command NotifyWidget do |_context, cmd|
+    command NotifyWidget => WidgetNotified do |_context, cmd|
       event WidgetNotified, widget_id: cmd.payload.widget_id
     end
   end
@@ -154,7 +154,7 @@ module TopologyTest
       context[:scheduled] = true
     end
 
-    command CreateWidget do |_context, cmd|
+    command CreateWidget => ScheduleEvent do |_context, cmd|
       event ScheduleEvent, widget_id: cmd.payload.widget_id
     end
 

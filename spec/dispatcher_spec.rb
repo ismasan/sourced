@@ -40,7 +40,7 @@ class DispatchTestDecider < Sourced::Decider
     context[:bound] = true
   end
 
-  command DispatcherTestMessages::BindDevice do |context, cmd|
+  command DispatcherTestMessages::BindDevice => DispatcherTestMessages::DeviceBound do |context, cmd|
     raise 'Not found' unless context[:exists]
     raise 'Already bound' if context[:bound]
     event DispatcherTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id

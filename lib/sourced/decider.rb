@@ -14,6 +14,42 @@ module Sourced
     # partition's value for one of the partition keys.
     InvalidEventError = Class.new(Error)
 
+    # Raised when a command handler emits a message its command doesn't
+    # declare, or emits nothing when its outputs don't include +nil+.
+    UndeclaredEventError = Class.new(Error)
+
+    # What a command's handler may emit: the message classes it declares, and
+    # whether it may emit none (+| nil+).
+    Outputs = Data.define(:messages, :optional) do
+      # @param declared [Class, Plumb::Or, nil] a message class, a union of
+      #   them (+A | B+), with +nil+ (+A | nil+) for "may emit none"
+      # @return [Outputs]
+      # @raise [ArgumentError] for anything that isn't a message class or nil
+      def self.parse(declared)
+        members = flatten(declared)
+        new(messages: members.compact.uniq.freeze, optional: members.include?(nil))
+      end
+
+      def self.flatten(declared)
+        case declared
+        in nil then [nil]
+        in Plumb::ValueClass if declared.children == [nil] then [nil]
+        in Plumb::Or then declared.children.flat_map { flatten(it) }
+        else
+          unless declared.respond_to?(:to_message_class)
+            raise ArgumentError, "#{declared.inspect} isn't a message class"
+          end
+
+          [declared.to_message_class]
+        end
+      end
+
+      # @return [Boolean] whether a handler may emit +message_class+
+      def include?(message_class) = messages.include?(message_class)
+
+      def to_s = [*messages, *(optional ? ['nil'] : [])].join(' | ')
+    end
+
     class << self
       # @return [Array<Class>] command message classes handled by this decider
       def handled_commands
@@ -28,13 +64,41 @@ module Sourced
         handled_commands + handled_messages_for_react
       end
 
-      # Register a command handler.
+      # @return [Hash{Class => Outputs}] each handled command's declared outputs
+      def command_outputs
+        @command_outputs ||= {}
+      end
+
+      # @return [Array<Class>] every message class a command handler may emit
+      def produced_messages = command_outputs.values.flat_map(&:messages).uniq
+
+      # Register a command handler, and what it may emit: a message class, a
+      # union of them, with +| nil+ when it may emit none.
       #
-      # @param declared [Class, #to_message_class] command class to handle (see {Sourced::Message.to_message_class})
+      # @example
+      #   command AddItem => ItemAdded | ItemRejected do |context, cmd|
+      #     event ItemAdded, cart_id: cmd.payload.cart_id, sku: cmd.payload.sku
+      #   end
+      #
+      # @param declaration [Hash{Class => Class, Plumb::Or, nil}] one
+      #   +Command => outputs+ pair (commands and outputs as {Sourced::Message.to_message_class})
       # @yield [context, message] command handler block
       # @return [void]
-      def command(declared, &block)
+      # @raise [ArgumentError] without exactly one pair, or for outputs that
+      #   aren't message classes
+      def command(declaration, &block)
+        unless declaration.is_a?(Hash) && declaration.size == 1
+          raise ArgumentError, "#{self}.command takes one Command => outputs pair, " \
+                               "ex. command #{declaration.inspect} => SomeEvent, got #{declaration.inspect}"
+        end
+
+        declared, outputs = declaration.first
         message_class = declared.to_message_class
+        begin
+          command_outputs[message_class] = Outputs.parse(outputs)
+        rescue ArgumentError => e
+          raise ArgumentError, "#{self}.command #{message_class}: #{e.message}"
+        end
         handled_commands << message_class
         define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
       end
@@ -146,6 +210,7 @@ module Sourced
         handled_commands.each do |cmd_class|
           subclass.handled_commands << cmd_class
         end
+        subclass.command_outputs.merge!(command_outputs)
       end
     end
 
@@ -184,11 +249,22 @@ module Sourced
     #
     # @param command [Sourced::Message] command to handle
     # @return [Array<Sourced::Message>] newly produced events
+    # @raise [UndeclaredEventError] when the handler emits nothing and its
+    #   outputs don't include +nil+
     def decide(command)
       @uncommitted_events = []
-      method_name = Sourced.message_method_name(PREFIX, command.to_message.class.to_s)
+      klass = command.to_message.class
+      @deciding = self.class.command_outputs[klass]
+      method_name = Sourced.message_method_name(PREFIX, klass.to_s)
       send(method_name, context, command) if respond_to?(method_name)
+      if @deciding && @uncommitted_events.empty? && !@deciding.optional
+        raise UndeclaredEventError, "#{self.class}: the #{klass} handler emitted nothing; " \
+                                    "declare command #{klass} => #{@deciding} | nil to allow it"
+      end
+
       @uncommitted_events.dup
+    ensure
+      @deciding = nil
     end
 
     # Produce a new event from within a command handler and apply it
@@ -199,12 +275,19 @@ module Sourced
     # @return [Sourced::Message] the newly built event
     #
     # @example
-    #   command RegisterDevice do |_context, cmd|
+    #   command RegisterDevice => DeviceRegistered do |_context, cmd|
     #     event DeviceRegistered, device_id: cmd.payload.device_id
     #   end
+    # @raise [UndeclaredEventError] when the command being decided doesn't
+    #   declare +event_class+
     # @raise [InvalidEventError] when the event carries another partition's
     #   value for a partition key
     def event(event_class, payload = {})
+      if @deciding && !@deciding.include?(event_class.to_message_class)
+        raise UndeclaredEventError, "#{self.class}: emitted #{event_class}, which its command doesn't declare " \
+                                    "(it declares #{@deciding})"
+      end
+
       evt = event_class.new(payload: payload)
       check_partition!(evt)
       @uncommitted_events << evt

@@ -18,7 +18,7 @@ end
 class ConfigTestDecider < Sourced::Decider
   partition_by :thing_id
 
-  command ConfigTestMessages::AddThing do |_context, cmd|
+  command ConfigTestMessages::AddThing => ConfigTestMessages::ThingAdded do |_context, cmd|
     event ConfigTestMessages::ThingAdded, thing_id: cmd.payload.thing_id
   end
 end

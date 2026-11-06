@@ -115,7 +115,7 @@ module MachineExternalEventsTest
   class Payments < Sourced::Decider
     partition_by :order_id
 
-    command CapturePayment do |_context, cmd|
+    command CapturePayment => PaymentCaptured do |_context, cmd|
       event PaymentCaptured, order_id: cmd.payload.order_id, amount: cmd.payload.amount
     end
   end

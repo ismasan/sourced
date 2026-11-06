@@ -247,7 +247,7 @@ RSpec.describe Sourced::Evolve do
         partition_by :cart_id
         evolve source
 
-        command EvolveTestMessages::AddItem do |history, cmd|
+        command EvolveTestMessages::AddItem => EvolveTestMessages::ItemAdded do |history, cmd|
           item_id = "#{cmd.payload.item_id}:#{history.size}"
           event EvolveTestMessages::ItemAdded, cart_id: cmd.payload.cart_id, item_id:
         end
@@ -304,7 +304,7 @@ RSpec.describe Sourced::Evolve do
         partition_by :cart_id
         evolve Sourced::Selector[EvolveTestMessages::ItemAdded]
 
-        command EvolveTestMessages::AddItem do |_, cmd|
+        command EvolveTestMessages::AddItem => EvolveTestMessages::ItemAdded do |_, cmd|
           event EvolveTestMessages::ItemAdded, cart_id: 'c2', item_id: cmd.payload.item_id
         end
       end

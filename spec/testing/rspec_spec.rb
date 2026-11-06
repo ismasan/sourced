@@ -58,13 +58,13 @@ class GWTTestDecider < Sourced::Decider
     context[:bound] = true
   end
 
-  command GWTTestMessages::BindDevice do |context, cmd|
+  command GWTTestMessages::BindDevice => GWTTestMessages::DeviceBound do |context, cmd|
     raise 'Not found' unless context[:exists]
     raise 'Already bound' if context[:bound]
     event GWTTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
-  command GWTTestMessages::NoopCommand do |_context, _cmd|
+  command GWTTestMessages::NoopCommand => nil do |_context, _cmd|
     # intentionally produces no events
   end
 
@@ -92,7 +92,7 @@ class GWTTestSimpleDecider < Sourced::Decider
     context[:exists] = true
   end
 
-  command GWTTestMessages::BindDevice do |context, cmd|
+  command GWTTestMessages::BindDevice => GWTTestMessages::DeviceBound do |context, cmd|
     raise 'Not found' unless context[:exists]
     event GWTTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end

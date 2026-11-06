@@ -16,7 +16,7 @@ module PartitionSchemaTest
       attribute :quantity, Integer
     end
 
-    command AddItem do |_context, cmd|
+    command AddItem => ItemAdded do |_context, cmd|
       event ItemAdded, cmd.payload.to_h
     end
 
@@ -141,20 +141,26 @@ RSpec.describe Sourced::PartitionSchema do
     end
 
     it 'requires commands to declare every key' do
-      reactor = decider { command(PartitionSchemaTest::Unkeyed) { |*| } }
+      reactor = decider { command(PartitionSchemaTest::Unkeyed => nil) { |*| } }
       expect { described_class.check!(reactor) }
         .to raise_error(Sourced::DefinitionError, /command PartitionSchemaTest::Unkeyed must declare order_id/)
     end
 
     it 'requires commands to declare keys as required attributes' do
-      reactor = decider { command(PartitionSchemaTest::OptionalOrder) { |*| } }
+      reactor = decider { command(PartitionSchemaTest::OptionalOrder => nil) { |*| } }
       expect { described_class.check!(reactor) }
         .to raise_error(Sourced::DefinitionError, /OptionalOrder must declare order_id/)
     end
 
+    it 'requires declared outputs to declare every key' do
+      reactor = decider { command(PartitionSchemaTest::PlaceOrder => PartitionSchemaTest::Unkeyed) { |*| } }
+      expect { described_class.check!(reactor) }
+        .to raise_error(Sourced::DefinitionError, /output PartitionSchemaTest::Unkeyed must declare order_id/)
+    end
+
     it 'requires reactions to declare every key' do
       reactor = decider do
-        command(PartitionSchemaTest::PlaceOrder) { |*| }
+        command(PartitionSchemaTest::PlaceOrder => nil) { |*| }
         reaction(PartitionSchemaTest::Unkeyed) { |*| }
       end
       expect { described_class.check!(reactor) }
@@ -162,11 +168,11 @@ RSpec.describe Sourced::PartitionSchema do
     end
 
     it 'requires the schema type, or a stricter one' do
-      reactor = decider { command(PartitionSchemaTest::IntegerOrder) { |*| } }
+      reactor = decider { command(PartitionSchemaTest::IntegerOrder => nil) { |*| } }
       expect { described_class.check!(reactor) }
         .to raise_error(Sourced::DefinitionError, /IntegerOrder declares order_id as Integer, but .* partitions by order_id as Sourced::Types::String/)
 
-      expect { described_class.check!(decider { command(PartitionSchemaTest::PresentOrder) { |*| } }) }.not_to raise_error
+      expect { described_class.check!(decider { command(PartitionSchemaTest::PresentOrder => nil) { |*| } }) }.not_to raise_error
     end
 
     it 'allows evolved events with some of the keys' do
@@ -194,7 +200,7 @@ RSpec.describe Sourced::PartitionSchema do
 
     it 'requires evolved events to declare a key' do
       reactor = decider do
-        command(PartitionSchemaTest::PlaceOrder) { |*| }
+        command(PartitionSchemaTest::PlaceOrder => nil) { |*| }
         evolve(PartitionSchemaTest::Unkeyed) { |*| }
       end
       expect { described_class.check!(reactor) }
@@ -275,12 +281,12 @@ RSpec.describe Sourced::PartitionSchema do
 
   it 'is checked on Router registration' do
     router = Sourced::Router.new(store: Sourced::Store.new(Sequel.sqlite))
-    reactor = decider { command(PartitionSchemaTest::IntegerOrder) { |*| } }
+    reactor = decider { command(PartitionSchemaTest::IntegerOrder => nil) { |*| } }
     expect { router.register(reactor) }.to raise_error(Sourced::DefinitionError, /declares order_id as Integer/)
   end
 
   it 'is checked by the GWT helpers' do
-    reactor = decider { command(PartitionSchemaTest::IntegerOrder) { |*| } }
+    reactor = decider { command(PartitionSchemaTest::IntegerOrder => nil) { |*| } }
     expect { with_reactor(reactor, order_id: 'o1') }.to raise_error(Sourced::DefinitionError, /declares order_id as Integer/)
   end
 

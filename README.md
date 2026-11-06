@@ -311,12 +311,24 @@ class CourseDecider < Sourced::Decider
   end
 
   # Command handler — enforce invariants, then produce events
-  command CreateCourse do |context, cmd|
+  command CreateCourse => CourseCreated do |context, cmd|
     raise "Course '#{cmd.payload.course_name}' already exists" if context[:name_taken]
 
     event CourseCreated,
       course_id: cmd.payload.course_id,
       course_name: cmd.payload.course_name
+  end
+end
+```
+
+A command declares what its handler may emit: `command Cmd => Event`, a union (`=> Created | Rejected`), and `| nil` when it may emit nothing. Emitting anything else raises `Sourced::Decider::UndeclaredEventError`, as does emitting nothing without `| nil`.
+
+```ruby
+command AddItem => ItemAdded | ItemRejected do |context, cmd|
+  if context[:closed]
+    event ItemRejected, cart_id: cmd.payload.cart_id
+  else
+    event ItemAdded, cart_id: cmd.payload.cart_id, sku: cmd.payload.sku
   end
 end
 ```
@@ -343,7 +355,7 @@ end
 
 Hand-defined messages work too, and every handled message is checked against the schema when the reactor is registered with a Router (and by the GWT test helpers), raising `Sourced::DefinitionError`:
 
-- commands, reactions and a machine's `on` events must declare every key, as required attributes;
+- commands, reactions, a Decider's declared outputs and a machine's `on` events must declare every key, as required attributes;
 - other evolved events must declare at least one key: the store reads a message into a partition when the keys it declares match, so events carrying some of the keys are fine;
 - each declared key must be the schema's type or a stricter one (`String.present` passes for `String`; `Integer` doesn't);
 - at least one handled message must declare every key, or no partition is ever created.
@@ -687,7 +699,7 @@ class Carts < Sourced::Decider
     context[:closed] = true
   end
 
-  command AddItem do |context, cmd|
+  command AddItem => ItemAdded do |context, cmd|
     raise 'Cart closed' if context[:closed]
     event ItemAdded, cart_id: cmd.payload.cart_id, item_id: cmd.payload.item_id
   end

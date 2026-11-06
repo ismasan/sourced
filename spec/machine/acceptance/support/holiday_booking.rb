@@ -399,7 +399,7 @@ module MachineAcceptanceHoliday
   class DepositGateway < Sourced::Decider
     partition_by :booking_id
 
-    command ChargeDeposit do |_context, cmd|
+    command ChargeDeposit => DepositReceived do |_context, cmd|
       event DepositReceived, booking_id: cmd.payload.booking_id, reference: "DP-#{cmd.payload.amount}"
     end
   end

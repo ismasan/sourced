@@ -131,7 +131,7 @@ class RouterTestDecider < Sourced::Decider
     context[:bound] = true
   end
 
-  command RouterTestMessages::BindDevice do |context, cmd|
+  command RouterTestMessages::BindDevice => RouterTestMessages::DeviceBound do |context, cmd|
     raise 'Not found' unless context[:exists]
     raise 'Already bound' if context[:bound]
     event RouterTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
@@ -141,7 +141,7 @@ class RouterTestDecider < Sourced::Decider
     context[:name] = evt.payload.name
   end
 
-  command RouterTestMessages::RenameDevice do |context, cmd|
+  command RouterTestMessages::RenameDevice => RouterTestMessages::DeviceRenamed do |context, cmd|
     raise 'Not found' unless context[:exists]
     event RouterTestMessages::DeviceRenamed, device_id: cmd.payload.device_id, name: cmd.payload.name
   end
@@ -355,7 +355,7 @@ RSpec.describe Sourced::Router do
       rival = Class.new(Sourced::Decider) do
         consumer_group 'rival'
         partition_by :device_id
-        command(RouterTestMessages::BindDevice) { |_context, _cmd| nil }
+        command(RouterTestMessages::BindDevice => nil) { |_context, _cmd| nil }
       end
 
       expect {
