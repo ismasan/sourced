@@ -39,8 +39,10 @@ module Sourced
   # Returned by {Store#read} with messages and a consistency guard.
   # Supports array destructuring via #to_ary for backwards compatibility:
   #   messages, guard = store.read(selector)
+  # and is its messages as an Array (#to_a).
   ReadResult = Data.define(:messages, :guard) do
     def to_ary = [messages, guard]
+    def to_a = messages
 
     # A copy of this result without +excluded+, matched by log position.
     #
