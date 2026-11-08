@@ -192,7 +192,7 @@ RSpec.describe Sourced::Topology do
       expect(node.group_id).to eq('topology_test.widget_decider')
     end
 
-    it 'extracts produced events via Prism' do
+    it 'lists the events its command handler declares' do
       node = find_node('ccc_topo.create_widget')
       expect(node.produces).to eq(['ccc_topo.widget_created'])
     end
@@ -258,6 +258,45 @@ RSpec.describe Sourced::Topology do
     it 'sets automation name from event class' do
       node = find_node('ccc_topo.widget_created-topology_test.widget_decider-aut')
       expect(node.name).to eq('reaction(TopologyTest::WidgetCreated)')
+    end
+  end
+
+  context 'with declared outputs the handler may not emit' do
+    let(:decider) do
+      Class.new(Sourced::Decider) do
+        def self.name = 'TopologyTest::DeclaredDecider'
+
+        partition_by :widget_id
+        command TopologyTest::CreateWidget => TopologyTest::WidgetCreated | TopologyTest::WidgetArchived | nil do |*|
+          nil
+        end
+      end
+    end
+    let(:reactors) { [decider] }
+
+    it 'produces every declared event, without parsing the handler' do
+      expect(find_node('ccc_topo.create_widget').produces)
+        .to eq(['ccc_topo.widget_created', 'ccc_topo.widget_archived'])
+      expect(find_nodes_by_type('event').map(&:id))
+        .to contain_exactly('ccc_topo.widget_created', 'ccc_topo.widget_archived')
+    end
+  end
+
+  context 'with a Sourced::Decider(source, Command => outputs) decision' do
+    let(:decision) do
+      Sourced::Decider(
+        Sourced::Selector[TopologyTest::WidgetCreated].by(:widget_id),
+        TopologyTest::ArchiveWidget => TopologyTest::WidgetArchived
+      ) { |_history, _cmd| nil }
+    end
+    let(:reactors) { [decision] }
+
+    it "is grouped by its command's type, producing its declared outputs" do
+      expect(find_node('ccc_topo.archive_widget')).to have_attributes(
+        group_id: 'ccc_topo.archive_widget', produces: ['ccc_topo.widget_archived']
+      )
+      expect(find_nodes_by_type('event').map(&:id))
+        .to contain_exactly('ccc_topo.widget_archived', 'ccc_topo.widget_created')
     end
   end
 

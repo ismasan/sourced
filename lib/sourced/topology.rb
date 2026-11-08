@@ -57,42 +57,24 @@ module Sourced
 
         if reactor.is_a?(Class) && reactor < Sourced::Machine
           add_machine(reactor, analyzer, nodes, command_ids, event_nodes)
-        elsif reactor.respond_to?(:handled_commands)
-          reactor.handled_commands.each do |cmd_class|
+        elsif reactor.respond_to?(:command_outputs)
+          reactor.command_outputs.each do |cmd_class, outputs|
             next if command_ids.key?(cmd_class.type)
 
-            produced_refs = analyzer.events_produced_by(reactor, cmd_class)
-            produced_types = resolve_refs(produced_refs, reactor)
-
-            schema = extract_schema(cmd_class)
             cmd_node = CommandNode.new(
               type: 'command',
               id: cmd_class.type,
               name: cmd_class.name,
               group_id: group_id,
               group_label: group_label,
-              produces: produced_types,
-              schema: schema
+              produces: outputs.messages.map(&:type),
+              schema: extract_schema(cmd_class)
             )
             nodes << cmd_node
             command_ids[cmd_class.type] = cmd_node
 
-            produced_types.each do |evt_type|
-              next if event_nodes.key?(evt_type)
-              next if command_ids.key?(evt_type)
-
-              evt_class = find_event_class(evt_type)
-              next unless evt_class
-
-              event_nodes[evt_type] = EventNode.new(
-                type: 'event',
-                id: evt_type,
-                name: evt_class.name,
-                group_id: group_id,
-                group_label: group_label,
-                produces: [],
-                schema: extract_schema(evt_class)
-              )
+            outputs.messages.each do |evt_class|
+              add_event_node(event_nodes, command_ids, evt_class, group_id, group_label)
             end
           end
         end
@@ -492,13 +474,6 @@ module Sourced
       def initialize
         @file_cache = {}
         @prism_available = check_prism
-      end
-
-      def events_produced_by(reactor, cmd_class)
-        return [] unless @prism_available
-
-        method_name = Sourced.message_method_name(Decider::PREFIX, cmd_class.name)
-        extract_calls_from_handler(reactor, method_name, :event)
       end
 
       def commands_dispatched_by(reactor, evt_class)
