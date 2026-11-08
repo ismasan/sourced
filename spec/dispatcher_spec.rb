@@ -46,7 +46,7 @@ class DispatchTestDecider < Sourced::Decider
     event DispatcherTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
-  reaction DispatcherTestMessages::DeviceBound do |_context, evt|
+  reaction DispatcherTestMessages::DeviceBound => DispatcherTestMessages::DelayedNotify do |_context, evt|
     dispatch(DispatcherTestMessages::DelayedNotify, device_id: evt.payload.device_id)
       .at(Time.now + 2)
   end

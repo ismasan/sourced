@@ -31,6 +31,10 @@ module Sourced
   # state (its +#handles_command?+ is false). Nothing is appended.
   CommandNotHandledError = Class.new(Error)
 
+  # Raised when a handler emits a message it doesn't declare, or emits
+  # nothing when its declared outputs don't include +nil+ (see {Outputs}).
+  UndeclaredOutputError = Class.new(Error)
+
   # Raised when a reactor's definition is invalid, ex. a handled message that
   # doesn't match its partition schema. Checked when it's registered with a Router.
   DefinitionError = Class.new(Error)
@@ -150,8 +154,8 @@ module Sourced
 
   # Handle a command synchronously: validate, load history, decide, append, ACK.
   # The command's partition is +reactor_class+'s selectors' keys (none for an
-  # id-partitioned reactor); its instances respond to +decide(command)+
-  # (see {Decider}).
+  # id-partitioned reactor); its instances respond to +handles_command?(command)+
+  # and +decide(command)+ (see {Decider}, {Machine}).
   #
   # @raise [CommandNotHandledError] if the loaded reactor's +#handles_command?+ is false
   def self.handle!(reactor_class, command, store: nil)
@@ -178,7 +182,7 @@ module Sourced
       instance = reactor_class.new(values)
     end
 
-    if instance.respond_to?(:handles_command?) && !instance.handles_command?(command)
+    unless instance.handles_command?(command)
       raise CommandNotHandledError, "#{reactor_class} doesn't handle #{command.class} (#{command.type}) in its current state"
     end
 
@@ -284,6 +288,7 @@ require 'sourced/consumer'
 require 'sourced/partition_schema'
 require 'sourced/projector/inline'
 require 'sourced/evolve'
+require 'sourced/outputs'
 require 'sourced/react'
 require 'sourced/sync'
 require 'sourced/decider'

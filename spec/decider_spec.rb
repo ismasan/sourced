@@ -49,7 +49,7 @@ class TestDeviceDecider < Sourced::Decider
     event DeciderTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
-  reaction DeciderTestMessages::DeviceBound do |_context, evt|
+  reaction DeciderTestMessages::DeviceBound => DeciderTestMessages::NotifyBound do |_context, evt|
     DeciderTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
   end
 
@@ -78,7 +78,7 @@ class TestDelayedReactionDecider < Sourced::Decider
     event DeciderTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
-  reaction DeciderTestMessages::DeviceBound do |_context, evt|
+  reaction DeciderTestMessages::DeviceBound => DeciderTestMessages::DelayedNotifyBound do |_context, evt|
     dispatch(DeciderTestMessages::DelayedNotifyBound, device_id: evt.payload.device_id)
       .at(Time.now + 10)
   end
@@ -96,7 +96,7 @@ class TestReplayingReactionDecider < Sourced::Decider
   end
 
   # device_id echoes whether the reacted message was evolved into context first.
-  reaction DeciderTestMessages::DeviceBound do |context, evt|
+  reaction DeciderTestMessages::DeviceBound => DeciderTestMessages::NotifyBound do |context, evt|
     device_id = context[:bound] ? evt.payload.device_id : 'not-evolved'
     DeciderTestMessages::NotifyBound.new(payload: { device_id: device_id })
   end
@@ -118,7 +118,7 @@ class TestCountingDecider < Sourced::Decider
   end
 
   # device_id echoes how many times the reacted message hit the evolve block.
-  reaction DeciderTestMessages::DeviceBound do |context, _evt|
+  reaction DeciderTestMessages::DeviceBound => DeciderTestMessages::NotifyBound do |context, _evt|
     DeciderTestMessages::NotifyBound.new(payload: { device_id: "count:#{context[:bound_count]}" })
   end
 end

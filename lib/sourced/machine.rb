@@ -1915,8 +1915,7 @@ module Sourced
           entered.flat_map(&:stops).uniq.each { |child| stop_children(child, at: nil) }
         end
 
-        method_name = self.class.reaction_handlers[message.to_message.class]
-        method_name ? Array(send(method_name, context, message)).compact : EMPTY_ARRAY
+        __run_reaction(message)
       end
     end
 

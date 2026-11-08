@@ -129,7 +129,7 @@ class HandleTestReactingDecider < Sourced::Decider
     event HandleTestMessages::DeviceCreated, device_id: cmd.payload.device_id, name: cmd.payload.name
   end
 
-  reaction HandleTestMessages::DeviceCreated do |_context, evt|
+  reaction HandleTestMessages::DeviceCreated => HandleTestMessages::NotifyCreated do |_context, evt|
     dispatch HandleTestMessages::NotifyCreated, device_id: evt.payload.device_id
   end
 end
@@ -416,6 +416,7 @@ RSpec.describe 'Sourced.handle!' do
       def self.handle_claim(claim) = []
 
       def initialize(values) = self.class.built_with = values
+      def handles_command?(_cmd) = true
       def decide(_cmd) = []
     end
     command = HandleUncheckedMessages::AddNote.new(payload: { text: 'x' }).with_tags(user_id: 'u1', device_id: 'd1')

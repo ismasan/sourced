@@ -68,7 +68,7 @@ class GWTTestDecider < Sourced::Decider
     # intentionally produces no events
   end
 
-  reaction GWTTestMessages::DeviceBound do |_context, evt|
+  reaction GWTTestMessages::DeviceBound => GWTTestMessages::NotifyBound do |_context, evt|
     GWTTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
   end
 

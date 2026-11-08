@@ -1349,7 +1349,7 @@ module MachineChildrenTest
       end
 
       it 'requires reactions to use types with all partition keys' do
-        m = machine(:order_id, :line_id) { reaction(OrderPlaced) { |_s, _e| nil } }
+        m = machine(:order_id, :line_id) { reaction(OrderPlaced => nil) { |_s, _e| nil } }
         expect do
           m.validate!
         end.to raise_error(Sourced::Machine::DefinitionError, /reaction .*OrderPlaced must declare line_id/)

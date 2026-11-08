@@ -333,7 +333,7 @@ RSpec.describe Sourced::Machine do
         -> { m.evolve(late) { |_s, _e| nil } },
         -> { m.evolve(Class.new(Sourced::Projector::Inline)) },
         -> { m.before_evolve { |_s, _e| nil } },
-        -> { m.reaction(late) { |_s, _e| nil } }
+        -> { m.reaction(late => nil) { |_s, _e| nil } }
       ].each do |declare|
         expect(&declare).to raise_error(Sourced::Machine::DefinitionError, /declared after the machine was validated/)
       end
@@ -704,6 +704,26 @@ RSpec.describe Sourced::Machine do
         .given(moved(m, 'machine_test.ping', from: 'initial', to: 'pinged', cart_id: 'c1'))
         .when(re_entry)
         .then(Notify.new(payload: { cart_id: 'c1', note: 'exit' }), Notify.new(payload: { cart_id: 'c1', note: 'entry' }))
+    end
+
+    it "holds a reaction to what it appends, not to what entry actions dispatch" do
+      m = machine do
+        initial { command Ping => :pinged }
+        state(:pinged) { entry { |_s, _transition| dispatch Notify, note: 'entry' } }
+        reaction(self::Pinged => Ping | nil) { |*| nil }
+      end
+      entered = moved(m, 'machine_test.ping', from: 'initial', to: 'pinged', cart_id: 'c1')
+
+      with_reactor(m, cart_id: 'c1').when(entered).then(Notify.new(payload: { cart_id: 'c1', note: 'entry' }))
+
+      strict = machine do
+        initial { command Ping => :pinged }
+        state(:pinged) { entry { |_s, _transition| dispatch Notify, note: 'entry' } }
+        reaction(self::Pinged => Ping) { |*| dispatch Notify, note: 'reaction' }
+      end
+      strict_entered = moved(strict, 'machine_test.ping', from: 'initial', to: 'pinged', cart_id: 'c1')
+      expect { with_reactor(strict, cart_id: 'c1').when(strict_entered).then([]) }
+        .to raise_error(Sourced::React::UndeclaredMessageError, /appended .*Notify, which it doesn't declare/)
     end
 
     it 'skips them while replaying' do

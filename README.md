@@ -1218,7 +1218,7 @@ end
 
 ### Reactions
 
-Both deciders and projectors can react to events to produce follow-up messages, enabling workflow orchestration. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
+Both deciders and projectors can react to events to produce follow-up messages, enabling workflow orchestration. A reaction declares what it may append, as a command handler does: `reaction Event => Command`, `=> Command | Other`, with `| nil` when it may append nothing. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
 
 ```ruby
 class EnrolmentDecider < Sourced::Decider
@@ -1227,35 +1227,37 @@ class EnrolmentDecider < Sourced::Decider
   # ... evolve and command handlers ...
 
   # Dispatch a follow-up message by class
-  reaction StudentEnrolled do |context, event|
+  reaction StudentEnrolled => NotifyStudent do |context, event|
     dispatch(NotifyStudent, student_id: event.payload.student_id)
   end
 
   # Dispatch multiple messages from one block
-  reaction OrderPlaced do |_context, event|
+  reaction OrderPlaced => ReserveInventory | ChargePayment do |_context, event|
     dispatch(ReserveInventory, order_id: event.payload.order_id)
     dispatch(ChargePayment,    order_id: event.payload.order_id)
   end
 
   # Chain .with_metadata and .at for metadata/delay
-  reaction StudentEnrolled do |_context, event|
+  reaction StudentEnrolled => SendReminder do |_context, event|
     dispatch(SendReminder, student_id: event.payload.student_id)
       .with_metadata(channel: 'email')
       .at(Time.now + 300)
   end
 
-  # React to several message types with one block
-  reaction StudentEnrolled, StudentRejoined do |_context, event|
-    dispatch(NotifyStudent, student_id: event.payload.student_id)
+  # React to several message types with one block; it may dispatch nothing
+  reaction StudentEnrolled | StudentRejoined => NotifyStudent | nil do |context, event|
+    dispatch(NotifyStudent, student_id: event.payload.student_id) if context[:notify]
   end
 
   # Wildcard: react to every evolve type without an explicit handler.
   # Useful for side-channel pipelines (audit logs, outbox, etc.).
-  reaction do |_context, event|
+  reaction any: ForwardToOutbox do |_context, event|
     dispatch(ForwardToOutbox, event_id: event.id)
   end
 end
 ```
+
+Appending a message the reaction doesn't declare, by `dispatch` or by returning it, raises `Sourced::React::UndeclaredMessageError`, as does appending nothing without `| nil`; both it and `Sourced::Decider::UndeclaredEventError` are `Sourced::UndeclaredOutputError`s. `reaction_outputs` holds each reaction's declaration (`dispatched_messages` their union), which [Topology](#topology-introspection) draws. Reaction outputs aren't held to the reactor's partition keys: they're mostly commands for other reactors. A bare `reaction Event`, without a block, only subscribes to it.
 
 `dispatch` takes a message class and its payload. The returned `Dispatcher` supports:
 
@@ -1823,7 +1825,7 @@ Sourced.topology
   .map(&:name)
 ```
 
-A Decider's command nodes produce what each `command Cmd => A | B` declares, with no parsing. Reactions' `produces` are resolved statically by parsing reactor source with Prism, so they are only populated when the `prism` gem is available. A machine's declared targets are known without parsing: a command node always lists its target states' types (and those its `always` steps lead to) and the `Started` of the children its `starts:` declares, and adds the events its block emits when Prism is available. Machine entry and `after` actions (`actions(<path>)`), exit actions (`exit(<path>)`, consuming the transitions that can leave the state), `on` transitions, joins, and starting or stopping children appear as automations.
+Command and automation nodes for Deciders' and projectors' handlers produce what each `command Cmd => A | B` and `reaction Evt => C | D` declares, with no parsing. A machine's declared targets are known without parsing: a command node always lists its target states' types (and those its `always` steps lead to) and the `Started` of the children its `starts:` declares, and adds the events its block emits when Prism is available. Machine entry and `after` actions (`actions(<path>)`), exit actions (`exit(<path>)`, consuming the transitions that can leave the state), `on` transitions, joins, and starting or stopping children appear as automations.
 
 For a machine's own shape, `MyMachine.to_mermaid` returns a Mermaid `stateDiagram-v2`: states, regions as concurrent sections, compound states as nested states, and transitions labelled with the commands, events (`on PaymentCaptured`), joins (`done`, `always [guard]`) that take them, `/ starts LineItemMachine` for the children a handler starts, and `(H)` / `(H*)` for history targets. Data-only handlers that start children, and the children a state `stops`, go in a note on the state.
 

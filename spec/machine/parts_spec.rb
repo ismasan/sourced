@@ -549,7 +549,7 @@ RSpec.describe Sourced::Machine::Part do
         partition_by :payroll_id
         consumer_group 'parts_handler_projector'
         evolve(MachinePartsTest::Payroll::PendingMachine) { |context, _evt| context }
-        reaction(MachinePartsTest::Payroll::PendingMachine) { |_context, _evt| nil }
+        reaction(MachinePartsTest::Payroll::PendingMachine => nil) { |_context, _evt| nil }
       end
 
       expect(projector.handled_messages).to eq([pending::State])

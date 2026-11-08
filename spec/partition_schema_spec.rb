@@ -161,7 +161,7 @@ RSpec.describe Sourced::PartitionSchema do
     it 'requires reactions to declare every key' do
       reactor = decider do
         command(PartitionSchemaTest::PlaceOrder => nil) { |*| }
-        reaction(PartitionSchemaTest::Unkeyed) { |*| }
+        reaction(PartitionSchemaTest::Unkeyed => nil) { |*| }
       end
       expect { described_class.check!(reactor) }
         .to raise_error(Sourced::DefinitionError, /reaction PartitionSchemaTest::Unkeyed must declare order_id/)

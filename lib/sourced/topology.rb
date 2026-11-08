@@ -108,8 +108,7 @@ module Sourced
           specific_events = reactor.handled_messages_for_react.reject { |e| catch_all_events.include?(e) }
 
           specific_events.each do |evt_class|
-            produced_refs = analyzer.commands_dispatched_by(reactor, evt_class)
-            produced_types = resolve_refs(produced_refs, reactor)
+            produced_types = reaction_produces(reactor, evt_class)
 
             aut_id = "#{evt_class.type}-#{group_id}-aut"
             projector_aut_ids << aut_id if is_read_model
@@ -126,8 +125,7 @@ module Sourced
           end
 
           if catch_all_events.any?
-            produced_refs = analyzer.commands_dispatched_by(reactor, catch_all_events.first)
-            produced_types = resolve_refs(produced_refs, reactor)
+            produced_types = reaction_produces(reactor, catch_all_events.first)
 
             group_type_id = Sourced::Types::ModuleToMessageType.parse(group_id)
             aut_id = "#{group_type_id}-aut"
@@ -355,6 +353,14 @@ module Sourced
       (reactor.respond_to?(:evolve_selector) ? reactor.evolve_selector : reactor.history_selector).types
     end
 
+    # The types a reaction declares it appends (none for a subscription
+    # without a handler).
+    # @api private
+    def self.reaction_produces(reactor, evt_class)
+      outputs = reactor.respond_to?(:reaction_outputs) ? reactor.reaction_outputs[evt_class] : nil
+      outputs ? outputs.messages.map(&:type) : []
+    end
+
     # @api private
     def self.add_event_node(event_nodes, command_ids, evt_class, group_id, group_label)
       return unless evt_class
@@ -462,7 +468,7 @@ module Sourced
       {}
     end
 
-    private_class_method :evolved, :add_machine, :machine_block_produces, :machine_transitions, :exits?, :branch, :eventless_closure, :add_event_node,
+    private_class_method :evolved, :reaction_produces, :add_machine, :machine_block_produces, :machine_transitions, :exits?, :branch, :eventless_closure, :add_event_node,
                          :resolve_refs, :resolve_ref, :resolve_symbol_ref,
                          :resolve_const_ref, :resolve_const_path_ref,
                          :resolve_const_index_ref,
@@ -474,13 +480,6 @@ module Sourced
       def initialize
         @file_cache = {}
         @prism_available = check_prism
-      end
-
-      def commands_dispatched_by(reactor, evt_class)
-        return [] unless @prism_available
-
-        method_name = Sourced.message_method_name(React::PREFIX, evt_class.name)
-        extract_calls_from_handler(reactor, method_name, :dispatch)
       end
 
       # Calls to +call_name+ inside a block (ex. a machine's command handler).
@@ -499,12 +498,6 @@ module Sourced
 
       def parse_file(path)
         @file_cache[path] ||= Prism.parse_file(path)
-      end
-
-      def extract_calls_from_handler(reactor, method_name, call_name)
-        calls_at(*reactor.instance_method(method_name).source_location, call_name)
-      rescue NameError
-        []
       end
 
       def calls_at(file, line, call_name)

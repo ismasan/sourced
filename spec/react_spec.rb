@@ -48,7 +48,7 @@ RSpec.describe Sourced::React do
         {}
       end
 
-      reaction ReactTestMessages::SomethingHappened do |_context, msg|
+      reaction ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext do |_context, msg|
         ReactTestMessages::DoNext.new(payload: { thing_id: msg.payload.thing_id })
       end
     end
@@ -121,7 +121,7 @@ RSpec.describe Sourced::React do
     it 'takes anything whose to_message_class is a message class, and reacts to that class' do
       declared = Object.new
       declared.define_singleton_method(:to_message_class) { ReactTestMessages::Unhandled }
-      reactor_class.reaction(declared) { |_context, msg| ReactTestMessages::DoNext.new(payload: { thing_id: msg.payload.foo }) }
+      reactor_class.reaction(declared => ReactTestMessages::DoNext) { |_context, msg| ReactTestMessages::DoNext.new(payload: { thing_id: msg.payload.foo }) }
 
       expect(reactor_class.handled_messages_for_react).to include(ReactTestMessages::Unhandled)
       result = reactor_class.new.react(ReactTestMessages::Unhandled.new(payload: { foo: 'f1' }))
@@ -130,7 +130,7 @@ RSpec.describe Sourced::React do
 
     it 'takes only what answers to_message_class' do
       expect {
-        reactor_class.reaction(:react_test_something_happened) { |_context, _msg| nil }
+        reactor_class.reaction(:react_test_something_happened => nil) { |_context, _msg| nil }
       }.to raise_error(NoMethodError, /to_message_class/)
     end
   end
@@ -146,6 +146,109 @@ RSpec.describe Sourced::React do
       msg = ReactTestMessages::SomethingHappened.new(payload: { thing_id: 't1' })
       result = instance.react(msg)
       expect(result.size).to eq(1)
+      expect(subclass.reaction_outputs).to eq(reactor_class.reaction_outputs)
+    end
+  end
+
+  describe 'declared outputs' do
+    let(:happened) { ReactTestMessages::SomethingHappened.new(payload: { thing_id: 't1' }) }
+
+    def reactor(&block)
+      Class.new do
+        include Sourced::React
+        extend Sourced::Consumer
+
+        consumer_group 'react_outputs'
+
+        def context = {}
+
+        class_exec(&block)
+      end
+    end
+
+    it 'records each reaction\'s outputs, and their union' do
+      klass = reactor do
+        reaction ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext | nil do |*|
+          nil
+        end
+        reaction ReactTestMessages::MultiReaction | ReactTestMessages::AnotherMultiReaction =>
+                   ReactTestMessages::DelayedCommand | ReactTestMessages::DoNext do |*|
+          nil
+        end
+      end
+
+      expect(klass.reaction_outputs[ReactTestMessages::SomethingHappened])
+        .to have_attributes(messages: [ReactTestMessages::DoNext], optional: true)
+      expect(klass.reaction_outputs[ReactTestMessages::AnotherMultiReaction].messages)
+        .to eq([ReactTestMessages::DelayedCommand, ReactTestMessages::DoNext])
+      expect(klass.dispatched_messages).to eq([ReactTestMessages::DoNext, ReactTestMessages::DelayedCommand])
+    end
+
+    it 'raises for a dispatched message it does not declare' do
+      klass = reactor do
+        reaction ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext do |_context, msg|
+          dispatch ReactTestMessages::DelayedCommand, thing_id: msg.payload.thing_id
+        end
+      end
+
+      expect { klass.new.react(happened) }
+        .to raise_error(Sourced::React::UndeclaredMessageError, /appended .*DelayedCommand, which it doesn't declare/)
+    end
+
+    it 'raises for a returned message it does not declare' do
+      klass = reactor do
+        reaction ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext do |*|
+          ReactTestMessages::DelayedCommand.new(payload: { thing_id: 't1' })
+        end
+      end
+
+      expect { klass.new.react(happened) }.to raise_error(Sourced::UndeclaredOutputError, /DelayedCommand/)
+    end
+
+    it 'raises when it appends nothing without | nil, and allows it with' do
+      strict = reactor { reaction(ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext) { |*| nil } }
+      lenient = reactor { reaction(ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext | nil) { |*| nil } }
+
+      expect { strict.new.react(happened) }
+        .to raise_error(Sourced::React::UndeclaredMessageError, /appended nothing; declare .*DoNext \| nil/)
+      expect(lenient.new.react(happened)).to eq([])
+    end
+
+    it 'declares outputs for a catch-all reaction with any:' do
+      klass = reactor do
+        def self.evolve_selector = Sourced::Selector[ReactTestMessages::Wildcarded]
+
+        reaction any: ReactTestMessages::DoNext do |_context, msg|
+          dispatch ReactTestMessages::DoNext, thing_id: msg.payload.thing_id
+        end
+      end
+
+      expect(klass.reaction_outputs[ReactTestMessages::Wildcarded].messages).to eq([ReactTestMessages::DoNext])
+      expect(klass.new.react(ReactTestMessages::Wildcarded.new(payload: { thing_id: 'w' })).map(&:class))
+        .to eq([ReactTestMessages::DoNext])
+    end
+
+    it 'subscribes without a handler for a bare class, with no block' do
+      klass = reactor { reaction ReactTestMessages::SomethingHappened }
+
+      expect(klass.handled_messages_for_react).to eq([ReactTestMessages::SomethingHappened])
+      expect(klass.new.react(happened)).to eq([])
+    end
+
+    it 'raises for a block without declared outputs, a pair without a block, or several pairs' do
+      expect { reactor { reaction(ReactTestMessages::SomethingHappened) { |*| nil } } }
+        .to raise_error(ArgumentError, /declares what it appends: one pair/)
+      expect { reactor { reaction { |*| nil } } }.to raise_error(ArgumentError, /any: Command/)
+      expect { reactor { reaction ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext } }
+        .to raise_error(ArgumentError, /needs a block/)
+      expect {
+        reactor do
+          reaction(ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext,
+                   ReactTestMessages::Unhandled => ReactTestMessages::DoNext) { |*| nil }
+        end
+      }.to raise_error(ArgumentError, /one pair/)
+      expect { reactor { reaction(ReactTestMessages::SomethingHappened => 'nope') { |*| nil } } }
+        .to raise_error(ArgumentError, /isn't a message class/)
     end
   end
 
@@ -161,23 +264,23 @@ RSpec.describe Sourced::React do
           { source: 'context' }
         end
 
-        def self.history_selector = Sourced::Selector[ReactTestMessages::Wildcarded]
+        def self.evolve_selector = Sourced::Selector[ReactTestMessages::Wildcarded]
 
-        reaction ReactTestMessages::SomethingHappened do |_context, msg|
+        reaction ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext do |_context, msg|
           dispatch(ReactTestMessages::DoNext, thing_id: msg.payload.thing_id)
         end
 
-        reaction ReactTestMessages::DelayedCommand do |_context, msg|
+        reaction ReactTestMessages::DelayedCommand => ReactTestMessages::DelayedCommand do |_context, msg|
           dispatch(ReactTestMessages::DelayedCommand, thing_id: msg.payload.thing_id)
             .with_metadata(foo: 'bar')
             .at(Time.now + 10)
         end
 
-        reaction ReactTestMessages::MultiReaction, ReactTestMessages::AnotherMultiReaction do |_context, msg|
+        reaction ReactTestMessages::MultiReaction | ReactTestMessages::AnotherMultiReaction => ReactTestMessages::DoNext do |_context, msg|
           dispatch(ReactTestMessages::DoNext, thing_id: msg.payload.thing_id)
         end
 
-        reaction do |context, msg|
+        reaction any: ReactTestMessages::DoNext do |context, msg|
           dispatch(ReactTestMessages::DoNext, thing_id: "#{context[:source]}-#{msg.payload.thing_id}")
         end
       end
@@ -209,7 +312,7 @@ RSpec.describe Sourced::React do
           {}
         end
 
-        reaction ReactTestMessages::SomethingHappened do |_context, msg|
+        reaction ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext | ReactTestMessages::DelayedCommand do |_context, msg|
           dispatch(ReactTestMessages::DoNext, thing_id: msg.payload.thing_id)
           dispatch(ReactTestMessages::DelayedCommand, thing_id: msg.payload.thing_id)
         end
@@ -242,11 +345,11 @@ RSpec.describe Sourced::React do
         exclusive
         consumer_group 'react_test.catch_all_queue'
         evolve(ReactTestMessages::Wildcarded) { |*| }
-        reaction { |*| }
+        reaction(any: nil) { |*| }
       end
       early = Class.new(Sourced::Decider) do
         evolve(ReactTestMessages::Wildcarded) { |*| }
-        reaction { |*| }
+        reaction(any: nil) { |*| }
         partition_by :thing_id
       end
 

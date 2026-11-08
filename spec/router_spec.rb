@@ -146,7 +146,7 @@ class RouterTestDecider < Sourced::Decider
     event RouterTestMessages::DeviceRenamed, device_id: cmd.payload.device_id, name: cmd.payload.name
   end
 
-  reaction RouterTestMessages::DeviceBound do |_context, evt|
+  reaction RouterTestMessages::DeviceBound => RouterTestMessages::NotifyBound do |_context, evt|
     RouterTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
   end
 end

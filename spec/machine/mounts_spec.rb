@@ -538,7 +538,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
 
     it 'rejects mounting a machine, pointing to parts and children' do
       mounted = stub_const('MachineMountsTest::Mounted', Class.new(Sourced::Machine) do
-        reaction(MachineMountsTest::Ship) { |_context, _evt| nil }
+        reaction(MachineMountsTest::Ship => nil) { |_context, _evt| nil }
       end)
 
       expect { machine { state(:placed) { region :payment, mounted } } }

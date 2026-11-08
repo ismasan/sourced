@@ -39,7 +39,7 @@ class TestItemProjector < Sourced::Projector::StateStored
     context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+  reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::NotifyArchive do |_context, msg|
     ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
   end
 
@@ -69,7 +69,7 @@ class TestItemESProjector < Sourced::Projector::EventSourced
     context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+  reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::NotifyArchive do |_context, msg|
     ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
   end
 
@@ -95,7 +95,7 @@ class TestDelayedItemProjector < Sourced::Projector::StateStored
     context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+  reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::DelayedNotifyArchive do |_context, msg|
     dispatch(ProjectorTestMessages::DelayedNotifyArchive, list_id: msg.payload.list_id)
       .at(Time.now + 10)
   end
@@ -114,7 +114,7 @@ class TestReplayingItemProjector < Sourced::Projector::StateStored
     context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+  reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::NotifyArchive do |_context, msg|
     ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
   end
 
@@ -136,7 +136,7 @@ class TestSelectiveItemProjector < Sourced::Projector::StateStored
     context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+  reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::NotifyArchive do |_context, msg|
     ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
   end
 
@@ -538,7 +538,7 @@ RSpec.describe Sourced::Projector do
         load_context { |values| find(values[:list_id]) }
 
         # Reactions see the evolved context, so they show what handle_batch built.
-        reaction ProjectorTestMessages::ItemArchived do |context, msg|
+        reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::NotifyArchive do |context, msg|
           ProjectorTestMessages::NotifyArchive.new(payload: { list_id: context[:items].join(',') })
         end
 
@@ -589,7 +589,7 @@ RSpec.describe Sourced::Projector do
         load_context { |values| db[values[:list_id]] } if with_load_context
 
         # Reactions see the evolved context: the messages, as names.
-        reaction ProjectorTestMessages::ItemArchived do |messages, _msg|
+        reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::NotifyArchive do |messages, _msg|
           ProjectorTestMessages::NotifyArchive.new(payload: { list_id: messages.map { it.payload.name }.join(',') })
         end
       end
