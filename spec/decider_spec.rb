@@ -619,4 +619,165 @@ RSpec.describe Sourced::Decider do
       expect(TestDeviceDecider.partition_keys).to eq([:device_id])
     end
   end
+
+  describe 'preconditions: a selector source\'s assertion' do
+    let(:registered) { DeciderTestMessages::DeviceRegistered }
+    let(:bound) { DeciderTestMessages::DeviceBound }
+
+    let(:binder) do
+      source = Sourced::Selector[registered, bound].includes(registered).excludes(bound)
+      Class.new(Sourced::Decider) do
+        partition_by :device_id
+        consumer_group 'decider_test.binder'
+        evolve source
+
+        command DeciderTestMessages::BindDevice => DeciderTestMessages::DeviceBound do |_, cmd|
+          event DeciderTestMessages::DeviceBound, **cmd.payload.to_h
+        end
+      end
+    end
+
+    def reg(device_id = 'd1') = registered.new(payload: { device_id:, name: 'Sensor' })
+    def bnd(device_id = 'd1') = bound.new(payload: { device_id:, asset_id: 'a0' })
+    def bind(device_id = 'd1') = DeciderTestMessages::BindDevice.new(payload: { device_id:, asset_id: 'a1' })
+
+    def instance_after(history)
+      binder.new(device_id: 'd1').tap { it.evolve(history) }
+    end
+
+    it 'is the default handles_command?, over the history so far' do
+      expect(instance_after([]).handles_command?(bind)).to be(false)
+      expect(instance_after([reg]).handles_command?(bind)).to be(true)
+      expect(instance_after([reg, bnd]).handles_command?(bind)).to be(false)
+    end
+
+    it "holds in the partition only: another partition's messages don't count" do
+      expect(instance_after([reg, bnd('d2')]).handles_command?(bind)).to be(true)
+    end
+
+    it 'is none for an inline projector source' do
+      expect(TestDeviceDecider.new(device_id: 'd1').handles_command?(bind)).to be(true)
+    end
+
+    it 'refuses a later command in a batch once an earlier one breaks it: workers ack it' do
+      guard = Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 1)
+      history = Sourced::ReadResult.new(messages: [Sourced::PositionedMessage.new(reg, 1)], guard:)
+      batch = [Sourced::PositionedMessage.new(bind, 2), Sourced::PositionedMessage.new(bind, 3)]
+
+      pairs = binder.handle_batch({ device_id: 'd1' }, batch, history:)
+      appended = pairs.map { |actions, _| Array(actions).grep(Sourced::Actions::Append).flat_map(&:messages) }
+
+      expect(appended.map(&:size)).to eq([1, 0])
+      expect(pairs.last.first).to eq(Sourced::Actions::OK)
+    end
+
+    it 'makes Sourced.handle! raise CommandNotHandledError, appending nothing' do
+      store = Sourced::Store.new(Sequel.sqlite)
+      store.install!
+      store.append(reg)
+
+      expect { Sourced.handle!(binder, bind('d2'), store:) }
+        .to raise_error(Sourced::CommandNotHandledError, /in its current state/)
+      expect(Sourced.handle!(binder, bind, store:).events.map(&:class)).to eq([bound])
+      expect { Sourced.handle!(binder, bind, store:) }.to raise_error(Sourced::CommandNotHandledError)
+      expect(store.read_all(limit: 10).messages.map(&:type))
+        .to eq([registered.type, DeciderTestMessages::BindDevice.type, bound.type])
+    end
+  end
+
+  describe '.call' do
+    it 'decides a command from history, without a store' do
+      history = [DeciderTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })]
+      cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+
+      expect(TestDeviceDecider.call(history, cmd).map(&:class)).to eq([DeciderTestMessages::DeviceBound])
+      read = Sourced::ReadResult.new(messages: history, guard: nil)
+      expect(TestDeviceDecider.call(read, cmd).size).to eq(1)
+    end
+
+    it 'raises what Sourced.handle! raises for a command it refuses' do
+      refusing = Class.new(TestDeviceDecider) do
+        def handles_command?(_) = false
+      end
+      cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+
+      expect { refusing.call([], cmd) }.to raise_error(Sourced::CommandNotHandledError, /in its current state/)
+    end
+
+    it 'raises for a command without a value for a partition key' do
+      cmd = DeciderTestMessages::BindDevice.new(payload: { asset_id: 'a1' })
+
+      expect { TestDeviceDecider.call([], cmd) }.to raise_error(Sourced::MissingPartitionKeyError, /device_id/)
+    end
+  end
+
+  describe 'Sourced::Decider(source, Command => outputs)' do
+    let(:registered) { DeciderTestMessages::DeviceRegistered }
+    let(:bound) { DeciderTestMessages::DeviceBound }
+    let(:bind_cmd) { DeciderTestMessages::BindDevice }
+    let(:bind) { bind_cmd.new(payload: { device_id: 'd1', asset_id: 'a1' }) }
+    let(:reg) { registered.new(payload: { device_id: 'd1', name: 'Sensor' }) }
+
+    it "is a one-command Decider over the source, grouped by the command's type, keyed by the source's keys" do
+      source = Sourced::Selector[registered].by(:device_id).includes(registered)
+      decision = Sourced::Decider(source, bind_cmd => bound) do |history, cmd|
+        event DeciderTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: "#{history.size}"
+      end
+
+      expect(decision).to be < Sourced::Decider
+      expect(decision).to have_attributes(
+        group_id: bind_cmd.type, partition_keys: [:device_id], handled_commands: [bind_cmd],
+        source:, history_selector: source, exclusive?: false
+      )
+      expect(decision.call([reg], bind).map { it.payload.asset_id }).to eq(['1'])
+      expect { decision.call([], bind) }.to raise_error(Sourced::CommandNotHandledError)
+    end
+
+    it 'chains partition_by, for a source without keys' do
+      decision = Sourced::Decider(TestDeviceDecider.projector, bind_cmd => bound | nil) { |*| nil }
+                   .partition_by(:device_id)
+
+      expect(decision.partition_keys).to eq([:device_id])
+      expect(decision.history_selector).to eq(TestDeviceDecider.projector.selector.by(:device_id))
+      expect(decision).not_to be_exclusive
+    end
+
+    it 'takes no source: the block gets the command only, and without keys it is an id-partitioned queue' do
+      decision = Sourced::Decider(bind_cmd => bound) do |cmd|
+        event DeciderTestMessages::DeviceBound, **cmd.payload.to_h
+      end
+
+      expect(decision.call([], bind).map(&:class)).to eq([bound])
+      expect(decision).to be_exclusive
+      expect(decision.history_selector).to eq(Sourced::Selector::NONE)
+      expect(decision.claim_selector).to eq(Sourced::Selector[bind_cmd].by_message_id)
+      expect(decision.partition_by(:device_id)).not_to be_exclusive
+    end
+
+    it 'registers with a Router' do
+      decision = Sourced::Decider(Sourced::Selector[registered].by(:device_id), bind_cmd => bound) { |*| nil }
+
+      store = Sourced::Store.new(Sequel.sqlite)
+      expect { Sourced::Router.new(store:, reactors: [decision]) }.not_to raise_error
+    end
+
+    it 'takes one Command => outputs pair' do
+      expect { Sourced::Decider(Sourced::Selector[registered]) { nil } }
+        .to raise_error(ArgumentError, /takes one Command => outputs pair/)
+    end
+  end
+
+  describe 'one-argument command handlers' do
+    it 'get the command only' do
+      decider = Class.new(Sourced::Decider) do
+        partition_by :device_id
+        command DeciderTestMessages::BindDevice => DeciderTestMessages::DeviceBound do |cmd|
+          event DeciderTestMessages::DeviceBound, **cmd.payload.to_h
+        end
+      end
+      cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+
+      expect(decider.new(device_id: 'd1').decide(cmd).first.payload.asset_id).to eq('a1')
+    end
+  end
 end

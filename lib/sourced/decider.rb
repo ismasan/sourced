@@ -1,6 +1,32 @@
 # frozen_string_literal: true
 
 module Sourced
+  # A Decider that decides one command: a self-contained decision, reading
+  # +source+ (a {Selector} or an inline projector, see {SourceInterface}) and
+  # emitting +outputs+. Its consumer group is the command's type, and its
+  # partition keys the source selector's, unless chained:
+  #
+  #   AddItem = Sourced::Decider(Selector[CartStarted, ItemAdded].by(:cart_id), Add => ItemAdded) do |history, cmd|
+  #     event ItemAdded, **cmd.payload.to_h
+  #   end
+  #
+  #   Reserve = Sourced::Decider(StockProjector, ReserveStock => StockReserved | Rejected) do |stock, cmd|
+  #     # ...
+  #   end.partition_by(:sku)
+  #
+  # Without a source, the block takes the command only, and without partition
+  # keys it's an id-partitioned queue (see {Consumer#exclusive}).
+  #
+  # @param source [SourceInterface, nil]
+  # @param declaration [Hash] one +Command => outputs+ pair (see {Decider.command})
+  # @yield [context, command], or +[command]+
+  # @return [Class<Decider>]
+  def self.Decider(source = nil, declaration = nil, &block)
+    return Decider.__single(nil, source, &block) if declaration.nil?
+
+    Decider.__single(source, declaration, &block)
+  end
+
   # Reactor base class for command-handling workflows in Sourced.
   class Decider
     include Sourced::Evolve
@@ -82,7 +108,8 @@ module Sourced
       #
       # @param declaration [Hash{Class => Class, Plumb::Or, nil}] one
       #   +Command => outputs+ pair (commands and outputs as {Sourced::Message.to_message_class})
-      # @yield [context, message] command handler block
+      # @yield [context, message] command handler block; a block taking one
+      #   argument gets the message only
       # @return [void]
       # @raise [ArgumentError] without exactly one pair, or for outputs that
       #   aren't message classes
@@ -101,6 +128,49 @@ module Sourced
         end
         handled_commands << message_class
         define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
+      end
+
+      # @api private
+      # @see Sourced.Decider
+      def __single(source, declaration, &block)
+        unless declaration.is_a?(Hash) && declaration.size == 1
+          raise ArgumentError, "Sourced::Decider takes one Command => outputs pair, got #{declaration.inspect}"
+        end
+
+        input = declaration.keys.first.to_message_class
+        Class.new(self) do
+          consumer_group input.type
+          if source
+            evolve source
+            keys = source.selector.keys
+            partition_by(*keys) if keys.any?
+          end
+          command(declaration, &block)
+          define_singleton_method(:exclusive?) { partition_keys.empty? || super() }
+        end
+      end
+
+      # Decide +command+ from +history+, without a store: what {Sourced.handle!}
+      # does, minus reading and appending. The partition is the command's
+      # values for the partition keys (payload, else tags).
+      #
+      # @example
+      #   Carts.call(history, AddItem.new(payload: { cart_id: 'c1', sku: 'apple' })) # => [ItemAdded]
+      #
+      # @param history [#to_a] the partition's history before the command
+      #   (messages, or a {ReadResult})
+      # @param command [Sourced::Message]
+      # @return [Array<Sourced::Message>] the events it decides
+      # @raise [Sourced::MissingPartitionKeyError] when the command has no value for a partition key
+      # @raise [Sourced::CommandNotHandledError] when it doesn't handle the command (see {#handles_command?})
+      def call(history, command)
+        instance = new(__partition_values_of(command))
+        instance.evolve(history.to_a)
+        unless instance.handles_command?(command)
+          raise CommandNotHandledError, "#{self} doesn't handle #{command.class} (#{command.type}) in its current state"
+        end
+
+        instance.decide(command)
       end
 
       # Build executable actions for a batch of claimed messages.
@@ -201,6 +271,19 @@ module Sourced
         handle_batch(values, claim.messages, history: history.excluding(claim.messages), replaying: claim.replaying)
       end
 
+      private def __partition_values_of(command)
+        message = command.to_message
+        values = partition_keys.each_with_object({}) do |key, h|
+          value = message.payload.respond_to?(key) ? message.payload.public_send(key) : nil
+          value = message.tags[key] if value.nil?
+          h[key] = value.to_s unless value.nil?
+        end
+        missing = partition_keys - values.keys
+        return values if missing.empty?
+
+        raise MissingPartitionKeyError, "#{command.type} has no value for #{self}'s partition keys #{missing.inspect}"
+      end
+
       # Copy registered command handlers into subclasses.
       #
       # @param subclass [Class] subclass being created
@@ -227,7 +310,9 @@ module Sourced
     # {Sourced.handle!} raises {Sourced::CommandNotHandledError} when this is
     # false, without appending anything; in background workers, {.handle_batch}
     # acks the command with no events. Defaults to whether a handler is
-    # registered for the command's class.
+    # registered for the command's class, and its precondition holds: its
+    # history selector's assertion (a selector source's), over the context so
+    # far, bound to the partition. An inline projector source has none.
     #
     # Override to refuse commands based on context without raising, the command-side
     # counterpart of {React#should_react?}:
@@ -242,7 +327,7 @@ module Sourced
     # @param command [Sourced::Message]
     # @return [Boolean]
     def handles_command?(command)
-      self.class.handled_commands.include?(command.to_message.class)
+      self.class.handled_commands.include?(command.to_message.class) && precondition_holds?
     end
 
     # Decide a command against the decider's current in-memory context.
@@ -256,7 +341,9 @@ module Sourced
       klass = command.to_message.class
       @deciding = self.class.command_outputs[klass]
       method_name = Sourced.message_method_name(PREFIX, klass.to_s)
-      send(method_name, context, command) if respond_to?(method_name)
+      if respond_to?(method_name)
+        method(method_name).arity == 1 ? send(method_name, command) : send(method_name, context, command)
+      end
       if @deciding && @uncommitted_events.empty? && !@deciding.optional
         raise UndeclaredEventError, "#{self.class}: the #{klass} handler emitted nothing; " \
                                     "declare command #{klass} => #{@deciding} | nil to allow it"
@@ -296,6 +383,11 @@ module Sourced
     end
 
     private
+
+    def precondition_holds?
+      selector = self.class.history_selector
+      selector.assertion == Selector::Assertion::TRUE || selector.bind(**partition_values).holds?(context)
+    end
 
     # What the decider emits belongs to its partition: an event carrying a
     # partition key with another value would be read into another partition.

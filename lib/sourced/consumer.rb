@@ -162,6 +162,8 @@ module Sourced
     #   partition_by :order_id, item_id: Types::UUID::V4
     #
     # Messages handled by the reactor are checked against it (see {PartitionSchema}).
+    #
+    # @return [self]
     def partition_by(*keys, **typed)
       __check_no_messages_defined!(:partition_by)
       schema = keys.flatten.to_h { |key| [key.to_sym, Types::String] }
@@ -175,6 +177,7 @@ module Sourced
       end
       @partition_keys = nil
       @partition_schema = Types::Hash[schema]
+      self
     end
 
     # The consumer group id: the declared {.consumer_group}, or else the class

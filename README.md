@@ -333,6 +333,47 @@ command AddItem => ItemAdded | ItemRejected do |context, cmd|
 end
 ```
 
+#### Reading history through a selector, with a precondition
+
+A Decider can read its history through a [Selector](#reading-with-selectors) instead of an inline projector: its handlers then get the partition's messages of the selector's types, in order. The selector's assertion is the Decider's precondition: a command is decided only while it holds over the history so far.
+
+```ruby
+class Carts < Sourced::Decider
+  partition_by :cart_id
+
+  # Decide only for a started cart that isn't checked out
+  evolve Sourced::Selector[CartStarted, ItemAdded, CartCheckedOut]
+    .includes(CartStarted).excludes(CartCheckedOut)
+
+  command AddItem => ItemAdded do |history, cmd|
+    event ItemAdded, cart_id: cmd.payload.cart_id, sku: cmd.payload.sku
+  end
+end
+```
+
+When the assertion doesn't hold, the handler doesn't run: `Sourced.handle!` raises `Sourced::CommandNotHandledError`, and workers ack the command with no events. A Decider has one assertion for all its commands, which share its consistency boundary.
+
+#### Single-command decisions
+
+For a boundary of its own per command, `Sourced::Decider(source, Command => outputs) { }` builds a Decider that decides just that command. Its consumer group is the command's type, its partition keys are the source selector's (chain `.partition_by(...)` for a source without keys), and the block is its handler:
+
+```ruby
+AddItem = Sourced::Decider(
+  Sourced::Selector[CartStarted, ItemAdded, CartCheckedOut].by(:cart_id).includes(CartStarted).excludes(CartCheckedOut),
+  AddItemToCart => ItemAdded
+) do |history, cmd|
+  event ItemAdded, cart_id: cmd.payload.cart_id, sku: cmd.payload.sku
+end
+
+Reserve = Sourced::Decider(StockProjector, ReserveStock => StockReserved | ReservationRejected) do |stock, cmd|
+  # ...
+end.partition_by(:sku)
+
+Sourced.register(AddItem)
+```
+
+Without a source, the block takes only the command (as any one-argument `command` block does), and without partition keys the decision is an id-partitioned queue.
+
 #### Partition schemas and reactor messages
 
 `partition_by` keys are Strings unless typed: `partition_by :order_id, item_id: Types::Integer`. `Command` and `Event` define messages typed `"<message_prefix>.<name>"` (the prefix defaults to the `group_id`, so `Shop::Orders` gives `shop.orders`; declare `message_prefix 'orders'` to keep stored types stable across renames), with the partition keys declared before the block's attributes:
@@ -375,7 +416,13 @@ else
 end
 ```
 
-Raises `Sourced::ConcurrentAppendError` on conflicts, or `RuntimeError` on domain invariant violations (e.g. "Course already exists"). For a reactor registered with `Sourced.register` whose consumer group isn't in the store yet (Sourced not started, or a `store:` it isn't registered in), it raises `Sourced::ConsumerGroupNotRegisteredError` without appending the command: silently not advancing the offset would have a worker decide the command again later.
+Raises `Sourced::ConcurrentAppendError` on conflicts, or `RuntimeError` on domain invariant violations (e.g. "Course already exists"). For a reactor registered with `Sourced.register` whose consumer group isn't in the store yet (Sourced not started, or a `store:` it isn't registered in), it raises `Sourced::ConsumerGroupNotRegisteredError` without appending the command: silently not advancing the offset would have a worker decide the command again later. A command the decider doesn't handle in its current state raises `Sourced::CommandNotHandledError` without appending anything.
+
+`Decider.call(history, command)` decides without a store, for specs and scripts: it evolves `history` (messages, or a `ReadResult`), refuses as `handle!` does, and returns the events.
+
+```ruby
+Carts.call([cart_started], AddItem.new(payload: { cart_id: 'c1', sku: 'apple' })) # => [ItemAdded]
+```
 
 #### CommandContext
 
