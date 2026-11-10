@@ -68,6 +68,10 @@ module MachineTest
   Expire = Sourced::Command.define('machine_test.expire') do
     attribute :cart_id, String
   end
+  DelayChosen = Sourced::Event.define('machine_test.delay_chosen') do
+    attribute :cart_id, String
+    attribute :delay, Sourced::Types::JSONData
+  end
 
   # Not a valid command for a cart machine: it lacks cart_id
   Unkeyed = Sourced::Command.define('machine_test.unkeyed') do
@@ -710,6 +714,100 @@ RSpec.describe Sourced::Machine do
       expect(expire.metadata[:entered_by]).to eq(transition.id)
     end
 
+    describe 'with a computed delay' do
+      # A machine whose open state's timer reads its delay from the context,
+      # recorded by an earlier event.
+      def computed(delay = ->(ctx) { ctx[:delay] }, &block)
+        machine do
+          context { {} }
+          evolve(DelayChosen) { |ctx, evt| ctx[:delay] = evt.payload.delay }
+          initial { command OpenCart => :open }
+          state(:open) do
+            after(delay => Expire | Checkout, &block)
+            command Expire => :expired
+            command(Checkout) { nil }
+          end
+          final :expired
+        end
+      end
+
+      def react(timed, delay)
+        chosen = DelayChosen.new(payload: { cart_id: 'c1', delay: })
+        transition = moved(timed, 'machine_test.open_cart', from: 'initial', to: 'open', cart_id: 'c1')
+        [transition, timed.new(cart_id: 'c1').tap { |m| m.evolve([chosen, transition]) }.__react(transition)]
+      end
+
+      it 'reads seconds or a duration string from the context the timer starts with' do
+        timed = computed
+        transition, (expire, checkout) = react(timed, 90)
+        expect(expire).to be_a(Expire)
+        expect(checkout).to be_a(Checkout)
+        expect(expire.created_at).to be_within(0.001).of(transition.created_at + 90)
+        expect(checkout.created_at).to be_within(0.001).of(transition.created_at + 90)
+        expect(expire.metadata[:entered_by]).to eq(transition.id)
+
+        transition, (expire, _) = react(timed, '1h30m')
+        expect(expire.created_at).to be_within(0.001).of(transition.created_at + 5400)
+      end
+
+      it 'takes the paren-less arrow syntax' do
+        timed = machine do
+          context { {} }
+          evolve(DelayChosen) { |ctx, evt| ctx[:delay] = evt.payload.delay }
+          initial { command OpenCart => :open }
+          state(:open) do
+            after ->(ctx) { ctx[:delay] } => Expire
+            command Expire => :expired
+          end
+          final :expired
+        end
+        transition, (expire,) = react(timed, '10m')
+
+        expect(expire.created_at).to be_within(0.001).of(transition.created_at + 600)
+      end
+
+      it 'takes any #call(context), and a block' do
+        sos_delay = Class.new { def self.call(ctx) = ctx[:delay] * 2 }
+        stub_const('MachineTest::SosDelay', sos_delay)
+        timed = computed(sos_delay) { |_ctx, _transition| dispatch Checkout }
+        transition, dispatched = react(timed, 30)
+
+        expect(dispatched.map(&:class)).to eq([Checkout])
+        expect(dispatched.first.created_at).to be_within(0.001).of(transition.created_at + 60)
+      end
+
+      it 'takes an object answering #call(context)' do
+        delay = Struct.new(:factor) { def call(ctx) = ctx[:delay] * factor }.new(3)
+        timed = computed(delay)
+        transition, (expire,) = react(timed, 20)
+
+        expect(expire.created_at).to be_within(0.001).of(transition.created_at + 60)
+        expect(timed.to_h.dig(:states, 'open', :after).first[:computed]).to eq('computed')
+      end
+
+      it 'raises TimerError when the delay computed is no delay' do
+        timed = computed
+        [nil, 'soon', '1M', {}].each do |delay|
+          expect { react(timed, delay) }.to raise_error(Sourced::Machine::TimerError, /open's after\(computed\)/)
+        end
+        expect { react(timed, '1M') }.to raise_error(Sourced::Machine::TimerError, /can't wait months or years/)
+        expect { react(timed, nil) }.to raise_error(Sourced::Machine::TimerError, /seconds or a duration string \(ex. '30m', 'PT1H'\), got nil/)
+      end
+
+      it 'renders the delay as computed' do
+        stub_const('MachineTest::SosDelay', Class.new { def self.call(ctx) = ctx[:delay] })
+        timed = computed
+        named = computed(MachineTest::SosDelay)
+
+        expect(timed.to_h.dig(:states, 'open', :after))
+          .to eq([{ delay: nil, computed: 'computed', dispatches: [Expire.type, Checkout.type] }])
+        expect(named.to_h.dig(:states, 'open', :after).first[:computed]).to eq('MachineTest::SosDelay')
+        expect { JSON.generate(timed.to_h) }.not_to raise_error
+        expect(timed.to_mermaid.lines.map(&:chomp)).to include('  open --> expired : after computed / Expire')
+        expect(named.to_mermaid.lines.map(&:chomp)).to include('  open --> expired : after MachineTest#58;#58;SosDelay / Expire')
+      end
+    end
+
     it 'adds a duration string to a time in the hour the clocks go back' do
       tz = ENV['TZ']
       ENV['TZ'] = 'Europe/London'
@@ -783,6 +881,7 @@ RSpec.describe Sourced::Machine do
       expect { machine { initial { after(60 => Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /no timers/)
       expect { machine { state(:open) { after('soon' => Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
       expect { machine { state(:open) { after(soon: Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
+      expect { machine { state(:open) { after(Object.new => Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /seconds or a duration string/)
     end
 
     it 'rejects delays in months or years' do

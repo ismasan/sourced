@@ -31,7 +31,8 @@ module Sourced
     #   their root final.
     # * +entry+ and +exit+ count the state's actions; +after+ lists its
     #   timers: delays as declared (seconds, or a duration string: +'30m'+,
-    #   +'P1D'+; see {NodeBuilder#after}) and the command types they dispatch.
+    #   +'P1D'+; see {NodeBuilder#after}; a computed one's is nil, with
+    #   +computed+ naming it) and the command types they dispatch.
     # * A transition to a state's history ({State.history}) targets a
     #   history node in its +states+, as XState's: +type: 'history'+,
     #   +history: 'shallow' | 'deep'+, key +$history+ / +$deep_history+. It's
@@ -107,7 +108,7 @@ module Sourced
           machine: node.machine.name,
           entry: node.entries.size,
           exit: node.exits.size,
-          after: node.afters.map { |timer| { delay: timer.delay, dispatches: timer.commands.map(&:type) } },
+          after: node.afters.map { |timer| { **timer.chart, dispatches: timer.commands.map(&:type) } },
           on: transitions(node, node.commands, 'command').merge(transitions(node, node.ons, 'event')),
           on_done: on_done_joins(node),
           always: eventless(node, node.always),

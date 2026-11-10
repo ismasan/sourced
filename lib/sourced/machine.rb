@@ -115,7 +115,8 @@ module Sourced
     # starts fewer children than it declares.
     StartError = Class.new(Error)
 
-    # Raised when an +after+ block dispatches a command its timer doesn't declare.
+    # Raised when an +after+ block dispatches a command its timer doesn't
+    # declare, or a computed delay returns no valid delay.
     TimerError = Class.new(Error)
 
     # Raised when a machine builds an event that isn't valid.
@@ -337,15 +338,61 @@ module Sourced
       def pass?(context) = guard.call(context)
     end
 
-    # A delayed action: runs when its state is entered, and future-dates
-    # what it dispatches by +seconds+ from the entering transition. +delay+ is
-    # as declared, seconds or a duration string, for rendering.
-    # +commands+ are what it may dispatch; without a +block+, it dispatches
-    # each of them.
-    After = Data.define(:delay, :seconds, :commands, :block) do
-      # @param time [Time] the entering transition's +created_at+
-      # @return [Time] when what the block dispatches is delivered
-      def from(time) = time + seconds
+    # What a computed timer delay is called with: the domain context.
+    DelayInterface = Types::Interface[:call]
+
+    # A delay that's neither seconds nor a duration string, or waits months or years.
+    InvalidDelayError = Class.new(ArgumentError)
+
+    # Timers (+after+) are delayed actions: run when their state is entered,
+    # they future-date what they dispatch from the entering transition by
+    # their delay, {StaticAfter}'s as declared, {ComputedAfter}'s from the
+    # context. +commands+ are what one may dispatch; without a +block+, it
+    # dispatches each of them. Both answer +#seconds_in(context)+ (raising
+    # {InvalidDelayError}), +#label+ (the delay as error messages and
+    # diagrams show it) and +#chart+ (its delay keys in {Machine.to_h}).
+    #
+    # A timer with a fixed delay: seconds, or a duration string.
+    StaticAfter = Data.define(:delay, :seconds, :commands, :block) do
+      # A delay's seconds: as given, or a duration string's.
+      # @param delay [Numeric, String]
+      # @return [Numeric]
+      # @raise [InvalidDelayError]
+      def self.seconds_for(delay)
+        return delay if Numeric === delay
+
+        duration = Fugit.parse_duration(delay) if String === delay
+        raise InvalidDelayError, "after needs seconds or a duration string (ex. '30m', 'PT1H'), got #{delay.inspect}" unless duration
+        if duration.h.key?(:yea) || duration.h.key?(:mon)
+          raise InvalidDelayError, "after(#{delay.inspect}) can't wait months or years, which vary in length; give days (ex. '30d')"
+        end
+
+        duration.to_sec
+      end
+
+      def initialize(delay:, commands:, block:, seconds: self.class.seconds_for(delay)) = super
+
+      def seconds_in(_context) = seconds
+      def label = String === delay ? delay : "#{delay}s"
+      def chart = { delay: }
+    end
+
+    # A timer whose delay a +#call(context)+ computes when it starts:
+    # seconds or a duration string, as {StaticAfter}'s.
+    ComputedAfter = Data.define(:delay, :label, :commands, :block) do
+      # The callable's class or module name, +'computed'+ for a lambda or an anonymous one.
+      def self.label_for(delay)
+        case delay
+        in Proc then 'computed'
+        in Module then delay.name || 'computed'
+        else delay.class.name || 'computed'
+        end
+      end
+
+      def initialize(delay:, commands:, block:, label: self.class.label_for(delay)) = super
+
+      def seconds_in(context) = StaticAfter.seconds_for(delay.call(context))
+      def chart = { delay: nil, computed: label }
     end
 
     # A child machine the parent tracks: started by handlers that declare it in
@@ -540,7 +587,16 @@ module Sourced
       # takes it (+'30m'+, +'1h30m'+, +'P1D'+), up to weeks: months and years
       # aren't a fixed number of seconds.
       #
-      # @param declaration [Hash{Numeric, String => Class, Plumb::Or}] delay => command(s)
+      # A +#call(context)+ computes the delay from the domain context when the
+      # timer starts (the reaction to the entering transition, as a block
+      # gets it), ex. from what an earlier command recorded. It returns
+      # seconds or a duration string, else the reaction raises {TimerError};
+      # it's read once per entry, so a later change to the context doesn't
+      # reschedule the timer.
+      #
+      #   after ->(ctx) { ctx[:sos_delay] } => SendSOS
+      #
+      # @param declaration [Hash{Numeric, String, #call => Class, Plumb::Or}] delay => command(s)
       # @yield [context, transition]
       def after(declaration, &block)
         raise DefinitionError, "#{@machine}: the initial position is never entered, so no timers" if @node.initial?
@@ -550,8 +606,8 @@ module Sourced
           in Hash if declaration.size == 1 then declaration.first
           else raise DefinitionError, "#{@machine}: after declares what it dispatches, ex. after('1h' => Command), got #{declaration.inspect}"
           end
-        seconds = __timer_seconds(delay)
-        @node.afters << After.new(delay:, seconds:, commands: __timer_commands(delay, declared).uniq, block:)
+        commands = __timer_commands(delay, declared).uniq
+        @node.afters << __timer(delay:, commands:, block:)
       end
 
       # Declare a region, active while this state is. A state with
@@ -711,19 +767,14 @@ module Sourced
         declaration
       end
 
-      # +after+'s delay in seconds: as given, or a duration string's.
-      private def __timer_seconds(delay)
-        return delay if Numeric === delay
+      # A +#call(context)+ delay is computed when the timer starts; any
+      # other is fixed now.
+      private def __timer(delay:, commands:, block:)
+        return ComputedAfter.new(delay:, commands:, block:) if DelayInterface === delay
 
-        duration = Fugit.parse_duration(delay) if String === delay
-        unless duration
-          raise DefinitionError, "#{@machine}: after needs seconds or a duration string (ex. '30m', 'PT1H'), got #{delay.inspect}"
-        end
-        if duration.h.key?(:yea) || duration.h.key?(:mon)
-          raise DefinitionError, "#{@machine}: after(#{delay.inspect}) can't wait months or years, which vary in length; give days (ex. '30d')"
-        end
-
-        duration.to_sec
+        StaticAfter.new(delay:, commands:, block:)
+      rescue InvalidDelayError => e
+        raise DefinitionError, "#{@machine}: #{e.message}"
       end
 
       # +after('1h' => A | B)+: a command, or a union of them.
@@ -1552,7 +1603,7 @@ module Sourced
       # A timer's commands are accepted somewhere, or they'd never be handled.
       # Without a block, they're built from the partition keys alone.
       def __check_timer!(node, timer, accepted)
-        label = "#{node.label}'s after(#{timer.delay.inspect})"
+        label = "#{node.label}'s after(#{timer.label})"
         timer.commands.each do |command|
           raise DefinitionError, "#{self}: #{label} dispatches #{command}, which no state accepts" unless accepted.include?(command)
           next if timer.block
@@ -2135,6 +2186,7 @@ module Sourced
       return unless @runtime.active_entry_of?(node, transition.id)
 
       node.afters.each do |timer|
+        delivered_at = transition.created_at + timer_seconds(node, timer)
         started = @__reaction_dispatchers.size
         if timer.block
           instance_exec(context, transition, &timer.block)
@@ -2144,13 +2196,19 @@ module Sourced
         @__reaction_dispatchers.drop(started).each do |dispatcher|
           dispatched = dispatcher.message.class
           unless timer.commands.include?(dispatched)
-            raise TimerError, "#{self.class}: #{node.path}'s after(#{timer.delay.inspect}) dispatched #{dispatched}, " \
+            raise TimerError, "#{self.class}: #{node.path}'s after(#{timer.label}) dispatched #{dispatched}, " \
                               "but declares #{timer.commands.join(' | ')}"
           end
 
-          dispatcher.at(timer.from(transition.created_at)).with_metadata(ENTERED_BY => transition.id, ENTERED_AT => node.path)
+          dispatcher.at(delivered_at).with_metadata(ENTERED_BY => transition.id, ENTERED_AT => node.path)
         end
       end
+    end
+
+    def timer_seconds(node, timer)
+      timer.seconds_in(context)
+    rescue InvalidDelayError => e
+      raise TimerError, "#{self.class}: #{node.path}'s after(#{timer.label}): #{e.message}"
     end
 
     # A timer command was caused by the transition it names: dispatched in
