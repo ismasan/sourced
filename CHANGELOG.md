@@ -2,6 +2,10 @@
 
 ### Added
 
+- **Computed timer delays.** `after` takes a `#call(context)` as its delay, read from the
+  domain context when the timer starts: `after ->(ctx) { ctx[:sos_delay] } => SendSOS`.
+  It returns seconds or a duration string; anything else (`nil` included) raises
+  `Machine::TimerError` in the reaction. `to_h` renders it as `delay: nil, computed: <name>`.
 - **Pattern matching on machines.** Machine instances, `Machine::Configuration`s and views
   match states in `case` / `in` and `case` / `when`: a state, or a part, matches where it's
   active (`State.===`, `Part.===`, as `in?`), and Hash patterns name regions at their

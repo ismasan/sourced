@@ -98,8 +98,7 @@ module Sourced
         end
       end
 
-      # The delay as declared: a duration string, or seconds.
-      def timer_label(timer) = "after #{String === timer.delay ? timer.delay : "#{timer.delay}s"}"
+      def timer_label(timer) = "after #{timer.label}"
 
       # A handler's edges, or a note for a data-only one that starts children.
       def handler(node, definition, label)
