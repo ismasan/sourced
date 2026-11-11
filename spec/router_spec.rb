@@ -375,6 +375,20 @@ RSpec.describe Sourced::Router do
         Sourced::Router.new(store:, reactors: [reactor])
       }.to raise_error(Sourced::DefinitionError, /selector is scoped by asset_id, which its claim_selector \(device_id\) doesn't partition by/)
     end
+
+    it 'checks history keys for a reactor with a partition_schema and no validate!' do
+      reactor = Class.new do
+        def self.group_id = 'router_test_schema_unbindable'
+        def self.partition_schema = Sourced::Types::Hash[device_id: Sourced::Types::String]
+        def self.claim_selector = Sourced::Selector[RouterTestMessages::DeviceRegistered].by(:device_id)
+        def self.history_selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id, :asset_id)
+        def self.handle_claim(_claim, history:) = []
+      end
+
+      expect {
+        Sourced::Router.new(store:, reactors: [reactor])
+      }.to raise_error(Sourced::DefinitionError, /scoped by asset_id/)
+    end
   end
 
   describe '#handle_next_for' do

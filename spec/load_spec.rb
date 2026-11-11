@@ -367,4 +367,42 @@ RSpec.describe 'Sourced.load' do
       }.to raise_error(Sourced::MissingPartitionKeyError, /LoadTestInlineProjector.*\[:course_id\]/)
     end
   end
+
+  describe 'loading a duck-typed reactor' do
+    it 'reads its history_selector bound to its partition, with ReactorDefaults applied' do
+      reactor = Class.new do
+        def self.claim_selector = Sourced::Selector[LoadTestMessages::StudentEnrolled].by(:course_id)
+        def self.history_selector = Sourced::Selector[LoadTestMessages::StudentEnrolled].by(:course_id)
+        def self.handle_claim(_claim, history:) = []
+
+        attr_reader :messages
+
+        def initialize(_values) = @messages = []
+        def evolve(messages) = @messages.concat(messages)
+      end
+      Sourced::ReactorDefaults.apply(reactor)
+      store.append([
+        LoadTestMessages::StudentEnrolled.new(payload: { course_id: 'algebra', student_id: 'joe' }),
+        LoadTestMessages::StudentEnrolled.new(payload: { course_id: 'history', student_id: 'jane' })
+      ])
+
+      instance, = Sourced.load(reactor, store: store, course_id: 'algebra')
+
+      expect(instance.messages.map { it.payload.student_id }).to eq(['joe'])
+    end
+  end
+
+  describe 'loading a selector projection' do
+    it 'reads its types scoped by the given values' do
+      projection = Sourced::Selector[LoadTestMessages::StudentEnrolled].to_projector
+      store.append([
+        LoadTestMessages::StudentEnrolled.new(payload: { course_id: 'algebra', student_id: 'joe' }),
+        LoadTestMessages::StudentEnrolled.new(payload: { course_id: 'history', student_id: 'jane' })
+      ])
+
+      instance, = Sourced.load(projection, store: store, course_id: 'algebra')
+
+      expect(instance.context.map { it.payload.student_id }).to eq(['joe'])
+    end
+  end
 end

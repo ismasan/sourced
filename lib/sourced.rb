@@ -177,7 +177,7 @@ module Sourced
     store ||= self.store
     needs_history = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
     if needs_history
-      instance, read_result = load(reactor_class, store: store, **partition_attrs)
+      instance, read_result = load_partition(reactor_class, partition_attrs, partition_attrs, store:)
     else
       instance = reactor_class.new(values)
     end
@@ -222,13 +222,17 @@ module Sourced
   #   cart, read_result = Sourced.load(CartProjector, cart_id: 'c1')
   #   cart.context
   def self.load(reactor_class, store: nil, upto: nil, **values)
-    store ||= self.store
     partition_attrs = reactor_class.partition_of(values)
     missing = partition_attrs.filter_map { |k, v| k if v.nil? }
     if missing.any?
       raise MissingPartitionKeyError, "#{reactor_class} can't be loaded without values for partition keys #{missing.inspect}"
     end
 
+    load_partition(reactor_class, partition_attrs, values, store: store || self.store, upto:)
+  end
+
+  # {.load} for a partition already taken from +values+.
+  private_class_method def self.load_partition(reactor_class, partition_attrs, values, store:, upto: nil)
     read_result = store.read(reactor_class.history_for(partition_attrs), limit: upto)
     instance = reactor_class.for_partition(values)
 

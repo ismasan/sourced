@@ -1808,15 +1808,24 @@ module Sourced
         super([msg])
         __region_projections.each { |region_projection| region_projection.evolve([msg]) }
       end
+      @available_commands = nil
       context
     end
 
     # The command classes the active states accept, and +Stop+ while it
-    # applies (see {Configuration#available_commands}). Memoized until the
-    # machine next transitions.
+    # applies (see {Configuration#available_commands}): what
+    # {#handles_command?} accepts, so none but +Stop+ while the source's
+    # precondition fails ({Evolve#source_holds?}). Memoized until the machine
+    # next evolves.
     #
     # @return [Set<Class>]
-    def available_commands = @available_commands ||= machine.available_commands
+    def available_commands
+      @available_commands ||= begin
+        commands = machine.available_commands
+        stop = self.class.stop_state && self.class::Stop
+        source_holds? ? commands : commands.select { it == stop }.to_set.freeze
+      end
+    end
 
     # Its configuration, read live (see {Configuration#to_machine_config}).
     # @return [View]

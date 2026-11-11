@@ -89,8 +89,13 @@ module Sourced
         message_class = declared.to_message_class
         command_outputs[message_class] = outputs
         handled_commands << message_class
-        handler = block.arity == 1 ? proc { |_context, cmd| instance_exec(cmd, &block) } : block
-        define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &handler)
+        method_name = Sourced.message_method_name(PREFIX, message_class.to_s)
+        return define_method(method_name, &block) unless block.arity == 1
+
+        # Its own method, so +return+ in the block returns from the handler.
+        command_method = :"#{method_name}_command"
+        define_method(command_method, &block)
+        define_method(method_name) { |_context, cmd| send(command_method, cmd) }
       end
 
       # @api private

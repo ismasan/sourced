@@ -247,8 +247,7 @@ module Sourced
           "partition_by or declaring `partition_by :__id`.)"
       end
 
-      # PartitionSchema.check! (in validate!) covers reactors with a schema.
-      PartitionSchema.check_history_keys!(reactor_class) unless reactor_class.respond_to?(:partition_schema)
+      PartitionSchema.check_history_keys!(reactor_class)
       validate_exclusive_ownership!(reactor_class, group)
 
       @reactors << reactor_class

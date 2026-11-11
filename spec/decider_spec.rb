@@ -655,6 +655,21 @@ RSpec.describe Sourced::Decider do
       expect(instance_after([reg, bnd('d2')]).handles_command?(bind)).to be(true)
     end
 
+    it 'is the history_selector\'s, when the reactor declares its own' do
+      registered = self.registered
+      bound = self.bound
+      decider = Class.new(Sourced::Decider) do
+        partition_by :device_id
+        evolve Sourced::Selector[registered, bound]
+        define_singleton_method(:history_selector) { Sourced::Selector[registered, bound].by(:device_id).includes(registered) }
+
+        command(DeciderTestMessages::BindDevice => nil) { |_, _| nil }
+      end
+
+      expect(decider.new(device_id: 'd1').handles_command?(bind)).to be(false)
+      expect(decider.new(device_id: 'd1').tap { it.evolve([reg]) }.handles_command?(bind)).to be(true)
+    end
+
     it 'is none for an inline projector source' do
       expect(TestDeviceDecider.new(device_id: 'd1').handles_command?(bind)).to be(true)
     end
@@ -778,6 +793,20 @@ RSpec.describe Sourced::Decider do
       cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
 
       expect(decider.new(device_id: 'd1').decide(cmd).first.payload.asset_id).to eq('a1')
+    end
+
+    it 'can return early' do
+      decider = Class.new(Sourced::Decider) do
+        partition_by :device_id
+        command DeciderTestMessages::BindDevice => DeciderTestMessages::DeviceBound | nil do |cmd|
+          return if cmd.payload.asset_id == 'skip'
+
+          event DeciderTestMessages::DeviceBound, **cmd.payload.to_h
+        end
+      end
+      cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'skip' })
+
+      expect(decider.new(device_id: 'd1').decide(cmd)).to eq([])
     end
   end
 end

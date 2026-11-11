@@ -31,6 +31,12 @@ module Sourced
         # @return [self]
         def to_projector = self
 
+        # What {Sourced.load} reads, as for {Projector::Inline}: all of
+        # +values+ are the partition, scoping its keyless selector.
+        def partition_of(values) = values
+        def history_for(partition) = selector.by(**partition)
+        def for_partition(_values) = new
+
         %i[context evolve before_evolve].each do |dsl|
           define_method(dsl) do |*|
             raise ArgumentError, "#{self}.#{dsl}: a selector projection takes no context/evolve/before_evolve " \

@@ -74,9 +74,8 @@ module Sourced
     #
     # @return [Boolean]
     def source_holds?
-      return true if self.class.evolve_selector.assertion == Selector::Assertion::TRUE
-
-      self.class.history_selector.bind(**partition_values).holds?(context)
+      selector = self.class.__source_selector
+      selector.assertion == Selector::Assertion::TRUE || selector.bind(**partition_values).holds?(context)
     end
 
     module ClassMethods
@@ -121,6 +120,18 @@ module Sourced
 
         evolve_selector.by_default(*partition_keys)
       end
+
+      # Validate the definition, then fix {#history_selector} for
+      # {#__source_selector}.
+      def validate!
+        super.tap { @__source_selector = history_selector }
+      end
+
+      # @api private
+      # {#history_selector}, fixed by {#validate!}, read per call before it.
+      # What {Evolve#source_holds?} checks.
+      # @return [Selector]
+      def __source_selector = @__source_selector || history_selector
 
       # Define the projector's initial context factory. The block takes no arguments.
       def context(&)
