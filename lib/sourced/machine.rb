@@ -72,10 +72,9 @@ module Sourced
     extend Definition
 
     # The machine's transitions, its children's starts and finishes, and the
-    # evolve types of its parts are read too, alongside the projector's
-    # selector. They're the machine's own, not its projector's (which has no
-    # handlers for them), so adopting a projector with +evolve SomeProjector+
-    # keeps them. Prepended after Sourced::Evolve's class methods.
+    # evolve types of its parts are read alongside the projector's selector.
+    # They're the machine's own, so adopting a projector keeps them.
+    # Prepended after Sourced::Evolve's class methods.
     module EvolveTypes
       # Fixed by {Machine.validate!}; computed on each call before it.
       def evolve_selector
@@ -131,7 +130,6 @@ module Sourced
 
     INITIAL = :initial
 
-    # What +after+ takes, for errors.
     AFTER_PAIR = "'1h' => Command | Other | nil"
 
     # Metadata keys on messages dispatched by an +after+ block: the id of the
@@ -246,8 +244,7 @@ module Sourced
 
     # The states a transition may go to; +nil+ means it may stay.
     Targets = Data.define(:members) do
-      # As a handler declaration (+reaction A | B+), the message classes its
-      # members stand for, +nil+ for a +nil+ member (see {Sourced::Outputs.flatten}).
+      # As a handler declaration (+reaction A | B+), see {Sourced::Outputs.flatten}.
       # @return [Array<Class, nil>]
       def to_message_classes = members.flat_map { |member| Outputs.flatten(member) }
 
@@ -354,9 +351,8 @@ module Sourced
     # Timers (+after+) are delayed actions: run when their state is entered,
     # they future-date what they dispatch from the entering transition by
     # their delay, {StaticAfter}'s as declared, {ComputedAfter}'s from the
-    # context. +outputs+ are the commands one may dispatch ({Sourced::Outputs},
-    # +commands+ their classes); without a +block+, it dispatches each of
-    # them. Both answer +#seconds_in(context)+ (raising
+    # context. +outputs+ are the commands one may dispatch; without a +block+,
+    # it dispatches each of them. Both answer +#seconds_in(context)+ (raising
     # {InvalidDelayError}), +#label+ (the delay as error messages and
     # diagrams show it) and +#chart+ (its delay keys in {Machine.to_h}).
     #
@@ -405,8 +401,7 @@ module Sourced
       def chart = { delay: nil, computed: label }
     end
 
-    # An +entry+ or +exit+ action: what it may dispatch, and the block that
-    # dispatches it. Without a +block+, it dispatches each of +outputs+.
+    # An +entry+ or +exit+ action. Without a +block+, it dispatches each of +outputs+.
     Action = Data.define(:outputs, :block)
 
     # A child machine the parent tracks: started by handlers that declare it in
@@ -569,19 +564,13 @@ module Sourced
       end
 
       # Runs when the machine enters this state, as a reaction. It declares
-      # what it may dispatch: a message class, a union of them, with +| nil+
-      # when it may dispatch none, or +nil+ for an action that dispatches
-      # nothing. Dispatching anything else raises
-      # {Sourced::React::UndeclaredMessageError}.
+      # what it may dispatch as a reaction does ({Sourced::Outputs}), or +nil+
+      # for none. Without a block, each declared message is dispatched with
+      # the partition keys as its payload.
       #
       #   entry SendReceipt do |cart, _transition|
       #     dispatch SendReceipt, total: cart.total
       #   end
-      #
-      # Without a block, each declared message is dispatched with the
-      # partition keys as its payload:
-      #
-      #   entry NotifyPaid
       #
       # @param declared [Class, Plumb::Or, nil]
       # @yield [context, transition]
@@ -593,10 +582,6 @@ module Sourced
 
       # Runs when the machine leaves this state, as a reaction to the
       # transition that left it. It declares what it dispatches as {#entry} does.
-      #
-      #   exit ReleaseStock | nil do |cart, _transition|
-      #     dispatch ReleaseStock, skus: cart.items.keys if cart.items.any?
-      #   end
       #
       # @param declared [Class, Plumb::Or, nil]
       # @yield [context, transition]
@@ -612,12 +597,8 @@ module Sourced
       #     command ExpirePayment => Expired
       #   end
       #
-      # Without a block, each declared command is dispatched with the
-      # partition keys as its payload. A block dispatches them itself, only the
-      # declared ones, and at least one unless it declares +| nil+ (else
-      # {Sourced::React::UndeclaredMessageError}):
+      # It declares what it dispatches as {#entry} does, commands only:
       #
-      #   after('1h' => Remind | ExpirePayment) { |order, _transition| dispatch Remind, email: order[:email] }
       #   after('1h' => Remind | nil) { |order, _transition| dispatch Remind, email: order[:email] if order[:email] }
       #
       # The delay is seconds, or a duration string as {Sourced::Message#at}
@@ -1661,7 +1642,6 @@ module Sourced
         end
       end
 
-      # A blockless entry or exit action dispatches its messages with the partition keys.
       def __check_action!(node, what, action)
         return if action.block
 
@@ -1813,10 +1793,8 @@ module Sourced
     end
 
     # The command classes the active states accept, and +Stop+ while it
-    # applies (see {Configuration#available_commands}): what
-    # {#handles_command?} accepts, so none but +Stop+ while the source's
-    # precondition fails ({Evolve#source_holds?}). Memoized until the machine
-    # next evolves.
+    # applies (see {Configuration#available_commands}); only +Stop+ while the
+    # source's precondition fails. Memoized until the machine next evolves.
     #
     # @return [Set<Class>]
     def available_commands
@@ -1839,10 +1817,9 @@ module Sourced
     # @return [Set<Class>]
     def handled_commands = self.class.__command_set
 
-    # Whether an active state accepts +command+, and the machine's source's
-    # precondition holds ({Evolve#source_holds?}). A command dispatched by an
-    # +after+ block is refused once the machine has left the state entry
-    # that started it, even if an active state accepts it.
+    # Whether an active state accepts +command+ and {Evolve#source_holds?}. A
+    # command dispatched by an +after+ block is refused once the machine has
+    # left the state entry that started it, even if an active state accepts it.
     #
     # {Sourced.handle!} raises {Sourced::CommandNotHandledError} when it doesn't,
     # appending nothing; in background workers the command is acked with no events.
@@ -2250,8 +2227,7 @@ module Sourced
       !root.initial? && !root.final?
     end
 
-    # Run an +entry+, +exit+ or +after+ action's block, or dispatch each of
-    # its outputs without one, holding what it dispatches to its declaration.
+    # Run an +entry+, +exit+ or +after+ action, holding what it dispatches to its outputs.
     # @param action [Action, StaticAfter, ComputedAfter]
     # @return [Array<Dispatcher>] what it dispatched
     def run_action(action, transition, label)

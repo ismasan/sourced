@@ -1,34 +1,23 @@
 # frozen_string_literal: true
 
 module Sourced
-  # Partitioning by {Message#id}: one partition per message, the store's queue
-  # case ({Selector#by_message_id}, {Selector#id_partitioned?}). The id is
-  # indexed under a reserved key name, chosen not to collide with a payload
-  # attribute.
+  # Partitioning by {Message#id}, one partition per message ({Selector#by_message_id}).
+  # The reserved key name can't collide with a payload attribute.
   module IdPartition
     KEY = '__id'
   end
 
-  # A declarative description of the messages to read: what {Store#read} and
-  # {Store#read_all} read, and what a {ConsistencyGuard} guards.
+  # The messages to read: what {Store#read} reads and a {ConsistencyGuard} guards.
   #
-  # A selector is a list of {Part}s, each with its own message types, partition
-  # key names and the values bound to them. A part selects a message of one of
-  # its types when every one of its keys that the message carries (in its
-  # payload or tags) has the bound value, and the message carries at least one
-  # of them. A part without keys selects every message of its types. A
-  # selector selects what any of its parts selects.
+  # A list of {Part}s, each with message types, partition keys and the values
+  # bound to them. A part selects a message of its types that carries (in
+  # payload or tags) at least one of its keys, every carried one with the bound
+  # value; a part without keys selects every message of its types.
   #
-  # A selector can also assert what must hold of what it selects, in order:
-  # {#is_empty}, {#includes}, {#excludes}, {#starts_with}, {#ends_with}, combined
-  # with {#+} (and), {#|} (or) and {#~} (not). An assertion covers what its
-  # selector selects at the point it's attached, so a later {#+} doesn't widen
-  # it, while {#by} and {#bind} scope and bind it with the selector;
-  # {#holds?} evaluates it over messages (see {Assertion}). The store reads
-  # and guards only the parts.
-  #
-  # Selectors are frozen values: every method returns a new one, so they compose
-  # in any order. The store reads only bound selectors (see {#bound?}).
+  # An optional {Assertion} ({#is_empty}, {#includes}, ... combined with {#+},
+  # {#|}, {#~}) states what must hold of what it selects. It covers its
+  # selector as attached, so a later {#+} doesn't widen it. The store reads and
+  # guards only the parts, and only bound selectors.
   #
   # @example
   #   s = Selector[CourseCreated, UserJoined].by(:course_id)
@@ -40,15 +29,13 @@ module Sourced
   #   placeable = (~cancelled).bind(order_id: 'o1')
   #   placeable.holds?(store.read(placeable).messages)
   class Selector < Data.define(:parts, :assertion)
-    # Raised when reading a selector whose keys aren't all bound: an unbound
-    # key would otherwise select every value, silently widening the read.
+    # An unbound key would otherwise select every value, widening the read.
     UnboundKeyError = Class.new(Sourced::Error)
 
     # Raised when defining an assertion that never holds, or always holds.
     AssertionError = Class.new(Sourced::DefinitionError)
 
     # Message types scoped by partition keys, and the values bound to them.
-    #
     # @!attribute types [Array<Class<Message>>] sorted by type string
     # @!attribute keys [Array<Symbol>] sorted
     # @!attribute values [Hash{Symbol => String}] bound values, by key
@@ -69,10 +56,7 @@ module Sourced
       # @return [Boolean] whether every key has a value
       def bound? = keys.all? { |k| values.key?(k) }
 
-      # Whether a message of one of {#types} carrying these key pairs is in the
-      # part: it carries at least one of its keys, each with the bound value.
-      # Always true without keys.
-      #
+      # Whether a message of {#types} carrying +pairs+ is in the part (see {Selector}).
       # @param pairs [Hash{String => String}] the message's {Message#extracted_keys}
       def selects_pairs?(pairs)
         return true if keys.empty?
@@ -101,14 +85,10 @@ module Sourced
       end
     end
 
-    # A selector of one part, without keys, or scoped by and bound to +values+
-    # (see {#by}).
-    #
-    # @example
-    #   Selector[E1, E2, account_id: 1] # Selector[E1, E2].by(account_id: 1)
+    # A one-part selector, scoped by and bound to +values+ if given:
+    # +Selector[E1, account_id: 1]+ is +Selector[E1].by(account_id: 1)+.
     #
     # @param types [Array<#to_message_class>]
-    # @param values [Hash{Symbol => Object}]
     # @return [Selector] {NONE} for no types
     def self.[](*types, **values)
       return NONE if types.empty?
@@ -128,14 +108,8 @@ module Sourced
       super(parts: merged.freeze, assertion:)
     end
 
-    # Scope every part by +keys+, in addition to its own, and by the keys of
-    # +values+, bound to them.
+    # Scope every part by +keys+ too, and by the keys of +values+, bound to them.
     #
-    # @example
-    #   Selector[E1].by(account_id: 1) # Selector[E1].by(:account_id).bind(account_id: 1)
-    #
-    # @param keys [Array<Symbol, String>]
-    # @param values [Hash{Symbol => Object}] see {#bind}
     # @return [Selector]
     def by(*keys, **values)
       keys = (keys + values.keys).map(&:to_sym)
@@ -143,15 +117,10 @@ module Sourced
       values.empty? ? scoped : scoped.bind(**values)
     end
 
-    # Scope the parts without keys of their own by +keys+, leaving the others
-    # (and their assertions) as declared: what a reactor reads for a partition
-    # from a source whose parts may have keys of their own.
+    # Scope only the parts without keys of their own by +keys+, leaving the
+    # others and their assertions as declared: a reactor's partitioned read of
+    # a source whose parts may have keys of their own.
     #
-    # @example
-    #   (Selector[E1] + Selector[E3].by(:user_id)).by_default(:account_id)
-    #   # => Selector[E1].by(:account_id) + Selector[E3].by(:user_id)
-    #
-    # @param keys [Array<Symbol, String>]
     # @return [Selector]
     def by_default(*keys)
       keys = keys.map(&:to_sym)
@@ -161,23 +130,16 @@ module Sourced
       )
     end
 
-    # Scope every part by message id: one partition per message, an
-    # id-partitioned queue's claims (see {IdPartition}).
-    #
+    # Scope every part by message id (see {IdPartition}).
     # @return [Selector]
     def by_message_id = by(IdPartition::KEY)
 
-    # Whether it's partitioned by message id ({#by_message_id}): one partition
-    # per message, which an id-partitioned queue claims.
-    #
-    # @return [Boolean]
+    # @return [Boolean] whether it's scoped {#by_message_id}
     def id_partitioned? = keys == ID_KEYS
 
-    # Bind values to the still-unbound keys of every part. Values for keys a part
-    # doesn't have are ignored, so a narrower selector binds from a wider
-    # partition. Binding can be partial, and happen in steps.
+    # Bind values to the unbound keys of every part, ignoring keys a part lacks
+    # (so a narrower selector binds from a wider partition). May be partial.
     #
-    # @param values [Hash{Symbol, String => Object}] stringified
     # @return [Selector]
     # @raise [MissingPartitionKeyError] for a nil value
     # @raise [ArgumentError] when rebinding a key to a different value
@@ -188,16 +150,11 @@ module Sourced
 
     # What either selects; both assertions must hold.
     #
-    # @param other [Selector]
-    # @return [Selector]
     # @raise [AssertionError] when the combined assertion never or always holds
     def +(other)
       combined = with(parts: parts + other.parts, assertion: Assertion.and(assertion, other.assertion))
-      # Unchanged from an operand, which was checked when its assertion was
-      # built (the built-ins, +, | and ~ go through #checked), so a check would
-      # find the same. #by and #bind change scopes without checking: bind is on
-      # the claim path, so an assertion that never (or always) holds only once
-      # its keys are bound isn't caught.
+      # An operand's assertion was checked when built. #by and #bind don't
+      # check (bind is on the claim path), so one failing only once bound isn't caught.
       return combined if combined.assertion == assertion || combined.assertion == other.assertion
 
       combined.checked
@@ -205,8 +162,6 @@ module Sourced
 
     # What either selects; either assertion must hold.
     #
-    # @param other [Selector]
-    # @return [Selector]
     # @raise [ArgumentError] when either has no assertion: the result would always hold
     # @raise [AssertionError] when the combined assertion never or always holds
     def |(other)
@@ -219,7 +174,6 @@ module Sourced
 
     # The same selection, asserting the opposite.
     #
-    # @return [Selector]
     # @raise [ArgumentError] without an assertion: the result would never hold
     def ~
       raise ArgumentError, "~#{inspect}: needs an assertion to negate" if assertion == Assertion::TRUE
@@ -228,48 +182,32 @@ module Sourced
     end
 
     # Holds when it selects nothing.
-    # @return [Selector]
     def is_empty = attach(:is_empty, nil)
 
-    # Holds when it selects some +type+.
-    # @param type [#to_message_class] one of its types
-    # @return [Selector]
+    # Holds when it selects some +type+ (one of its {#types}).
     def includes(type) = attach(:includes, type)
 
     # Holds when it selects no +type+.
-    # @param type [#to_message_class] one of its types
-    # @return [Selector]
     def excludes(type) = attach(:includes, type, negate: true)
 
     # Holds when the first message it selects is a +type+.
-    # @param type [#to_message_class] one of its types
-    # @return [Selector]
     def starts_with(type) = attach(:starts_with, type)
 
     # Holds when the last message it selects is a +type+.
-    # @param type [#to_message_class] one of its types
-    # @return [Selector]
     def ends_with(type) = attach(:ends_with, type)
 
-    # Whether the selector selects +message+: the store's partition rule, in
-    # Ruby. Types indexed by message id (id-partitioned queues' types) are an
-    # exception: the store indexes them under +__id+ only, so it never reads
-    # them by a payload key, but this matches them by their payload.
+    # Whether it selects +message+: the store's partition rule, in Ruby. It
+    # matches id-indexed types by payload, which the store never does.
     #
-    # @param message [Message, #to_message]
     # @raise [UnboundKeyError] unless {#bound?}
     def selects?(message) = bound!.selected?(message.to_message)
 
-    # The state of its assertion before any message: one state per leaf.
-    #
-    # @return [Array<Symbol>]
+    # @return [Array<Symbol>] its assertion's state before any message, one per leaf
     def start = assertion.leaves.map(&:initial).freeze
 
-    # The state of its assertion after +messages+, in order. Each leaf
-    # advances on the messages its own selector selects.
+    # Its assertion's state after +messages+, in order, from +state+ ({#start}
+    # or a previous {#advance}). Each leaf advances on what its scope selects.
     #
-    # @param state [Array<Symbol>] from {#start} or a previous {#advance}
-    # @param messages [Array<Message>]
     # @return [Array<Symbol>]
     # @raise [UnboundKeyError] unless {#bound?}
     def advance(state, messages)
@@ -287,33 +225,24 @@ module Sourced
       end
     end
 
-    # @param state [Array<Symbol>]
     # @return [Boolean] whether its assertion holds in +state+
     def accepts?(state) = assertion.evaluate(assertion.leaves.zip(state).to_h)
 
-    # @param messages [Array<Message>] in position order, ex. what {Store#read} returned
-    # @return [Boolean] whether its assertion holds after +messages+
+    # @return [Boolean] whether its assertion holds after +messages+, in position order
     # @raise [UnboundKeyError] unless {#bound?}
     def holds?(messages) = accepts?(advance(start, messages))
 
-    # @return [Automaton] its assertion's reachable states (without an
-    #   assertion, one accepting state over the types it selects)
+    # @return [Automaton] its assertion's reachable states
     def automaton = Automaton.new(assertion, parts)
 
-    # @return [String] a Mermaid +stateDiagram-v2+ of its assertion's minimal
-    #   automaton, its states +valid+ (the assertion holds) or +invalid+. Without
-    #   an assertion, one +valid+ state that every message it selects keeps.
+    # @return [String] a Mermaid diagram of its assertion's minimal automaton
     def to_mermaid = automaton.to_mermaid
 
-    # A selector is a source for what reads one (a reactor, see {Evolve}), as
-    # an inline projector is: it reads its own {#selector}, and evolves
-    # through {#to_projector}.
-    #
+    # A selector is a reactor's source (see {Evolve}), as an inline projector is.
     # @return [self]
     def selector = self
 
-    # @return [Class<Projection>] a projector whose context is the messages of
-    #   its types
+    # @return [Class<Projection>] a projector whose context is its types' messages
     def to_projector = Projection.for(self)
 
     # @return [Boolean] whether every key of every part has a value
@@ -322,7 +251,6 @@ module Sourced
     # @return [Array<Symbol>] keys some part has no value for
     def unbound_keys = parts.flat_map { |p| p.keys - p.values.keys }.uniq
 
-    # @return [self]
     # @raise [UnboundKeyError] unless {#bound?}
     def bound!
       return self if bound?
@@ -336,14 +264,12 @@ module Sourced
     # @return [Array<Class<Message>>] every part's types
     def types = parts.flat_map(&:types).uniq
 
-    # @return [Array<String>] every part's type strings
+    # @return [Array<String>]
     def type_names = types.map(&:type)
 
     # @return [Array<Symbol>] every part's keys
     def keys = parts.flat_map(&:keys).uniq
 
-    # Each part as its types and scope, unbound keys as +?+, and its assertion.
-    #
     # @example
     #   #<Sourced::Selector [CourseCreated].by(course_id: "c1") + [UserRegistered].by(user_id: ?)>
     #   #<Sourced::Selector [OrderCancelled, OrderReopened].by(order_id: ?) where ¬ends_with(OrderCancelled)>
@@ -370,7 +296,6 @@ module Sourced
       end
     end
 
-    # @return [self]
     # @raise [AssertionError] when its assertion never or always holds
     def checked
       return self if assertion.leaves.empty?

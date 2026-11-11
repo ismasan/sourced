@@ -3,20 +3,14 @@
 module Sourced
   class Selector
     # The reachable states of an {Assertion}'s product automaton, for checking
-    # assertions when they're defined and drawing them ({Selector#to_mermaid}).
-    # Evaluating an assertion over messages ({Selector#holds?}) doesn't need it.
+    # assertions when they're defined and drawing them.
     #
-    # Its alphabet abstracts messages: a symbol is a message class and the part
-    # scopes (keys and values) that select it. When every leaf's scope selects a
-    # class with the same keys and values, a symbol is just the class and the
-    # automaton is exact. When they differ, a message of that class may be
-    # selected by some scopes and not others. With every key bound, a symbol is
-    # each combination some message can produce (one +order_id+ can't be both
-    # "x" and "y"). With unbound keys, every combination is a symbol: an
-    # over-approximation. A superset of the real alphabet reaches a superset of
-    # the real states, so "no reachable state accepts" (never holds) and "every
-    # reachable state accepts" (always holds) remain true of every real
-    # history. Don't tighten it without keeping that.
+    # A letter is a message class and the part scopes that select it. With
+    # every key bound, the alphabet is the combinations some message can
+    # produce (one +order_id+ can't be both "x" and "y"); with unbound keys it's
+    # every combination, an over-approximation. A superset of the real alphabet
+    # reaches a superset of the real states, so {#never?} and {#always?} stay
+    # sound. Don't tighten it without keeping that.
     class Automaton
       # A message class, selected by the parts with these signatures (keys and values).
       Letter = Data.define(:type, :signatures) do
@@ -45,9 +39,7 @@ module Sourced
       # @return [Set<Array<Symbol>>]
       attr_reader :accepting
 
-      # @param assertion [Assertion]
-      # @param parts [Array<Selector::Part>] what the alphabet is over when the
-      #   assertion has no leaves (the selector's own parts); leaves bring their scopes'
+      # @param parts [Array<Selector::Part>] the alphabet's parts when the assertion has no leaves
       def initialize(assertion, parts = Plumb::BLANK_ARRAY)
         @assertion = assertion
         @leaves = assertion.leaves
@@ -66,9 +58,7 @@ module Sourced
       # @param state [Array<Symbol>]
       def accept?(state) = accepting.include?(state)
 
-      # States merged when they accept the same futures (Moore's algorithm),
-      # each labelled by its first state, in breadth-first order.
-      #
+      # States merged when they accept the same futures (Moore's algorithm).
       # @return [Array<Array<Array<Symbol>>>] blocks of equivalent states; the first holds {#initial}
       def minimal_blocks
         block_of = states.to_h { |s| [s, accept?(s) ? 1 : 0] }
@@ -83,10 +73,8 @@ module Sourced
         states.group_by { |s| block_of[s] }.values
       end
 
-      # States are labelled by whether the assertion holds there: +valid+ or
-      # +invalid+. States sharing a label differ in what can happen next.
-      #
-      # @return [String] a Mermaid +stateDiagram-v2+ of the minimal automaton
+      # @return [String] a Mermaid +stateDiagram-v2+ of the minimal automaton,
+      #   its states +valid+ or +invalid+ (whether the assertion holds there)
       def to_mermaid
         blocks = minimal_blocks
         id_of = {}

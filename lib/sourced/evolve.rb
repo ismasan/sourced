@@ -2,24 +2,19 @@
 
 module Sourced
   # What a reactor reads its history through: a {Selector} (its context is the
-  # messages it selects) or a {Projector::Inline} subclass (its context is the
-  # projection's). It answers the selector the reactor reads, scoped to the
-  # partition, and the projector the reactor evolves. See {Evolve}.
+  # messages it selects) or a {Projector::Inline} subclass. See {Evolve}.
   SourceInterface = Types::Interface[:selector, :to_projector]
 
   # Evolve mixin for reactors: evolves reactor context through its
   # {ClassMethods#source source}.
   #
-  # By default the source is a {Sourced::Projector::Inline} subclass of the
-  # reactor's own, which the +context+ / +evolve+ DSL declares, so evolve
-  # blocks run in the projection's scope, not the reactor's. A reactor can also
-  # adopt a standalone source with <tt>evolve SomeSource</tt>: a projector, or
-  # (for a Decider) a {Selector}.
+  # By default the source is the reactor's own inline projector, declared by
+  # the +context+ / +evolve+ DSL (blocks run in the projection's scope). A
+  # reactor can instead adopt a standalone source with <tt>evolve SomeSource</tt>:
+  # a projector or a {Selector}.
   #
-  # Each reactor works on a projector subclass of its own (of its source's
-  # +to_projector+, or its parent reactor's projector), so inline +evolve+
-  # blocks never change a projector another reactor uses. A selector's
-  # projector takes no inline declarations.
+  # Each reactor works on a projector subclass of its own, so inline +evolve+
+  # blocks never change a projector another reactor uses.
   #
   # @example Inline projector
   #   class Carts < Sourced::Decider
@@ -67,10 +62,9 @@ module Sourced
       projection.evolve(messages)
     end
 
-    # Whether the source's assertion holds over the context so far, in this
-    # reactor's partition (+partition_values+): a selector source's
-    # precondition. True for a source without one, ex. an inline projector.
-    # Deciders and machines decide a command only while it holds.
+    # Whether the source selector's assertion holds over the context in this
+    # reactor's partition. Deciders and machines decide a command only while it
+    # holds.
     #
     # @return [Boolean]
     def source_holds?
@@ -84,35 +78,25 @@ module Sourced
         subclass.send(:__use_source, @source, projector)
       end
 
-      # What the reactor reads its history through: the source it adopted with
-      # {#evolve}, else its own {#projector}.
-      #
-      # @return [SourceInterface]
+      # @return [SourceInterface] the adopted source, else its own {#projector}
       def source = @source || projector
 
-      # The projector this reactor owns and its projections are built from: a
-      # subclass of its source's +to_projector+ (an inline projector, or a
-      # {Selector::Projection}), or of its parent reactor's.
+      # The reactor's own subclass of its source's +to_projector+, or of its
+      # parent reactor's projector.
       #
       # @return [Class<Sourced::Projector::Inline>, Class<Selector::Projection>]
       def projector
         @projector ||= __build_projector(Sourced::Projector::Inline)
       end
 
-      # What the reactor evolves from, without its partition: its projector's
-      # selector (a selector source's, as given). What it reacts to with a
-      # catch-all +reaction+, and what Topology draws, however it's partitioned.
+      # What the reactor evolves from, without its partition.
       #
       # @return [Selector]
       def evolve_selector = projector.selector
 
       # The history the Router reads for a claimed partition: {#evolve_selector}
-      # with its parts that have no keys scoped by the partition keys
-      # ({Selector#by_default}), and the others as declared (a selector
-      # source's parts with keys of their own, which {PartitionSchema.check!}
-      # holds to partition keys). {Selector::NONE} (no history) for an
-      # id-partitioned reactor, which declares no partition keys or
-      # +partition_by :__id+.
+      # with its keyless parts scoped by the partition keys; keyed parts stay as
+      # declared. {Selector::NONE} for an id-partitioned reactor.
       #
       # @return [Selector]
       def history_selector
@@ -121,15 +105,13 @@ module Sourced
         evolve_selector.by_default(*partition_keys)
       end
 
-      # Validate the definition, then fix {#history_selector} for
-      # {#__source_selector}.
+      # Validate the definition, then fix {#__source_selector}.
       def validate!
         super.tap { @__source_selector = history_selector }
       end
 
       # @api private
-      # {#history_selector}, fixed by {#validate!}, read per call before it.
-      # What {Evolve#source_holds?} checks.
+      # {#history_selector}, fixed by {#validate!}; what {Evolve#source_holds?} checks.
       # @return [Selector]
       def __source_selector = @__source_selector || history_selector
 
@@ -149,9 +131,8 @@ module Sourced
       # Register an evolve handler on the reactor's projection, or adopt a
       # standalone source.
       #
-      # Adopting must come before this reactor's own +context+ / +evolve+ /
-      # +before_evolve+ declarations, which it would otherwise discard. It replaces
-      # the source inherited from a parent reactor.
+      # Adopting must come before the reactor's own +context+ / +evolve+ /
+      # +before_evolve+ declarations, and replaces an inherited source.
       #
       # @overload evolve(message_class, &block)
       #   @param message_class [Class] a {Sourced::Message} subclass
@@ -159,8 +140,7 @@ module Sourced
       #   @raise [ArgumentError] for a selector source, which takes no handlers
       # @overload evolve(source)
       #   @param source [SourceInterface] an inline projector, or a {Selector}
-      # @raise [ArgumentError] when adopting after own declarations, or with a
-      #   block
+      # @raise [ArgumentError] when adopting after own declarations, or with a block
       def evolve(declared, &block)
         if SourceInterface === declared
           __adopt!(declared, block)

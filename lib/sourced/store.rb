@@ -494,7 +494,7 @@ module Sourced
     # @example Only what a selector selects
     #   messages = store.read_all(Selector[DeviceRegistered].by(:device_id).bind(device_id: 'd1'), limit: 20)
     #
-    # @param selector [Selector, nil] only return what it selects (default: everything)
+    # @param selector [Selector, nil] default: everything
     # @param from_position [Integer] return messages from this position, inclusive (default 0)
     # @param limit [Integer] max number of messages to return (default 50)
     # @param order [:asc, :desc]
@@ -518,12 +518,9 @@ module Sourced
       ReadAllResult.new(messages:, last_position: latest_position, fetcher:)
     end
 
-    # The messages +selector+ selects, in position order, and a guard over the
-    # same selector.
-    #
-    # The guard's position is the last message read, or +after_position+: its
-    # conflict check matches exactly what this read matches, so nothing in
-    # between can be missed or misreported.
+    # The messages +selector+ selects, in position order, and a guard over it
+    # at the last message read (or +after_position+), so its conflict check
+    # matches exactly what this read matched.
     #
     # @example Using the guard for optimistic concurrency on append
     #   selector = Selector[DeviceRegistered, DeviceBound].by(:device_id).bind(device_id: 'dev-1')
@@ -533,9 +530,9 @@ module Sourced
     #   # Raises Sourced::ConcurrentAppendError if conflicting writes occurred
     #
     # @param selector [Selector]
-    # @param after_position [Integer, nil] only return messages after this position (exclusive)
-    # @param limit [Integer, nil] max number of messages to return
-    # @return [ReadResult] messages and a guard
+    # @param after_position [Integer, nil] exclusive
+    # @param limit [Integer, nil]
+    # @return [ReadResult]
     # @raise [Selector::UnboundKeyError] for a selector with unbound keys
     def read(selector, after_position: nil, limit: nil)
       selector.bound!
@@ -544,28 +541,22 @@ module Sourced
       ReadResult.new(messages:, guard: ConsistencyGuard.new(selector:, last_position:))
     end
 
-    # The SQL {#read} runs for +selector+, for inspecting or explaining a read
-    # (ex. +EXPLAIN QUERY PLAN+). Key pair ids are resolved now and inlined as
-    # literals, so it reflects the key pairs that exist at the time of the call.
+    # The SQL {#read} runs for +selector+ (ex. for +EXPLAIN QUERY PLAN+), with
+    # the key pair ids that exist now inlined as literals.
     #
-    # @param selector [Selector]
-    # @param after_position [Integer, nil]
-    # @param limit [Integer, nil]
-    # @return [String, nil] nil when the read runs no query: the selector has no
-    #   parts, or none of its parts' key pairs exist yet
+    # @return [String, nil] nil when the read runs no query
     # @raise [Selector::UnboundKeyError] for a selector with unbound keys
     def read_sql(selector, after_position: nil, limit: nil)
       messages_sql(selector.bound!, after: after_position, limit:)
     end
 
     # Register a consumer group. Idempotent.
-    # With a +selector+, the one the group claims with (see {#claim_next}),
-    # offsets are created eagerly during {#append} for its partition keys, from
-    # messages of its types (as discovery in {#claim_next} does), and an id-partitioned
-    # group's types are indexed by message id.
+    # With a claim +selector+ (see {#claim_next}), {#append} creates offsets
+    # eagerly for its partition keys from messages of its types, and an
+    # id-partitioned group's types are indexed by message id.
     #
     # @param group_id [String] unique identifier for the consumer group
-    # @param selector [Selector, nil] the group's claim selector
+    # @param selector [Selector, nil]
     # @param label [String, nil] the name the group is shown under (its reactor's
     #   class name). Updated on every registration, so it follows a renamed class.
     # @param exclusive [Boolean] when true, the group exclusively owns its message
@@ -688,18 +679,14 @@ module Sourced
 
     # Claim the next available partition for processing.
     #
-    # +selector+ is unbound, its parts by the same partition keys, ex.
-    # <tt>Selector[ItemAdded, OrderPlaced].by(:order_id)</tt>: its keys are the
-    # group's partitions, its types the messages it handles. Its assertion is
+    # +selector+ is unbound, all parts by the same partition keys, ex.
+    # <tt>Selector[ItemAdded, OrderPlaced].by(:order_id)</tt>. Its assertion is
     # ignored.
     #
     # Bootstraps partition offsets (discovering new partitions from messages with
-    # ALL the partition keys), finds the unclaimed partition with the earliest
-    # pending message, claims it, and fetches what +selector+, bound to the
-    # partition, selects.
-    #
-    # Returns a {ConsistencyGuard} over that bound selector alongside the
-    # messages ({Selector::NONE} for id-partitioned queue claims).
+    # ALL the partition keys), claims the unclaimed partition with the earliest
+    # pending message, and fetches what +selector+ bound to it selects, with a
+    # guard over that ({Selector::NONE} for id-partitioned queue claims).
     #
     # The +replaying+ flag indicates whether the returned messages have been
     # processed by this consumer group before. A message is replaying when its
@@ -708,7 +695,7 @@ module Sourced
     # messages are correctly flagged as replaying.
     #
     # @param group_id [String] consumer group identifier
-    # @param selector [Selector] what the group claims
+    # @param selector [Selector]
     # @param worker_id [String] identifier for the claiming worker
     # @param batch_size [Integer, nil] max messages to fetch per claim (nil = unlimited)
     # @return [ClaimResult, nil] nil when there's nothing to claim, or for {Selector::NONE}
@@ -809,9 +796,8 @@ module Sourced
         return nil
       end
 
-      # The guard covers the selector's types (not just fetched messages), so message
-      # types that haven't appeared yet are conflicts too. An id partition holds
-      # one message, so a queue claim has nothing to guard.
+      # The guard covers the selector's types, so types not yet seen are
+      # conflicts too. An id partition holds one message: nothing to guard.
       last_pos = messages.last.position
       guard_selector = selector.id_partitioned? ? Selector::NONE : selector
       guard = ConsistencyGuard.new(selector: guard_selector, last_position: last_pos)
@@ -984,12 +970,10 @@ module Sourced
     # An offset is drained when it is currently unclaimed, it has at least one
     # partition key (only partitioned offsets are reaped — a non-partitioned
     # group's single offset is kept), and no remaining message carries any of
-    # its key pairs. That keeps every offset whose partition still has messages
-    # (they carry its values), and some whose remaining messages are in other
-    # partitions sharing one of its values, until those are deleted too: an
-    # exact check would compare each candidate message's other keys, and scan
-    # every message sharing a low-cardinality value. A retain (non-deleting)
-    # reactor's partitions always have messages, so they are never matched here.
+    # its key pairs. This over-keeps offsets whose remaining messages belong to
+    # other partitions sharing a value: an exact check would scan every message
+    # sharing a low-cardinality value. A retain (non-deleting) reactor's
+    # partitions always have messages, so they are never matched here.
     #
     # The reap race is benign: if a new message arrives for a just-reaped
     # partition, {#claim_next} re-discovers and recreates the offset on the next
@@ -1248,9 +1232,8 @@ module Sourced
     end
 
     # Create offsets eagerly for all registered consumer groups, for each
-    # appended message of a group's types that carries all of its partition keys.
-    # These are the partitions {#discover_new_partitions} finds, so a group sees
-    # the same ones whether it was registered before the messages or after.
+    # appended message of a group's types that carries all of its partition keys
+    # (the partitions {#discover_new_partitions} finds).
     # Called inside the append transaction after messages and key_pairs are inserted.
     #
     # @param types [Array<String>] each appended message's type
@@ -1450,26 +1433,21 @@ module Sourced
     end
 
     # Find the next unclaimed partition with pending messages and claim it.
-    # A message is pending for a partition when it's in it by the partition
-    # rule the claim then reads with (see {#partition_filter_sql}): it carries
-    # at least one of the offset's key pairs, and no partition key with
-    # another value. So a message carrying only some of the keys wakes every
-    # partition sharing them.
+    # Pending is the partition rule the claim then reads with (see
+    # {#partition_filter_sql}).
     #
     # @param cg_id [Integer] consumer group internal ID
-    # @param partition_by [Array<String>] the partition keys
-    # @param handled_types [Array<String>] message type strings
+    # @param partition_by [Array<String>]
+    # @param handled_types [Array<String>]
     # @param worker_id [String] claiming worker identifier
     # @return [Hash, nil] +{ offset_id:, partition_key:, last_position: }+ or nil
     def find_and_claim_partition(cg_id, partition_by, handled_types, worker_id)
       types_list = handled_types.map { |t| db.literal(t) }.join(', ')
       names_list = partition_by.map { |n| db.literal(n) }.join(', ')
 
-      # Single query for the lowest-last_position unclaimed offset that has a
-      # pending message: one indexed under one of the offset's key_pairs
-      # (message_key_pairs(key_pair_id, message_position)), with no key_pair
-      # under a partition key that isn't the offset's (message_key_pairs PK,
-      # key_pairs PK, offset_key_pairs PK).
+      # The lowest-last_position unclaimed offset with a pending message, all
+      # index-backed: message_key_pairs(key_pair_id, message_position) and the
+      # message_key_pairs, key_pairs and offset_key_pairs PKs.
       offset = db.fetch(<<~SQL).first
         SELECT o.id, o.partition_key, o.last_position
         FROM #{@offsets_table} o
@@ -1514,9 +1492,7 @@ module Sourced
 
     # A claim selector's partition keys: one offset per tuple of their values.
     #
-    # @param selector [Selector]
     # @return [Array<String>] sorted
-    # @raise [ArgumentError] unless every part has the same keys, none bound
     def claim_keys(selector)
       keys = selector.parts.map(&:keys).uniq
       if keys.size > 1
@@ -1533,11 +1509,8 @@ module Sourced
     # The messages +selector+ selects, in position order.
     #
     # @param selector [Selector] bound
-    # @param after [Integer, nil] positions after this (exclusive)
-    # @param through [Integer, nil] positions up to this (inclusive)
-    # @param limit [Integer, nil]
-    # @param order [:asc, :desc]
-    # @param key_pair_index [Hash{Array(String, String) => Integer}, nil] see {#selector_sql}
+    # @param after [Integer, nil] exclusive
+    # @param through [Integer, nil] inclusive
     # @return [Array<PositionedMessage>]
     def select_messages(selector, after: nil, through: nil, limit: nil, order: :asc, key_pair_index: nil)
       sql = messages_sql(selector, after:, through:, limit:, order:, key_pair_index:)
@@ -1547,8 +1520,6 @@ module Sourced
     end
 
     # The query {#select_messages} runs, or nil when the selector can select nothing.
-    #
-    # @return [String, nil]
     def messages_sql(selector, after: nil, through: nil, limit: nil, order: :asc, key_pair_index: nil)
       candidates, filter = selector_sql(selector, after:, through:, key_pair_index:, limit:, order:)
       return unless candidates
@@ -1564,23 +1535,18 @@ module Sourced
       sql
     end
 
-    # SQL for what +selector+ selects within a position range: candidate
-    # positions, and the condition over candidate messages +m+ that narrows them.
-    # Each part contributes its candidates and its condition; parts are OR'd.
-    # Candidates are pooled, so a part's condition holds only for messages the
-    # part selects, wherever they came from (see {#partition_filter_sql}).
+    # SQL for what +selector+ selects within a position range: the union of
+    # each part's candidate positions, and the OR of each part's condition over
+    # candidate messages +m+. Candidates are pooled, so each condition must hold
+    # only for messages its part selects.
     #
-    # A keyed part's candidates are the positions indexed under any of its
-    # key_pairs, bounded in the (key_pair_id, message_position) index, so a read
-    # costs the partition's messages, not the log's. A part whose key_pairs don't
-    # exist yet selects nothing. A part without keys takes its candidates from
-    # the message_type index. Its candidates are its matches, so with a +limit+
-    # it contributes only the first +limit+ of them in +order+.
+    # Keyed parts' candidates come from the (key_pair_id, message_position)
+    # index, so a read costs the partition's messages, not the log's. Keyless
+    # parts' come from the message_type index and are their matches, so they
+    # take +limit+.
     #
-    # @param key_pair_index [Hash{Array(String, String) => Integer}, nil] key_pair
-    #   ids by [name, value], when the caller has them; looked up otherwise
-    # @param limit [Integer, nil] the read's limit
-    # @param order [:asc, :desc] the read's order
+    # @param key_pair_index [Hash{Array(String, String) => Integer}, nil] ids by
+    #   [name, value]; looked up when nil
     # @return [Array(String, String), nil] candidates and condition, or nil when
     #   the selector can select nothing
     def selector_sql(selector, after: nil, through: nil, key_pair_index: nil, limit: nil, order: :asc)
@@ -1630,7 +1596,6 @@ module Sourced
 
     # Ids of the key_pairs a selector's parts are bound to that exist, in one query.
     #
-    # @param selector [Selector]
     # @return [Hash{Array(String, String) => Integer}] ids by [name, value]
     def key_pair_index_for(selector)
       pairs = selector.parts.flat_map { |p| p.values.map { |name, value| [name.to_s, value] } }.uniq
@@ -1641,17 +1606,14 @@ module Sourced
         .to_h { |r| [[r[:name], r[:value]], r[:id]] }
     end
 
-    # A keyed part's condition, over candidate messages +m+ from {#selector_sql}:
-    # the message carries at least one of the part's key_pairs, and none of the
-    # part's keys with another value (including a value whose key_pair didn't
-    # exist when the ids were resolved). A part's own candidates carry one of
-    # its key_pairs, so when they're the only candidates (+own_candidates+),
-    # that half is left out.
+    # A keyed part's condition, over candidate messages +m+: the message
+    # carries at least one of the part's key_pairs, and none of its keys with
+    # another value (including one whose key_pair didn't exist when the ids
+    # were resolved). With +own_candidates+ (every candidate is the part's, so
+    # carries one of its key_pairs) the first half is left out.
     #
     # @param key_pair_ids [Array<Integer>] the part's key_pairs that exist
     # @param attr_names [Array<Symbol, String>] all the part's keys
-    # @param handled_types [Array<String>]
-    # @param own_candidates [Boolean] whether every candidate is the part's
     def partition_filter_sql(key_pair_ids, attr_names, handled_types, own_candidates: false)
       kp_ids_list = key_pair_ids.map { |id| db.literal(id) }.join(', ')
       names_list = attr_names.map { |n| db.literal(n.to_s) }.join(', ')
@@ -1677,7 +1639,7 @@ module Sourced
     end
 
     # Whether a message the guard's selector selects was appended after its
-    # position: {#selector_sql} after +last_position+, LIMIT 1.
+    # +last_position+.
     #
     # @param guard [ConsistencyGuard]
     # @return [Boolean]

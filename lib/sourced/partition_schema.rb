@@ -2,10 +2,9 @@
 
 module Sourced
   # Checks a reactor's handled messages against its +partition_schema+
-  # (see {Consumer#partition_by}). Built-in reactors run it from +validate!+
-  # ({Consumer.validate!}, {Machine.validate!}), which the {Router} calls when
-  # adding them, so hand-defined messages are held to the same keys and types
-  # as those built with {Consumer#Command} / {Consumer#Event}.
+  # (see {Consumer#partition_by}). Built-in reactors run it from +validate!+,
+  # which the {Router} calls, so hand-defined messages are held to the same
+  # keys and types as those built with {Consumer#Command} / {Consumer#Event}.
   #
   # The store reads a message into a partition when every partition key it
   # declares matches, so messages carrying some of the keys are legitimate.
@@ -13,19 +12,16 @@ module Sourced
   #
   # * Commands, reactions and a machine's +on+ events pick out one partition:
   #   they must declare every key, as required attributes. So must a Decider's
-  #   declared outputs, which are appended to the partition: with only some
-  #   keys, they'd be read into every partition sharing them.
+  #   declared outputs, or they'd be read into every partition sharing a key.
   # * Any other handled message must declare at least one key, or no
   #   partition ever reads it.
   # * Every key a message declares must be the schema's type, or stricter
   #   (Plumb subtyping: +String.present+ passes for +String+, +Integer+ doesn't).
   # * At least one handled message declares every key, or no partition is
   #   ever created.
-  # * The claim selector's keys are the partition keys: they're what a claim's
-  #   partition has values for.
-  # * The history selector's keys are the claim selector's: binding takes
-  #   their values from the claimed partition ({.check_history_keys!}, which
-  #   the Router runs for reactors without a schema).
+  # * The claim selector's keys are the partition keys.
+  # * The history selector's keys are the claim selector's, so a claim can
+  #   bind them ({.check_history_keys!}).
   #
   # Id-partitioned reactors (no schema) are only checked for the last rule.
   module PartitionSchema
@@ -37,8 +33,7 @@ module Sourced
     }.freeze
 
     # @param reactor [#partition_schema, #claim_selector, #history_selector] +partition_schema+
-    #   is a +Plumb::HashClass+; its roles come from +handled_commands+ / +handled_events+ /
-    #   +handled_messages_for_react+ where it has them, its messages from those and its selectors
+    #   is a +Plumb::HashClass+
     # @param error [Class] the exception class to raise
     # @raise [DefinitionError]
     # @return [void]
@@ -90,9 +85,6 @@ module Sourced
       klass::Payload._schema.to_h.to_h { |key, type| [key.to_sym, [type, key.optional?]] }
     end
 
-    # A claim reads the reactor's +history_selector+ bound to the claimed
-    # partition, so its keys must be the +claim_selector+'s.
-    #
     # @param reactor [#claim_selector, #history_selector]
     # @param error [Class] the exception class to raise
     # @raise [DefinitionError]

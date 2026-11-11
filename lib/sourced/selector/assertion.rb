@@ -2,18 +2,15 @@
 
 module Sourced
   class Selector
-    # What must hold of the messages a {Selector} selects, as a tree of built-in
-    # assertions ({Leaf}s) combined with {And}, {Or} and {Not}.
+    # What must hold of the messages a {Selector} selects: built-in {Leaf}s
+    # combined with {And}, {Or} and {Not}.
     #
-    # Every built-in is a small deterministic finite automaton over message
-    # types, so a combination is their product: its state is one state per
-    # leaf, advanced by the messages each leaf's own selector (its +scope+, the
-    # selector it was attached to) selects. That state is all the history it
-    # needs to decide, so it can be stored and advanced with new messages only
-    # (see {Selector#start}, {Selector#advance}, {Selector#accepts?}).
+    # Each built-in is a small DFA over message types, so a combination is
+    # their product: one state per leaf, advanced by what the leaf's +scope+
+    # selects. That state is all the history it needs, so it can be stored and
+    # advanced with new messages only.
     #
-    # Nodes are frozen values. {.and} / {.or} flatten and order their operands,
-    # so equal assertions compare equal however they were combined.
+    # {.and} / {.or} flatten and order their operands, so equal assertions compare equal.
     module Assertion
       # Holds for any history: a selector without an assertion.
       True = Data.define do
@@ -46,10 +43,6 @@ module Sourced
         end
 
         # The state after a message of +klass+ that {#scope} selects.
-        #
-        # @param state [Symbol]
-        # @param klass [Class<Message>]
-        # @return [Symbol]
         def step(state, klass)
           case kind
           in :is_empty then :some
@@ -59,7 +52,6 @@ module Sourced
           end
         end
 
-        # @param state [Symbol]
         def accept?(state)
           case kind
           in :is_empty then state == :empty
@@ -102,8 +94,7 @@ module Sourced
 
       module_function
 
-      # @return [Assertion] all of +nodes+, flattened, deduplicated and ordered;
-      #   {TRUE} for none
+      # @return [Assertion] all of +nodes+, flattened, deduplicated and ordered ({TRUE} for none)
       def and(*nodes)
         operands = nodes.flat_map { |n| n.is_a?(And) ? n.operands : [n] }.reject { |n| n == TRUE }
         combine(And, operands) { TRUE }

@@ -7,10 +7,6 @@ module Sourced
   Outputs = Data.define(:messages, :optional) do
     # One +Input => outputs+ pair, as +command+, +reaction+ and +after+ take
     # it: the input as given (each macro reads its own), and its outputs.
-    #
-    #   input, outputs = Outputs.pair(declaration, "#{self}.command", example: 'Command => Event')
-    #
-    # @param declaration [Object] what the macro was given
     # @param label [String] the macro, for errors
     # @param example [String] a pair it takes, for errors
     # @param error [Class<Exception>] what to raise
@@ -26,9 +22,6 @@ module Sourced
     end
 
     # {.parse}, raising +error+ with +label+ for what it rejects.
-    # @param declared [Class, Plumb::Or, nil]
-    # @param label [String] the declaring macro, for errors
-    # @param error [Class<Exception>]
     # @return [Outputs]
     def self.declare(declared, label, error: ArgumentError)
       parse(declared)
@@ -45,10 +38,9 @@ module Sourced
       new(messages: members.compact.uniq.freeze, optional: members.include?(nil))
     end
 
-    # The message classes +declared+ stands for, +nil+ for a +nil+ member: a
-    # message class (or anything answering +to_message_class+), a +Plumb::Or+
-    # of them, or a union answering +to_message_classes+ (ex. machine states,
-    # {Machine::Targets}).
+    # The message classes +declared+ stands for, +nil+ for a +nil+ member:
+    # anything answering +to_message_class+, a +Plumb::Or+ of them, or a union
+    # answering +to_message_classes+ (ex. {Machine::Targets}).
     # @return [Array<Class, nil>]
     # @raise [ArgumentError] for anything else
     def self.flatten(declared)
@@ -67,9 +59,6 @@ module Sourced
 
     # An action without a block dispatches each output, so it needs some, and
     # no choice between dispatching them and none.
-    # @param block [Proc, nil] the action's block
-    # @param label [String] the action, for errors
-    # @param error [Class<Exception>]
     # @return [self]
     def check_blockless!(block, label, error: ArgumentError)
       return self if block || (messages.any? && !optional)

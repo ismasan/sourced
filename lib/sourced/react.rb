@@ -10,11 +10,9 @@ module Sourced
     PREFIX = 'sourced_reaction'
     EMPTY_ARRAY = [].freeze
 
-    # What +reaction+ takes, for errors.
     REACTION_PAIR = 'Event => Command | Other | nil, A | B => Command, or any: Command'
 
-    # Raised when a reaction appends a message its declaration doesn't
-    # include, or appends nothing when its outputs don't include +nil+.
+    # See {ClassMethods#reaction}.
     UndeclaredMessageError = Class.new(UndeclaredOutputError)
 
     def self.included(base)
@@ -68,8 +66,6 @@ module Sourced
 
     private
 
-    # Run +message+'s reaction handler, if it has one, holding what it
-    # appends (returned or dispatched) to its declared outputs.
     def __run_reaction(message)
       klass = message.to_message.class
       method_name = self.class.reaction_handlers[klass]
@@ -83,10 +79,7 @@ module Sourced
       returned
     end
 
-    # Run the block, holding what it dispatches, and the messages it
-    # returns, to +outputs+.
-    # @param outputs [Outputs] what the handler declares
-    # @param label [String] the handler, for errors
+    # Run the block, holding what it dispatches and returns to +outputs+.
     # @yieldreturn [Array<Sourced::Message>] messages it appends besides its dispatches
     # @return [Array<Dispatcher>] what it dispatched
     def __checking_outputs(outputs, label)
@@ -97,9 +90,6 @@ module Sourced
       dispatched
     end
 
-    # @param outputs [Outputs] what the handler declares
-    # @param appended [Array<Sourced::Message>] what it appended
-    # @param label [String] the handler, for errors
     def __check_outputs!(outputs, appended, label)
       appended.each do |msg|
         next if outputs.include?(msg.to_message.class)
@@ -210,20 +200,13 @@ module Sourced
         @catch_all_react_events ||= Set.new
       end
 
-      # Register a reaction handler, and what it may append: a message class,
-      # a union of them, with +| nil+ when it may append none.
+      # Register a reaction handler, and what it may append (see {Outputs}).
+      # Appending an undeclared class, or nothing without +| nil+, raises
+      # {UndeclaredMessageError}.
       #
-      # The reacted-to side is a message class (or anything whose
-      # +to_message_class+ returns one, see {Sourced::Message.to_message_class}),
-      # a union of them (+A | B+), or +:any+ for a catch-all reaction across
-      # all evolve types without a handler of their own. Handlers are looked up
-      # by +message.to_message.class+. Without a block, +reaction A+ only
-      # subscribes to +A+.
-      #
-      # @example React to an event
-      #   reaction StudentEnrolled => NotifyStudent do |context, event|
-      #     dispatch(NotifyStudent, student_id: event.payload.student_id)
-      #   end
+      # The reacted-to side is a message class, a union of them (+A | B+), or
+      # +:any+ for every evolve type without a handler of its own. Without a
+      # block, +reaction A+ only subscribes to +A+.
       #
       # @example React to several message classes, maybe appending nothing
       #   reaction StudentEnrolled | StudentRejoined => NotifyStudent | nil do |context, event|
@@ -235,8 +218,7 @@ module Sourced
       #     dispatch(Audit, type: event.type)
       #   end
       #
-      # @raise [ArgumentError] for a block without declared outputs, or a
-      #   declaration without a block
+      # @raise [ArgumentError] for a block without declared outputs, or outputs without a block
       def reaction(*args, &block)
         case args
         in [Hash => declaration] if declaration.size == 1
@@ -258,7 +240,7 @@ module Sourced
 
       # @api private
       def __react_to_any(outputs, &block)
-        # What it evolves from, however it's partitioned (see Evolve.evolve_selector).
+        # evolve_selector: what it evolves from, however it's partitioned.
         evolve_selector.types.each do |message_class|
           next if reaction_handlers.key?(message_class)
 
@@ -281,7 +263,6 @@ module Sourced
         handled_messages_for_react << message_class unless handled_messages_for_react.include?(message_class)
       end
 
-      # The classes a reaction's left side names (see {Outputs.flatten}).
       # @api private
       def __reacted_classes(reacted)
         classes = Outputs.flatten(reacted)

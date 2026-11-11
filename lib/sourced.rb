@@ -153,9 +153,8 @@ module Sourced
   end
 
   # Handle a command synchronously: validate, load history, decide, append, ACK.
-  # The command's partition is +reactor_class+'s selectors' keys (none for an
-  # id-partitioned reactor); its instances respond to +handles_command?(command)+
-  # and +decide(command)+ (see {Decider}, {Machine}).
+  # The partition comes from +reactor_class+'s selectors' keys; its instances
+  # answer +handles_command?(command)+ and +decide(command)+.
   #
   # @raise [CommandNotHandledError] if the loaded reactor's +#handles_command?+ is false
   def self.handle!(reactor_class, command, store: nil)
@@ -212,10 +211,8 @@ module Sourced
   #
   # +reactor_class+ answers +partition_of(values)+ (the partition among
   # +values+), +history_for(partition)+ (the bound selector it reads) and
-  # +for_partition(values)+ (an instance, which responds to
-  # +evolve(messages)+): reactors through {Consumer}, where the partition is
-  # their keys' values, and {Sourced::Projector::Inline}, where it's all of
-  # +values+.
+  # +for_partition(values)+ (an instance answering +evolve(messages)+); see
+  # {Consumer} and {Sourced::Projector::Inline}.
   #
   # @raise [MissingPartitionKeyError] if a partition key is missing or nil
   # @example
@@ -241,9 +238,8 @@ module Sourced
     [instance, read_result]
   end
 
-  # A reactor's partition keys: its claim and history selectors' (a selector
-  # without types has none, ex. a decider's history when it evolves nothing),
-  # none when it's partitioned by message id.
+  # A reactor's partition keys: its claim and history selectors', none when
+  # it's partitioned by message id.
   # @api private
   def self.partition_keys_of(reactor_class)
     claim_selector = reactor_class.claim_selector
@@ -253,8 +249,8 @@ module Sourced
     reactor_class.respond_to?(:history_selector) ? keys | reactor_class.history_selector.keys : keys
   end
 
-  # A message's values for +keys+: from its payload, or else its tags.
-  # Keys it has no value for are left out.
+  # A message's values for +keys+, from its payload or else its tags; keys
+  # without a value are left out.
   # @api private
   def self.extract_partition_attrs(message, keys)
     keys.each_with_object({}) do |key, h|

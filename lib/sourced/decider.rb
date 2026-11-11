@@ -1,24 +1,17 @@
 # frozen_string_literal: true
 
 module Sourced
-  # A Decider that decides one command: a self-contained decision, reading
-  # +source+ (a {Selector} or an inline projector, see {SourceInterface}) and
-  # emitting +outputs+. Its consumer group is the command's type, and its
-  # partition keys the source selector's, unless chained:
+  # A Decider that decides one command, reading +source+ (see
+  # {SourceInterface}). Its consumer group is the command's type, and its
+  # partition keys the source selector's, unless chained (+.partition_by(:sku)+).
+  # Without partition keys it's an id-partitioned queue.
   #
   #   AddItem = Sourced::Decider(Selector[CartStarted, ItemAdded].by(:cart_id), Add => ItemAdded) do |history, cmd|
   #     event ItemAdded, **cmd.payload.to_h
   #   end
   #
-  #   Reserve = Sourced::Decider(StockProjector, ReserveStock => StockReserved | Rejected) do |stock, cmd|
-  #     # ...
-  #   end.partition_by(:sku)
-  #
-  # Without a source, the block takes the command only, and without partition
-  # keys it's an id-partitioned queue (see {Consumer#exclusive}).
-  #
   # @param source [SourceInterface, nil]
-  # @param declaration [Hash] one +Command => outputs+ pair (see {Decider.command})
+  # @param declaration [Hash] see {Decider.command}
   # @yield [context, command], or +[command]+
   # @return [Class<Decider>]
   def self.Decider(source = nil, declaration = nil, &block)
@@ -36,15 +29,12 @@ module Sourced
 
     PREFIX = 'sourced_decide'
 
-    # What +command+ takes, for errors.
     COMMAND_PAIR = 'Command => Event | Other | nil'
 
-    # Raised when a command handler emits an event carrying another
-    # partition's value for one of the partition keys.
+    # An emitted event carries another partition's value for a partition key.
     InvalidEventError = Class.new(Error)
 
-    # Raised when a command handler emits a message its command doesn't
-    # declare, or emits nothing when its outputs don't include +nil+.
+    # See {Decider.command}.
     UndeclaredEventError = Class.new(UndeclaredOutputError)
 
     class << self
@@ -70,20 +60,18 @@ module Sourced
       def produced_messages = command_outputs.values.flat_map(&:messages).uniq
 
       # Register a command handler, and what it may emit: a message class, a
-      # union of them, with +| nil+ when it may emit none.
+      # union of them, with +| nil+ when it may emit none. Emitting an
+      # undeclared class, or nothing without +| nil+, raises {UndeclaredEventError}.
       #
       # @example
       #   command AddItem => ItemAdded | ItemRejected do |context, cmd|
       #     event ItemAdded, cart_id: cmd.payload.cart_id, sku: cmd.payload.sku
       #   end
       #
-      # @param declaration [Hash{Class => Class, Plumb::Or, nil}] one
-      #   +Command => outputs+ pair (commands and outputs as {Sourced::Message.to_message_class})
-      # @yield [context, message] command handler block; a block taking one
-      #   argument gets the message only
+      # @param declaration [Hash{Class => Class, Plumb::Or, nil}] one +Command => outputs+ pair
+      # @yield [context, message], or +[message]+
       # @return [void]
-      # @raise [ArgumentError] without exactly one pair, or for outputs that
-      #   aren't message classes
+      # @raise [ArgumentError] without exactly one pair of message classes
       def command(declaration, &block)
         declared, outputs = Outputs.pair(declaration, "#{self}.command", example: COMMAND_PAIR)
         message_class = declared.to_message_class
@@ -115,19 +103,14 @@ module Sourced
         end
       end
 
-      # Decide +command+ from +history+, without a store: what {Sourced.handle!}
-      # does, minus reading and appending. The partition is the command's
+      # {Sourced.handle!} without a store: the partition is the command's
       # values for the partition keys (payload, else tags).
       #
-      # @example
-      #   Carts.call(history, AddItem.new(payload: { cart_id: 'c1', sku: 'apple' })) # => [ItemAdded]
-      #
-      # @param history [#to_a] the partition's history before the command
-      #   (messages, or a {ReadResult})
+      # @param history [#to_a] messages, or a {ReadResult}
       # @param command [Sourced::Message]
       # @return [Array<Sourced::Message>] the events it decides
-      # @raise [Sourced::MissingPartitionKeyError] when the command has no value for a partition key
-      # @raise [Sourced::CommandNotHandledError] when it doesn't handle the command (see {#handles_command?})
+      # @raise [Sourced::MissingPartitionKeyError]
+      # @raise [Sourced::CommandNotHandledError] see {#handles_command?}
       def call(history, command)
         instance = new(__partition_values_of(command))
         instance.evolve(history.to_a)
@@ -293,8 +276,7 @@ module Sourced
     #
     # @param command [Sourced::Message] command to handle
     # @return [Array<Sourced::Message>] newly produced events
-    # @raise [UndeclaredEventError] when the handler emits nothing and its
-    #   outputs don't include +nil+
+    # @raise [UndeclaredEventError]
     def decide(command)
       @uncommitted_events = []
       klass = command.to_message.class
@@ -322,10 +304,8 @@ module Sourced
     #   command RegisterDevice => DeviceRegistered do |_context, cmd|
     #     event DeviceRegistered, device_id: cmd.payload.device_id
     #   end
-    # @raise [UndeclaredEventError] when the command being decided doesn't
-    #   declare +event_class+
-    # @raise [InvalidEventError] when the event carries another partition's
-    #   value for a partition key
+    # @raise [UndeclaredEventError]
+    # @raise [InvalidEventError]
     def event(event_class, payload = {})
       if @deciding && !@deciding.include?(event_class.to_message_class)
         raise UndeclaredEventError, "#{self.class}: emitted #{event_class}, which its command doesn't declare " \
@@ -341,8 +321,7 @@ module Sourced
 
     private
 
-    # What the decider emits belongs to its partition: an event carrying a
-    # partition key with another value would be read into another partition.
+    # An event carrying another partition's value would be read into that partition.
     def check_partition!(evt)
       Sourced.extract_partition_attrs(evt, self.class.partition_keys).each do |key, value|
         value = value.to_s

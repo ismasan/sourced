@@ -2,21 +2,12 @@
 
 module Sourced
   class Projector
-    # Defines how a projection, an in-memory context, is evolved from a history
-    # of messages. An inline projector (a subclass) is the definition; a
-    # projection (an instance) is its result. Inline: it runs in memory, where
-    # it's called. For a reactor that persists projections, see {Sourced::Projector}.
-    #
-    # An inline projector knows nothing about stores, partitions, commands or side
-    # effects: it declares an initial context and how each message type changes it,
-    # so a projection's context is a function of the messages it evolves. Evolve
-    # blocks run in the projection's own scope.
-    #
-    # Identifying values (ex. a cart's id) come from the messages, not from
-    # outside: set them in the evolve blocks.
-    #
-    # Reactors evolve their context through an inline projector (see
-    # {Sourced::Evolve}): their own, or a standalone one shared between reactors.
+    # Defines how a projection, an in-memory context, is evolved from messages.
+    # An inline projector (a subclass) is the definition; a projection (an
+    # instance) is its result. It knows nothing about stores, partitions or side
+    # effects; evolve blocks run in the projection's scope, and identifying
+    # values (ex. a cart's id) come from the messages. For the reactor that
+    # persists projections, see {Sourced::Projector}.
     #
     # @example
     #   class CartProjector < Sourced::Projector::Inline
@@ -51,42 +42,23 @@ module Sourced
           @evolve_handlers ||= {}
         end
 
-        # What this projector evolves from, built by {.evolve}: a {Selector} of
-        # the message types it has handlers for, without keys. Reactors scope it
-        # by their partition keys; {Sourced.load} by the values it's given.
-        #
-        # @return [Selector]
+        # @return [Selector] the evolved message types, without keys
         def selector
           @selector ||= Selector[*evolve_handlers.keys]
         end
 
-        # What {Sourced.load} reads for +partition+: its {.selector} scoped by
-        # it.
-        #
-        # @param partition [Hash{Symbol => Object}]
-        # @return [Selector]
+        # {Sourced.load} protocol: {.selector} scoped by +partition+.
         def history_for(partition) = selector.by(**partition)
 
-        # The partition among +values+, as {Sourced.load} reads it: all of
-        # them, since an inline projector declares no partition keys.
-        #
-        # @param values [Hash{Symbol => Object}]
-        # @return [Hash{Symbol => Object}]
+        # {Sourced.load} protocol: all +values+, as it declares no partition keys.
         def partition_of(values) = values
 
-        # A projection for the partition {Sourced.load} reads, starting from the
-        # +context+ block's context.
-        #
-        # @return [Projector::Inline]
+        # {Sourced.load} protocol: a fresh projection.
         def for_partition(_values) = new
 
-        # A source's projector (see {SourceInterface}): an inline projector is its own.
-        #
-        # @return [self]
+        # {SourceInterface}: an inline projector is its own projector.
         def to_projector = self
 
-        # Define the initial context factory.
-        #
         # @yieldreturn [Object] the initial context
         # @raise [ArgumentError] if the block declares arguments: it receives none
         def context(&blk)
@@ -104,16 +76,8 @@ module Sourced
           @before_evolve_blocks ||= []
         end
 
-        # Register a block to run before the evolve handler of every message this
-        # projection handles, in the projection's scope. Messages without a
-        # handler are still skipped. Blocks run in declaration order, and
-        # subclasses inherit them.
-        #
-        # @example Stamp every order event
-        #   before_evolve do |context, evt|
-        #     context[:order_id] ||= evt.payload.order_id
-        #     context[:updated_at] = evt.created_at
-        #   end
+        # Register a block to run before the evolve handler of every handled
+        # message, in declaration order. Subclasses inherit them.
         #
         # @yield [context, message]
         # @raise [ArgumentError] without a block
@@ -123,10 +87,7 @@ module Sourced
           before_evolve_blocks << block
         end
 
-        # Register an evolve handler for a {Sourced::Message} subclass, or for the
-        # class an object's +to_message_class+ returns (see {Sourced::Message.to_message_class}).
-        #
-        # @param declared [Class, #to_message_class] message class to evolve from
+        # @param declared [Class, #to_message_class]
         # @yield [context, message] mutates +context+ for +message+
         def evolve(declared, &block)
           message_class = declared.to_message_class
@@ -151,10 +112,8 @@ module Sourced
         @context = init_context
       end
 
-      # Apply messages to context via registered handlers, each preceded by the
-      # +before_evolve+ blocks. Handlers are looked up by +msg.to_message.class+,
-      # so wrapped messages dispatch too; they receive +msg+ as given. Skips
-      # messages without a registered handler.
+      # Handlers are looked up by +msg.to_message.class+, so wrapped messages
+      # dispatch too; they receive +msg+ as given. Unhandled messages are skipped.
       #
       # @param messages [Sourced::Message, Array<Sourced::Message>]
       # @return [Object] the evolved context

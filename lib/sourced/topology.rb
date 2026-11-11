@@ -147,10 +147,8 @@ module Sourced
       nodes + event_nodes.values
     end
 
-    # A machine's commands (its parts' too) produce the states they move
-    # to (a part's states are its owner's) and the +Started+ of the children their
-    # +starts:+ declare; their data events aren't edges. Entry, exit and
-    # +after+ actions (producing what they declare), joins, and starting and
+    # A machine's commands (its parts' too) produce what {.handler_produces}
+    # lists. Entry, exit and +after+ actions, joins, and starting and
     # stopping children are automations.
     # What runs on entering a state consumes its class; what runs on
     # leaving it (exit actions, stopping the children it started) consumes the
@@ -323,15 +321,12 @@ module Sourced
       reached
     end
 
-    # What +reactor+ evolves from, however it's partitioned: its
-    # +evolve_selector+'s types, or its history selector's.
+    # What +reactor+ evolves from, however it's partitioned.
     # @api private
     def self.evolved(reactor)
       (reactor.respond_to?(:evolve_selector) ? reactor.evolve_selector : reactor.history_selector).types
     end
 
-    # The types a reaction declares it appends (none for a subscription
-    # without a handler).
     # @api private
     def self.reaction_produces(reactor, evt_class)
       outputs = reactor.reaction_outputs[evt_class]

@@ -252,37 +252,26 @@ module Sourced
       @exclusive ||= false
     end
 
-    # The history the Router reads for a claimed partition, bound to the
-    # partition's values. {Selector::NONE} (no history) by default; overridden
-    # by Sourced::Evolve.
+    # The history the Router reads for a claimed partition, bound to it.
+    # {Selector::NONE} by default; overridden by Sourced::Evolve.
     #
     # @return [Selector]
     def history_selector
       Selector::NONE
     end
 
-    # The partition among +values+, as {Sourced.load} reads it: each partition
-    # key's value (nil when missing).
-    #
-    # @param values [Hash{Symbol => Object}]
-    # @return [Hash{Symbol => Object}]
+    # {Sourced.load} protocol: each partition key's value (nil when missing).
     def partition_of(values) = Sourced.partition_keys_of(self).to_h { |key| [key, values[key]] }
 
-    # What {Sourced.load} reads for +partition+: {#history_selector} bound to
-    # it, as the Router reads a claim's history.
-    #
-    # @param partition [Hash{Symbol => Object}]
-    # @return [Selector]
+    # {Sourced.load} protocol: {#history_selector} bound to +partition+.
     def history_for(partition) = history_selector.bind(**partition)
 
-    # An instance for the partition {Sourced.load} reads.
-    #
-    # @param values [Hash{Symbol => Object}]
+    # {Sourced.load} protocol: an instance for the partition.
     def for_partition(values) = new(values)
 
-    # What the Router claims, and wakes the reactor for: its +handled_messages+,
-    # partitioned by its partition keys, or by message id (+__id+) when it
-    # declares none (only exclusive reactors may be; the Router checks).
+    # What the Router claims and wakes the reactor for: +handled_messages+ by
+    # the partition keys, or by message id when it declares none (exclusive
+    # reactors only).
     #
     # @return [Selector]
     def claim_selector
@@ -290,8 +279,7 @@ module Sourced
       partition_keys.empty? ? selector.by_message_id : selector.by(*partition_keys)
     end
 
-    # Check the reactor's messages against its partition schema (see
-    # {PartitionSchema}). The Router runs it when the reactor is added.
+    # Run {PartitionSchema.check!}. The Router calls it when the reactor is added.
     #
     # @raise [DefinitionError]
     # @return [void]

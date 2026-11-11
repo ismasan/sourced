@@ -2,21 +2,15 @@
 
 module Sourced
   class Selector
-    # A selector as a projector: what a reactor reading through a selector
-    # (see {Evolve}) evolves. A subclass per selector ({.for}); a projection
-    # (an instance) keeps the messages of the selector's types it evolves, in
-    # order, and they're its context. It takes the history as read, so it
-    # filters by type only: the store read is the partition's, and what a
-    # reactor appends is checked against the partition when it's emitted.
-    #
-    # It answers what a reactor asks of its projector: {.selector}, +new+,
-    # {#evolve} and {#context}. It takes no inline declarations.
+    # A selector as a projector (see {Evolve}), one subclass per selector
+    # ({.for}). Its context is the evolved messages of the selector's types, in
+    # order, filtered by type only: the store read is already the partition's.
+    # It takes no inline declarations.
     class Projection
       class << self
         # @return [Selector]
         attr_reader :selector
 
-        # @param selector [Selector]
         # @return [Class<Projection>]
         def for(selector) = Class.new(self) { @selector = selector }
 
@@ -31,8 +25,7 @@ module Sourced
         # @return [self]
         def to_projector = self
 
-        # What {Sourced.load} reads, as for {Projector::Inline}: all of
-        # +values+ are the partition, scoping its keyless selector.
+        # {Sourced.load}'s protocol, as {Projector::Inline}'s: every value is the partition.
         def partition_of(values) = values
         def history_for(partition) = selector.by(**partition)
         def for_partition(_values) = new
@@ -50,7 +43,6 @@ module Sourced
         @messages = messages.dup
       end
 
-      # @param messages [Sourced::Message, Array<Sourced::Message>]
       # @return [Array<Sourced::Message>] the context
       def evolve(messages)
         types = self.class.types

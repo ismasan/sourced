@@ -33,8 +33,7 @@ module Sourced
     #   types it +dispatches+ and whether it's +optional+ (+| nil+); +after+ lists its
     #   timers: delays as declared (seconds, or a duration string: +'30m'+,
     #   +'P1D'+; see {NodeBuilder#after}; a computed one's is nil, with
-    #   +computed+ naming it), the command types they +dispatch+ and whether
-    #   they're +optional+.
+    #   +computed+ naming it), with +dispatches+ and +optional+ too.
     # * A transition to a state's history ({State.history}) targets a
     #   history node in its +states+, as XState's: +type: 'history'+,
     #   +history: 'shallow' | 'deep'+, key +$history+ / +$deep_history+. It's
