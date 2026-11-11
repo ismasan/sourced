@@ -50,7 +50,7 @@ module MachineExternalEventsTest
     end
 
     state Paid do
-      entry { |_order, _evt| dispatch NotifyPaid }
+      entry(NotifyPaid) { |_order, _evt| dispatch NotifyPaid }
       command Ship => Shipped
     end
 

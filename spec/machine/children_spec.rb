@@ -70,13 +70,13 @@ module MachineChildrenTest
     evolve(OrderPlaced) { |line, evt| line.currency = evt.payload.currency }
 
     started Added do
-      entry { |line, _evt| dispatch ReserveStock, sku: line.sku, currency: line.currency }
+      entry(ReserveStock) { |line, _evt| dispatch ReserveStock, sku: line.sku, currency: line.currency }
       command StockReserved => Reserved
       command StockUnavailable => Failed
     end
 
     state Reserved do
-      exit { |line, _evt| dispatch ReleaseStock, sku: line.sku }
+      exit(ReleaseStock) { |line, _evt| dispatch ReleaseStock, sku: line.sku }
       command PickLine => Picked
     end
 
@@ -131,7 +131,7 @@ module MachineChildrenTest
     evolve(OrderPlaced) { |pay, evt| pay.amount = evt.payload.total }
 
     started Requested do
-      entry { |pay, _evt| dispatch ChargeCard, amount: pay.amount }
+      entry(ChargeCard) { |pay, _evt| dispatch ChargeCard, amount: pay.amount }
       command GatewayCaptured => Captured
       command GatewayDeclined => Declined
     end
@@ -197,7 +197,7 @@ module MachineChildrenTest
       Packed = State(:packed)
 
       started Packing do
-        entry { |_parcel, _evt| dispatch PrintLabel }
+        entry(PrintLabel) { |_parcel, _evt| dispatch PrintLabel }
         command Pack => Packed
       end
 
@@ -1298,7 +1298,7 @@ module MachineChildrenTest
       it 'places a root final with its block' do
         child = machine(:order_id, :line_id) do
           started(:added) { command PrintLabel => :cancelled }
-          stopped(:cancelled) { entry { |_line, _evt| nil } }
+          stopped(:cancelled) { entry(nil) { |_line, _evt| nil } }
         end
 
         node = child.nodes.fetch(child::Cancelled)
@@ -1311,7 +1311,7 @@ module MachineChildrenTest
       it 'marks an already-placed root final' do
         child = machine(:order_id, :line_id) do
           started :added
-          final(:cancelled) { entry { |_line, _evt| nil } }
+          final(:cancelled) { entry(nil) { |_line, _evt| nil } }
           stopped self::Cancelled
         end
 
@@ -1324,7 +1324,7 @@ module MachineChildrenTest
           machine(:order_id, :line_id) do
             started :added
             final :cancelled
-            stopped(self::Cancelled) { entry { |_line, _evt| nil } }
+            stopped(self::Cancelled) { entry(nil) { |_line, _evt| nil } }
           end
         end.to raise_error(Sourced::Machine::DefinitionError, /Cancelled is placed twice/)
       end

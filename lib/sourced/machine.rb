@@ -395,6 +395,10 @@ module Sourced
       def chart = { delay: nil, computed: label }
     end
 
+    # An +entry+ or +exit+ action: what it may dispatch, and the block that
+    # dispatches it. Without a +block+, it dispatches each of +outputs+.
+    Action = Data.define(:outputs, :block)
+
     # A child machine the parent tracks: started by handlers that declare it in
     # +starts:+ (+kind+ +:spawn+, one spec per machine), or by a state
     # ({NodeBuilder#start}, +kind+ +:invoke+, one spec per placement).
@@ -554,18 +558,39 @@ module Sourced
         @node.ons[event_class] = definition
       end
 
-      # Runs when the machine enters this state, as a reaction.
+      # Runs when the machine enters this state, as a reaction. It declares
+      # what it may dispatch: a message class, a union of them, with +| nil+
+      # when it may dispatch none, or +nil+ for an action that dispatches
+      # nothing. Dispatching anything else raises
+      # {Sourced::React::UndeclaredMessageError}.
+      #
+      #   entry SendReceipt do |cart, _transition|
+      #     dispatch SendReceipt, total: cart.total
+      #   end
+      #
+      # Without a block, each declared message is dispatched with the
+      # partition keys as its payload:
+      #
+      #   entry NotifyPaid
+      #
+      # @param declared [Class, Plumb::Or, nil]
       # @yield [context, transition]
-      def entry(&block)
+      def entry(*declared, &block)
         raise DefinitionError, "#{@machine}: the initial position is never entered, so no entry actions" if @node.initial?
 
-        @node.entries << block
+        @node.entries << __action('entry', declared, block)
       end
 
       # Runs when the machine leaves this state, as a reaction to the
-      # transition that left it.
+      # transition that left it. It declares what it dispatches as {#entry} does.
+      #
+      #   exit ReleaseStock | nil do |cart, _transition|
+      #     dispatch ReleaseStock, skus: cart.items.keys if cart.items.any?
+      #   end
+      #
+      # @param declared [Class, Plumb::Or, nil]
       # @yield [context, transition]
-      def exit(&block) = @node.exits << block
+      def exit(*declared, &block) = @node.exits << __action('exit', declared, block)
 
       # Dispatches +commands+ when the machine enters this state, as a
       # reaction. They're delivered +delay+ after the entering transition, and
@@ -765,6 +790,23 @@ module Sourced
         raise DefinitionError, "#{@machine}: invalid declaration #{declaration.inspect}, #{arrow.inspect}" if arrow.any?
 
         declaration
+      end
+
+      private def __action(what, declared, block)
+        unless declared.size == 1
+          raise DefinitionError, "#{@machine}: #{@node.label}'s #{what} declares what it dispatches, ex. " \
+                                 "#{what} Command do, #{what} Command | nil do, or #{what} nil do"
+        end
+
+        outputs = Outputs.parse(declared.first)
+        if block.nil? && (outputs.optional || outputs.messages.empty?)
+          raise DefinitionError,
+                "#{@machine}: #{@node.label}'s #{what} #{outputs} needs a block to choose what to dispatch"
+        end
+
+        Action.new(outputs:, block:)
+      rescue ArgumentError => e
+        raise DefinitionError, "#{@machine}: #{@node.label}'s #{what}: #{e.message}"
       end
 
       # A +#call(context)+ delay is computed when the timer starts; any
@@ -1505,6 +1547,8 @@ module Sourced
           end
           __check_transient!(node) if node.transient?
           node.afters.each { |timer| __check_timer!(node, timer, accepted) }
+          node.entries.each { |action| __check_action!(node, 'entry', action) }
+          node.exits.each { |action| __check_action!(node, 'exit', action) }
           node.always.each { |eventless| __check_target!(tree, node, eventless.target) }
           __check_join!(tree, node) if node.dones.any? || node.regions.any?
           node.children_joins.each { |join| __check_children_join!(tree, node, join) }
@@ -1615,14 +1659,24 @@ module Sourced
         label = "#{node.label}'s after(#{timer.label})"
         timer.commands.each do |command|
           raise DefinitionError, "#{self}: #{label} dispatches #{command}, which no state accepts" unless accepted.include?(command)
-          next if timer.block
-
-          missing = (command::Payload._schema.resolve({}).errors || {}).keys - partition_keys
-          next if missing.empty?
-
-          raise DefinitionError,
-                "#{self}: #{label} dispatches #{command} without a block, so it can't fill #{command}'s #{missing.join(', ')}"
+          __check_fillable!(label, command) unless timer.block
         end
+      end
+
+      # A blockless entry or exit action dispatches its messages with the partition keys.
+      def __check_action!(node, what, action)
+        return if action.block
+
+        action.outputs.messages.each { |message_class| __check_fillable!("#{node.label}'s #{what}", message_class) }
+      end
+
+      # What's dispatched without a block gets the partition keys only.
+      def __check_fillable!(label, message_class)
+        missing = (message_class::Payload._schema.resolve({}).errors || {}).keys - partition_keys
+        return if missing.empty?
+
+        raise DefinitionError, "#{self}: #{label} dispatches #{message_class} without a block, " \
+                               "so it can't fill #{message_class}'s #{missing.join(', ')}"
       end
 
       def __check_join!(tree, node)
@@ -1904,12 +1958,12 @@ module Sourced
           tree = self.class.tree
           message.payload.exited.each do |path|
             left = tree.node_at(path, message)
-            left.exits.each { |blk| instance_exec(context, message, &blk) }
+            left.exits.each { |action| run_action(left, 'exit', action, message) }
             left.invokes.each { |spec| stop_children(spec.machine, at: left.path) }
           end
           entered = message.payload.entered.map { |path| tree.node_at(path, message) }
           entered.each do |node|
-            node.entries.each { |blk| instance_exec(context, message, &blk) }
+            node.entries.each { |action| run_action(node, 'entry', action, message) }
             start_timers(node, message)
           end
           entered.flat_map(&:stops).uniq.each { |child| stop_children(child, at: nil) }
@@ -2186,6 +2240,17 @@ module Sourced
     def stoppable?
       root = @runtime.current_node(self.class.tree.root)
       !root.initial? && !root.final?
+    end
+
+    # Run an +entry+ or +exit+ action, holding what it dispatches to its declaration.
+    def run_action(node, what, action, transition)
+      started = @__reaction_dispatchers.size
+      if action.block
+        instance_exec(context, transition, &action.block)
+      else
+        action.outputs.messages.each { |message_class| dispatch message_class }
+      end
+      __check_outputs!(action.outputs, @__reaction_dispatchers.drop(started).map(&:message), "#{node.path} #{what}")
     end
 
     # Timers for a state entry the machine has already left would only be

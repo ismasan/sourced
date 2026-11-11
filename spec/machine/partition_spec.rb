@@ -34,7 +34,7 @@ module MachinePartitionTest
       end
 
       state Open do
-        entry { |_context, _evt| dispatch Notify }
+        entry(Notify) { |_context, _evt| dispatch Notify }
         command Close => Closed
       end
 

@@ -75,7 +75,7 @@ module MachineRegionsTest
     end
 
     state Placed do
-      exit { |_order, _evt| dispatch NotifyOrderClosed }
+      exit(NotifyOrderClosed) { |_order, _evt| dispatch NotifyOrderClosed }
       command CancelOrder => Cancelled
       command Pause => Paused
       command Restart => Placed                            # re-enters itself
@@ -98,8 +98,8 @@ module MachineRegionsTest
         end
 
         state Charging do
-          entry { |order, _evt| dispatch ChargeCard, card: order.card }
-          exit { |_order, _evt| dispatch VoidPayment }
+          entry(ChargeCard) { |order, _evt| dispatch ChargeCard, card: order.card }
+          exit(VoidPayment) { |_order, _evt| dispatch VoidPayment }
           after(3600 => ExpirePayment)
           command ExpirePayment => Cancelled               # an ancestor region's state
           command Abort => Cancelled
@@ -108,7 +108,7 @@ module MachineRegionsTest
 
         state Rejected
         final(Captured) do
-          entry { |_order, _evt| dispatch SendReceipt }
+          entry(SendReceipt) { |_order, _evt| dispatch SendReceipt }
         end
       end
 

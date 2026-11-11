@@ -110,7 +110,7 @@ module MachineTest
     end
 
     state Open do
-      exit { |cart, _transition| dispatch ReleaseStock, skus: cart.items.keys }
+      exit(ReleaseStock) { |cart, _transition| dispatch ReleaseStock, skus: cart.items.keys }
 
       command AddItem do |_cart, cmd|
         event ItemAdded, sku: cmd.payload.sku, qty: cmd.payload.qty, unit_price: cmd.payload.unit_price
@@ -132,7 +132,7 @@ module MachineTest
     end
 
     state Ordered do
-      entry { |cart, _transition| dispatch SendReceipt, total: cart.total }
+      entry(SendReceipt) { |cart, _transition| dispatch SendReceipt, total: cart.total }
       command Pay => Paid
     end
 
@@ -178,7 +178,7 @@ module MachineTest
     end
 
     state :pinged do
-      entry { |s, _transition| dispatch Notify, note: s[:note] }
+      entry(Notify) { |s, _transition| dispatch Notify, note: s[:note] }
     end
   end
 
@@ -672,7 +672,7 @@ RSpec.describe Sourced::Machine do
       seen = []
       m = machine do
         initial { command Ping => :pinged }
-        state(:pinged) { entry { |s, transition| seen << [s, transition] } }
+        state(:pinged) { entry(nil) { |s, transition| seen << [s, transition] } }
       end
       transition = moved(m, 'machine_test.ping', from: 'initial', to: 'pinged', cart_id: 'c1')
 
@@ -684,8 +684,8 @@ RSpec.describe Sourced::Machine do
       m = machine do
         initial { command Ping => :pinged }
         state :pinged do
-          exit { |_s, _transition| dispatch Notify, note: 'exit' }
-          entry { |_s, _transition| dispatch Notify, note: 'entry' }
+          exit(Notify) { |_s, _transition| dispatch Notify, note: 'exit' }
+          entry(Notify) { |_s, _transition| dispatch Notify, note: 'entry' }
           command Ping => :pinged
         end
       end
@@ -709,7 +709,7 @@ RSpec.describe Sourced::Machine do
     it "holds a reaction to what it appends, not to what entry actions dispatch" do
       m = machine do
         initial { command Ping => :pinged }
-        state(:pinged) { entry { |_s, _transition| dispatch Notify, note: 'entry' } }
+        state(:pinged) { entry(Notify) { |_s, _transition| dispatch Notify, note: 'entry' } }
         reaction(self::Pinged => Ping | nil) { |*| nil }
       end
       entered = moved(m, 'machine_test.ping', from: 'initial', to: 'pinged', cart_id: 'c1')
@@ -718,7 +718,7 @@ RSpec.describe Sourced::Machine do
 
       strict = machine do
         initial { command Ping => :pinged }
-        state(:pinged) { entry { |_s, _transition| dispatch Notify, note: 'entry' } }
+        state(:pinged) { entry(Notify) { |_s, _transition| dispatch Notify, note: 'entry' } }
         reaction(self::Pinged => Ping) { |*| dispatch Notify, note: 'reaction' }
       end
       strict_entered = moved(strict, 'machine_test.ping', from: 'initial', to: 'pinged', cart_id: 'c1')
@@ -731,6 +731,96 @@ RSpec.describe Sourced::Machine do
 
       pairs = CartMachine.handle_batch({ cart_id: 'c1' }, [ordered], history:, replaying: true)
       expect(pairs).to eq([[Sourced::Actions::OK, ordered]])
+    end
+
+    describe 'declared outputs' do
+      def entered(machine) = moved(machine, 'machine_test.ping', from: 'initial', to: 'pinged', cart_id: 'c1')
+
+      it 'dispatches each declared message with the partition keys without a block' do
+        m = machine do
+          initial { command Ping => :pinged }
+          state(:pinged) { entry Pay }
+        end
+
+        with_reactor(m, cart_id: 'c1').when(entered(m)).then(Pay, cart_id: 'c1')
+      end
+
+      it 'raises for a message the action does not declare' do
+        m = machine do
+          initial { command Ping => :pinged }
+          state(:pinged) { entry(Pay) { |*| dispatch Notify, note: 'x' } }
+        end
+
+        expect { with_reactor(m, cart_id: 'c1').when(entered(m)).then([]) }
+          .to raise_error(Sourced::React::UndeclaredMessageError,
+                          /pinged entry appended MachineTest::Notify, which it doesn't declare \(MachineTest::Pay\)/)
+      end
+
+      it 'raises when an action dispatches nothing without | nil' do
+        m = machine do
+          initial { command Ping => :pinged }
+          state(:pinged) { entry(Pay) { |*| nil } }
+        end
+
+        expect { with_reactor(m, cart_id: 'c1').when(entered(m)).then([]) }
+          .to raise_error(Sourced::React::UndeclaredMessageError, /pinged entry appended nothing/)
+      end
+
+      it 'lets an action declaring | nil, or nil, dispatch nothing' do
+        m = machine do
+          initial { command Ping => :pinged }
+          state :pinged do
+            entry(Pay | nil) { |*| nil }
+            entry(nil) { |*| nil }
+          end
+        end
+
+        with_reactor(m, cart_id: 'c1').when(entered(m)).then([])
+      end
+
+      it 'holds exit actions to their own declaration' do
+        m = machine do
+          initial { command Ping => :pinged }
+          state :pinged do
+            exit(Pay) { |*| dispatch Notify, note: 'x' }
+            command Ping => :pinged
+          end
+        end
+        re_entry = moved(m, 'machine_test.ping', from: 'pinged', to: 'pinged', exited: %w[pinged], cart_id: 'c1')
+
+        expect { with_reactor(m, cart_id: 'c1').given(entered(m)).when(re_entry).then([]) }
+          .to raise_error(Sourced::React::UndeclaredMessageError, /pinged exit appended MachineTest::Notify/)
+      end
+
+      it 'requires a declaration' do
+        expect { machine { state(:open) { entry { nil } } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /entry declares what it dispatches, ex. entry Command do/)
+        expect { machine { state(:open) { exit { nil } } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /exit declares what it dispatches/)
+      end
+
+      it 'requires a block for an optional or empty declaration' do
+        expect { machine { state(:open) { entry Pay | nil } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /entry MachineTest::Pay \| nil needs a block/)
+        expect { machine { state(:open) { exit nil } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /exit nil needs a block/)
+      end
+
+      it 'rejects anything that is not a message class' do
+        expect { machine { state(:open) { entry('nope') { nil } } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /entry: "nope" isn't a message class/)
+      end
+
+      it "rejects a blockless action that can't fill its message's payload" do
+        m = machine do
+          initial { command Ping => :pinged }
+          state(:pinged) { exit ReleaseStock }
+        end
+
+        expect { m.validate! }
+          .to raise_error(Sourced::Machine::DefinitionError,
+                          /exit dispatches MachineTest::ReleaseStock without a block, so it can't fill .*skus/)
+      end
     end
   end
 
@@ -1187,7 +1277,7 @@ RSpec.describe Sourced::Machine do
     end
 
     it 'rejects entry actions on the initial position' do
-      expect { machine { initial { entry { nil } } } }
+      expect { machine { initial { entry(nil) { nil } } } }
         .to raise_error(Sourced::Machine::DefinitionError, /no entry actions/)
     end
 

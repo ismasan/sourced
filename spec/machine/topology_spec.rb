@@ -42,7 +42,7 @@ module MachineTopologyTest
     end
 
     state Opened do
-      entry { |_s, _evt| dispatch Remind }
+      entry(Remind) { |_s, _evt| dispatch Remind }
       # Its commands are declared, whatever the block does.
       after('1h' => Cancel) { |_s, _evt| nil }
       command(Note) { |_s, _cmd| event Noted }
@@ -60,7 +60,7 @@ module MachineTopologyTest
         initial { command Ship => :shipped }
         final :shipped
       end
-      exit { |_s, _evt| dispatch Archive }
+      exit(Archive) { |_s, _evt| dispatch Archive }
       command Cancel => Cancelled
       done Done
     end

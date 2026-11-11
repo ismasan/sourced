@@ -75,21 +75,24 @@ module Sourced
       started = @__reaction_dispatchers.size
       returned = Array(send(method_name, context, message)).compact
       dispatched = @__reaction_dispatchers.drop(started).map(&:message)
-      __check_reaction_outputs!(klass, returned.reject { |value| value.is_a?(Dispatcher) } + dispatched)
+      appended = returned.reject { |value| value.is_a?(Dispatcher) } + dispatched
+      __check_outputs!(self.class.reaction_outputs.fetch(klass), appended, "#{klass} reaction")
       returned
     end
 
-    def __check_reaction_outputs!(klass, appended)
-      outputs = self.class.reaction_outputs.fetch(klass)
+    # @param outputs [Outputs] what the handler declares
+    # @param appended [Array<Sourced::Message>] what it appended
+    # @param label [String] the handler, for errors
+    def __check_outputs!(outputs, appended, label)
       appended.each do |msg|
         next if outputs.include?(msg.to_message.class)
 
-        raise UndeclaredMessageError, "#{self.class}: the #{klass} reaction appended #{msg.to_message.class}, " \
+        raise UndeclaredMessageError, "#{self.class}: the #{label} appended #{msg.to_message.class}, " \
                                       "which it doesn't declare (#{outputs})"
       end
       return if appended.any? || outputs.optional
 
-      raise UndeclaredMessageError, "#{self.class}: the #{klass} reaction appended nothing; " \
+      raise UndeclaredMessageError, "#{self.class}: the #{label} appended nothing; " \
                                     "declare #{outputs} | nil if it may append none"
     end
 

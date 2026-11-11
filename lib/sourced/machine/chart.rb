@@ -29,7 +29,8 @@ module Sourced
     #   lists the children it +stops+. +mounts+ lists the parts a state
     #   mounts (as regions, or as a compound state's), with +on_final+ by
     #   their root final.
-    # * +entry+ and +exit+ count the state's actions; +after+ lists its
+    # * +entry+ and +exit+ list the state's actions, each with the message
+    #   types it +dispatches+ and whether it's +optional+ (+| nil+); +after+ lists its
     #   timers: delays as declared (seconds, or a duration string: +'30m'+,
     #   +'P1D'+; see {NodeBuilder#after}; a computed one's is nil, with
     #   +computed+ naming it) and the command types they dispatch.
@@ -99,6 +100,8 @@ module Sourced
       # state's machine's start, or the machine's own +started+ state.
       def start_node(region) = region.compound? ? region.start_node : region.nodes.fetch(@machine.start_state)
 
+      def action_chart(action) = { dispatches: action.outputs.messages.map(&:type), optional: action.outputs.optional }
+
       def node(node)
         compound = node.compound_region
         {
@@ -106,8 +109,8 @@ module Sourced
           key: node.initial? ? 'initial' : node.key.state_name.to_s,
           type: node_type(node),
           machine: node.machine.name,
-          entry: node.entries.size,
-          exit: node.exits.size,
+          entry: node.entries.map { |action| action_chart(action) },
+          exit: node.exits.map { |action| action_chart(action) },
           after: node.afters.map { |timer| { **timer.chart, dispatches: timer.commands.map(&:type) } },
           on: transitions(node, node.commands, 'command').merge(transitions(node, node.ons, 'event')),
           on_done: on_done_joins(node),

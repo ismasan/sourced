@@ -861,7 +861,7 @@ class OrderMachine < Sourced::Machine
       state Paying do
         # When a payment transitions to Paying
         # it immediately dispatches the ChargeCard command (handling not shown here)
-        entry { |order, _evt| dispatch ChargeCard, card: order.card }  # order_id filled in
+        entry(ChargeCard) { |order, _evt| dispatch ChargeCard, card: order.card }  # order_id filled in
 
         # Schedule an ExpirePayment command to be dispatched in one hour
         # If by the time the command arrives the machine has moved on from the Paying state
@@ -948,6 +948,7 @@ How it runs:
 - **`on Event => Target`** moves the machine when it claims an event another reactor appended, while the state is active. It's decided like a command (same targets, `to`, `nil`; the block gets `(context, event)`), under the claim's guard, and never while replaying. The event must carry the machine's partition keys.
 - **Eventless steps** (`always`, mounted parts' `on_final`, `done`, `children_done`, starting states' children) run after every decision until none applies, each appending its own state event, all in the decision's transaction. Guards see the context with the decision's events applied.
 - **Entry and exit actions are reactions**, run when the machine claims the state event, after the deciding transaction committed, and see the latest state. Leaving a state exits its active regions first. A transient state's entry actions run after the machine has already left it. They're skipped while replaying.
+- **Entry and exit actions declare what they dispatch**, as reactions do: `entry SendReceipt do |cart, _evt| … end`, `exit ReleaseStock | nil do … end` when it may dispatch nothing, `entry nil do … end` for one that never dispatches. With braces, the declaration needs parentheses: `entry(SendReceipt) { … }`. Dispatching an undeclared message, or nothing without `| nil`, raises `React::UndeclaredMessageError`. Without a block, `entry Notify` (or `exit Notify | Archive`) dispatches each declared message with the partition keys as its payload, so `validate!` raises for one that requires more.
 - **`after(delay => Command)`** dispatches commands delivered that long after the state was entered. The delay is seconds (`after(3600 => Expire)`) or a duration string, as `Message#at` takes it (`'1h'`, `'1h30m'`, `'P1D'`), up to weeks: months and years vary in length, so `after('1M' => …)` raises `Machine::DefinitionError` (give days, `'30d'`). The delay can also be computed from the context when the timer starts (as a block gets it), by a `#call(context)` returning seconds or a duration string: `after ->(ctx) { ctx[:sos_delay] } => SendSOS`. It's read once per entry (a later change to the context doesn't reschedule), and anything else it returns, `nil` included, raises `Machine::TimerError` in the reaction; `to_h` shows it as `delay: nil, computed: <its name>`. The commands are declared, so they show in the topology and `to_h`, and some state must accept them. Without a block, each is dispatched with the partition keys as its payload (so it can't require more). A block dispatches them itself, and only the declared ones (`Machine::TimerError`): `after('1h' => Remind | Expire) { |order, _evt| dispatch Remind, email: order[:email] }`. A timer command delivered after the machine has left that state entry is refused, even where the command is accepted, so timers never need cancelling.
 - **History**: `Working.history` targets a state with regions at the states its regions were last in (`Working.history(deep: true)` restores everything below it); regions with no history take their default entry. History is rebuilt from `exited` on replay.
 - `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.paths`, `machine.in?(OrderMachine::Paying)`, `machine.in?(:payment, OrderMachine::Paying)`, `machine.in?('placed.payment.paying')`, `machine.current(:payment)`, `machine.entered_by`, `machine.children(LineItemMachine)`.
@@ -1052,7 +1053,7 @@ class LineItemMachine < Sourced::Machine
   end
 
   started Added do # where the parent starts it
-    entry { |line, _evt| dispatch ReserveStock }
+    entry(ReserveStock) { |line, _evt| dispatch ReserveStock }
     command StockReserved => Reserved
   end
   
@@ -1096,7 +1097,7 @@ class OrderMachine < Sourced::Machine
 end
 ```
 
-`stopped` generates three messages, under `<prefix>.runtime.child`: `Started` (appended by the parent's `start`, entering the child's `started` state; `start`'s attributes beyond the child's keys are its `input`), `Finished` (appended when the child reaches a root final), and the `Stop` command, accepted from any started, non-final position. The constants `Started`, `Finished` and `Stop` are reserved for them. `stopped` places a root final, taking a block as `final` does (`stopped Dropped do entry { … } end`); without one, it marks the root final already placed under that handle, or places a bare one. The parent evolves only its children's `Started` and `Finished`: `machine.children(LineItemMachine)` returns `ChildRef`s (`keys`, `state`, `final?`), and `machine.children` all of them, by machine.
+`stopped` generates three messages, under `<prefix>.runtime.child`: `Started` (appended by the parent's `start`, entering the child's `started` state; `start`'s attributes beyond the child's keys are its `input`), `Finished` (appended when the child reaches a root final), and the `Stop` command, accepted from any started, non-final position. The constants `Started`, `Finished` and `Stop` are reserved for them. `stopped` places a root final, taking a block as `final` does (`stopped Dropped do entry(Notify) { … } end`); without one, it marks the root final already placed under that handle, or places a bare one. The parent evolves only its children's `Started` and `Finished`: `machine.children(LineItemMachine)` returns `ChildRef`s (`keys`, `state`, `final?`), and `machine.children` all of them, by machine.
 
 **Started by handlers.** A handler (`command`, `on` or `children_done`) declares the children it may start with `starts:`, a machine or a union of them built with `|` (`nil` last), and starts them with `start Child, **payload` in its block. Starts are counted after the block runs: too few, or starting a machine `starts:` doesn't name, raises `Sourced::Machine::StartError`.
 
@@ -1825,7 +1826,7 @@ Sourced.topology
   .map(&:name)
 ```
 
-Command and automation nodes for Deciders' and projectors' handlers produce what each `command Cmd => A | B` and `reaction Evt => C | D` declares, with no parsing. A machine's declared targets are known without parsing: a command node always lists its target states' types (and those its `always` steps lead to) and the `Started` of the children its `starts:` declares, and adds the events its block emits when Prism is available. Machine entry and `after` actions (`actions(<path>)`), exit actions (`exit(<path>)`, consuming the transitions that can leave the state), `on` transitions, joins, and starting or stopping children appear as automations.
+Command and automation nodes for Deciders' and projectors' handlers produce what each `command Cmd => A | B` and `reaction Evt => C | D` declares, with no parsing. A machine's declared targets are known without parsing: a command node always lists its target states' types (and those its `always` steps lead to) and the `Started` of the children its `starts:` declares, and adds the events its block emits when Prism is available. Machine entry and `after` actions (`actions(<path>)`, producing what they declare), exit actions (`exit(<path>)`, consuming the transitions that can leave the state), `on` transitions, joins, and starting or stopping children appear as automations.
 
 For a machine's own shape, `MyMachine.to_mermaid` returns a Mermaid `stateDiagram-v2`: states, regions as concurrent sections, compound states as nested states, and transitions labelled with the commands, events (`on PaymentCaptured`), joins (`done`, `always [guard]`) that take them, `/ starts LineItemMachine` for the children a handler starts, and `(H)` / `(H*)` for history targets. Data-only handlers that start children, and the children a state `stops`, go in a note on the state.
 

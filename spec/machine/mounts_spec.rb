@@ -44,8 +44,8 @@ module MachineMountsTest
       end
 
       state :authorizing do
-        entry { |order, _evt| dispatch ChargeCard, card: order.card }
-        exit { |_order, _evt| dispatch VoidPayment }
+        entry(ChargeCard) { |order, _evt| dispatch ChargeCard, card: order.card }
+        exit(VoidPayment) { |_order, _evt| dispatch VoidPayment }
         after(3600 => expire)
         command capture => :captured
         command expire => :expired
@@ -86,8 +86,8 @@ module MachineMountsTest
       end
 
       state Authorizing do
-        entry { |order, _evt| dispatch ChargeCard, card: order.card }
-        exit { |_order, _evt| dispatch VoidPayment }
+        entry(ChargeCard) { |order, _evt| dispatch ChargeCard, card: order.card }
+        exit(VoidPayment) { |_order, _evt| dispatch VoidPayment }
         after(3600 => ExpirePayment)
         command Capture => Captured
         command ExpirePayment => Expired
@@ -136,8 +136,8 @@ module MachineMountsTest
         end
 
         state Authorizing do
-          entry { |order, _evt| dispatch ChargeCard, card: order.card }
-          exit { |_order, _evt| dispatch VoidPayment }
+          entry(ChargeCard) { |order, _evt| dispatch ChargeCard, card: order.card }
+          exit(VoidPayment) { |_order, _evt| dispatch VoidPayment }
           after(3600 => ExpirePayment)
           command Capture => :captured
           command ExpirePayment => :expired

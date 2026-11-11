@@ -173,7 +173,8 @@ module Sourced
     # A machine's commands (its parts' too) produce the states they move
     # to (a part's states are its owner's), the +Started+ of the children their
     # +starts:+ declare, and what their blocks emit (+event+). Entry, exit and
-    # +after+ actions, joins, and starting and stopping children are automations.
+    # +after+ actions (producing what they declare), joins, and starting and
+    # stopping children are automations.
     # What runs on entering a state consumes its class; what runs on
     # leaving it (exit actions, stopping the children it started) consumes the
     # classes of the transitions that can leave it.
@@ -209,10 +210,7 @@ module Sourced
         nodes << AutomationNode.new(type: 'automation', id: "#{id}-#{group_id}-aut", name:, group_id:, group_label:, consumes:, produces:, state:)
       end
 
-      # Constants in a block resolve where it's declared: the machine, or a part.
-      dispatched_by = lambda do |blocks, scope|
-        blocks.flat_map { |blk| resolve_refs(analyzer.calls_in_block(blk, :dispatch), scope) }.uniq
-      end
+      dispatched_by = ->(actions) { actions.flat_map { |action| action.outputs.messages.map(&:type) } }
       transitions = machine_transitions(machine)
 
       machine.all_nodes.each do |node|
@@ -227,9 +225,10 @@ module Sourced
 
         entering = [node.key.type]
         leaving = transitions.select { |source, target| exits?(source, target, node) }.map { |_, target| target.key.type }.uniq
-        entry_dispatched = (dispatched_by.call(node.entries, node.machine) + node.afters.flat_map { |timer| timer.commands.map(&:type) }).uniq
+        timed = node.afters.flat_map { |timer| timer.commands.map(&:type) }
+        entry_dispatched = (dispatched_by.call(node.entries) + timed).uniq
         automation.call(node.path, node.path, "actions(#{node.path})", entering, entry_dispatched) if entry_dispatched.any?
-        exit_dispatched = dispatched_by.call(node.exits, node.machine)
+        exit_dispatched = dispatched_by.call(node.exits).uniq
         automation.call(node.path, "#{node.path}-exit", "exit(#{node.path})", leaving, exit_dispatched) if exit_dispatched.any?
 
         if node.dones.any?

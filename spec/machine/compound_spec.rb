@@ -68,14 +68,14 @@ module MachineCompoundTest
       initial { command Begin => Begun }   # never reached as a compound state
 
       started Begun do
-        entry { |_context, _evt| dispatch NotifyThingStarted }
+        entry(NotifyThingStarted) { |_context, _evt| dispatch NotifyThingStarted }
         after(60 => Nudge) { |order, _evt| dispatch Nudge, thing_id: order.fetch(:thing_id) }
         command Progress => Progressed
         command Nudge => Progressed
       end
 
       state Progressed do
-        exit { |_context, _evt| dispatch Cleanup }
+        exit(Cleanup) { |_context, _evt| dispatch Cleanup }
         command Finish => Completed
       end
 
@@ -99,8 +99,8 @@ module MachineCompoundTest
 
     state ThingMachine do
       on_final ThingMachine::Completed => Ready
-      entry { |_context, _evt| dispatch NotifyCompound }
-      exit { |_context, _evt| dispatch NotifyLeft }
+      entry(NotifyCompound) { |_context, _evt| dispatch NotifyCompound }
+      exit(NotifyLeft) { |_context, _evt| dispatch NotifyLeft }
       command RestartThing => ThingMachine
       command Cancel => Cancelled
     end
@@ -194,7 +194,7 @@ module MachineCompoundTest
         Agreed = State(:agreed)
 
         started Outline do
-          entry { |_context, _evt| dispatch NotifyOutline }
+          entry(NotifyOutline) { |_context, _evt| dispatch NotifyOutline }
           after(30 => RemindOutline)
           command(RemindOutline) { |_context, _cmd| nil }
           command Propose => Proposed
@@ -214,8 +214,8 @@ module MachineCompoundTest
 
       started ItineraryMachine do
         on_final ItineraryMachine::Agreed => Finalised
-        entry { |_context, _evt| dispatch NotifyItinerary }
-        exit { |_context, _evt| dispatch LeftItinerary }
+        entry(NotifyItinerary) { |_context, _evt| dispatch NotifyItinerary }
+        exit(LeftItinerary) { |_context, _evt| dispatch LeftItinerary }
         after(60 => RemindItinerary)
         command(RemindItinerary) { |_context, _cmd| nil }
       end
@@ -229,8 +229,8 @@ module MachineCompoundTest
 
     state PlanningMachine do
       on_final PlanningMachine::Finalised => Done
-      entry { |_context, _evt| dispatch NotifyPlanning }
-      exit { |_context, _evt| dispatch LeftPlanning }
+      entry(NotifyPlanning) { |_context, _evt| dispatch NotifyPlanning }
+      exit(LeftPlanning) { |_context, _evt| dispatch LeftPlanning }
     end
 
     final Done
