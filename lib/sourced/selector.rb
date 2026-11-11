@@ -1,6 +1,14 @@
 # frozen_string_literal: true
 
 module Sourced
+  # Partitioning by {Message#id}: one partition per message, the store's queue
+  # case ({Selector#by_message_id}, {Selector#id_partitioned?}). The id is
+  # indexed under a reserved key name, chosen not to collide with a payload
+  # attribute.
+  module IdPartition
+    KEY = '__id'
+  end
+
   # A declarative description of the messages to read: what {Store#read} and
   # {Store#read_all} read, and what a {ConsistencyGuard} guards.
   #
@@ -158,6 +166,12 @@ module Sourced
     #
     # @return [Selector]
     def by_message_id = by(IdPartition::KEY)
+
+    # Whether it's partitioned by message id ({#by_message_id}): one partition
+    # per message, which an id-partitioned queue claims.
+    #
+    # @return [Boolean]
+    def id_partitioned? = keys == ID_KEYS
 
     # Bind values to the still-unbound keys of every part. Values for keys a part
     # doesn't have are ignored, so a narrower selector binds from a wider
@@ -392,5 +406,8 @@ module Sourced
   class Selector
     # Selects nothing: the identity for {#+}.
     NONE = new(parts: [])
+
+    # An id partition's keys (see {#id_partitioned?}).
+    ID_KEYS = [IdPartition::KEY.to_sym].freeze
   end
 end

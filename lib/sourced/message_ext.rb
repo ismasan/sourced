@@ -8,21 +8,6 @@ require 'sourced/message'
 require 'sourced/selector'
 
 module Sourced
-  # Partitioning by {Message#id}: one partition per message, the store's queue
-  # case. The id is indexed under a reserved key name, chosen not to collide
-  # with a payload attribute.
-  module IdPartition
-    extend self
-
-    KEY = '__id'
-
-    # Whether +keys+ (a +partition_by+, or a claimed partition's keys) are the id partition.
-    #
-    # @param keys [Array<String, Symbol>]
-    # @return [Boolean]
-    def keys?(keys) = keys.size == 1 && keys.first.to_s == KEY
-  end
-
   # Optimistic concurrency: detects messages +selector+ selects appended after
   # +last_position+. Returned by {Store#read} and {Store#claim_next}; pass to
   # {Store#append} via +guard:+. {Selector::NONE} guards nothing.

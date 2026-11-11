@@ -585,14 +585,13 @@ module Sourced
       # id-partitioned groups (reserved "__id" key) must have their message types
       # indexed by id so they are claimable regardless of which code path appends
       # them (append, handle!, workflows, scheduled-message promotion).
-      if partition_by_sorted && IdPartition.keys?(partition_by_sorted)
-        selector.types.each { |t| @type_index_basis[t.type] = :id }
-      end
+      id_partitioned = partition_by_sorted ? selector.id_partitioned? : false
+      selector.types.each { |t| @type_index_basis[t.type] = :id } if id_partitioned
 
       # Cache for hot-path use in append
       cg = db[@consumer_groups_table].where(group_id: group_id).first
       @registered_groups[group_id] = {
-        cg_id: cg[:id], partition_by: partition_by_sorted, exclusive: exclusive,
+        cg_id: cg[:id], partition_by: partition_by_sorted, exclusive: exclusive, id_partitioned:,
         types: selector ? selector.type_names.to_set.freeze : Set.new.freeze
       }
     end
@@ -814,7 +813,7 @@ module Sourced
       # types that haven't appeared yet are conflicts too. An id partition holds
       # one message, so a queue claim has nothing to guard.
       last_pos = messages.last.position
-      guard_selector = IdPartition.keys?(partition_value.keys) ? Selector::NONE : selector
+      guard_selector = selector.id_partitioned? ? Selector::NONE : selector
       guard = ConsistencyGuard.new(selector: guard_selector, last_position: last_pos)
 
       # replaying: true when all messages are at or below the highest position
@@ -1265,7 +1264,7 @@ module Sourced
       # id-partitioned (queue) groups are excluded: id is high-cardinality, so
       # they use lazy discovery in claim_next instead of eager per-message offsets.
       eager_groups = @registered_groups.each_value.reject do |gi|
-        gi[:partition_by].nil? || gi[:partition_by].empty? || IdPartition.keys?(gi[:partition_by])
+        gi[:partition_by].nil? || gi[:partition_by].empty? || gi[:id_partitioned]
       end
       return if eager_groups.empty?
 

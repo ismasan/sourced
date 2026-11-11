@@ -128,10 +128,18 @@ RSpec.describe Sourced::React do
       expect(result.map { |msg| msg.payload.thing_id }).to eq(['f1'])
     end
 
-    it 'takes only what answers to_message_class' do
+    it 'reacts to each class a union answering to_message_classes stands for' do
+      union = Object.new
+      union.define_singleton_method(:to_message_classes) { [ReactTestMessages::Unhandled, ReactTestMessages::Wildcarded] }
+      reactor_class.reaction(union => nil) { |*| nil }
+
+      expect(reactor_class.handled_messages_for_react).to include(ReactTestMessages::Unhandled, ReactTestMessages::Wildcarded)
+    end
+
+    it 'takes only what answers to_message_class or to_message_classes' do
       expect {
         reactor_class.reaction(:react_test_something_happened => nil) { |_context, _msg| nil }
-      }.to raise_error(NoMethodError, /to_message_class/)
+      }.to raise_error(ArgumentError, /:react_test_something_happened isn't a message class/)
     end
   end
 
@@ -237,7 +245,7 @@ RSpec.describe Sourced::React do
 
     it 'raises for a block without declared outputs, a pair without a block, or several pairs' do
       expect { reactor { reaction(ReactTestMessages::SomethingHappened) { |*| nil } } }
-        .to raise_error(ArgumentError, /declares what it appends: one pair/)
+        .to raise_error(ArgumentError, /\.reaction takes one pair, ex. Event => Command \| Other \| nil/)
       expect { reactor { reaction { |*| nil } } }.to raise_error(ArgumentError, /any: Command/)
       expect { reactor { reaction ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext } }
         .to raise_error(ArgumentError, /needs a block/)
@@ -246,7 +254,7 @@ RSpec.describe Sourced::React do
           reaction(ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext,
                    ReactTestMessages::Unhandled => ReactTestMessages::DoNext) { |*| nil }
         end
-      }.to raise_error(ArgumentError, /one pair/)
+      }.to raise_error(ArgumentError, /\.reaction takes one pair/)
       expect { reactor { reaction(ReactTestMessages::SomethingHappened => 'nope') { |*| nil } } }
         .to raise_error(ArgumentError, /isn't a message class/)
     end

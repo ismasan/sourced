@@ -67,6 +67,18 @@ module Sourced
       projection.evolve(messages)
     end
 
+    # Whether the source's assertion holds over the context so far, in this
+    # reactor's partition (+partition_values+): a selector source's
+    # precondition. True for a source without one, ex. an inline projector.
+    # Deciders and machines decide a command only while it holds.
+    #
+    # @return [Boolean]
+    def source_holds?
+      return true if self.class.evolve_selector.assertion == Selector::Assertion::TRUE
+
+      self.class.history_selector.bind(**partition_values).holds?(context)
+    end
+
     module ClassMethods
       def inherited(subclass)
         super
@@ -105,10 +117,9 @@ module Sourced
       #
       # @return [Selector]
       def history_selector
-        keys = partition_keys
-        return Selector::NONE if keys.empty? || IdPartition.keys?(keys)
+        return Selector::NONE if partition_keys.empty? || claim_selector.id_partitioned?
 
-        evolve_selector.by_default(*keys)
+        evolve_selector.by_default(*partition_keys)
       end
 
       # Define the projector's initial context factory. The block takes no arguments.

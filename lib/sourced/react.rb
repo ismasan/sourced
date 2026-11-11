@@ -10,6 +10,9 @@ module Sourced
     PREFIX = 'sourced_reaction'
     EMPTY_ARRAY = [].freeze
 
+    # What +reaction+ takes, for errors.
+    REACTION_PAIR = 'Event => Command | Other | nil, A | B => Command, or any: Command'
+
     # Raised when a reaction appends a message its declaration doesn't
     # include, or appends nothing when its outputs don't include +nil+.
     UndeclaredMessageError = Class.new(UndeclaredOutputError)
@@ -239,21 +242,15 @@ module Sourced
         in [Hash => declaration] if declaration.size == 1
           raise ArgumentError, "#{self}.reaction #{declaration.inspect} needs a block" unless block
 
-          reacted, declared = declaration.first
-          outputs = begin
-            Outputs.parse(declared)
-          rescue ArgumentError => e
-            raise ArgumentError, "#{self}.reaction #{reacted}: #{e.message}"
-          end
+          reacted, outputs = Outputs.pair(declaration, "#{self}.reaction", example: REACTION_PAIR)
           if reacted == :any
             __react_to_any(outputs, &block)
           else
             __reacted_classes(reacted).each { |message_class| __react_to(message_class, outputs, &block) }
           end
         in _ if block
-          raise ArgumentError, "#{self}.reaction declares what it appends: one pair, ex. " \
-                               'reaction Event => Command, Event | Other => Command | nil, or any: Command; ' \
-                               "got #{args.map(&:inspect).join(', ')}"
+          # Not one pair (that's matched above), so this raises its error.
+          Outputs.pair(args.size == 1 ? args.first : args, "#{self}.reaction", example: REACTION_PAIR)
         in [_, *] => values
           values.each { |value| __subscribe(value.to_message_class) }
         end
@@ -284,16 +281,13 @@ module Sourced
         handled_messages_for_react << message_class unless handled_messages_for_react.include?(message_class)
       end
 
-      # The classes a reaction's left side names: a union of message classes
-      # (+Plumb::Or+), or of machine states and parts (+Machine::Targets+).
+      # The classes a reaction's left side names (see {Outputs.flatten}).
       # @api private
       def __reacted_classes(reacted)
-        case reacted
-        in Plumb::Or then reacted.children.flat_map { __reacted_classes(it) }
-        in Machine::Targets then reacted.members.flat_map { __reacted_classes(it) }
-        in nil then raise ArgumentError, "#{self}.reaction: nil isn't a message class"
-        else [reacted.to_message_class]
-        end
+        classes = Outputs.flatten(reacted)
+        raise ArgumentError, "#{self}.reaction: nil isn't a message class" if classes.include?(nil)
+
+        classes
       end
 
       def __validate_message_for_reaction!(_message_class)

@@ -183,12 +183,12 @@ RSpec.describe Sourced::Decider do
 
     def decide(decider) = decider.new(device_id: 'd1').decide(bind)
 
-    it 'requires one Command => outputs pair' do
+    it 'takes one pair' do
       cmd = DeciderTestMessages::BindDevice
       expect { Class.new(Sourced::Decider) { command(cmd) { nil } } }
-        .to raise_error(ArgumentError, /takes one Command => outputs pair/)
+        .to raise_error(ArgumentError, /\.command takes one pair, ex. Command => Event \| Other \| nil; got DeciderTestMessages::BindDevice/)
       expect { Class.new(Sourced::Decider) { command(cmd => nil, Object => nil) { nil } } }
-        .to raise_error(ArgumentError, /takes one Command => outputs pair/)
+        .to raise_error(ArgumentError, /\.command takes one pair/)
       expect { decider_with('nope') { nil } }.to raise_error(ArgumentError, /BindDevice: "nope" isn't a message class/)
     end
 
@@ -761,9 +761,9 @@ RSpec.describe Sourced::Decider do
       expect { Sourced::Router.new(store:, reactors: [decision]) }.not_to raise_error
     end
 
-    it 'takes one Command => outputs pair' do
+    it 'takes one pair, as command does' do
       expect { Sourced::Decider(Sourced::Selector[registered]) { nil } }
-        .to raise_error(ArgumentError, /takes one Command => outputs pair/)
+        .to raise_error(ArgumentError, /Sourced::Decider takes one pair, ex. Command => Event \| Other \| nil; got #<Sourced::Selector/)
     end
   end
 

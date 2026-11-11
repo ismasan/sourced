@@ -240,14 +240,15 @@ module Sourced
       # not collide with a payload attribute) and must be sole-owned, so it is only
       # allowed for exclusive reactors. This keeps id-indexing safe: a type is only
       # id-indexed when its lone exclusive owner is id-partitioned.
-      if IdPartition.keys?(group.claim_selector.keys) && !group.exclusive
+      if group.claim_selector.id_partitioned? && !group.exclusive
         raise ArgumentError,
           "#{reactor_class} must declare `partition_by`. (Only an `exclusive` reactor may " \
           "be id-partitioned — one partition per message — whether by omitting " \
           "partition_by or declaring `partition_by :__id`.)"
       end
 
-      validate_history_keys!(reactor_class, group)
+      # PartitionSchema.check! (in validate!) covers reactors with a schema.
+      PartitionSchema.check_history_keys!(reactor_class) unless reactor_class.respond_to?(:partition_schema)
       validate_exclusive_ownership!(reactor_class, group)
 
       @reactors << reactor_class
@@ -295,18 +296,6 @@ module Sourced
           Cannot register #{reactor_class}: exclusive reactor #{offender} requires sole ownership of its message types, but #{reactor_class} and #{existing} both handle: #{overlap.sort.join(', ')}
         MSG
       end
-    end
-
-    # A claim's history is the reactor's +history_selector+ bound to the claimed
-    # partition, so its keys must be the claim selector's.
-    #
-    # @raise [DefinitionError]
-    def validate_history_keys!(reactor_class, group)
-      unbound = group.history_selector.keys - group.claim_selector.keys
-      return if unbound.empty?
-
-      raise DefinitionError, "#{reactor_class}: its history_selector is scoped by #{unbound.join(', ')}, which its " \
-                             "claim_selector (#{group.claim_selector.keys.join(', ')}) doesn't partition by, so a claim can't bind them"
     end
 
     # Normalize a pair's +signals+ into an array, without Hash-splatting a single

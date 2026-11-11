@@ -36,6 +36,9 @@ module Sourced
 
     PREFIX = 'sourced_decide'
 
+    # What +command+ takes, for errors.
+    COMMAND_PAIR = 'Command => Event | Other | nil'
+
     # Raised when a command handler emits an event carrying another
     # partition's value for one of the partition keys.
     InvalidEventError = Class.new(Error)
@@ -82,18 +85,9 @@ module Sourced
       # @raise [ArgumentError] without exactly one pair, or for outputs that
       #   aren't message classes
       def command(declaration, &block)
-        unless declaration.is_a?(Hash) && declaration.size == 1
-          raise ArgumentError, "#{self}.command takes one Command => outputs pair, " \
-                               "ex. command #{declaration.inspect} => SomeEvent, got #{declaration.inspect}"
-        end
-
-        declared, outputs = declaration.first
+        declared, outputs = Outputs.pair(declaration, "#{self}.command", example: COMMAND_PAIR)
         message_class = declared.to_message_class
-        begin
-          command_outputs[message_class] = Outputs.parse(outputs)
-        rescue ArgumentError => e
-          raise ArgumentError, "#{self}.command #{message_class}: #{e.message}"
-        end
+        command_outputs[message_class] = outputs
         handled_commands << message_class
         handler = block.arity == 1 ? proc { |_context, cmd| instance_exec(cmd, &block) } : block
         define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &handler)
@@ -102,11 +96,8 @@ module Sourced
       # @api private
       # @see Sourced.Decider
       def __single(source, declaration, &block)
-        unless declaration.is_a?(Hash) && declaration.size == 1
-          raise ArgumentError, "Sourced::Decider takes one Command => outputs pair, got #{declaration.inspect}"
-        end
-
-        input = declaration.keys.first.to_message_class
+        declared, = Outputs.pair(declaration, 'Sourced::Decider', example: COMMAND_PAIR)
+        input = declared.to_message_class
         Class.new(self) do
           consumer_group input.type
           if source
@@ -274,9 +265,8 @@ module Sourced
     # {Sourced.handle!} raises {Sourced::CommandNotHandledError} when this is
     # false, without appending anything; in background workers, {.handle_batch}
     # acks the command with no events. Defaults to whether a handler is
-    # registered for the command's class, and its precondition holds: its
-    # history selector's assertion (a selector source's), over the context so
-    # far, bound to the partition. An inline projector source has none.
+    # registered for the command's class, and its source's precondition holds
+    # ({Evolve#source_holds?}).
     #
     # Override to refuse commands based on context without raising, the command-side
     # counterpart of {React#should_react?}:
@@ -291,7 +281,7 @@ module Sourced
     # @param command [Sourced::Message]
     # @return [Boolean]
     def handles_command?(command)
-      self.class.handled_commands.include?(command.to_message.class) && precondition_holds?
+      self.class.handled_commands.include?(command.to_message.class) && source_holds?
     end
 
     # Decide a command against the decider's current in-memory context.
@@ -345,12 +335,6 @@ module Sourced
     end
 
     private
-
-    def precondition_holds?
-      return true if self.class.evolve_selector.assertion == Selector::Assertion::TRUE
-
-      self.class.history_selector.bind(**partition_values).holds?(context)
-    end
 
     # What the decider emits belongs to its partition: an event carrying a
     # partition key with another value would be read into another partition.

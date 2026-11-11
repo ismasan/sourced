@@ -131,6 +131,9 @@ module Sourced
 
     INITIAL = :initial
 
+    # What +after+ takes, for errors.
+    AFTER_PAIR = "'1h' => Command | Other | nil"
+
     # Metadata keys on messages dispatched by an +after+ block: the id of the
     # transition that entered the state and started the timer, and the
     # state's path. One transition can enter several states, so a
@@ -243,6 +246,11 @@ module Sourced
 
     # The states a transition may go to; +nil+ means it may stay.
     Targets = Data.define(:members) do
+      # As a handler declaration (+reaction A | B+), the message classes its
+      # members stand for, +nil+ for a +nil+ member (see {Sourced::Outputs.flatten}).
+      # @return [Array<Class, nil>]
+      def to_message_classes = members.flat_map { |member| Outputs.flatten(member) }
+
       # @param other [State, History, Targets, nil]
       # @return [Targets]
       def |(other)
@@ -630,12 +638,14 @@ module Sourced
       def after(declaration, &block)
         raise DefinitionError, "#{@machine}: the initial position is never entered, so no timers" if @node.initial?
 
-        delay, declared =
-          case declaration
-          in Hash if declaration.size == 1 then declaration.first
-          else raise DefinitionError, "#{@machine}: after declares what it dispatches, ex. after('1h' => Command), got #{declaration.inspect}"
-          end
-        @node.afters << __timer(delay:, outputs: __timer_outputs(delay, declared, block), block:)
+        label = "#{@machine}: #{@node.label}'s after"
+        delay, outputs = Outputs.pair(declaration, label, example: AFTER_PAIR, error: DefinitionError)
+        unless outputs.messages.any? && outputs.messages.all? { it < Sourced::Command }
+          raise DefinitionError, "#{label}(#{delay.inspect}) dispatches commands, got #{outputs}"
+        end
+
+        outputs.check_blockless!(block, "#{label}(#{delay.inspect})", error: DefinitionError)
+        @node.afters << __timer(delay:, outputs:, block:)
       end
 
       # Declare a region, active while this state is. A state with
@@ -796,20 +806,14 @@ module Sourced
       end
 
       private def __action(what, declared, block)
+        label = "#{@machine}: #{@node.label}'s #{what}"
         unless declared.size == 1
-          raise DefinitionError, "#{@machine}: #{@node.label}'s #{what} declares what it dispatches, ex. " \
+          raise DefinitionError, "#{label} declares what it dispatches, ex. " \
                                  "#{what} Command do, #{what} Command | nil do, or #{what} nil do"
         end
 
-        outputs = Outputs.parse(declared.first)
-        if block.nil? && (outputs.optional || outputs.messages.empty?)
-          raise DefinitionError,
-                "#{@machine}: #{@node.label}'s #{what} #{outputs} needs a block to choose what to dispatch"
-        end
-
-        Action.new(outputs:, block:)
-      rescue ArgumentError => e
-        raise DefinitionError, "#{@machine}: #{@node.label}'s #{what}: #{e.message}"
+        outputs = Outputs.declare(declared.first, label, error: DefinitionError)
+        Action.new(outputs: outputs.check_blockless!(block, label, error: DefinitionError), block:)
       end
 
       # A +#call(context)+ delay is computed when the timer starts; any
@@ -820,23 +824,6 @@ module Sourced
         StaticAfter.new(delay:, outputs:, block:)
       rescue InvalidDelayError => e
         raise DefinitionError, "#{@machine}: #{e.message}"
-      end
-
-      # +after('1h' => A | B)+: a command, or a union of them, with +| nil+
-      # when its block may dispatch none.
-      private def __timer_outputs(delay, declared, block)
-        outputs = Outputs.parse(declared)
-        if outputs.messages.empty? || !outputs.messages.all? { it < Sourced::Command }
-          raise DefinitionError, "#{@machine}: after(#{delay.inspect}) dispatches commands, got #{declared.inspect}"
-        end
-        if outputs.optional && block.nil?
-          raise DefinitionError,
-                "#{@machine}: after(#{delay.inspect} => #{outputs}) needs a block to choose what to dispatch"
-        end
-
-        outputs
-      rescue ArgumentError
-        raise DefinitionError, "#{@machine}: after(#{delay.inspect}) dispatches commands, got #{declared.inspect}"
       end
     end
 
@@ -1843,7 +1830,8 @@ module Sourced
     # @return [Set<Class>]
     def handled_commands = self.class.__command_set
 
-    # Whether an active state accepts +command+. A command dispatched by an
+    # Whether an active state accepts +command+, and the machine's source's
+    # precondition holds ({Evolve#source_holds?}). A command dispatched by an
     # +after+ block is refused once the machine has left the state entry
     # that started it, even if an active state accepts it.
     #
@@ -1856,7 +1844,7 @@ module Sourced
       return stoppable? if stop_command?(command)
       return false if stale_timer?(command)
 
-      handlers_for(command).any?
+      handlers_for(command).any? && source_holds?
     end
 
     # Decide +command+ against the current configuration and context.

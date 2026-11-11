@@ -351,7 +351,7 @@ class Carts < Sourced::Decider
 end
 ```
 
-When the assertion doesn't hold, the handler doesn't run: `Sourced.handle!` raises `Sourced::CommandNotHandledError`, and workers ack the command with no events. A Decider has one assertion for all its commands, which share its consistency boundary.
+When the assertion doesn't hold, the handler doesn't run: `Sourced.handle!` raises `Sourced::CommandNotHandledError`, and workers ack the command with no events. A Decider has one assertion for all its commands, which share its consistency boundary. A machine reading through a selector holds its commands to the selector's assertion the same way: an active state accepting a command decides it only while the assertion holds.
 
 #### Single-command decisions
 

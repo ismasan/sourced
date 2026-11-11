@@ -235,6 +235,19 @@ RSpec.describe Sourced::Machine do
       expect(instance.machine.paths).to eq(['ordered'])
     end
 
+    it "accepts commands only while the source's assertion holds" do
+      guarded = machine do
+        evolve Sourced::Selector[ItemAdded].includes(ItemAdded)
+
+        state(:open) { command Checkout => :ordered }
+        final :ordered
+      end
+      checkout = Checkout.new(payload: { cart_id: 'c1' })
+
+      expect(guarded.at(['open'], [], cart_id: 'c1').handles_command?(checkout)).to be(false)
+      expect(guarded.at(['open'], [item_added], cart_id: 'c1').handles_command?(checkout)).to be(true)
+    end
+
     it 'reads its messages and its own state events in the partition' do
       expect(selecting.history_selector.types).to include(ItemAdded, selecting::Open, selecting::Ordered)
       expect(selecting.history_selector.parts.map(&:keys).uniq).to eq([[:cart_id]])
@@ -801,9 +814,9 @@ RSpec.describe Sourced::Machine do
 
       it 'requires a block for an optional or empty declaration' do
         expect { machine { state(:open) { entry Pay | nil } } }
-          .to raise_error(Sourced::Machine::DefinitionError, /entry MachineTest::Pay \| nil needs a block/)
+          .to raise_error(Sourced::Machine::DefinitionError, /entry: MachineTest::Pay \| nil needs a block/)
         expect { machine { state(:open) { exit nil } } }
-          .to raise_error(Sourced::Machine::DefinitionError, /exit nil needs a block/)
+          .to raise_error(Sourced::Machine::DefinitionError, /exit: nil needs a block/)
       end
 
       it 'rejects anything that is not a message class' do
@@ -1039,11 +1052,11 @@ RSpec.describe Sourced::Machine do
     end
 
     it 'rejects timers that declare no commands' do
-      expect { machine { state(:open) { after(60) { dispatch Expire } } } }.to raise_error(Sourced::Machine::DefinitionError, /declares what it dispatches/)
-      expect { machine { state(:open) { after(60 => Expire, 120 => Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /declares what it dispatches/)
+      expect { machine { state(:open) { after(60) { dispatch Expire } } } }.to raise_error(Sourced::Machine::DefinitionError, /after takes one pair, ex. '1h' => Command/)
+      expect { machine { state(:open) { after(60 => Expire, 120 => Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /after takes one pair/)
       expect { machine { state(:open) { after(60 => CartOpened) } } }.to raise_error(Sourced::Machine::DefinitionError, /dispatches commands/)
       expect { machine { state(:open) { after(60 => nil) } } }.to raise_error(Sourced::Machine::DefinitionError, /dispatches commands/)
-      expect { machine { state(:open) { after(60 => 'nope') } } }.to raise_error(Sourced::Machine::DefinitionError, /dispatches commands/)
+      expect { machine { state(:open) { after(60 => 'nope') } } }.to raise_error(Sourced::Machine::DefinitionError, /after 60: "nope" isn't a message class/)
     end
 
     it 'takes a union of commands' do
@@ -1120,7 +1133,7 @@ RSpec.describe Sourced::Machine do
 
     it 'requires a block for a timer declaring | nil' do
       expect { machine { state(:open) { after(60 => Expire | nil) } } }
-        .to raise_error(Sourced::Machine::DefinitionError, /after\(60 => MachineTest::Expire \| nil\) needs a block/)
+        .to raise_error(Sourced::Machine::DefinitionError, /after\(60\): MachineTest::Expire \| nil needs a block/)
     end
 
     it 'labels the edge a timer takes from its state, and notes its other commands' do

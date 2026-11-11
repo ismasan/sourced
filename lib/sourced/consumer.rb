@@ -261,6 +261,25 @@ module Sourced
       Selector::NONE
     end
 
+    # The partition among +values+, as {Sourced.load} reads it: each partition
+    # key's value (nil when missing).
+    #
+    # @param values [Hash{Symbol => Object}]
+    # @return [Hash{Symbol => Object}]
+    def partition_of(values) = Sourced.partition_keys_of(self).to_h { |key| [key, values[key]] }
+
+    # What {Sourced.load} reads for +partition+: {#history_selector} bound to
+    # it, as the Router reads a claim's history.
+    #
+    # @param partition [Hash{Symbol => Object}]
+    # @return [Selector]
+    def history_for(partition) = history_selector.bind(**partition)
+
+    # An instance for the partition {Sourced.load} reads.
+    #
+    # @param values [Hash{Symbol => Object}]
+    def for_partition(values) = new(values)
+
     # What the Router claims, and wakes the reactor for: its +handled_messages+,
     # partitioned by its partition keys, or by message id (+__id+) when it
     # declares none (only exclusive reactors may be; the Router checks).

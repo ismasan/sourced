@@ -60,6 +60,26 @@ module Sourced
           @selector ||= Selector[*evolve_handlers.keys]
         end
 
+        # What {Sourced.load} reads for +partition+: its {.selector} scoped by
+        # it.
+        #
+        # @param partition [Hash{Symbol => Object}]
+        # @return [Selector]
+        def history_for(partition) = selector.by(**partition)
+
+        # The partition among +values+, as {Sourced.load} reads it: all of
+        # them, since an inline projector declares no partition keys.
+        #
+        # @param values [Hash{Symbol => Object}]
+        # @return [Hash{Symbol => Object}]
+        def partition_of(values) = values
+
+        # A projection for the partition {Sourced.load} reads, starting from the
+        # +context+ block's context.
+        #
+        # @return [Projector::Inline]
+        def for_partition(_values) = new
+
         # A source's projector (see {SourceInterface}): an inline projector is its own.
         #
         # @return [self]

@@ -210,12 +210,12 @@ module Sourced
   # Pass +upto:+ (partition-local rank) to evolve over at most the first N matching
   # messages in the partition — useful for time-travel, deterministic replay, or debugging.
   #
-  # +reactor_class+'s instances must respond to +evolve(messages)+. If it
-  # responds to +claim_selector+ (a reactor), its selectors' keys of +values+
-  # are the partition, its +history_selector+ is bound to them and instances
-  # are built with +new(values)+; otherwise, as for a {Sourced::Projector::Inline}, all
-  # of +values+ are the partition, its +selector+ is scoped by them and
-  # instances are built with +new+.
+  # +reactor_class+ answers +partition_of(values)+ (the partition among
+  # +values+), +history_for(partition)+ (the bound selector it reads) and
+  # +for_partition(values)+ (an instance, which responds to
+  # +evolve(messages)+): reactors through {Consumer}, where the partition is
+  # their keys' values, and {Sourced::Projector::Inline}, where it's all of
+  # +values+.
   #
   # @raise [MissingPartitionKeyError] if a partition key is missing or nil
   # @example
@@ -223,16 +223,14 @@ module Sourced
   #   cart.context
   def self.load(reactor_class, store: nil, upto: nil, **values)
     store ||= self.store
-    partitioned = reactor_class.respond_to?(:claim_selector)
-    partition_attrs = partitioned ? partition_keys_of(reactor_class).to_h { |k| [k, values[k]] } : values
+    partition_attrs = reactor_class.partition_of(values)
     missing = partition_attrs.filter_map { |k, v| k if v.nil? }
     if missing.any?
       raise MissingPartitionKeyError, "#{reactor_class} can't be loaded without values for partition keys #{missing.inspect}"
     end
 
-    selector = partitioned ? reactor_class.history_selector.bind(**partition_attrs) : reactor_class.selector.by(**partition_attrs)
-    read_result = store.read(selector, limit: upto)
-    instance = partitioned ? reactor_class.new(values) : reactor_class.new
+    read_result = store.read(reactor_class.history_for(partition_attrs), limit: upto)
+    instance = reactor_class.for_partition(values)
 
     instance.evolve(read_result.messages)
 
@@ -242,10 +240,13 @@ module Sourced
   # A reactor's partition keys: its claim and history selectors' (a selector
   # without types has none, ex. a decider's history when it evolves nothing),
   # none when it's partitioned by message id.
-  private_class_method def self.partition_keys_of(reactor_class)
-    keys = reactor_class.claim_selector.keys
-    keys |= reactor_class.history_selector.keys if reactor_class.respond_to?(:history_selector)
-    IdPartition.keys?(keys) ? Plumb::BLANK_ARRAY : keys
+  # @api private
+  def self.partition_keys_of(reactor_class)
+    claim_selector = reactor_class.claim_selector
+    return Plumb::BLANK_ARRAY if claim_selector.id_partitioned?
+
+    keys = claim_selector.keys
+    reactor_class.respond_to?(:history_selector) ? keys | reactor_class.history_selector.keys : keys
   end
 
   # A message's values for +keys+: from its payload, or else its tags.

@@ -218,7 +218,7 @@ RSpec.describe Sourced::PartitionSchema do
         .to raise_error(Sourced::DefinitionError, /no handled message declares every partition key order_id, item_id/)
     end
 
-    it "requires the selector's keys to be partition keys" do
+    it "requires the history selector's keys to be the claim selector's" do
       reactor = Class.new do
         extend Sourced::Consumer
         consumer_group 'partition_schema_selector'
@@ -227,7 +227,7 @@ RSpec.describe Sourced::PartitionSchema do
         def self.history_selector = Sourced::Selector[PartitionSchemaTest::OrderNoted].by(:order_id, :note)
       end
       expect { described_class.check!(reactor) }
-        .to raise_error(Sourced::DefinitionError, /selector is scoped by note, which aren't partition keys/)
+        .to raise_error(Sourced::DefinitionError, /history_selector is scoped by note, which its claim_selector \(order_id\) doesn't partition by/)
     end
 
     it "requires the claim selector's keys to be the partition keys" do
@@ -240,6 +240,18 @@ RSpec.describe Sourced::PartitionSchema do
       end
       expect { described_class.check!(reactor) }
         .to raise_error(Sourced::DefinitionError, /claim_selector is scoped by order_id, not its partition keys \(order_id, note\)/)
+    end
+
+    it "reports a claim selector without every partition key before the history keys it can't bind" do
+      reactor = Class.new(Sourced::Decider) do
+        consumer_group 'partition_schema_claim_before_history'
+        partition_by :order_id, :note
+        evolve(PartitionSchemaTest::OrderNoted) { |*| nil }
+        command(PartitionSchemaTest::PlaceOrder => nil) { |*| nil }
+        def self.claim_selector = Sourced::Selector[PartitionSchemaTest::PlaceOrder].by(:order_id)
+      end
+      expect { described_class.check!(reactor) }
+        .to raise_error(Sourced::DefinitionError, /claim_selector is scoped by order_id, not its partition keys/)
     end
 
     it 'allows a claim selector with the partition keys' do

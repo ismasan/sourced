@@ -21,12 +21,13 @@ module Sourced
   #   (Plumb subtyping: +String.present+ passes for +String+, +Integer+ doesn't).
   # * At least one handled message declares every key, or no partition is
   #   ever created.
-  # * The history selector's keys are partition keys: binding takes their
-  #   values from the claimed partition.
   # * The claim selector's keys are the partition keys: they're what a claim's
   #   partition has values for.
+  # * The history selector's keys are the claim selector's: binding takes
+  #   their values from the claimed partition ({.check_history_keys!}, which
+  #   the Router runs for reactors without a schema).
   #
-  # Id-partitioned reactors (no schema) aren't checked.
+  # Id-partitioned reactors (no schema) are only checked for the last rule.
   module PartitionSchema
     extend self
 
@@ -45,7 +46,7 @@ module Sourced
       return unless reactor.respond_to?(:partition_schema)
 
       schema = reactor.partition_schema.to_h.transform_keys(&:to_sym)
-      return if schema.empty? || IdPartition.keys?(schema.keys)
+      return check_history_keys!(reactor, error:) if schema.empty? || reactor.claim_selector.id_partitioned?
 
       full = FULL_ROLES.each_with_object({}) do |(method, role), roles|
         next unless reactor.respond_to?(method)
@@ -53,8 +54,9 @@ module Sourced
         reactor.public_send(method).each { |klass| roles[klass] ||= role }
       end
       selector = reactor.history_selector
-      check_selector_keys!(reactor, schema, selector, error)
+      # The claim selector first: a history selector is held to its keys.
       check_claim_keys!(reactor, schema, error)
+      check_history_keys!(reactor, error:)
       messages = (full.keys + reactor.claim_selector.types + selector.types).uniq
       return if messages.empty?
 
@@ -88,12 +90,20 @@ module Sourced
       klass::Payload._schema.to_h.to_h { |key, type| [key.to_sym, [type, key.optional?]] }
     end
 
-    private def check_selector_keys!(reactor, schema, selector, error)
-      foreign = selector.keys - schema.keys
-      return if foreign.empty?
+    # A claim reads the reactor's +history_selector+ bound to the claimed
+    # partition, so its keys must be the +claim_selector+'s.
+    #
+    # @param reactor [#claim_selector, #history_selector]
+    # @param error [Class] the exception class to raise
+    # @raise [DefinitionError]
+    # @return [void]
+    def check_history_keys!(reactor, error: DefinitionError)
+      claim_keys = reactor.claim_selector.keys
+      unbound = reactor.history_selector.keys - claim_keys
+      return if unbound.empty?
 
-      raise error, "#{reactor}: its history_selector is scoped by #{foreign.join(', ')}, which aren't partition keys " \
-                   "(#{schema.keys.join(', ')}), so a claim can't bind them"
+      raise error, "#{reactor}: its history_selector is scoped by #{unbound.join(', ')}, which its " \
+                   "claim_selector (#{claim_keys.join(', ')}) doesn't partition by, so a claim can't bind them"
     end
 
     private def check_claim_keys!(reactor, schema, error)

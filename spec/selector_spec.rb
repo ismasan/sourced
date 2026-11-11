@@ -92,7 +92,8 @@ RSpec.describe Sourced::Selector do
     it 'scopes every part by the reserved message id key' do
       selector = described_class[SelectorTestMessages::E1].by_message_id
       expect(selector.keys).to eq([:__id])
-      expect(Sourced::IdPartition.keys?(selector.keys)).to be true
+      expect(selector).to be_id_partitioned
+      expect(described_class[SelectorTestMessages::E1].by(:__id, :other)).not_to be_id_partitioned
     end
   end
 
