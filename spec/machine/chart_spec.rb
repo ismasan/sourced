@@ -255,7 +255,7 @@ module MachineChartTest
         opened = chart[:states]['opened']
         expect(opened).to include(
           id: 'opened', key: 'opened', type: 'atomic', machine: 'MachineChartTest::TripMachine',
-          entry: [{ dispatches: [t(:remind)], optional: false }], exit: [], after: [{ delay: 60, dispatches: [t(:remind)] }], on_done: nil, invoke: [], mounts: [], states: {}, status: nil,
+          entry: [{ dispatches: [t(:remind)], optional: false }], exit: [], after: [{ delay: 60, dispatches: [t(:remind)], optional: false }], on_done: nil, invoke: [], mounts: [], states: {}, status: nil,
           children_done: [{ id: 'machine_chart_test.leg_machine', targets: ['legs_done'], starts: [], starts_optional: false }]
         )
         expect(opened).not_to include(:message_type, :class)

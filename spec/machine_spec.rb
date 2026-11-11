@@ -947,7 +947,7 @@ RSpec.describe Sourced::Machine do
         named = computed(MachineTest::SosDelay)
 
         expect(timed.to_h.dig(:states, 'open', :after))
-          .to eq([{ delay: nil, computed: 'computed', dispatches: [Expire.type, Checkout.type] }])
+          .to eq([{ delay: nil, computed: 'computed', dispatches: [Expire.type, Checkout.type], optional: false }])
         expect(named.to_h.dig(:states, 'open', :after).first[:computed]).to eq('MachineTest::SosDelay')
         expect { JSON.generate(timed.to_h) }.not_to raise_error
         expect(timed.to_mermaid.lines.map(&:chomp)).to include('  open --> expired : after computed / Expire')
@@ -1043,6 +1043,7 @@ RSpec.describe Sourced::Machine do
       expect { machine { state(:open) { after(60 => Expire, 120 => Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /declares what it dispatches/)
       expect { machine { state(:open) { after(60 => CartOpened) } } }.to raise_error(Sourced::Machine::DefinitionError, /dispatches commands/)
       expect { machine { state(:open) { after(60 => nil) } } }.to raise_error(Sourced::Machine::DefinitionError, /dispatches commands/)
+      expect { machine { state(:open) { after(60 => 'nope') } } }.to raise_error(Sourced::Machine::DefinitionError, /dispatches commands/)
     end
 
     it 'takes a union of commands' do
@@ -1060,7 +1061,7 @@ RSpec.describe Sourced::Machine do
 
       expect(dispatched.map(&:class)).to eq([Expire, Checkout])
       expect(dispatched.map { it.payload.cart_id }).to eq(%w[c1 c1])
-      expect(timed.to_h.dig(:states, 'open', :after)).to eq([{ delay: 60, dispatches: [Expire.type, Checkout.type] }])
+      expect(timed.to_h.dig(:states, 'open', :after)).to eq([{ delay: 60, dispatches: [Expire.type, Checkout.type], optional: false }])
     end
 
     it 'dispatches what a block builds, from the declared commands only' do
@@ -1088,7 +1089,38 @@ RSpec.describe Sourced::Machine do
       end
       transition = moved(undeclared, 'machine_test.open_cart', from: 'initial', to: 'open', cart_id: 'c1')
       instance = undeclared.new(cart_id: 'c1').tap { |m| m.evolve([transition]) }
-      expect { instance.__react(transition) }.to raise_error(Sourced::Machine::TimerError, /dispatched MachineTest::Checkout, but declares MachineTest::Expire/)
+      expect { instance.__react(transition) }
+        .to raise_error(Sourced::React::UndeclaredMessageError,
+                        /open after\(60s\) appended MachineTest::Checkout, which it doesn't declare \(MachineTest::Expire\)/)
+    end
+
+    it 'dispatches nothing from a block only when it declares | nil' do
+      timed = lambda do |declared|
+        machine do
+          initial { command OpenCart => :open }
+          state(:open) do
+            after(60 => declared) { |*| nil }
+            command Expire => :closed
+          end
+          final :closed
+        end
+      end
+
+      optional = timed.call(Expire | nil)
+      transition = moved(optional, 'machine_test.open_cart', from: 'initial', to: 'open', cart_id: 'c1')
+      expect(optional.new(cart_id: 'c1').tap { |m| m.evolve([transition]) }.__react(transition)).to eq([])
+      expect(optional.to_h.dig(:states, 'open', :after)).to eq([{ delay: 60, dispatches: [Expire.type], optional: true }])
+
+      strict = timed.call(Expire)
+      transition = moved(strict, 'machine_test.open_cart', from: 'initial', to: 'open', cart_id: 'c1')
+      instance = strict.new(cart_id: 'c1').tap { |m| m.evolve([transition]) }
+      expect { instance.__react(transition) }
+        .to raise_error(Sourced::React::UndeclaredMessageError, /open after\(60s\) appended nothing/)
+    end
+
+    it 'requires a block for a timer declaring | nil' do
+      expect { machine { state(:open) { after(60 => Expire | nil) } } }
+        .to raise_error(Sourced::Machine::DefinitionError, /after\(60 => MachineTest::Expire \| nil\) needs a block/)
     end
 
     it 'labels the edge a timer takes from its state, and notes its other commands' do

@@ -115,8 +115,7 @@ module Sourced
     # starts fewer children than it declares.
     StartError = Class.new(Error)
 
-    # Raised when an +after+ block dispatches a command its timer doesn't
-    # declare, or a computed delay returns no valid delay.
+    # Raised when a timer's computed delay returns no valid delay.
     TimerError = Class.new(Error)
 
     # Raised when a machine builds an event that isn't valid.
@@ -347,13 +346,14 @@ module Sourced
     # Timers (+after+) are delayed actions: run when their state is entered,
     # they future-date what they dispatch from the entering transition by
     # their delay, {StaticAfter}'s as declared, {ComputedAfter}'s from the
-    # context. +commands+ are what one may dispatch; without a +block+, it
-    # dispatches each of them. Both answer +#seconds_in(context)+ (raising
+    # context. +outputs+ are the commands one may dispatch ({Sourced::Outputs},
+    # +commands+ their classes); without a +block+, it dispatches each of
+    # them. Both answer +#seconds_in(context)+ (raising
     # {InvalidDelayError}), +#label+ (the delay as error messages and
     # diagrams show it) and +#chart+ (its delay keys in {Machine.to_h}).
     #
     # A timer with a fixed delay: seconds, or a duration string.
-    StaticAfter = Data.define(:delay, :seconds, :commands, :block) do
+    StaticAfter = Data.define(:delay, :seconds, :outputs, :block) do
       # A delay's seconds: as given, or a duration string's.
       # @param delay [Numeric, String]
       # @return [Numeric]
@@ -370,8 +370,9 @@ module Sourced
         duration.to_sec
       end
 
-      def initialize(delay:, commands:, block:, seconds: self.class.seconds_for(delay)) = super
+      def initialize(delay:, outputs:, block:, seconds: self.class.seconds_for(delay)) = super
 
+      def commands = outputs.messages
       def seconds_in(_context) = seconds
       def label = String === delay ? delay : "#{delay}s"
       def chart = { delay: }
@@ -379,7 +380,7 @@ module Sourced
 
     # A timer whose delay a +#call(context)+ computes when it starts:
     # seconds or a duration string, as {StaticAfter}'s.
-    ComputedAfter = Data.define(:delay, :label, :commands, :block) do
+    ComputedAfter = Data.define(:delay, :label, :outputs, :block) do
       # The callable's class or module name, +'computed'+ for a lambda or an anonymous one.
       def self.label_for(delay)
         case delay
@@ -389,8 +390,9 @@ module Sourced
         end
       end
 
-      def initialize(delay:, commands:, block:, label: self.class.label_for(delay)) = super
+      def initialize(delay:, outputs:, block:, label: self.class.label_for(delay)) = super
 
+      def commands = outputs.messages
       def seconds_in(context) = StaticAfter.seconds_for(delay.call(context))
       def chart = { delay: nil, computed: label }
     end
@@ -603,10 +605,12 @@ module Sourced
       #   end
       #
       # Without a block, each declared command is dispatched with the
-      # partition keys as its payload. A block dispatches them itself, and only
-      # the declared ones ({TimerError}):
+      # partition keys as its payload. A block dispatches them itself, only the
+      # declared ones, and at least one unless it declares +| nil+ (else
+      # {Sourced::React::UndeclaredMessageError}):
       #
       #   after('1h' => Remind | ExpirePayment) { |order, _transition| dispatch Remind, email: order[:email] }
+      #   after('1h' => Remind | nil) { |order, _transition| dispatch Remind, email: order[:email] if order[:email] }
       #
       # The delay is seconds, or a duration string as {Sourced::Message#at}
       # takes it (+'30m'+, +'1h30m'+, +'P1D'+), up to weeks: months and years
@@ -631,8 +635,7 @@ module Sourced
           in Hash if declaration.size == 1 then declaration.first
           else raise DefinitionError, "#{@machine}: after declares what it dispatches, ex. after('1h' => Command), got #{declaration.inspect}"
           end
-        commands = __timer_commands(delay, declared).uniq
-        @node.afters << __timer(delay:, commands:, block:)
+        @node.afters << __timer(delay:, outputs: __timer_outputs(delay, declared, block), block:)
       end
 
       # Declare a region, active while this state is. A state with
@@ -811,21 +814,29 @@ module Sourced
 
       # A +#call(context)+ delay is computed when the timer starts; any
       # other is fixed now.
-      private def __timer(delay:, commands:, block:)
-        return ComputedAfter.new(delay:, commands:, block:) if DelayInterface === delay
+      private def __timer(delay:, outputs:, block:)
+        return ComputedAfter.new(delay:, outputs:, block:) if DelayInterface === delay
 
-        StaticAfter.new(delay:, commands:, block:)
+        StaticAfter.new(delay:, outputs:, block:)
       rescue InvalidDelayError => e
         raise DefinitionError, "#{@machine}: #{e.message}"
       end
 
-      # +after('1h' => A | B)+: a command, or a union of them.
-      private def __timer_commands(delay, declared)
-        case declared
-        in Plumb::Or then declared.children.flat_map { __timer_commands(delay, it) }
-        in Class if declared < Sourced::Command then [declared]
-        else raise DefinitionError, "#{@machine}: after(#{delay.inspect}) dispatches commands, got #{declared.inspect}"
+      # +after('1h' => A | B)+: a command, or a union of them, with +| nil+
+      # when its block may dispatch none.
+      private def __timer_outputs(delay, declared, block)
+        outputs = Outputs.parse(declared)
+        if outputs.messages.empty? || !outputs.messages.all? { it < Sourced::Command }
+          raise DefinitionError, "#{@machine}: after(#{delay.inspect}) dispatches commands, got #{declared.inspect}"
         end
+        if outputs.optional && block.nil?
+          raise DefinitionError,
+                "#{@machine}: after(#{delay.inspect} => #{outputs}) needs a block to choose what to dispatch"
+        end
+
+        outputs
+      rescue ArgumentError
+        raise DefinitionError, "#{@machine}: after(#{delay.inspect}) dispatches commands, got #{declared.inspect}"
       end
     end
 
@@ -1958,12 +1969,12 @@ module Sourced
           tree = self.class.tree
           message.payload.exited.each do |path|
             left = tree.node_at(path, message)
-            left.exits.each { |action| run_action(left, 'exit', action, message) }
+            left.exits.each { |action| run_action(action, message, "#{left.path} exit") }
             left.invokes.each { |spec| stop_children(spec.machine, at: left.path) }
           end
           entered = message.payload.entered.map { |path| tree.node_at(path, message) }
           entered.each do |node|
-            node.entries.each { |action| run_action(node, 'entry', action, message) }
+            node.entries.each { |action| run_action(action, message, "#{node.path} entry") }
             start_timers(node, message)
           end
           entered.flat_map(&:stops).uniq.each { |child| stop_children(child, at: nil) }
@@ -2242,15 +2253,20 @@ module Sourced
       !root.initial? && !root.final?
     end
 
-    # Run an +entry+ or +exit+ action, holding what it dispatches to its declaration.
-    def run_action(node, what, action, transition)
+    # Run an +entry+, +exit+ or +after+ action's block, or dispatch each of
+    # its outputs without one, holding what it dispatches to its declaration.
+    # @param action [Action, StaticAfter, ComputedAfter]
+    # @return [Array<Dispatcher>] what it dispatched
+    def run_action(action, transition, label)
       started = @__reaction_dispatchers.size
       if action.block
         instance_exec(context, transition, &action.block)
       else
         action.outputs.messages.each { |message_class| dispatch message_class }
       end
-      __check_outputs!(action.outputs, @__reaction_dispatchers.drop(started).map(&:message), "#{node.path} #{what}")
+      dispatched = @__reaction_dispatchers.drop(started)
+      __check_outputs!(action.outputs, dispatched.map(&:message), label)
+      dispatched
     end
 
     # Timers for a state entry the machine has already left would only be
@@ -2260,19 +2276,7 @@ module Sourced
 
       node.afters.each do |timer|
         delivered_at = transition.created_at + timer_seconds(node, timer)
-        started = @__reaction_dispatchers.size
-        if timer.block
-          instance_exec(context, transition, &timer.block)
-        else
-          timer.commands.each { |command| dispatch command }
-        end
-        @__reaction_dispatchers.drop(started).each do |dispatcher|
-          dispatched = dispatcher.message.class
-          unless timer.commands.include?(dispatched)
-            raise TimerError, "#{self.class}: #{node.path}'s after(#{timer.label}) dispatched #{dispatched}, " \
-                              "but declares #{timer.commands.join(' | ')}"
-          end
-
+        run_action(timer, transition, "#{node.path} after(#{timer.label})").each do |dispatcher|
           dispatcher.at(delivered_at).with_metadata(ENTERED_BY => transition.id, ENTERED_AT => node.path)
         end
       end

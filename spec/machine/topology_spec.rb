@@ -44,7 +44,7 @@ module MachineTopologyTest
     state Opened do
       entry(Remind) { |_s, _evt| dispatch Remind }
       # Its commands are declared, whatever the block does.
-      after('1h' => Cancel) { |_s, _evt| nil }
+      after('1h' => Cancel | nil) { |_s, _evt| nil }
       command(Note) { |_s, _cmd| event Noted }
       command AddLeg, starts: LegMachine
       command Book => Booked
