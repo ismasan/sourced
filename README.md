@@ -926,7 +926,7 @@ Command forms:
 | `command Cmd => A | nil do … end` | required | to `A` if the block calls `to(A)`, else stays put |
 | `command Cmd do … end` | required | data only: same as `=> nil` |
 
-Targets can be unions (`A | B | nil`, `nil` last) or Arrays (`[:a, :b, nil]`). `to` picks the target; `event` only appends data events, and raises for a state class. A handler moves the machine at most once, to a declared target, or raises `Sourced::Machine::TransitionError`. Partition keys are filled in on every event a machine emits and every message it dispatches.
+Targets can be unions (`A | B | nil`, `nil` last) or Arrays (`[:a, :b, nil]`). `to` picks the target; `event` only appends data events, and raises for a state class. A handler moves the machine at most once, to a declared target, or raises `Sourced::Machine::TransitionError`. Partition keys are filled in on every event a machine emits and every message it dispatches. An event it appends must declare every partition key, else `Sourced::Machine::InvalidEventError`: one declaring only some would be read into every partition sharing them. Dispatched messages aren't checked, since they're for other reactors' partitions.
 
 How it runs:
 
@@ -947,8 +947,7 @@ How it runs:
   ```
 - **`on Event => Target`** moves the machine when it claims an event another reactor appended, while the state is active. It's decided like a command (same targets, `to`, `nil`; the block gets `(context, event)`), under the claim's guard, and never while replaying. The event must carry the machine's partition keys.
 - **Eventless steps** (`always`, mounted parts' `on_final`, `done`, `children_done`, starting states' children) run after every decision until none applies, each appending its own state event, all in the decision's transaction. Guards see the context with the decision's events applied.
-- **Entry and exit actions are reactions**, run when the machine claims the state event, after the deciding transaction committed, and see the latest state. Leaving a state exits its active regions first. A transient state's entry actions run after the machine has already left it. They're skipped while replaying.
-- **Entry and exit actions declare what they dispatch**, as reactions do: `entry SendReceipt do |cart, _evt| … end`, `exit ReleaseStock | nil do … end` when it may dispatch nothing, `entry nil do … end` for one that never dispatches. With braces, the declaration needs parentheses: `entry(SendReceipt) { … }`. Dispatching an undeclared message, or nothing without `| nil`, raises `React::UndeclaredMessageError`. Without a block, `entry Notify` (or `exit Notify | Archive`) dispatches each declared message with the partition keys as its payload, so `validate!` raises for one that requires more.
+- **Entry and exit actions are reactions**, run when the machine claims the state event, after the deciding transaction committed, and see the latest state. A transient state's entry actions run after the machine has already left it. They're skipped while replaying. See [Entry and exit actions](#entry-and-exit-actions).
 - **`after(delay => Command)`** dispatches commands delivered that long after the state was entered. The delay is seconds (`after(3600 => Expire)`) or a duration string, as `Message#at` takes it (`'1h'`, `'1h30m'`, `'P1D'`), up to weeks: months and years vary in length, so `after('1M' => …)` raises `Machine::DefinitionError` (give days, `'30d'`). The delay can also be computed from the context when the timer starts (as a block gets it), by a `#call(context)` returning seconds or a duration string: `after ->(ctx) { ctx[:sos_delay] } => SendSOS`. It's read once per entry (a later change to the context doesn't reschedule), and anything else it returns, `nil` included, raises `Machine::TimerError` in the reaction; `to_h` shows it as `delay: nil, computed: <its name>`. The commands are declared, so they show in the topology and `to_h`, and some state must accept them. Without a block, each is dispatched with the partition keys as its payload (so it can't require more). A block dispatches them itself: only the declared ones, and at least one unless it declares `| nil`, as entry and exit actions (else `React::UndeclaredMessageError`): `after('1h' => Remind | Expire) { |order, _evt| dispatch Remind, email: order[:email] }`, `after('1h' => Remind | nil) { … }`. A timer command delivered after the machine has left that state entry is refused, even where the command is accepted, so timers never need cancelling.
 - **History**: `Working.history` targets a state with regions at the states its regions were last in (`Working.history(deep: true)` restores everything below it); regions with no history take their default entry. History is rebuilt from `exited` on replay.
 - `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.paths`, `machine.in?(OrderMachine::Paying)`, `machine.in?(:payment, OrderMachine::Paying)`, `machine.in?('placed.payment.paying')`, `machine.current(:payment)`, `machine.entered_by`, `machine.children(LineItemMachine)`.
@@ -961,6 +960,34 @@ How it runs:
   ```
 
   It lists what the states declare: a handler can still reject a command by raising or stay put with `| nil`, and a timer command is refused once its state entry is left (`handles_command?` checks that).
+
+#### Entry and exit actions
+
+A state's `entry` and `exit` blocks declare what they may dispatch, as reactions do: a message class, a union of them, `| nil` when the block may dispatch nothing, or `nil` for one that never dispatches. Each block gets the domain context and the state event being claimed: for `entry`, the event that entered the state, and for `exit`, the event of the move that left it.
+
+```ruby
+state Paid do
+  entry SendReceipt do |order, entered|            # entered: the OrderMachine::Paid event
+    dispatch SendReceipt, total: order.total
+  end
+
+  entry NotifyWarehouse                            # no block: dispatched with the partition keys
+
+  exit ReleaseStock | nil do |order, _left_by|     # the event of the state it moved to
+    dispatch ReleaseStock, skus: order.skus if order.skus.any?
+  end
+end
+```
+
+- **Checked one by one.** Dispatching a message the action doesn't declare, or nothing without `| nil`, raises `Sourced::React::UndeclaredMessageError`. A block that uses braces needs its declaration in parentheses, as in `entry(SendReceipt) { … }`, because `entry SendReceipt { … }` passes the block to `SendReceipt`. `entry` or `exit` without a declaration raises `Sourced::Machine::DefinitionError`.
+- **Without a block,** `entry Notify` (or `exit Notify | Archive`) dispatches each declared message with the partition keys as its payload, so `validate!` raises for one that requires more. `| nil` and `nil` need a block, since they leave the choice to it.
+- **Order.** For each state event it claims, the machine runs, in order:
+  1. the exit actions of the states the move left, innermost first, also stopping the children those states started;
+  2. the entry actions and timers of the states it entered, outermost first: a state's `entry` actions in declaration order, then its `after` timers;
+  3. any `reaction` to the event.
+
+  A state can declare several `entry` and `exit` actions. The initial position is never entered, so it takes no entry actions or timers.
+- **A machine's `reaction`s** ([Reactions](#reactions)) can react to its own state events (`reaction OrderMachine::Paid => NotifyAccounts do … end`) or to any event it claims. They run after the actions, and each one is held to its own declaration: what entry, exit and timer actions dispatch isn't counted against a reaction.
 
 **Read-only configurations.** A machine's configuration is the paths of its active states: JSON-native strings, outermost first, that can be stored and read back later without loading the machine's history. `machine.paths` returns them from an instance, and `OrderMachine.configuration(paths)` reads them back against the machine's definition:
 
@@ -977,7 +1004,7 @@ config.in?(OrderMachine::Paying) # => true
 
 An instance's `machine` is a configuration too, read live: it changes as the instance decides. `configuration(paths)` is detached, and the same at any point.
 
-A projection can keep the paths without loading the machine at all: each state event's `exited` and `entered` paths update them, ex. for every record a listing shows:
+A projection can keep the paths without loading the machine at all. Each state event's `exited` and `entered` paths update them, so the projection evolves `OrderMachine.transition_classes`: every event class a move of the machine appends, including its parts' states and, for a child machine, `Started`. For example, for every record a listing shows:
 
 ```ruby
 class OrderListing < Sourced::Projector::StateStored
@@ -1198,7 +1225,7 @@ The part class goes wherever a state does: handler targets (`=> Working`, `=> Wo
 Rules for parts:
 
 - **Messages and states**: `Command(:name)` / `Event(:name)` in a part are typed `<owner prefix>.<part prefix>.<name>` and declare the owner's partition keys first; its states are typed `<owner prefix>.runtime.<part prefix>.<name>`. The part prefix defaults to the class name relative to the owner, underscored, without a trailing `Machine` (`OrderMachine::PaymentMachine` → `payment`); `part_of OrderMachine, prefix: 'billing'` sets another. A part declared `part_of` another part belongs to that part's owner, its prefix nested under the enclosing part's. The owner appends a part's state classes as they are (`OrderMachine::PaymentMachine::Captured === evt`, `OrderMachine::Working::State === evt`). A part can be mounted any number of times in its owner's chart, sharing its classes (paths tell the placements apart), but each machine places a part's compound state once.
-- **Context**: a part's `evolve(Event) { |context, evt| … }` blocks run on the owner's context, and its handlers receive it. An event is evolved by one block, across the owner and its parts.
+- **Context**: a part's `evolve(Event) { |context, evt| … }` blocks run on the owner's context, and its handlers receive it. An event is evolved by one block, across the owner and its parts. So an owner whose parts declare `evolve` blocks needs an inline projector context; one that evolves through a selector source (`evolve SomeSelector`) raises `Sourced::Machine::DefinitionError`.
 - **Escalation**: a part's targets are its own states. It reaches the owner through its root finals, which `on_final` maps onto the owner's states, in the deciding decision: the `on_final:` keyword for a region, `on_final Final => Target` in a compound state's block (one line per mapping, or one Hash). Unmapped finals leave the part there. When a decision both makes a region reach a mapped final and completes the owner's `done` join, `on_final` wins. (`done` is the state's own completion, and `start … on_done` a child finishing; `on_final` is an exit from the part.)
 - **Handlers run on the owner's instance**: `event`, `dispatch` and `machine` are the owner's. A part's states may have entry, exit and `after` actions, and may start children.
 - **Not allowed**: `partition_by`, `consumer_group`, `context`, reactions, sync blocks and `stopped` (they're the owner's); mounting a part outside its owner's chart, starting it as a child, or registering it. Mounting a `Sourced::Machine` raises `Sourced::Machine::DefinitionError`: reuse a machine with its own partition as a child.
@@ -1853,7 +1880,7 @@ result.reactor.to_h                  # status after the command, including the e
 
 ## Testing
 
-Sourced ships with RSpec helpers for Given-When-Then testing of deciders, projectors and inline projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
+Sourced ships with RSpec helpers for Given-When-Then testing of deciders, machines, projectors and inline projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
 
 ```ruby
 require 'sourced/testing/rspec'
@@ -2001,6 +2028,23 @@ RSpec.describe CartProjector do
   end
 end
 ```
+
+### Testing machines
+
+`with_reactor` takes a machine as it does a decider. `.given` is the history, `.when` a command (or another reactor's event that an `on` takes), and `.then` the state and data events it appends.
+
+`.at(State)` puts the machine at a state first. It appends to the history the state event that a move there would append from where the history leaves it, entering the state's ancestors and default sub-states, with `trigger: 'at'`. It's setup, like `given`, so no entry actions, timers or eventless steps run. Chain several `.at` calls to position parallel regions, mixed with `.given`. For a part mounted more than once, pass the path of the placement you mean, as in `.at('booking.backup.holding')`. `#history` returns the history so far.
+
+```ruby
+with_reactor(OrderMachine, order_id: 'o1')
+  .at(OrderMachine::Paying)                  # placed, payment at paying
+  .when(ExpirePayment, order_id: 'o1')
+  .then(OrderMachine::Cancelled, order_id: 'o1', trigger: ExpirePayment.type,
+                                 source: 'placed.payment.paying', target: 'cancelled',
+                                 exited: %w[placed.payment.paying placed], entered: %w[cancelled])
+```
+
+To test entry and exit actions, timers and reactions, pass the claimed state event to `.when`. The machine reacts to it as a worker would, and `.then` lists what it dispatches.
 
 ### Message matching
 
