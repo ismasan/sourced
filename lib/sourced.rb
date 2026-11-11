@@ -248,11 +248,13 @@ module Sourced
     IdPartition.keys?(keys) ? Plumb::BLANK_ARRAY : keys
   end
 
-  # Partition values from the command's payload, or else its tags.
-  private_class_method def self.extract_partition_attrs(command, keys)
+  # A message's values for +keys+: from its payload, or else its tags.
+  # Keys it has no value for are left out.
+  # @api private
+  def self.extract_partition_attrs(message, keys)
     keys.each_with_object({}) do |key, h|
-      value = command.payload&.respond_to?(key) ? command.payload.send(key) : nil
-      value = command.tags[key] if value.nil?
+      value = message.payload&.respond_to?(key) ? message.payload.public_send(key) : nil
+      value = message.tags[key] if value.nil?
       h[key] = value unless value.nil?
     end
   end

@@ -72,24 +72,8 @@ module Sourced
           end
         end
 
-        if reactor.respond_to?(:history_selector)
-          evolved(reactor).each do |evt_class|
-            next if evt_class < Sourced::Command
-
-            evt_type = evt_class.type
-            next if event_nodes.key?(evt_type)
-            next if command_ids.key?(evt_type)
-
-            event_nodes[evt_type] = EventNode.new(
-              type: 'event',
-              id: evt_type,
-              name: evt_class.name,
-              group_id: group_id,
-              group_label: group_label,
-              produces: [],
-              schema: extract_schema(evt_class)
-            )
-          end
+        evolved(reactor).each do |evt_class|
+          add_event_node(event_nodes, command_ids, evt_class, group_id, group_label) unless evt_class < Sourced::Command
         end
 
         is_read_model = reactor < Sourced::Projector
@@ -350,7 +334,7 @@ module Sourced
     # without a handler).
     # @api private
     def self.reaction_produces(reactor, evt_class)
-      outputs = reactor.respond_to?(:reaction_outputs) ? reactor.reaction_outputs[evt_class] : nil
+      outputs = reactor.reaction_outputs[evt_class]
       outputs ? outputs.messages.map(&:type) : []
     end
 

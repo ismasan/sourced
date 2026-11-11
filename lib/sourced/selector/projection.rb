@@ -20,6 +20,9 @@ module Sourced
         # @return [Class<Projection>]
         def for(selector) = Class.new(self) { @selector = selector }
 
+        # @return [Set<Class>] the selector's types
+        def types = @types ||= selector.types.to_set
+
         def inherited(subclass)
           super
           subclass.instance_variable_set(:@selector, selector)
@@ -44,7 +47,7 @@ module Sourced
       # @param messages [Sourced::Message, Array<Sourced::Message>]
       # @return [Array<Sourced::Message>] the context
       def evolve(messages)
-        types = self.class.selector.types
+        types = self.class.types
         Array(messages).each { |msg| @messages << msg if types.include?(msg.to_message.class) }
         context
       end

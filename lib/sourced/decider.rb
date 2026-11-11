@@ -95,7 +95,8 @@ module Sourced
           raise ArgumentError, "#{self}.command #{message_class}: #{e.message}"
         end
         handled_commands << message_class
-        define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
+        handler = block.arity == 1 ? proc { |_context, cmd| instance_exec(cmd, &block) } : block
+        define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &handler)
       end
 
       # @api private
@@ -240,12 +241,7 @@ module Sourced
       end
 
       private def __partition_values_of(command)
-        message = command.to_message
-        values = partition_keys.each_with_object({}) do |key, h|
-          value = message.payload.respond_to?(key) ? message.payload.public_send(key) : nil
-          value = message.tags[key] if value.nil?
-          h[key] = value.to_s unless value.nil?
-        end
+        values = Sourced.extract_partition_attrs(command.to_message, partition_keys).transform_values(&:to_s)
         missing = partition_keys - values.keys
         return values if missing.empty?
 
@@ -309,9 +305,7 @@ module Sourced
       klass = command.to_message.class
       @deciding = self.class.command_outputs[klass]
       method_name = Sourced.message_method_name(PREFIX, klass.to_s)
-      if respond_to?(method_name)
-        method(method_name).arity == 1 ? send(method_name, command) : send(method_name, context, command)
-      end
+      send(method_name, context, command) if respond_to?(method_name)
       if @deciding && @uncommitted_events.empty? && !@deciding.optional
         raise UndeclaredEventError, "#{self.class}: the #{klass} handler emitted nothing; " \
                                     "declare command #{klass} => #{@deciding} | nil to allow it"
@@ -353,18 +347,18 @@ module Sourced
     private
 
     def precondition_holds?
-      selector = self.class.history_selector
-      selector.assertion == Selector::Assertion::TRUE || selector.bind(**partition_values).holds?(context)
+      return true if self.class.evolve_selector.assertion == Selector::Assertion::TRUE
+
+      self.class.history_selector.bind(**partition_values).holds?(context)
     end
 
     # What the decider emits belongs to its partition: an event carrying a
     # partition key with another value would be read into another partition.
     def check_partition!(evt)
-      pairs = evt.extracted_keys.to_h
-      self.class.partition_keys.each do |key|
-        value = pairs[key.to_s]
+      Sourced.extract_partition_attrs(evt, self.class.partition_keys).each do |key, value|
+        value = value.to_s
         expected = partition_values[key]
-        next if value.nil? || expected.nil? || value == expected.to_s
+        next if expected.nil? || value == expected.to_s
 
         raise InvalidEventError, "#{self.class}: #{evt.class} has #{key} #{value.inspect}, but is emitted in " \
                                  "the partition where #{key} is #{expected.to_s.inspect}"

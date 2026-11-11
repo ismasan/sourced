@@ -2258,15 +2258,14 @@ module Sourced
     # @param action [Action, StaticAfter, ComputedAfter]
     # @return [Array<Dispatcher>] what it dispatched
     def run_action(action, transition, label)
-      started = @__reaction_dispatchers.size
-      if action.block
-        instance_exec(context, transition, &action.block)
-      else
-        action.outputs.messages.each { |message_class| dispatch message_class }
+      __checking_outputs(action.outputs, label) do
+        if action.block
+          instance_exec(context, transition, &action.block)
+        else
+          action.outputs.messages.each { |message_class| dispatch message_class }
+        end
+        EMPTY_ARRAY # its block's return value isn't appended
       end
-      dispatched = @__reaction_dispatchers.drop(started)
-      __check_outputs!(action.outputs, dispatched.map(&:message), label)
-      dispatched
     end
 
     # Timers for a state entry the machine has already left would only be

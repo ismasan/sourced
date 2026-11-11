@@ -72,12 +72,26 @@ module Sourced
       method_name = self.class.reaction_handlers[klass]
       return EMPTY_ARRAY unless method_name
 
-      started = @__reaction_dispatchers.size
-      returned = Array(send(method_name, context, message)).compact
-      dispatched = @__reaction_dispatchers.drop(started).map(&:message)
-      appended = returned.reject { |value| value.is_a?(Dispatcher) } + dispatched
-      __check_outputs!(self.class.reaction_outputs.fetch(klass), appended, "#{klass} reaction")
+      returned = nil
+      __checking_outputs(self.class.reaction_outputs.fetch(klass), "#{klass} reaction") do
+        returned = Array(send(method_name, context, message)).compact
+        returned.reject { |value| value.is_a?(Dispatcher) }
+      end
       returned
+    end
+
+    # Run the block, holding what it dispatches, and the messages it
+    # returns, to +outputs+.
+    # @param outputs [Outputs] what the handler declares
+    # @param label [String] the handler, for errors
+    # @yieldreturn [Array<Sourced::Message>] messages it appends besides its dispatches
+    # @return [Array<Dispatcher>] what it dispatched
+    def __checking_outputs(outputs, label)
+      started = @__reaction_dispatchers.size
+      returned = yield
+      dispatched = @__reaction_dispatchers.drop(started)
+      __check_outputs!(outputs, returned + dispatched.map(&:message), label)
+      dispatched
     end
 
     # @param outputs [Outputs] what the handler declares
