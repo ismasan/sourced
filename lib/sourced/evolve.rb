@@ -105,9 +105,10 @@ module Sourced
         evolve_selector.by_default(*partition_keys)
       end
 
-      # Validate the definition, then fix {#__source_selector}.
+      # Validate the definition, then fix {#__source_selector} once (a
+      # Machine validates on every instance).
       def validate!
-        super.tap { @__source_selector = history_selector }
+        super.tap { @__source_selector ||= history_selector }
       end
 
       # @api private
