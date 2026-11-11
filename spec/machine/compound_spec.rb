@@ -557,7 +557,7 @@ RSpec.describe 'Sourced::Machine compound states' do
       commands = nodes.select { |n| n.type == 'command' }
       expect(commands.map(&:name)).to include(thing::Progress.name, M::Cancel.name)
       expect(commands.find { |n| n.name == M::StartThing.name }.produces)
-        .to contain_exactly(thing::State.type, M::ThingBegun.type)
+        .to contain_exactly(thing::State.type)
     end
   end
 

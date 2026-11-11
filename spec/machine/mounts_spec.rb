@@ -499,7 +499,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
 
       expect(commands.map(&:name)).to include(pay::StartPayment.name, pay::Capture.name)
       expect(commands.find { |n| n.name == pay::StartPayment.name }.produces)
-        .to contain_exactly(pay::Authorizing.type, pay::PaymentInfoAdded.type)
+        .to contain_exactly(pay::Authorizing.type)
       expect(automations).to include('actions(placed.payment.authorizing)')
     end
   end
