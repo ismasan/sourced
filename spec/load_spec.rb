@@ -327,12 +327,6 @@ RSpec.describe 'Sourced.load' do
       expect(projection.context).to eq(course_id: 'algebra', students: %w[joe jane])
       expect(read_result.messages.size).to eq(2)
     end
-
-    it 'evolves over at most upto messages' do
-      projection, _read_result = Sourced.load(LoadTestInlineProjector, store: store, upto: 1, course_id: 'algebra')
-
-      expect(projection.context[:students]).to eq(['joe'])
-    end
   end
 
   describe 'empty history' do

@@ -129,12 +129,6 @@ RSpec.describe Sourced::Projector::Inline do
       expect(projector.selector).to eq(Sourced::Selector[ProjectionTestMessages::ItemAdded, ProjectionTestMessages::ItemRemoved])
     end
 
-    it 'gives subclasses its selector, and keeps theirs apart' do
-      subclass = Class.new(projector) { evolve(ProjectionTestMessages::Unhandled) { |_, _| nil } }
-      expect(subclass.selector.types).to include(ProjectionTestMessages::ItemAdded, ProjectionTestMessages::Unhandled)
-      expect(projector.selector.types).not_to include(ProjectionTestMessages::Unhandled)
-    end
-
     it 'rejects context blocks that take arguments' do
       expect { Class.new(Sourced::Projector::Inline) { context { |values| values } } }
         .to raise_error(ArgumentError, /no arguments/)

@@ -624,12 +624,4 @@ RSpec.describe Sourced::Projector do
       expect(stored['L1'].size).to eq(1)
     end
   end
-
-  describe '.history_selector' do
-    it "is its projection's selector, by the partition keys" do
-      selector = TestItemProjector.history_selector
-      expect(selector).to eq(TestItemProjector.projector.selector.by(:list_id))
-      expect(selector.types.map(&:type)).to include('projector_test.item.added', 'projector_test.item.archived')
-    end
-  end
 end

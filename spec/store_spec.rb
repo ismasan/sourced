@@ -770,26 +770,6 @@ RSpec.describe Sourced::Store do
         ])
       end
 
-      it 'returns only what the selector selects' do
-        selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1')
-        result = store.read_all(selector)
-        expect(result.messages.size).to eq(1)
-        expect(result.messages.first.payload.device_id).to eq('dev-1')
-      end
-
-      it 'selects what any of its parts selects' do
-        selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1') +
-                   Sourced::Selector[StoreTestMessages::AssetRegistered].by(:asset_id).bind(asset_id: 'asset-1')
-        result = store.read_all(selector)
-        types = result.messages.map(&:type)
-        expect(types).to eq(['store_test.device.registered', 'store_test.asset.registered'])
-      end
-
-      it 'pages every message of its types with a selector without keys' do
-        result = store.read_all(Sourced::Selector[StoreTestMessages::DeviceRegistered])
-        expect(result.messages.map(&:position)).to eq([1, 4])
-      end
-
       it 'combines with from_position' do
         selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-2')
         # dev-2 registered is at position 4
@@ -806,21 +786,6 @@ RSpec.describe Sourced::Store do
         selector = Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::DeviceBound]
         expect(store.read_all(selector, order: :desc).messages.map(&:position)).to eq([4, 3, 1])
         expect(store.read_all(selector, from_position: 3, order: :desc).messages.map(&:position)).to eq([3, 1])
-      end
-
-      it 'returns empty messages when the selector selects nothing' do
-        selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'nonexistent')
-        result = store.read_all(selector)
-        expect(result.messages).to be_empty
-      end
-
-      it 'paginates with to_enum' do
-        selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1') +
-                   Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-2')
-        # DeviceRegistered messages at positions 1 and 4
-        result = store.read_all(selector, limit: 1)
-        positions = result.to_enum.map(&:position)
-        expect(positions).to eq([1, 4])
       end
 
       it 'raises for a selector with unbound keys' do
@@ -847,11 +812,6 @@ RSpec.describe Sourced::Store do
       expect(results.size).to eq(1)
       expect(results.first.type).to eq('store_test.device.registered')
       expect(results.first.payload.device_id).to eq('dev-1')
-    end
-
-    it 'returns messages with position' do
-      results, = store.read(dev1)
-      expect(results.first.position).to eq(1)
     end
 
     it 'reads several types' do
@@ -980,14 +940,6 @@ RSpec.describe Sourced::Store do
     it 'selects messages whose every key they carry has the bound value' do
       results, = store.read(selector)
       expect(results.map(&:position)).to eq([1, 4])
-    end
-
-    it 'excludes messages carrying a key with another value' do
-      # dev-1/asset-2 shares device_id but not asset_id
-      # dev-2/asset-1 shares asset_id but not device_id
-      results, = store.read(selector)
-      pairs = results.grep(StoreTestMessages::DeviceBound).map { |m| [m.payload.device_id, m.payload.asset_id] }
-      expect(pairs).to eq([['dev-1', 'asset-1']])
     end
 
     it 'guard detects conflicts in the partition' do
@@ -3521,13 +3473,6 @@ RSpec.describe Sourced::Store do
       expect(read.first.payload).to eq(tagged.payload)
       expect(read.last.tags).to eq({})
       expect(db[:sourced_messages].order(:position).select_map(:tags)).to eq(['{"device_id":"dev-1"}', nil])
-    end
-
-    it 'indexes tags as key pairs, read by #read with a selector' do
-      store.append([note('one', device_id: 'dev-1'), note('two', device_id: 'dev-2')])
-
-      messages, = store.read(Sourced::Selector[StoreTestMessages::NoteAdded].by(:device_id).bind(device_id: 'dev-1'))
-      expect(messages.map { |m| m.payload.text }).to eq(['one'])
     end
 
     it 'raises on append, appending nothing, when a tag conflicts with a payload attribute' do

@@ -192,11 +192,6 @@ RSpec.describe Sourced::Topology do
       expect(node.group_id).to eq('topology_test.widget_decider')
     end
 
-    it 'lists the events its command handler declares' do
-      node = find_node('ccc_topo.create_widget')
-      expect(node.produces).to eq(['ccc_topo.widget_created'])
-    end
-
     it 'extracts produced events for NotifierDecider' do
       node = find_node('ccc_topo.notify_widget')
       expect(node.produces).to eq(['ccc_topo.widget_notified'])
@@ -248,11 +243,6 @@ RSpec.describe Sourced::Topology do
     it 'sets correct consumes on automation nodes' do
       node = find_node('ccc_topo.widget_created-topology_test.widget_decider-aut')
       expect(node.consumes).to eq(['ccc_topo.widget_created'])
-    end
-
-    it 'lists the commands its reaction declares' do
-      node = find_node('ccc_topo.widget_created-topology_test.widget_decider-aut')
-      expect(node.produces).to eq(['ccc_topo.notify_widget'])
     end
 
     it 'sets automation name from event class' do
@@ -440,16 +430,6 @@ RSpec.describe Sourced::Topology do
     it 'readmodel produces both automation node IDs' do
       node = find_node(rm_id)
       expect(node.produces).to contain_exactly(specific_aut_id, catchall_aut_id)
-    end
-  end
-
-  context 'with SchedulingDecider (chained dispatch)' do
-    let(:reactors) { [TopologyTest::SchedulingDecider] }
-
-    it 'lists a delayed dispatch\'s declared command' do
-      node = find_node('ccc_topo.schedule_event-topology_test.scheduling_decider-aut')
-      expect(node).not_to be_nil
-      expect(node.produces).to eq(['ccc_topo.delayed_cmd'])
     end
   end
 

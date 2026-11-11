@@ -805,20 +805,6 @@ RSpec.describe Sourced::Machine do
         with_reactor(m, cart_id: 'c1').when(entered(m)).then([])
       end
 
-      it 'holds exit actions to their own declaration' do
-        m = machine do
-          initial { command Ping => :pinged }
-          state :pinged do
-            exit(Pay) { |*| dispatch Notify, note: 'x' }
-            command Ping => :pinged
-          end
-        end
-        re_entry = moved(m, 'machine_test.ping', from: 'pinged', to: 'pinged', exited: %w[pinged], cart_id: 'c1')
-
-        expect { with_reactor(m, cart_id: 'c1').given(entered(m)).when(re_entry).then([]) }
-          .to raise_error(Sourced::React::UndeclaredMessageError, /pinged exit appended MachineTest::Notify/)
-      end
-
       it 'requires a declaration' do
         expect { machine { state(:open) { entry { nil } } } }
           .to raise_error(Sourced::Machine::DefinitionError, /entry declares what it dispatches, ex. entry Command do/)

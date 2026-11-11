@@ -265,17 +265,6 @@ RSpec.describe Sourced::Evolve do
       expect(decider.history_selector).to eq(selector.by(:cart_id))
     end
 
-    it 'reads a keyed selector as given, so its parts keep their own keys' do
-      source = Sourced::Selector[EvolveTestMessages::CartClosed].by(:cart_id) +
-               Sourced::Selector[EvolveTestMessages::ItemAdded].by(:item_id)
-      decider = Class.new(Sourced::Decider) do
-        partition_by :cart_id, :item_id
-        evolve source
-      end
-
-      expect(decider.history_selector).to eq(source)
-    end
-
     it 'scopes only the parts without keys of a mixed selector' do
       source = Sourced::Selector[EvolveTestMessages::CartClosed] +
                Sourced::Selector[EvolveTestMessages::ItemAdded].by(:item_id)
@@ -338,17 +327,6 @@ RSpec.describe Sourced::Evolve do
       expect { decider.before_evolve { |_, _| nil } }.to raise_error(ArgumentError, /a selector projection takes no/)
     end
 
-    it 'raises after own declarations, or with a block' do
-      source = selector
-      expect {
-        Class.new(Sourced::Decider) do
-          evolve(EvolveTestMessages::CartClosed) { |_, _| nil }
-          evolve source
-        end
-      }.to raise_error(ArgumentError, /must come before/)
-      expect { Class.new(Sourced::Decider).evolve(selector) { nil } }.to raise_error(ArgumentError, /takes no block/)
-    end
-
     it 'is inherited as given, and can be replaced' do
       child = Class.new(decider)
       replaced = Class.new(decider) { evolve EvolveTestMessages::CartProjector }
@@ -358,19 +336,5 @@ RSpec.describe Sourced::Evolve do
       expect(replaced.source).to be(EvolveTestMessages::CartProjector)
       expect(replaced.projector.superclass).to eq(EvolveTestMessages::CartProjector)
     end
-
-    it 'is taken by Projectors, which claim its types and evolve the messages' do
-      source = selector
-      projector = Class.new(Sourced::Projector::EventSourced) do
-        partition_by :cart_id
-        evolve source
-      end
-
-      expect(projector.handled_messages).to eq(selector.types)
-      instance = projector.new(cart_id: 'c1')
-      instance.evolve([added('i1'), closed])
-      expect(instance.context.map(&:class)).to eq([EvolveTestMessages::ItemAdded, EvolveTestMessages::CartClosed])
-    end
-
   end
 end

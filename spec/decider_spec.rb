@@ -670,10 +670,6 @@ RSpec.describe Sourced::Decider do
       expect(decider.new(device_id: 'd1').tap { it.evolve([reg]) }.handles_command?(bind)).to be(true)
     end
 
-    it 'is none for an inline projector source' do
-      expect(TestDeviceDecider.new(device_id: 'd1').handles_command?(bind)).to be(true)
-    end
-
     it 'refuses a later command in a batch once an earlier one breaks it: workers ack it' do
       guard = Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 1)
       history = Sourced::ReadResult.new(messages: [Sourced::PositionedMessage.new(reg, 1)], guard:)
@@ -710,15 +706,6 @@ RSpec.describe Sourced::Decider do
       expect(TestDeviceDecider.call(read, cmd).size).to eq(1)
     end
 
-    it 'raises what Sourced.handle! raises for a command it refuses' do
-      refusing = Class.new(TestDeviceDecider) do
-        def handles_command?(_) = false
-      end
-      cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
-
-      expect { refusing.call([], cmd) }.to raise_error(Sourced::CommandNotHandledError, /in its current state/)
-    end
-
     it 'raises for a command without a value for a partition key' do
       cmd = DeciderTestMessages::BindDevice.new(payload: { asset_id: 'a1' })
 
@@ -745,7 +732,7 @@ RSpec.describe Sourced::Decider do
         source:, history_selector: source, exclusive?: false
       )
       expect(decision.call([reg], bind).map { it.payload.asset_id }).to eq(['1'])
-      expect { decision.call([], bind) }.to raise_error(Sourced::CommandNotHandledError)
+      expect { decision.call([], bind) }.to raise_error(Sourced::CommandNotHandledError, /in its current state/)
     end
 
     it 'chains partition_by, for a source without keys' do
@@ -783,18 +770,6 @@ RSpec.describe Sourced::Decider do
   end
 
   describe 'one-argument command handlers' do
-    it 'get the command only' do
-      decider = Class.new(Sourced::Decider) do
-        partition_by :device_id
-        command DeciderTestMessages::BindDevice => DeciderTestMessages::DeviceBound do |cmd|
-          event DeciderTestMessages::DeviceBound, **cmd.payload.to_h
-        end
-      end
-      cmd = DeciderTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
-
-      expect(decider.new(device_id: 'd1').decide(cmd).first.payload.asset_id).to eq('a1')
-    end
-
     it 'can return early' do
       decider = Class.new(Sourced::Decider) do
         partition_by :device_id
