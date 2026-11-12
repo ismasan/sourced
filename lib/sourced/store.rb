@@ -680,8 +680,7 @@ module Sourced
     # Claim the next available partition for processing.
     #
     # +selector+ is unbound, all parts by the same partition keys, ex.
-    # <tt>Selector[ItemAdded, OrderPlaced].by(:order_id)</tt>. Its assertion is
-    # ignored.
+    # <tt>Selector[ItemAdded, OrderPlaced].by(:order_id)</tt>.
     #
     # Bootstraps partition offsets (discovering new partitions from messages with
     # ALL the partition keys), claims the unclaimed partition with the earliest

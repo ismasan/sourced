@@ -161,49 +161,6 @@ the first example's `.by(:course_id).bind(course_id: 'c1')`. Reading a selector 
 out of `by`. A selector without keys (`Sourced::Selector[CourseCreated]`) reads
 every message of its types.
 
-### Asserting history
-
-A selector can also say what must hold of what it selects, in order. Assertions
-are declarative: the store reads and guards the selector as usual, and
-`holds?` evaluates the assertion over the messages it read.
-
-```ruby
-lifecycle = Sourced::Selector[OrderCancelled, OrderReopened].by(:order_id)
-cancelled = lifecycle.ends_with(OrderCancelled)
-paid      = Sourced::Selector[PaymentReceived].by(:order_id).includes(PaymentReceived)
-
-shippable = (paid + ~cancelled).bind(order_id: 'o1')
-shippable.holds?(store.read(shippable).messages) # => true or false
-```
-
-The built-ins are `is_empty`, `includes(T)`, `excludes(T)`, `starts_with(T)` and
-`ends_with(T)`, over the types the selector reads (another type raises). `+` is
-*and*, `|` is *or* and `~` is *not*. An assertion covers what its selector
-selects at the point it's attached, so later reads don't change it:
-`cancelled + Sourced::Selector[ItemAdded].by(:order_id)` still asks whether the
-last of the order's cancellations and reopenings is a cancellation. Attach it
-after the `+` to ask about everything: `(a + b).ends_with(T)`.
-
-Each assertion is a small state machine. `start`, `advance(state, messages)` and
-`accepts?(state)` evaluate it incrementally, so a state stored with a read
-model can be advanced with new messages only. Defining an assertion that can
-never hold (`includes(X).excludes(X)`), or always holds, raises
-`Sourced::Selector::AssertionError`. `to_mermaid` draws the minimal state
-machine, each state `valid` (the assertion holds) or `invalid`. States sharing
-a label differ in what can happen next. A selector without an assertion draws
-one `valid` state that every message it selects keeps. For `~cancelled`:
-
-```mermaid
-stateDiagram-v2
-    state "valid" as s0
-    state "invalid" as s1
-    [*] --> s0
-    s0 --> s1: OrderCancelled
-    s0 --> s0: OrderReopened
-    s1 --> s1: OrderCancelled
-    s1 --> s0: OrderReopened
-```
-
 ### Optimistic concurrency
 
 ```ruby
@@ -333,17 +290,15 @@ command AddItem => ItemAdded | ItemRejected do |context, cmd|
 end
 ```
 
-#### Reading history through a selector, with a precondition
+#### Reading history through a selector
 
-A Decider can read its history through a [Selector](#reading-with-selectors) instead of an inline projector: its handlers then get the partition's messages of the selector's types, in order. The selector's assertion is the Decider's precondition: a command is decided only while it holds over the history so far.
+A Decider can read its history through a [Selector](#reading-with-selectors) instead of an inline projector: its handlers then get the partition's messages of the selector's types, in order.
 
 ```ruby
 class Carts < Sourced::Decider
   partition_by :cart_id
 
-  # Decide only for a started cart that isn't checked out
   evolve Sourced::Selector[CartStarted, ItemAdded, CartCheckedOut]
-    .includes(CartStarted).excludes(CartCheckedOut)
 
   command AddItem => ItemAdded do |history, cmd|
     event ItemAdded, cart_id: cmd.payload.cart_id, sku: cmd.payload.sku
@@ -351,7 +306,29 @@ class Carts < Sourced::Decider
 end
 ```
 
-When the assertion doesn't hold, the handler doesn't run: `Sourced.handle!` raises `Sourced::CommandNotHandledError`, and workers ack the command with no events. A Decider has one assertion for all its commands, which share its consistency boundary. A machine reading through a selector holds its commands to the selector's assertion the same way: an active state accepting a command decides it only while the assertion holds.
+#### Asserting history
+
+`Sourced::Assertion` builds quick predicates over a list of messages, by type, for a handler to check the history it got and emit a domain error event when a rule doesn't hold. The built-ins are `is_empty`, `includes(T)`, `excludes(T)`, `starts_with(T)` and `ends_with(T)`; `+` is *and*, `|` is *or* and `~` is *not*. `holds?(history)` evaluates one, and so does `===`, for `case` / `when`.
+
+```ruby
+Started    = Sourced::Assertion.includes(CartStarted)
+CheckedOut = Sourced::Assertion.ends_with(CartCheckedOut) # not reopened since
+Open       = Started + ~CheckedOut
+
+class Carts < Sourced::Decider
+  partition_by :cart_id
+
+  evolve Sourced::Selector[CartStarted, ItemAdded, CartCheckedOut, CartReopened]
+
+  command AddItem => ItemAdded | ItemRejected do |history, cmd|
+    next event(ItemRejected, cart_id: cmd.payload.cart_id, reason: 'cart not open') unless Open === history
+
+    event ItemAdded, cart_id: cmd.payload.cart_id, sku: cmd.payload.sku
+  end
+end
+```
+
+The rejection is a declared output, so it's in the log for other reactors to react to, and in the Topology. An assertion takes an Array of messages (a selector source's context), and raises `ArgumentError` for anything else, ex. an inline projector's context. It isn't a source: `evolve` takes selectors and projectors only.
 
 #### Single-command decisions
 
@@ -359,7 +336,7 @@ For a boundary of its own per command, `Sourced::Decider(source, Command => outp
 
 ```ruby
 AddItem = Sourced::Decider(
-  Sourced::Selector[CartStarted, ItemAdded, CartCheckedOut].by(:cart_id).includes(CartStarted).excludes(CartCheckedOut),
+  Sourced::Selector[CartStarted, ItemAdded, CartCheckedOut].by(:cart_id),
   AddItemToCart => ItemAdded
 ) do |history, cmd|
   event ItemAdded, cart_id: cmd.payload.cart_id, sku: cmd.payload.sku
@@ -951,7 +928,7 @@ How it runs:
 - **`after(delay => Command)`** dispatches commands delivered that long after the state was entered. The delay is seconds (`after(3600 => Expire)`) or a duration string, as `Message#at` takes it (`'1h'`, `'1h30m'`, `'P1D'`), up to weeks: months and years vary in length, so `after('1M' => …)` raises `Machine::DefinitionError` (give days, `'30d'`). The delay can also be computed from the context when the timer starts (as a block gets it), by a `#call(context)` returning seconds or a duration string: `after ->(ctx) { ctx[:sos_delay] } => SendSOS`. It's read once per entry (a later change to the context doesn't reschedule), and anything else it returns, `nil` included, raises `Machine::TimerError` in the reaction; `to_h` shows it as `delay: nil, computed: <its name>`. The commands are declared, so they show in the topology and `to_h`, and some state must accept them. Without a block, each is dispatched with the partition keys as its payload (so it can't require more). A block dispatches them itself: only the declared ones, and at least one unless it declares `| nil`, as entry and exit actions (else `React::UndeclaredMessageError`): `after('1h' => Remind | Expire) { |order, _evt| dispatch Remind, email: order[:email] }`, `after('1h' => Remind | nil) { … }`. A timer command delivered after the machine has left that state entry is refused, even where the command is accepted, so timers never need cancelling.
 - **History**: `Working.history` targets a state with regions at the states its regions were last in (`Working.history(deep: true)` restores everything below it); regions with no history take their default entry. History is rebuilt from `exited` on replay.
 - `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.paths`, `machine.in?(OrderMachine::Paying)`, `machine.in?(:payment, OrderMachine::Paying)`, `machine.in?('placed.payment.paying')`, `machine.current(:payment)`, `machine.entered_by`, `machine.children(LineItemMachine)`.
-- `available_commands` lists the command classes the active states accept (and a child's `Stop` while it applies), as a frozen Set kept until the machine next evolves. While a selector source's assertion doesn't hold, it lists only `Stop`, as `handles_command?` refuses the rest. Ex. to show the actions a UI offers:
+- `available_commands` lists the command classes the active states accept (and a child's `Stop` while it applies), as a frozen Set kept until the machine next transitions. Ex. to show the actions a UI offers:
 
   ```ruby
   order, _ = Sourced.load(OrderMachine, order_id: 'o1') # placed, paying

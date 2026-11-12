@@ -235,33 +235,6 @@ RSpec.describe Sourced::Machine do
       expect(instance.machine.paths).to eq(['ordered'])
     end
 
-    it "accepts commands only while the source's assertion holds" do
-      guarded = machine do
-        evolve Sourced::Selector[ItemAdded].includes(ItemAdded)
-
-        state(:open) { command Checkout => :ordered }
-        final :ordered
-      end
-      checkout = Checkout.new(payload: { cart_id: 'c1' })
-
-      expect(guarded.at(['open'], [], cart_id: 'c1').handles_command?(checkout)).to be(false)
-      expect(guarded.at(['open'], [item_added], cart_id: 'c1').handles_command?(checkout)).to be(true)
-    end
-
-    it "lists no commands while the source's assertion fails" do
-      guarded = machine do
-        evolve Sourced::Selector[ItemAdded].includes(ItemAdded)
-
-        state(:open) { command Checkout => :ordered }
-        final :ordered
-      end
-      placed = guarded.at(['open'], [], cart_id: 'c1')
-
-      expect(placed.available_commands).to be_empty
-      placed.evolve([item_added])
-      expect(placed.available_commands).to contain_exactly(Checkout)
-    end
-
     it 'reads its messages and its own state events in the partition' do
       expect(selecting.history_selector.types).to include(ItemAdded, selecting::Open, selecting::Ordered)
       expect(selecting.history_selector.parts.map(&:keys).uniq).to eq([[:cart_id]])

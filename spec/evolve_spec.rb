@@ -238,7 +238,6 @@ RSpec.describe Sourced::Evolve do
 
     let(:selector) do
       Sourced::Selector[EvolveTestMessages::ItemAdded, EvolveTestMessages::CartClosed]
-        .excludes(EvolveTestMessages::CartClosed)
     end
 
     let(:decider) do
@@ -257,7 +256,7 @@ RSpec.describe Sourced::Evolve do
     def closed(cart_id = 'c1') = EvolveTestMessages::CartClosed.new(payload: { cart_id: })
     def add(item_id) = EvolveTestMessages::AddItem.new(payload: { cart_id: 'c1', item_id: })
 
-    it 'is the source, as given, read in the partition with its assertion' do
+    it 'is the source, as given, read in the partition' do
       expect(decider.source).to be(selector)
       expect(decider.projector).to be < Sourced::Selector::Projection
       expect(decider.projector.selector).to be(selector)

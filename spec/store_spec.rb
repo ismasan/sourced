@@ -1069,46 +1069,6 @@ RSpec.describe Sourced::Store do
       }.not_to raise_error
     end
 
-    it 'reads and guards only the parts of a selector with an assertion, evaluated over the read' do
-      bound_once = Sourced::Selector[StoreTestMessages::DeviceBound].by(:device_id).bind(device_id: 'dev-1')
-      asserted = (bound_once.includes(StoreTestMessages::DeviceBound) + selector).bind(asset_id: 'asset-1')
-      result = store.read(asserted)
-
-      expect(result.messages.map(&:position)).to eq(store.read(bound_once + selector).messages.map(&:position))
-      expect(asserted.holds?(result.messages)).to be(true)
-      expect(result.guard.selector).to eq(asserted)
-    end
-
-    it 'selects in Ruby (Selector#selects?) what it reads in SQL' do
-      store.append([
-        StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-2' }),
-        StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-2', asset_id: 'asset-1' }),
-        StoreTestMessages::NoteAdded.new(payload: { text: 'a' }).with_tags(device_id: 'dev-1'),
-        StoreTestMessages::NoteAdded.new(payload: { text: 'b' }).with_tags(device_id: 'dev-1', asset_id: 'asset-9'),
-        StoreTestMessages::NoteAdded.new(payload: { text: 'c' }).with_tags(asset_id: 'asset-1'),
-        StoreTestMessages::NoteAdded.new(payload: { text: 'd' })
-      ])
-      notes = Sourced::Selector[StoreTestMessages::NoteAdded]
-      selectors = [
-        selector,
-        Sourced::Selector[StoreTestMessages::DeviceBound, StoreTestMessages::NoteAdded]
-          .by(:device_id, :asset_id).bind(device_id: 'dev-1', asset_id: 'asset-1'),
-        notes.by(:device_id).bind(device_id: 'dev-1') + notes.by(:asset_id).bind(asset_id: 'asset-1'),
-        notes + Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-2'),
-        notes.by(:device_id, :asset_id).bind(device_id: 'dev-1', asset_id: 'asset-404'),
-        # a note tagged device_id: dev-1 is a candidate of the device part, but
-        # not of its types, and carries none of the asset part's keys
-        Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1') +
-          notes.by(:asset_id).bind(asset_id: 'asset-1')
-      ]
-      log = store.read_all(limit: 100).messages
-
-      selectors.each do |sel|
-        expect(log.select { |msg| sel.selects?(msg) }.map(&:position))
-          .to eq(store.read(sel).messages.map(&:position)), sel.inspect
-      end
-    end
-
     it 'guard and read match the same messages' do
       appended = [
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'in' }),   # device part
@@ -1568,14 +1528,6 @@ RSpec.describe Sourced::Store do
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
 
       expect(store.claim_next(group_id, Sourced::Selector::NONE, worker_id: 'w-1')).to be_nil
-    end
-
-    it 'claims by the parts, ignoring the assertion' do
-      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
-
-      result = store.claim_next(group_id, selector.excludes(StoreTestMessages::DeviceRegistered), worker_id: 'w-1')
-      expect(result.messages.map(&:type)).to eq([StoreTestMessages::DeviceRegistered.type])
-      expect(result.guard.selector).to eq(selector.bind(device_id: 'dev-1'))
     end
 
     it 'raises for parts with different keys' do

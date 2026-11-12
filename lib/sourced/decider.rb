@@ -253,8 +253,7 @@ module Sourced
     # {Sourced.handle!} raises {Sourced::CommandNotHandledError} when this is
     # false, without appending anything; in background workers, {.handle_batch}
     # acks the command with no events. Defaults to whether a handler is
-    # registered for the command's class, and its source's precondition holds
-    # ({Evolve#source_holds?}).
+    # registered for the command's class.
     #
     # Override to refuse commands based on context without raising, the command-side
     # counterpart of {React#should_react?}:
@@ -269,7 +268,7 @@ module Sourced
     # @param command [Sourced::Message]
     # @return [Boolean]
     def handles_command?(command)
-      self.class.handled_commands.include?(command.to_message.class) && source_holds?
+      self.class.handled_commands.include?(command.to_message.class)
     end
 
     # Decide a command against the decider's current in-memory context.

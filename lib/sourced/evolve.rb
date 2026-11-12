@@ -33,7 +33,7 @@ module Sourced
   # @example Reading through a selector: the context is the messages
   #   class Carts < Sourced::Decider
   #     partition_by :cart_id
-  #     evolve Sourced::Selector[CartStarted, CartClosed].excludes(CartClosed)
+  #     evolve Sourced::Selector[CartStarted, CartClosed]
   #   end
   module Evolve
     def self.included(base)
@@ -60,16 +60,6 @@ module Sourced
     # @return [Object] the evolved context
     def evolve(messages)
       projection.evolve(messages)
-    end
-
-    # Whether the source selector's assertion holds over the context in this
-    # reactor's partition. Deciders and machines decide a command only while it
-    # holds.
-    #
-    # @return [Boolean]
-    def source_holds?
-      selector = self.class.__source_selector
-      selector.assertion == Selector::Assertion::TRUE || selector.bind(**partition_values).holds?(context)
     end
 
     module ClassMethods
@@ -104,17 +94,6 @@ module Sourced
 
         evolve_selector.by_default(*partition_keys)
       end
-
-      # Validate the definition, then fix {#__source_selector} once (a
-      # Machine validates on every instance).
-      def validate!
-        super.tap { @__source_selector ||= history_selector }
-      end
-
-      # @api private
-      # {#history_selector}, fixed by {#validate!}; what {Evolve#source_holds?} checks.
-      # @return [Selector]
-      def __source_selector = @__source_selector || history_selector
 
       # Define the projector's initial context factory. The block takes no arguments.
       def context(&)

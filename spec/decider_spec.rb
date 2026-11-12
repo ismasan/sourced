@@ -27,6 +27,10 @@ module DeciderTestMessages
   DelayedNotifyBound = Sourced::Message.define('decider_test.delayed_notify_bound') do
     attribute :device_id, String
   end
+
+  BindingRejected = Sourced::Message.define('decider_test.binding_rejected') do
+    attribute :device_id, String
+  end
 end
 
 class TestDeviceDecider < Sourced::Decider
@@ -620,57 +624,36 @@ RSpec.describe Sourced::Decider do
     end
   end
 
-  describe 'preconditions: a selector source\'s assertion' do
+  describe 'assertions over a selector source, in a handler' do
     let(:registered) { DeciderTestMessages::DeviceRegistered }
     let(:bound) { DeciderTestMessages::DeviceBound }
+    let(:rejected) { DeciderTestMessages::BindingRejected }
 
     let(:binder) do
-      source = Sourced::Selector[registered, bound].includes(registered).excludes(bound)
+      bindable = Sourced::Assertion.includes(registered) + Sourced::Assertion.excludes(bound)
       Class.new(Sourced::Decider) do
         partition_by :device_id
         consumer_group 'decider_test.binder'
-        evolve source
+        evolve Sourced::Selector[DeciderTestMessages::DeviceRegistered, DeciderTestMessages::DeviceBound]
 
-        command DeciderTestMessages::BindDevice => DeciderTestMessages::DeviceBound do |_, cmd|
+        command DeciderTestMessages::BindDevice => DeciderTestMessages::DeviceBound | DeciderTestMessages::BindingRejected do |history, cmd|
+          next event(DeciderTestMessages::BindingRejected, device_id: cmd.payload.device_id) unless bindable === history
+
           event DeciderTestMessages::DeviceBound, **cmd.payload.to_h
         end
       end
     end
 
     def reg(device_id = 'd1') = registered.new(payload: { device_id:, name: 'Sensor' })
-    def bnd(device_id = 'd1') = bound.new(payload: { device_id:, asset_id: 'a0' })
     def bind(device_id = 'd1') = DeciderTestMessages::BindDevice.new(payload: { device_id:, asset_id: 'a1' })
 
-    def instance_after(history)
-      binder.new(device_id: 'd1').tap { it.evolve(history) }
+    it "let the handler emit a domain error over the partition's history" do
+      expect(binder.call([], bind).map(&:class)).to eq([rejected])
+      expect(binder.call([reg], bind).map(&:class)).to eq([bound])
+      expect(binder.call([reg, bound.new(payload: { device_id: 'd1', asset_id: 'a0' })], bind).map(&:class)).to eq([rejected])
     end
 
-    it 'is the default handles_command?, over the history so far' do
-      expect(instance_after([]).handles_command?(bind)).to be(false)
-      expect(instance_after([reg]).handles_command?(bind)).to be(true)
-      expect(instance_after([reg, bnd]).handles_command?(bind)).to be(false)
-    end
-
-    it "holds in the partition only: another partition's messages don't count" do
-      expect(instance_after([reg, bnd('d2')]).handles_command?(bind)).to be(true)
-    end
-
-    it 'is the history_selector\'s, when the reactor declares its own' do
-      registered = self.registered
-      bound = self.bound
-      decider = Class.new(Sourced::Decider) do
-        partition_by :device_id
-        evolve Sourced::Selector[registered, bound]
-        define_singleton_method(:history_selector) { Sourced::Selector[registered, bound].by(:device_id).includes(registered) }
-
-        command(DeciderTestMessages::BindDevice => nil) { |_, _| nil }
-      end
-
-      expect(decider.new(device_id: 'd1').handles_command?(bind)).to be(false)
-      expect(decider.new(device_id: 'd1').tap { it.evolve([reg]) }.handles_command?(bind)).to be(true)
-    end
-
-    it 'refuses a later command in a batch once an earlier one breaks it: workers ack it' do
+    it 'see what the handler emitted earlier in a batch' do
       guard = Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 1)
       history = Sourced::ReadResult.new(messages: [Sourced::PositionedMessage.new(reg, 1)], guard:)
       batch = [Sourced::PositionedMessage.new(bind, 2), Sourced::PositionedMessage.new(bind, 3)]
@@ -678,21 +661,7 @@ RSpec.describe Sourced::Decider do
       pairs = binder.handle_batch({ device_id: 'd1' }, batch, history:)
       appended = pairs.map { |actions, _| Array(actions).grep(Sourced::Actions::Append).flat_map(&:messages) }
 
-      expect(appended.map(&:size)).to eq([1, 0])
-      expect(pairs.last.first).to eq(Sourced::Actions::OK)
-    end
-
-    it 'makes Sourced.handle! raise CommandNotHandledError, appending nothing' do
-      store = Sourced::Store.new(Sequel.sqlite)
-      store.install!
-      store.append(reg)
-
-      expect { Sourced.handle!(binder, bind('d2'), store:) }
-        .to raise_error(Sourced::CommandNotHandledError, /in its current state/)
-      expect(Sourced.handle!(binder, bind, store:).events.map(&:class)).to eq([bound])
-      expect { Sourced.handle!(binder, bind, store:) }.to raise_error(Sourced::CommandNotHandledError)
-      expect(store.read_all(limit: 10).messages.map(&:type))
-        .to eq([registered.type, DeciderTestMessages::BindDevice.type, bound.type])
+      expect(appended.map { |msgs| msgs.map(&:class) }).to eq([[bound], [rejected]])
     end
   end
 
@@ -721,7 +690,7 @@ RSpec.describe Sourced::Decider do
     let(:reg) { registered.new(payload: { device_id: 'd1', name: 'Sensor' }) }
 
     it "is a one-command Decider over the source, grouped by the command's type, keyed by the source's keys" do
-      source = Sourced::Selector[registered].by(:device_id).includes(registered)
+      source = Sourced::Selector[registered].by(:device_id)
       decision = Sourced::Decider(source, bind_cmd => bound) do |history, cmd|
         event DeciderTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: "#{history.size}"
       end
@@ -732,7 +701,6 @@ RSpec.describe Sourced::Decider do
         source:, history_selector: source, exclusive?: false
       )
       expect(decision.call([reg], bind).map { it.payload.asset_id }).to eq(['1'])
-      expect { decision.call([], bind) }.to raise_error(Sourced::CommandNotHandledError, /in its current state/)
     end
 
     it 'chains partition_by, for a source without keys' do

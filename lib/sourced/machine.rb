@@ -1788,22 +1788,15 @@ module Sourced
         super([msg])
         __region_projections.each { |region_projection| region_projection.evolve([msg]) }
       end
-      @available_commands = nil
       context
     end
 
     # The command classes the active states accept, and +Stop+ while it
-    # applies (see {Configuration#available_commands}); only +Stop+ while the
-    # source's precondition fails. Memoized until the machine next evolves.
+    # applies (see {Configuration#available_commands}). Memoized until the
+    # machine next transitions.
     #
     # @return [Set<Class>]
-    def available_commands
-      @available_commands ||= begin
-        commands = machine.available_commands
-        stop = self.class.stop_state && self.class::Stop
-        source_holds? ? commands : commands.select { it == stop }.to_set.freeze
-      end
-    end
+    def available_commands = @available_commands ||= machine.available_commands
 
     # Its configuration, read live (see {Configuration#to_machine_config}).
     # @return [View]
@@ -1817,7 +1810,7 @@ module Sourced
     # @return [Set<Class>]
     def handled_commands = self.class.__command_set
 
-    # Whether an active state accepts +command+ and {Evolve#source_holds?}. A
+    # Whether an active state accepts +command+. A
     # command dispatched by an +after+ block is refused once the machine has
     # left the state entry that started it, even if an active state accepts it.
     #
@@ -1830,7 +1823,7 @@ module Sourced
       return stoppable? if stop_command?(command)
       return false if stale_timer?(command)
 
-      handlers_for(command).any? && source_holds?
+      handlers_for(command).any?
     end
 
     # Decide +command+ against the current configuration and context.
