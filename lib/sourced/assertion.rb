@@ -43,23 +43,45 @@ module Sourced
     end
 
     # A built-in assertion.
-    #
-    # @!attribute kind [Symbol] +:is_empty+, +:includes+, +:starts_with+ or +:ends_with+
-    # @!attribute type [Class<Message>, nil] the message class it's about (nil for +:is_empty+)
-    Leaf = Data.define(:kind, :type) do
+    module Leaf
       include Node
 
-      def evaluate(types)
-        case kind
-        in :is_empty then types.empty?
-        in :includes then types.include?(type)
-        in :starts_with then types.first == type
-        in :ends_with then types.last == type
-        end
-      end
-
-      def label = type ? "#{kind}(#{Assertion.type_label(type)})" : kind.to_s
       def sort_key = label
+    end
+
+    # Holds for a history with no messages.
+    IsEmpty = Data.define do
+      include Leaf
+
+      def evaluate(types) = types.empty?
+      def label = 'is_empty'
+    end
+
+    # A built-in assertion about one message type, named by its +kind+.
+    #
+    # @!attribute type [Class<Message>]
+    TypeLeaf = Data.define(:type) do
+      include Leaf
+
+      def label = "#{kind}(#{Assertion.type_label(type)})"
+    end
+
+    # Holds when the history has a +type+.
+    class Includes < TypeLeaf
+      def kind = 'includes'
+      def evaluate(types) = types.include?(type)
+    end
+
+    # Holds when the first message is a +type+.
+    class StartsWith < TypeLeaf
+      def kind = 'starts_with'
+      def evaluate(types) = types.first == type
+    end
+
+    # Holds when the last message is a +type+.
+    class EndsWith < TypeLeaf
+      def kind = 'ends_with'
+      def evaluate(types) = types.last == type
     end
 
     # Holds when +operand+ doesn't.
@@ -92,20 +114,20 @@ module Sourced
     module_function
 
     # Holds for a history with no messages.
-    def is_empty = Leaf.new(kind: :is_empty, type: nil)
+    def is_empty = IsEmpty.new
 
     # Holds when the history has a +type+.
-    def includes(type) = Leaf.new(kind: :includes, type: type.to_message_class)
+    def includes(type) = Includes.new(type: type.to_message_class)
 
     # Holds when the history has no +type+.
     def excludes(type) = self.not(includes(type))
 
     # Holds when the first message is a +type+.
-    def starts_with(type) = Leaf.new(kind: :starts_with, type: type.to_message_class)
+    def starts_with(type) = StartsWith.new(type: type.to_message_class)
 
     # Holds when the last message is a +type+, ex. an order cancelled and not
     # reopened since.
-    def ends_with(type) = Leaf.new(kind: :ends_with, type: type.to_message_class)
+    def ends_with(type) = EndsWith.new(type: type.to_message_class)
 
     # @return [Assertion] all of +nodes+, flattened, deduplicated and ordered
     def and(*nodes) = combine(And, nodes.flat_map { |n| n.is_a?(And) ? n.operands : [n] })
