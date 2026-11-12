@@ -308,7 +308,7 @@ end
 
 #### Asserting history
 
-`Sourced::Assertion` builds quick predicates over a list of messages, by type, for a handler to check the history it got and emit a domain error event when a rule doesn't hold. The built-ins are `is_empty`, `includes(T)`, `excludes(T)`, `starts_with(T)` and `ends_with(T)`; `+` is *and*, `|` is *or* and `~` is *not*. `holds?(history)` evaluates one, and so does `===`, for `case` / `when`.
+`Sourced::Assertion` builds quick predicates over a list of messages, by type, for a handler to check the history it got and emit a domain error event when a rule doesn't hold. The built-ins are `is_empty`, `includes(T)`, `excludes(T)`, `starts_with(T)` and `ends_with(T)`; `+` is *and*, `|` is *or* and `~` is *not*. Built-ins other than `is_empty` also chain as *and*: `Assertion.includes(A).includes(B).ends_with(C)` is `includes(A) + includes(B) + ends_with(C)`. `holds?(history)` evaluates one, and so does `===`, for `case` / `when`.
 
 ```ruby
 Started    = Sourced::Assertion.includes(CartStarted)

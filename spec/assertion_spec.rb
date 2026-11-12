@@ -37,6 +37,17 @@ RSpec.describe Sourced::Assertion do
     expect(either.holds?([cancelled])).to be(true)
   end
 
+  it 'chains built-ins as and' do
+    chained = described_class.includes(AssertionTest::Paid)
+                             .excludes(AssertionTest::Reopened)
+                             .ends_with(AssertionTest::Cancelled)
+
+    expect(chained).to eq(is_paid + described_class.excludes(AssertionTest::Reopened) + is_cancelled)
+    expect(chained.holds?([paid, cancelled])).to be(true)
+    expect(chained.holds?([paid, cancelled, reopened, cancelled])).to be(false)
+    expect((is_paid | is_cancelled).starts_with(AssertionTest::Paid).holds?([paid, cancelled])).to be(true)
+  end
+
   it 'is === its holds?, for case/when' do
     result = case [paid, cancelled]
              when is_cancelled then :cancelled

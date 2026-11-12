@@ -28,6 +28,21 @@ module Sourced
       # @return [Assertion] holds when this doesn't
       def ~ = Assertion.not(self)
 
+      # Chained builders: this and the built-in, ex.
+      # <tt>Assertion.includes(A).includes(B).ends_with(C)</tt>.
+
+      # @return [Assertion] holds when this does and the history has a +type+
+      def includes(type) = self + Assertion.includes(type)
+
+      # @return [Assertion] holds when this does and the history has no +type+
+      def excludes(type) = self + Assertion.excludes(type)
+
+      # @return [Assertion] holds when this does and the first message is a +type+
+      def starts_with(type) = self + Assertion.starts_with(type)
+
+      # @return [Assertion] holds when this does and the last message is a +type+
+      def ends_with(type) = self + Assertion.ends_with(type)
+
       # @param messages [Array<Sourced::Message>] in log order
       # @return [Boolean]
       # @raise [ArgumentError] for anything but an Array, ex. an inline projector's context
