@@ -308,12 +308,22 @@ end
 
 #### Asserting history
 
-`Sourced::Assertion` builds quick predicates over a list of messages, by type, for a handler to check the history it got and emit a domain error event when a rule doesn't hold. The built-ins are `is_empty`, `includes(T)`, `excludes(T)`, `starts_with(T)` and `ends_with(T)`; `+` is *and*, `|` is *or* and `~` is *not*. Built-ins other than `is_empty` also chain as *and*: `Assertion.includes(A).includes(B).ends_with(C)` is `includes(A) + includes(B) + ends_with(C)`. `holds?(history)` evaluates one, and so does `===`, for `case` / `when`.
+`Sourced::Assertion` builds quick predicates over a list of messages, by type, for a handler to check the history it got and emit a domain error event when a rule doesn't hold. `Assertion[...]` takes the built-ins, all of which must hold:
+
+| | holds when the history |
+|---|---|
+| `Assertion[A, B]` | includes A and B |
+| `Assertion[A..]` | starts with A |
+| `Assertion[..A]` | ends with A |
+| `Assertion[A.., ..B]` | starts with A and ends with B |
+| `Assertion[]` | is empty |
+
+A range with both ends, or an exclusive one (`A...`), raises `ArgumentError`; Ruby can't build `A..B` for two event classes anyway.
+
+`+` is *and*, `-` is *and not*, `|` is *or* and `~` is *not*. The built-ins are also named: `is_empty`, `includes(T)`, `excludes(T)`, `starts_with(T)` and `ends_with(T)`, and all but `is_empty` chain as *and*: `Assertion.includes(A).includes(B).ends_with(C)`. `holds?(history)` evaluates one, and so does `===`, for `case` / `when`.
 
 ```ruby
-Started    = Sourced::Assertion.includes(CartStarted)
-CheckedOut = Sourced::Assertion.ends_with(CartCheckedOut) # not reopened since
-Open       = Started + ~CheckedOut
+Open = Sourced::Assertion[CartStarted] - Sourced::Assertion[..CartCheckedOut] # not checked out, or reopened since
 
 class Carts < Sourced::Decider
   partition_by :cart_id

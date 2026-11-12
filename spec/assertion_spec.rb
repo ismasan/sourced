@@ -48,6 +48,25 @@ RSpec.describe Sourced::Assertion do
     expect((is_paid | is_cancelled).starts_with(AssertionTest::Paid).holds?([paid, cancelled])).to be(true)
   end
 
+  it 'builds built-ins with [], from classes and open ranges' do
+    expect(described_class[]).to eq(described_class.is_empty)
+    expect(described_class[AssertionTest::Paid, AssertionTest::Cancelled])
+      .to eq(is_paid + described_class.includes(AssertionTest::Cancelled))
+    expect(described_class[AssertionTest::Paid.., ..AssertionTest::Cancelled])
+      .to eq(described_class.starts_with(AssertionTest::Paid) + is_cancelled)
+  end
+
+  it 'raises for a range [] has no built-in for' do
+    expect { described_class[AssertionTest::Paid...] }.to raise_error(ArgumentError, /takes A\.\. .* or \.\.A/)
+    expect { described_class[...AssertionTest::Paid] }.to raise_error(ArgumentError)
+    expect { described_class[nil..] }.to raise_error(ArgumentError)
+  end
+
+  it 'subtracts with -, and not' do
+    expect(is_paid - is_cancelled).to eq(is_paid + ~is_cancelled)
+    expect((described_class[AssertionTest::Paid] - described_class[AssertionTest::Reopened..]).holds?([paid])).to be(true)
+  end
+
   it 'is === its holds?, for case/when' do
     result = case [paid, cancelled]
              when is_cancelled then :cancelled
@@ -69,7 +88,24 @@ RSpec.describe Sourced::Assertion do
     expect(is_paid + is_cancelled).to eq(is_cancelled + is_paid)
     expect(is_paid | is_cancelled).to eq(is_cancelled | is_paid)
     expect(~~is_cancelled).to eq(is_cancelled)
-    expect((~is_cancelled).inspect).to eq('#<Sourced::Assertion ¬ends_with(Cancelled)>')
+  end
+
+  it 'inspects as Assertion[] syntax that builds it again' do
+    paid, cancelled, reopened = AssertionTest::Paid, AssertionTest::Cancelled, AssertionTest::Reopened
+    {
+      described_class[] => 'Assertion[]',
+      ~is_cancelled => '~Assertion[..Cancelled]',
+      described_class[..cancelled, paid, reopened..] - described_class[cancelled..] =>
+        'Assertion[Reopened.., Paid, ..Cancelled] - Assertion[Cancelled..]',
+      (is_paid | described_class[reopened]) + is_cancelled - described_class[paid, ..reopened] =>
+        'Assertion[..Cancelled] + (Assertion[Paid] | Assertion[Reopened]) - Assertion[Paid, ..Reopened]',
+      ~(is_paid | is_cancelled) => '~(Assertion[Paid] | Assertion[..Cancelled])'
+    }.each do |assertion, inspected|
+      expect(assertion.inspect).to eq(inspected)
+      expect(assertion.pretty_inspect).to eq("#{inspected}\n")
+      rebuilt = Module.new { include AssertionTest }.module_eval(inspected.gsub('Assertion', 'Sourced::Assertion'))
+      expect(rebuilt).to eq(assertion)
+    end
   end
 
   it "isn't a source: reactors can't evolve one" do
