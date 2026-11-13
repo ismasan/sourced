@@ -38,9 +38,11 @@ module Sourced
 
   # Returned by {Store#read} with messages and a consistency guard.
   # Supports array destructuring via #to_ary for backwards compatibility:
-  #   messages, guard = store.read(conditions)
+  #   messages, guard = store.read(selector)
+  # and is its messages as an Array (#to_a).
   ReadResult = Data.define(:messages, :guard) do
     def to_ary = [messages, guard]
+    def to_a = messages
 
     # A copy of this result without +excluded+, matched by log position.
     #
@@ -489,131 +491,80 @@ module Sourced
     # @example Next page (using the last position from the previous page)
     #   messages = store.read_all(from_position: 20, limit: 20)
     #
-    # @example Filtered by conditions (OR semantics, same as #read)
-    #   messages = store.read_all(conditions: [cond1, cond2], limit: 20)
+    # @example Only what a selector selects
+    #   messages = store.read_all(Selector[DeviceRegistered].by(:device_id).bind(device_id: 'd1'), limit: 20)
     #
+    # @param selector [Selector, nil] default: everything
     # @param from_position [Integer] return messages from this position, inclusive (default 0)
-    # @param conditions [Array<QueryCondition>, nil] optional conditions to filter by
     # @param limit [Integer] max number of messages to return (default 50)
+    # @param order [:asc, :desc]
     # @return [ReadAllResult] messages and last global position
-    def read_all(from_position: nil, conditions: [], limit: 50, order: :asc)
+    # @raise [Selector::UnboundKeyError] for a selector with unbound keys
+    def read_all(selector = nil, from_position: nil, limit: 50, order: :asc)
       desc = order == :desc
-      conditions = Array(conditions).compact
-      after_position = from_position ? from_position - 1 : nil
 
-      if conditions.any?
-        messages = query_messages(conditions, after_position:, limit:, order:)
+      if selector
+        selector.bound!
+        after = !desc && from_position ? from_position - 1 : nil
+        through = desc ? from_position : nil
+        messages = select_messages(selector, after:, through:, limit:, order:)
       else
         ds = db[@messages_table]
         ds = desc ? ds.where { position <= from_position } : ds.where { position >= from_position } if from_position
         messages = ds.order(desc ? Sequel.desc(:position) : :position).limit(limit).map { |row| deserialize(row) }
       end
 
-      fetcher = ->(pos) { read_all(from_position: desc ? pos - 1 : pos + 1, conditions:, limit:, order:) }
+      fetcher = ->(pos) { read_all(selector, from_position: desc ? pos - 1 : pos + 1, limit:, order:) }
       ReadAllResult.new(messages:, last_position: latest_position, fetcher:)
     end
 
-    # Query messages by conditions, or by partition.
-    #
-    # Conditions: each matches on (message_type AND key_name AND key_value), and
-    # conditions are OR'd.
-    #
-    # A {PartitionQuery}: the messages in the partition, matched per message as
-    # {#claim_next} matches them.
-    #
-    # Either way the guard is a {ConsistencyGuard} over the same query.
-    #
-    # @param query [PartitionQuery, QueryCondition, Array<QueryCondition>]
-    # @param after_position [Integer, nil] only return messages after this position (exclusive)
-    # @param limit [Integer, nil] max number of messages to return
-    # @return [ReadResult] messages and a guard
-    def read(query, after_position: nil, limit: nil)
-      case query
-      in PartitionQuery
-        read_partition_query(query, after_position: after_position || 0, limit:)
-      else
-        read_conditions(Array(query), after_position:, limit:)
-      end
-    end
-
-    # Read messages for a specific partition using AND semantics: {#read} with a
-    # {PartitionQuery}. A message is included only when every partition attribute
-    # it carries (in its payload or tags) matches the given value. Messages that
-    # don't carry a partition attribute pass through (same logic as {#claim_next}).
-    #
-    # @example Single partition attribute
-    #   result = store.read_partition(
-    #     { device_id: 'dev-1' },
-    #     handled_types: ['device.registered', 'device.bound']
-    #   )
-    #   result.messages  # => [#<PositionedMessage ...>, ...]
-    #   result.guard     # => #<ConsistencyGuard query=#<PartitionQuery ...> ...>
-    #
-    # @example Composite partition (AND semantics — messages must match all attributes they declare)
-    #   result = store.read_partition(
-    #     { course_name: 'Algebra', user_id: 'joe' },
-    #     handled_types: ['course.created', 'user.joined_course']
-    #   )
-    #   # Returns CourseCreated(course_name: 'Algebra') — matches on its only attribute
-    #   # Returns UserJoinedCourse(course_name: 'Algebra', user_id: 'joe') — matches both
-    #   # Excludes UserJoinedCourse(course_name: 'Algebra', user_id: 'jane') — user_id mismatch
-    #
-    # @example Resuming from a position (e.g. after processing a batch)
-    #   result = store.read_partition(
-    #     { device_id: 'dev-1' },
-    #     handled_types: ['device.registered'],
-    #     after_position: 42
-    #   )
-    #   # Only returns messages with position > 42
+    # The messages +selector+ selects, in position order, and a guard over it
+    # at the last message read (or +after_position+), so its conflict check
+    # matches exactly what this read matched.
     #
     # @example Using the guard for optimistic concurrency on append
-    #   result = store.read_partition(
-    #     { device_id: 'dev-1' },
-    #     handled_types: ['device.registered', 'device.bound']
-    #   )
+    #   selector = Selector[DeviceRegistered, DeviceBound].by(:device_id).bind(device_id: 'dev-1')
+    #   result = store.read(selector)
     #   # ... build new events from result.messages ...
     #   store.append(new_events, guard: result.guard)
     #   # Raises Sourced::ConcurrentAppendError if conflicting writes occurred
     #
-    # @param partition_attrs [Hash{Symbol|String => String}] partition attribute values
-    # @param handled_types [Array<String>] message type strings to include
-    # @param after_position [Integer] fetch messages after this position (exclusive, default 0)
-    # @param upto [Integer, nil] partition-local cutoff: return at most the first +upto+
-    #   matching messages (SQL LIMIT). Counts ranks within the partition, not global positions.
-    #   The guard's last_position is the global position of the last returned message
-    #   (or +after_position+), so further partition writes are detected as conflicts.
-    # @return [ReadResult] messages and a guard for optimistic concurrency
-    def read_partition(partition_attrs, handled_types:, after_position: 0, upto: nil)
-      read_partition_query(PartitionQuery.new(attrs: partition_attrs, types: handled_types), after_position:, limit: upto)
+    # @param selector [Selector]
+    # @param after_position [Integer, nil] exclusive
+    # @param limit [Integer, nil]
+    # @return [ReadResult]
+    # @raise [Selector::UnboundKeyError] for a selector with unbound keys
+    def read(selector, after_position: nil, limit: nil)
+      selector.bound!
+      messages = select_messages(selector, after: after_position, limit:)
+      last_position = messages.empty? ? (after_position || 0) : messages.last.position
+      ReadResult.new(messages:, guard: ConsistencyGuard.new(selector:, last_position:))
     end
 
-    # Conflict detection: returns messages matching conditions (or in a
-    # partition) that appeared after the given position. Empty means no conflicts.
+    # The SQL {#read} runs for +selector+ (ex. for +EXPLAIN QUERY PLAN+), with
+    # the key pair ids that exist now inlined as literals.
     #
-    # @param conditions [PartitionQuery, Array<QueryCondition>] conditions to check
-    # @param position [Integer] check for messages after this position
-    # @return [ReadResult]
-    def messages_since(conditions, position)
-      read(conditions, after_position: position)
+    # @return [String, nil] nil when the read runs no query
+    # @raise [Selector::UnboundKeyError] for a selector with unbound keys
+    def read_sql(selector, after_position: nil, limit: nil)
+      messages_sql(selector.bound!, after: after_position, limit:)
     end
 
     # Register a consumer group. Idempotent.
-    # When +partition_by+ is provided, offsets are created eagerly during {#append}
-    # instead of lazily via discovery in {#claim_next}, from messages of
-    # +handled_types+ when given (only those can make a partition claimable).
+    # With a claim +selector+ (see {#claim_next}), {#append} creates offsets
+    # eagerly for its partition keys from messages of its types, and an
+    # id-partitioned group's types are indexed by message id.
     #
     # @param group_id [String] unique identifier for the consumer group
+    # @param selector [Selector, nil]
     # @param label [String, nil] the name the group is shown under (its reactor's
     #   class name). Updated on every registration, so it follows a renamed class.
-    # @param partition_by [Array<String, Symbol>, nil] attribute names defining partitions
     # @param exclusive [Boolean] when true, the group exclusively owns its message
     #   types and uses queue (delete-on-ack) semantics
-    # @param handled_types [Array<String>] message type strings this group consumes.
-    #   Used to derive per-type index basis (:id for id-partitioned groups), and
-    #   to create eager offsets only from messages of these types.
     # @return [void]
-    def register_consumer_group(group_id, label: nil, partition_by: nil, exclusive: false, handled_types: [])
-      partition_by_sorted = partition_by ? Array(partition_by).map(&:to_s).sort : nil
+    # @raise [ArgumentError] for a selector that can't be claimed (see {#claim_next})
+    def register_consumer_group(group_id, selector = nil, label: nil, exclusive: false)
+      partition_by_sorted = selector && !selector.none? ? claim_keys(selector) : nil
       partition_by_json = partition_by_sorted ? JSON.dump(partition_by_sorted) : nil
       now = Time.now.iso8601
       db.run(<<~SQL)
@@ -625,15 +576,14 @@ module Sourced
       # id-partitioned groups (reserved "__id" key) must have their message types
       # indexed by id so they are claimable regardless of which code path appends
       # them (append, handle!, workflows, scheduled-message promotion).
-      if partition_by_sorted && IdPartition.keys?(partition_by_sorted)
-        Array(handled_types).each { |t| @type_index_basis[t] = :id }
-      end
+      id_partitioned = partition_by_sorted ? selector.id_partitioned? : false
+      selector.types.each { |t| @type_index_basis[t.type] = :id } if id_partitioned
 
       # Cache for hot-path use in append
       cg = db[@consumer_groups_table].where(group_id: group_id).first
       @registered_groups[group_id] = {
-        cg_id: cg[:id], partition_by: partition_by_sorted, exclusive: exclusive,
-        types: Array(handled_types).empty? ? nil : Array(handled_types).to_set.freeze
+        cg_id: cg[:id], partition_by: partition_by_sorted, exclusive: exclusive, id_partitioned:,
+        types: selector ? selector.type_names.to_set.freeze : Set.new.freeze
       }
     end
 
@@ -729,12 +679,13 @@ module Sourced
 
     # Claim the next available partition for processing.
     #
-    # Bootstraps partition offsets (discovering new partitions from messages with
-    # ALL +partition_by+ attributes), finds the unclaimed partition with the earliest
-    # pending message, claims it, and fetches messages using conditional AND semantics.
+    # +selector+ is unbound, all parts by the same partition keys, ex.
+    # <tt>Selector[ItemAdded, OrderPlaced].by(:order_id)</tt>.
     #
-    # Returns a {ConsistencyGuard} over a {PartitionQuery} of the partition and
-    # +handled_types+ alongside the messages (an empty one for id-partitioned queue claims).
+    # Bootstraps partition offsets (discovering new partitions from messages with
+    # ALL the partition keys), claims the unclaimed partition with the earliest
+    # pending message, and fetches what +selector+ bound to it selects, with a
+    # guard over that ({Selector::NONE} for id-partitioned queue claims).
     #
     # The +replaying+ flag indicates whether the returned messages have been
     # processed by this consumer group before. A message is replaying when its
@@ -743,13 +694,16 @@ module Sourced
     # messages are correctly flagged as replaying.
     #
     # @param group_id [String] consumer group identifier
-    # @param partition_by [String, Array<String>] attribute name(s) defining partitions
-    # @param handled_types [Array<String>] message type strings this consumer handles
+    # @param selector [Selector]
     # @param worker_id [String] identifier for the claiming worker
     # @param batch_size [Integer, nil] max messages to fetch per claim (nil = unlimited)
-    # @return [Hash, nil] +{ offset_id:, key_pair_ids:, partition_key:, partition_value:, messages:, replaying:, guard: }+ or nil
-    def claim_next(group_id, partition_by:, handled_types:, worker_id:, batch_size: nil)
-      partition_by = Array(partition_by).sort
+    # @return [ClaimResult, nil] nil when there's nothing to claim, or for {Selector::NONE}
+    # @raise [ArgumentError] unless every part of +selector+ has the same keys, none bound
+    def claim_next(group_id, selector, worker_id:, batch_size: nil)
+      return nil if selector.none?
+
+      partition_by = claim_keys(selector)
+      handled_types = selector.type_names
       now = Time.now.iso8601
       cg = db[@consumer_groups_table]
         .where(group_id: group_id, status: CLAIMABLE)
@@ -781,10 +735,10 @@ module Sourced
         scan_version = cg[:last_nil_types_max_pos]
         return nil if scan_version.negative?
 
-        claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+        claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
         unless claimed
           discover_new_partitions(cg[:id], partition_by, handled_types)
-          claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+          claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
         end
 
         unless claimed
@@ -810,11 +764,11 @@ module Sourced
 
         has_offsets = db[@offsets_table].where(consumer_group_id: cg[:id]).limit(1).any?
         if has_offsets && types_max_pos <= cg[:discovery_position]
-          claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+          claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
         end
         unless claimed
           discover_new_partitions(cg[:id], partition_by, handled_types)
-          claimed = find_and_claim_partition(cg[:id], handled_types, worker_id)
+          claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
         end
 
         unless claimed
@@ -831,7 +785,9 @@ module Sourced
       key_pair_ids = key_pairs.map(&:first)
       partition_value = key_pairs.to_h { |_, name, value| [name, value] }
 
-      messages = fetch_partition_messages(key_pair_ids, partition_value.keys, claimed[:last_position], handled_types, limit: batch_size)
+      selector = Selector.new(parts: selector.parts).bind(**partition_value)
+      key_pair_index = key_pairs.to_h { |id, name, value| [[name, value], id] }
+      messages = select_messages(selector, after: claimed[:last_position], limit: batch_size, key_pair_index:)
 
       # If no messages pass the conditional AND filter, release and return nil
       if messages.empty?
@@ -839,15 +795,11 @@ module Sourced
         return nil
       end
 
-      # The guard covers handled_types (not just fetched messages), so message
-      # types that haven't appeared yet are conflicts too. An id partition holds
-      # one message, so a queue claim has nothing to guard.
+      # The guard covers the selector's types, so types not yet seen are
+      # conflicts too. An id partition holds one message: nothing to guard.
       last_pos = messages.last.position
-      guard = if IdPartition.keys?(partition_value.keys)
-                ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: last_pos)
-              else
-                ConsistencyGuard.new(query: PartitionQuery.new(attrs: partition_value, types: handled_types), last_position: last_pos)
-              end
+      guard_selector = selector.id_partitioned? ? Selector::NONE : selector
+      guard = ConsistencyGuard.new(selector: guard_selector, last_position: last_pos)
 
       # replaying: true when all messages are at or below the highest position
       # ever acked by this consumer group (i.e. they've been processed before).
@@ -1016,8 +968,10 @@ module Sourced
     #
     # An offset is drained when it is currently unclaimed, it has at least one
     # partition key (only partitioned offsets are reaped — a non-partitioned
-    # group's single offset is kept), and no remaining message matches all of its
-    # partition key_pairs (AND semantics). A retain (non-deleting) reactor's
+    # group's single offset is kept), and no remaining message carries any of
+    # its key pairs. This over-keeps offsets whose remaining messages belong to
+    # other partitions sharing a value: an exact check would scan every message
+    # sharing a low-cardinality value. A retain (non-deleting) reactor's
     # partitions always have messages, so they are never matched here.
     #
     # The reap race is benign: if a new message arrives for a just-reaped
@@ -1037,12 +991,7 @@ module Sourced
             SELECT 1
             FROM #{@offset_key_pairs_table} okp
             JOIN #{@message_key_pairs_table} mkp ON okp.key_pair_id = mkp.key_pair_id
-            JOIN #{@messages_table} m ON mkp.message_position = m.position
             WHERE okp.offset_id = o.id
-            GROUP BY m.position
-            HAVING COUNT(*) = (
-              SELECT COUNT(*) FROM #{@offset_key_pairs_table} WHERE offset_id = o.id
-            )
           )
       SQL
 
@@ -1282,10 +1231,8 @@ module Sourced
     end
 
     # Create offsets eagerly for all registered consumer groups, for each
-    # appended message that carries all of a group's partition keys and is one
-    # of its handled types (any type when it registered none). A claim needs a
-    # message of its types carrying every key, so an offset from another type
-    # would wait for one, which creates it anyway.
+    # appended message of a group's types that carries all of its partition keys
+    # (the partitions {#discover_new_partitions} finds).
     # Called inside the append transaction after messages and key_pairs are inserted.
     #
     # @param types [Array<String>] each appended message's type
@@ -1299,7 +1246,7 @@ module Sourced
       # id-partitioned (queue) groups are excluded: id is high-cardinality, so
       # they use lazy discovery in claim_next instead of eager per-message offsets.
       eager_groups = @registered_groups.each_value.reject do |gi|
-        gi[:partition_by].nil? || gi[:partition_by].empty? || IdPartition.keys?(gi[:partition_by])
+        gi[:partition_by].nil? || gi[:partition_by].empty? || gi[:id_partitioned]
       end
       return if eager_groups.empty?
 
@@ -1319,7 +1266,7 @@ module Sourced
         seen = Set.new
 
         indexed_keys.each_with_index do |pairs, i|
-          next if group_types && !group_types.include?(types[i])
+          next unless group_info[:types].include?(types[i])
 
           keys = pairs.to_h  # {"__id"=>"…", "device_id"=>"dev-1", "name"=>"A"}
           next unless partition_by.all? { |attr| keys.key?(attr) }
@@ -1485,27 +1432,21 @@ module Sourced
     end
 
     # Find the next unclaimed partition with pending messages and claim it.
-    # Uses OR joins for candidate detection (any matching key_pair), then
-    # a NOT EXISTS clause to exclude messages that conflict on a shared
-    # attribute name (same name, different value). This gives AND semantics:
-    # a message only counts as pending for a partition when every attribute
-    # it shares with the partition has the same value.
+    # Pending is the partition rule the claim then reads with (see
+    # {#partition_filter_sql}).
     #
     # @param cg_id [Integer] consumer group internal ID
-    # @param handled_types [Array<String>] message type strings
+    # @param partition_by [Array<String>]
+    # @param handled_types [Array<String>]
     # @param worker_id [String] claiming worker identifier
     # @return [Hash, nil] +{ offset_id:, partition_key:, last_position: }+ or nil
-    def find_and_claim_partition(cg_id, handled_types, worker_id)
+    def find_and_claim_partition(cg_id, partition_by, handled_types, worker_id)
       types_list = handled_types.map { |t| db.literal(t) }.join(', ')
+      names_list = partition_by.map { |n| db.literal(n) }.join(', ')
 
-      # Single query for the lowest-last_position unclaimed offset that has a
-      # pending message. A correlated EXISTS applies the AND-match (a message
-      # qualifies only when it is indexed under *every* one of the offset's
-      # key_pairs), and both joins are index-backed
-      # (message_key_pairs(key_pair_id, message_position), offset_key_pairs PK).
-      # This replaces an N-round-trip Ruby loop — one subquery per unclaimed
-      # offset — which mattered once the eager path stopped short-circuiting and
-      # scans on every poll.
+      # The lowest-last_position unclaimed offset with a pending message, all
+      # index-backed: message_key_pairs(key_pair_id, message_position) and the
+      # message_key_pairs, key_pairs and offset_key_pairs PKs.
       offset = db.fetch(<<~SQL).first
         SELECT o.id, o.partition_key, o.last_position
         FROM #{@offsets_table} o
@@ -1519,10 +1460,17 @@ module Sourced
             WHERE okp.offset_id = o.id
               AND m.position > o.last_position
               AND m.message_type IN (#{types_list})
-            GROUP BY m.position
-            HAVING COUNT(*) = (
-              SELECT COUNT(*) FROM #{@offset_key_pairs_table} WHERE offset_id = o.id
-            )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM #{@message_key_pairs_table} other
+                JOIN #{@key_pairs_table} kp ON kp.id = other.key_pair_id
+                WHERE other.message_position = m.position
+                  AND kp.name IN (#{names_list})
+                  AND NOT EXISTS (
+                    SELECT 1 FROM #{@offset_key_pairs_table} own
+                    WHERE own.offset_id = o.id AND own.key_pair_id = other.key_pair_id
+                  )
+              )
           )
         ORDER BY o.last_position
         LIMIT 1
@@ -1541,207 +1489,174 @@ module Sourced
       { offset_id: offset[:id], partition_key: offset[:partition_key], last_position: offset[:last_position] }
     end
 
-    # Fetch messages for a partition using conditional AND semantics.
-    # For each candidate message, it must match ALL of the partition's attributes
-    # that the message itself has. Messages with a single partition attribute match
-    # on that one; messages with multiple must match all of them.
+    # A claim selector's partition keys: one offset per tuple of their values.
     #
-    # @param key_pair_ids [Array<Integer>] the ids of the partition's key_pairs that exist
-    # @param attr_names [Array<String>] all the partition's attribute names, so a
-    #   message carrying one whose key_pair doesn't exist yet is excluded
-    # @param last_position [Integer] fetch messages after this position
-    # @param handled_types [Array<String>] message type strings
-    # @param limit [Integer, nil] max messages to return (nil = unlimited)
-    # @return [Array<PositionedMessage>]
-    def fetch_partition_messages(key_pair_ids, attr_names, last_position, handled_types, limit: nil)
-      return Plumb::BLANK_ARRAY if key_pair_ids.empty? || handled_types.empty?
+    # @return [Array<String>] sorted
+    def claim_keys(selector)
+      keys = selector.parts.map(&:keys).uniq
+      if keys.size > 1
+        raise ArgumentError, "#{selector.inspect} can't be claimed: its parts must all have the same partition keys"
+      end
+      raise ArgumentError, "#{selector.inspect} can't be claimed: it has no partition keys" if keys.first.empty?
+      unless selector.parts.all? { |p| p.values.empty? }
+        raise ArgumentError, "#{selector.inspect} can't be claimed: claims bind its keys to each partition's values"
+      end
 
-      sql = <<~SQL
-        SELECT DISTINCT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.tags, m.created_at
-        FROM #{@messages_table} m
-        WHERE m.position IN (#{partition_positions_sql(key_pair_ids, last_position)})
-          AND #{partition_filter_sql(key_pair_ids, attr_names, handled_types)}
-        ORDER BY m.position ASC
-      SQL
-      sql += " LIMIT #{db.literal(limit)}" if limit
+      keys.first.map(&:to_s)
+    end
+
+    # The messages +selector+ selects, in position order.
+    #
+    # @param selector [Selector] bound
+    # @param after [Integer, nil] exclusive
+    # @param through [Integer, nil] inclusive
+    # @return [Array<PositionedMessage>]
+    def select_messages(selector, after: nil, through: nil, limit: nil, order: :asc, key_pair_index: nil)
+      sql = messages_sql(selector, after:, through:, limit:, order:, key_pair_index:)
+      return Plumb::BLANK_ARRAY unless sql
 
       db.fetch(sql).map { |row| deserialize(row) }
     end
 
-    # Positions after +last_position+ indexed under any of the partition's
-    # key_pairs: the candidates {#partition_filter_sql} narrows down. Bounded by
-    # position in the (key_pair_id, message_position) index, so a read or claim
-    # costs the partition's messages, not the log's.
-    def partition_positions_sql(key_pair_ids, last_position)
-      kp_ids_list = key_pair_ids.map { |id| db.literal(id) }.join(', ')
-
-      <<~SQL
-        SELECT message_position FROM #{@message_key_pairs_table}
-        WHERE key_pair_id IN (#{kp_ids_list})
-          AND message_position > #{db.literal(last_position)}
-      SQL
-    end
-
-    # The WHERE clause, over candidate messages +m+ from {#partition_positions_sql},
-    # shared by {#fetch_partition_messages} and {#check_conflicts}.
-    # A message qualifies when it matches as many of the partition's key_pairs as
-    # it has attribute names in common with the partition.
-    def partition_filter_sql(key_pair_ids, attr_names, handled_types)
-      kp_ids_list = key_pair_ids.map { |id| db.literal(id) }.join(', ')
-      names_list = attr_names.map { |n| db.literal(n.to_s) }.join(', ')
-      types_list = handled_types.map { |t| db.literal(t) }.join(', ')
-
-      <<~SQL
-        m.message_type IN (#{types_list})
-          AND (
-            SELECT COUNT(*) FROM #{@message_key_pairs_table} mkp
-            WHERE mkp.message_position = m.position
-              AND mkp.key_pair_id IN (#{kp_ids_list})
-          ) = (
-            SELECT COUNT(DISTINCT kp_msg.name)
-            FROM #{@message_key_pairs_table} mkp2
-            JOIN #{@key_pairs_table} kp_msg ON mkp2.key_pair_id = kp_msg.id
-            WHERE mkp2.message_position = m.position
-              AND kp_msg.name IN (#{names_list})
-          )
-      SQL
-    end
-
-    # Ids of the partition's key_pairs that exist, in one query.
-    #
-    # @param attrs [Hash{String => String}]
-    # @return [Array<Integer>]
-    def partition_key_pair_ids(attrs)
-      return Plumb::BLANK_ARRAY if attrs.empty?
-
-      or_clauses = attrs.map { |n, v| "(name = #{db.literal(n)} AND value = #{db.literal(v)})" }
-      db.fetch("SELECT id FROM #{@key_pairs_table} WHERE #{or_clauses.join(' OR ')}").map { |r| r[:id] }
-    end
-
-    # {#read} for a {PartitionQuery}. The guard's position is the last message
-    # read, or +after_position+: its conflict check matches exactly what this read
-    # matches, so nothing in between can be missed or misreported.
-    #
-    # @param query [PartitionQuery]
-    # @param after_position [Integer]
-    # @param limit [Integer, nil]
-    # @return [ReadResult]
-    def read_partition_query(query, after_position:, limit: nil)
-      key_pair_ids = partition_key_pair_ids(query.attrs)
-      messages = fetch_partition_messages(key_pair_ids, query.attrs.keys, after_position, query.types, limit:)
-      last_position = messages.empty? ? after_position : messages.last.position
-      guard = ConsistencyGuard.new(query:, last_position:)
-      ReadResult.new(messages:, guard:)
-    end
-
-    # {#read} for conditions.
-    #
-    # @param conditions [Array<QueryCondition>]
-    # @return [ReadResult]
-    def read_conditions(conditions, after_position:, limit:)
-      if conditions.empty?
-        guard = ConsistencyGuard.new(query: conditions, last_position: after_position || latest_position)
-        return ReadResult.new(messages: [], guard:)
-      end
-
-      messages = query_messages(conditions, after_position:, limit:)
-      last_position = messages.any? ? messages.last.position : (after_position || latest_position)
-      guard = ConsistencyGuard.new(query: conditions, last_position:)
-      ReadResult.new(messages:, guard:)
-    end
-
-    # Core query logic shared by {#read}, {#read_all}, and {#check_conflicts}.
-    # Resolves key_pair IDs from conditions, then queries messages.
-    # Attributes within each condition are AND'd; conditions are OR'd.
-    #
-    # @param conditions [Array<QueryCondition>]
-    # @param after_position [Integer, nil] only include messages after this position (exclusive)
-    # @param limit [Integer, nil]
-    # @param order [:asc, :desc] position order (default :asc)
-    # @return [Array<PositionedMessage>]
-    def query_messages(conditions, after_position: nil, limit: nil, order: :asc)
-      subqueries = condition_position_subqueries(conditions, after_position: after_position)
-      return [] if subqueries.empty?
-
-      union = subqueries.join(" UNION ")
-      direction = order == :desc ? "DESC" : "ASC"
+    # The query {#select_messages} runs, or nil when the selector can select nothing.
+    def messages_sql(selector, after: nil, through: nil, limit: nil, order: :asc, key_pair_index: nil)
+      candidates, filter = selector_sql(selector, after:, through:, key_pair_index:, limit:, order:)
+      return unless candidates
 
       sql = <<~SQL
         SELECT m.position, m.message_id, m.message_type, m.causation_id, m.correlation_id, m.payload, m.metadata, m.tags, m.created_at
         FROM #{@messages_table} m
-        WHERE m.position IN (#{union})
-        ORDER BY m.position #{direction}
+        WHERE m.position IN (#{candidates})
+          AND (#{filter})
+        ORDER BY m.position #{order == :desc ? 'DESC' : 'ASC'}
       SQL
       sql += " LIMIT #{db.literal(limit)}" if limit
-
-      db.fetch(sql).map { |row| deserialize(row) }
+      sql
     end
 
-    # Whether a message the guard covers was appended after its position.
-    # A {PartitionQuery} runs the claim's partition match, LIMIT 1.
+    # SQL for what +selector+ selects within a position range: the union of
+    # each part's candidate positions, and the OR of each part's condition over
+    # candidate messages +m+. Candidates are pooled, so each condition must hold
+    # only for messages its part selects.
+    #
+    # Keyed parts' candidates come from the (key_pair_id, message_position)
+    # index, so a read costs the partition's messages, not the log's. Keyless
+    # parts' come from the message_type index and are their matches, so they
+    # take +limit+.
+    #
+    # @param key_pair_index [Hash{Array(String, String) => Integer}, nil] ids by
+    #   [name, value]; looked up when nil
+    # @return [Array(String, String), nil] candidates and condition, or nil when
+    #   the selector can select nothing
+    def selector_sql(selector, after: nil, through: nil, key_pair_index: nil, limit: nil, order: :asc)
+      key_pair_index ||= key_pair_index_for(selector)
+      candidates = []
+      conditions = []
+
+      selector.parts.each do |part|
+        types_list = part.type_names.map { |t| db.literal(t) }.join(', ')
+
+        if part.keys.empty?
+          sql = <<~SQL
+            SELECT position FROM #{@messages_table}
+            WHERE message_type IN (#{types_list})#{position_range_sql('position', after, through)}
+          SQL
+          if limit
+            sql = "SELECT position FROM (#{sql} ORDER BY position #{order == :desc ? 'DESC' : 'ASC'} LIMIT #{db.literal(limit)})"
+          end
+          candidates << sql
+          conditions << "m.message_type IN (#{types_list})"
+          next
+        end
+
+        kp_ids = part.values.filter_map { |name, value| key_pair_index[[name.to_s, value]] }
+        next if kp_ids.empty?
+
+        kp_ids_list = kp_ids.map { |id| db.literal(id) }.join(', ')
+        candidates << <<~SQL
+          SELECT message_position AS position FROM #{@message_key_pairs_table}
+          WHERE key_pair_id IN (#{kp_ids_list})#{position_range_sql('message_position', after, through)}
+        SQL
+        conditions << partition_filter_sql(kp_ids, part.keys, part.type_names, own_candidates: selector.parts.size == 1)
+      end
+
+      return nil if candidates.empty?
+
+      [candidates.join(' UNION ALL '), conditions.map { |c| "(#{c})" }.join(' OR ')]
+    end
+
+    # @return [String] an AND clause bounding +column+, or an empty string
+    def position_range_sql(column, after, through)
+      sql = +''
+      sql << " AND #{column} > #{db.literal(after)}" if after
+      sql << " AND #{column} <= #{db.literal(through)}" if through
+      sql
+    end
+
+    # Ids of the key_pairs a selector's parts are bound to that exist, in one query.
+    #
+    # @return [Hash{Array(String, String) => Integer}] ids by [name, value]
+    def key_pair_index_for(selector)
+      pairs = selector.parts.flat_map { |p| p.values.map { |name, value| [name.to_s, value] } }.uniq
+      return {} if pairs.empty?
+
+      or_clauses = pairs.map { |n, v| "(name = #{db.literal(n)} AND value = #{db.literal(v)})" }
+      db.fetch("SELECT id, name, value FROM #{@key_pairs_table} WHERE #{or_clauses.join(' OR ')}")
+        .to_h { |r| [[r[:name], r[:value]], r[:id]] }
+    end
+
+    # A keyed part's condition, over candidate messages +m+: the message
+    # carries at least one of the part's key_pairs, and none of its keys with
+    # another value (including one whose key_pair didn't exist when the ids
+    # were resolved). With +own_candidates+ (every candidate is the part's, so
+    # carries one of its key_pairs) the first half is left out.
+    #
+    # @param key_pair_ids [Array<Integer>] the part's key_pairs that exist
+    # @param attr_names [Array<Symbol, String>] all the part's keys
+    def partition_filter_sql(key_pair_ids, attr_names, handled_types, own_candidates: false)
+      kp_ids_list = key_pair_ids.map { |id| db.literal(id) }.join(', ')
+      names_list = attr_names.map { |n| db.literal(n.to_s) }.join(', ')
+      types_list = handled_types.map { |t| db.literal(t) }.join(', ')
+      carries = own_candidates ? '' : <<~SQL
+        AND EXISTS (
+          SELECT 1 FROM #{@message_key_pairs_table} own
+          WHERE own.message_position = m.position AND own.key_pair_id IN (#{kp_ids_list})
+        )
+      SQL
+
+      <<~SQL
+        m.message_type IN (#{types_list})
+          #{carries}
+          AND NOT EXISTS (
+            SELECT 1 FROM #{@message_key_pairs_table} mkp
+            JOIN #{@key_pairs_table} kp ON kp.id = mkp.key_pair_id
+            WHERE mkp.message_position = m.position
+              AND kp.name IN (#{names_list})
+              AND mkp.key_pair_id NOT IN (#{kp_ids_list})
+          )
+      SQL
+    end
+
+    # Whether a message the guard's selector selects was appended after its
+    # +last_position+.
     #
     # @param guard [ConsistencyGuard]
     # @return [Boolean]
+    # @raise [Selector::UnboundKeyError] for a selector with unbound keys
     def check_conflicts(guard)
-      last_position = guard.last_position
+      guard.selector.bound!
+      candidates, filter = selector_sql(guard.selector, after: guard.last_position)
+      return false unless candidates
 
-      case guard.query
-      in PartitionQuery[attrs:, types:]
-        key_pair_ids = partition_key_pair_ids(attrs)
-        return false if key_pair_ids.empty? || types.empty?
-
-        # Joined rather than IN, so the scan stops at the first match instead of
-        # collecting every candidate position first.
-        sql = <<~SQL
-          SELECT 1 FROM (#{partition_positions_sql(key_pair_ids, last_position)}) pk
-          JOIN #{@messages_table} m ON m.position = pk.message_position
-          WHERE #{partition_filter_sql(key_pair_ids, attrs.keys, types)}
-          LIMIT 1
-        SQL
-        !db.fetch(sql).first.nil?
-      in []
-        false
-      in Array => conditions
-        query_messages(conditions, after_position: last_position).any?
-      end
-    end
-
-    # Build per-condition position subqueries with AND-within/OR-across semantics.
-    # Resolves key_pair IDs, then builds one SQL subquery per condition.
-    # Each subquery selects positions where the message matches ALL attrs in the condition.
-    #
-    # @param conditions [Array<QueryCondition>]
-    # @param after_position [Integer, nil] only include positions after this (exclusive)
-    # @return [Array<String>] SQL subquery strings (empty if no conditions can match)
-    def condition_position_subqueries(conditions, after_position: nil)
-      all_lookups = conditions.flat_map { |c| c.attrs.map { |k, v| [k.to_s, v.to_s] } }.uniq
-      return [] if all_lookups.empty?
-
-      or_clauses = all_lookups.map { |n, v| "(name = #{db.literal(n)} AND value = #{db.literal(v)})" }
-      key_rows = db.fetch("SELECT id, name, value FROM #{@key_pairs_table} WHERE #{or_clauses.join(' OR ')}").all
-
-      key_pair_index = {}
-      key_rows.each { |r| key_pair_index[[r[:name], r[:value]]] = r[:id] }
-
-      position_filter = after_position ? "AND m.position > #{db.literal(after_position)}" : ""
-
-      conditions.filter_map do |c|
-        kp_ids = c.attrs.filter_map { |k, v| key_pair_index[[k.to_s, v.to_s]] }
-        next if kp_ids.size < c.attrs.size
-
-        kp_ids_list = kp_ids.map { |id| db.literal(id) }.join(', ')
-
-        <<~SQL
-          SELECT m.position
-          FROM #{@messages_table} m
-          JOIN #{@message_key_pairs_table} mkp ON m.position = mkp.message_position
-          WHERE m.message_type = #{db.literal(c.message_type)}
-            AND mkp.key_pair_id IN (#{kp_ids_list})
-            #{position_filter}
-          GROUP BY m.position
-          HAVING COUNT(DISTINCT mkp.key_pair_id) = #{kp_ids.size}
-        SQL
-      end
+      # Joined rather than IN, so the scan stops at the first match instead of
+      # collecting every candidate position first.
+      sql = <<~SQL
+        SELECT 1 FROM (#{candidates}) pk
+        JOIN #{@messages_table} m ON m.position = pk.position
+        WHERE #{filter}
+        LIMIT 1
+      SQL
+      !db.fetch(sql).first.nil?
     end
 
     # Deserialize a database row into a {PositionedMessage}.

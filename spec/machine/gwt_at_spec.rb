@@ -34,7 +34,7 @@ module GWTAtTest
       initial { command Authorize => Authorizing }
 
       state Authorizing do
-        entry { |_context, evt| dispatch Notify, order_id: evt.payload.order_id }
+        entry(Notify) { |_context, evt| dispatch Notify, order_id: evt.payload.order_id }
         command Capture => Captured
       end
 

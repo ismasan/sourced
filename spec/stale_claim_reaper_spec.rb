@@ -75,8 +75,7 @@ RSpec.describe 'Store worker heartbeat and stale claim release' do
       # Claim the partition
       @claim = store.claim_next(
         'reaper_test_projector',
-        partition_by: ['device_id'],
-        handled_types: ['reaper_test.device.registered'],
+        Sourced::Selector[StaleClaimReaperTestMessages::DeviceRegistered].by(:device_id),
         worker_id: 'w1'
       )
     end
@@ -125,16 +124,14 @@ RSpec.describe 'Store worker heartbeat and stale claim release' do
 
       claim2 = store.claim_next(
         'reaper_test_projector',
-        partition_by: ['device_id'],
-        handled_types: ['reaper_test.device.registered'],
+        Sourced::Selector[StaleClaimReaperTestMessages::DeviceRegistered].by(:device_id),
         worker_id: 'w2'
       )
 
       # Re-claim d1 with w1
       claim1 = store.claim_next(
         'reaper_test_projector',
-        partition_by: ['device_id'],
-        handled_types: ['reaper_test.device.registered'],
+        Sourced::Selector[StaleClaimReaperTestMessages::DeviceRegistered].by(:device_id),
         worker_id: 'w1'
       )
 
@@ -212,12 +209,11 @@ RSpec.describe Sourced::StaleClaimReaper do
     it 'removes a drained queue offset end-to-end' do
       reaper = described_class.new(store: store, interval: 30, ttl_seconds: 60, logger: logger)
 
-      store.register_consumer_group('q_group', partition_by: 'device_id', exclusive: true)
+      store.register_consumer_group('q_group', Sourced::Selector[StaleClaimReaperTestMessages::DeviceRegistered].by(:device_id), exclusive: true)
       store.append(
         StaleClaimReaperTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       )
-      claim = store.claim_next('q_group', partition_by: 'device_id',
-        handled_types: ['reaper_test.device.registered'], worker_id: 'w1')
+      claim = store.claim_next('q_group', Sourced::Selector[StaleClaimReaperTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w1')
       store.ack_and_delete('q_group', offset_id: claim.offset_id, positions: claim.messages.map(&:position))
 
       expect(db[:sourced_offsets].count).to eq(1)

@@ -72,19 +72,18 @@ module Sourced
     extend Definition
 
     # The machine's transitions, its children's starts and finishes, and the
-    # evolve types of its parts are evolved too, alongside the
-    # projection's evolve types. They're the machine's own, not its
-    # projection's (which has no handlers for them), so adopting a projection
-    # with +evolve SomeProjection+ keeps them. Prepended after Sourced::Evolve's
-    # class methods, so +super+ is the projection's list.
+    # evolve types of its parts are read alongside the projector's selector.
+    # They're the machine's own, so adopting a projector keeps them.
+    # Prepended after Sourced::Evolve's class methods.
     module EvolveTypes
       # Fixed by {Machine.validate!}; computed on each call before it.
-      def handled_messages_for_evolve
-        return @__evolve_types if @__evolve_types
+      def evolve_selector
+        return @__evolve_selector if @__evolve_selector
 
         tree = self.tree
-        parts = tree.mounted_machines.flat_map { |part| part.projection_class.handled_messages }
-        (super + __transition_classes + tree.child_events + parts + handled_events).uniq
+        parts = tree.mounted_machines.map { |part| part.projector.selector }
+        own = Selector[*__transition_classes, *tree.child_events, *handled_events]
+        [projector.selector, own, *parts].reduce(:+)
       end
     end
     singleton_class.prepend EvolveTypes
@@ -115,8 +114,7 @@ module Sourced
     # starts fewer children than it declares.
     StartError = Class.new(Error)
 
-    # Raised when an +after+ block dispatches a command its timer doesn't
-    # declare, or a computed delay returns no valid delay.
+    # Raised when a timer's computed delay returns no valid delay.
     TimerError = Class.new(Error)
 
     # Raised when a machine builds an event that isn't valid.
@@ -131,6 +129,8 @@ module Sourced
     AmbiguousRegionError = Class.new(Error)
 
     INITIAL = :initial
+
+    AFTER_PAIR = "'1h' => Command | Other | nil"
 
     # Metadata keys on messages dispatched by an +after+ block: the id of the
     # transition that entered the state and started the timer, and the
@@ -244,6 +244,10 @@ module Sourced
 
     # The states a transition may go to; +nil+ means it may stay.
     Targets = Data.define(:members) do
+      # As a handler declaration (+reaction A | B+), see {Sourced::Outputs.flatten}.
+      # @return [Array<Class, nil>]
+      def to_message_classes = members.flat_map { |member| Outputs.flatten(member) }
+
       # @param other [State, History, Targets, nil]
       # @return [Targets]
       def |(other)
@@ -347,13 +351,13 @@ module Sourced
     # Timers (+after+) are delayed actions: run when their state is entered,
     # they future-date what they dispatch from the entering transition by
     # their delay, {StaticAfter}'s as declared, {ComputedAfter}'s from the
-    # context. +commands+ are what one may dispatch; without a +block+, it
-    # dispatches each of them. Both answer +#seconds_in(context)+ (raising
+    # context. +outputs+ are the commands one may dispatch; without a +block+,
+    # it dispatches each of them. Both answer +#seconds_in(context)+ (raising
     # {InvalidDelayError}), +#label+ (the delay as error messages and
     # diagrams show it) and +#chart+ (its delay keys in {Machine.to_h}).
     #
     # A timer with a fixed delay: seconds, or a duration string.
-    StaticAfter = Data.define(:delay, :seconds, :commands, :block) do
+    StaticAfter = Data.define(:delay, :seconds, :outputs, :block) do
       # A delay's seconds: as given, or a duration string's.
       # @param delay [Numeric, String]
       # @return [Numeric]
@@ -370,8 +374,9 @@ module Sourced
         duration.to_sec
       end
 
-      def initialize(delay:, commands:, block:, seconds: self.class.seconds_for(delay)) = super
+      def initialize(delay:, outputs:, block:, seconds: self.class.seconds_for(delay)) = super
 
+      def commands = outputs.messages
       def seconds_in(_context) = seconds
       def label = String === delay ? delay : "#{delay}s"
       def chart = { delay: }
@@ -379,7 +384,7 @@ module Sourced
 
     # A timer whose delay a +#call(context)+ computes when it starts:
     # seconds or a duration string, as {StaticAfter}'s.
-    ComputedAfter = Data.define(:delay, :label, :commands, :block) do
+    ComputedAfter = Data.define(:delay, :label, :outputs, :block) do
       # The callable's class or module name, +'computed'+ for a lambda or an anonymous one.
       def self.label_for(delay)
         case delay
@@ -389,11 +394,15 @@ module Sourced
         end
       end
 
-      def initialize(delay:, commands:, block:, label: self.class.label_for(delay)) = super
+      def initialize(delay:, outputs:, block:, label: self.class.label_for(delay)) = super
 
+      def commands = outputs.messages
       def seconds_in(context) = StaticAfter.seconds_for(delay.call(context))
       def chart = { delay: nil, computed: label }
     end
+
+    # An +entry+ or +exit+ action. Without a +block+, it dispatches each of +outputs+.
+    Action = Data.define(:outputs, :block)
 
     # A child machine the parent tracks: started by handlers that declare it in
     # +starts:+ (+kind+ +:spawn+, one spec per machine), or by a state
@@ -554,18 +563,29 @@ module Sourced
         @node.ons[event_class] = definition
       end
 
-      # Runs when the machine enters this state, as a reaction.
+      # Runs when the machine enters this state, as a reaction. It declares
+      # what it may dispatch as a reaction does ({Sourced::Outputs}), or +nil+
+      # for none. Without a block, each declared message is dispatched with
+      # the partition keys as its payload.
+      #
+      #   entry SendReceipt do |cart, _transition|
+      #     dispatch SendReceipt, total: cart.total
+      #   end
+      #
+      # @param declared [Class, Plumb::Or, nil]
       # @yield [context, transition]
-      def entry(&block)
+      def entry(*declared, &block)
         raise DefinitionError, "#{@machine}: the initial position is never entered, so no entry actions" if @node.initial?
 
-        @node.entries << block
+        @node.entries << __action('entry', declared, block)
       end
 
       # Runs when the machine leaves this state, as a reaction to the
-      # transition that left it.
+      # transition that left it. It declares what it dispatches as {#entry} does.
+      #
+      # @param declared [Class, Plumb::Or, nil]
       # @yield [context, transition]
-      def exit(&block) = @node.exits << block
+      def exit(*declared, &block) = @node.exits << __action('exit', declared, block)
 
       # Dispatches +commands+ when the machine enters this state, as a
       # reaction. They're delivered +delay+ after the entering transition, and
@@ -577,11 +597,9 @@ module Sourced
       #     command ExpirePayment => Expired
       #   end
       #
-      # Without a block, each declared command is dispatched with the
-      # partition keys as its payload. A block dispatches them itself, and only
-      # the declared ones ({TimerError}):
+      # It declares what it dispatches as {#entry} does, commands only:
       #
-      #   after('1h' => Remind | ExpirePayment) { |order, _transition| dispatch Remind, email: order[:email] }
+      #   after('1h' => Remind | nil) { |order, _transition| dispatch Remind, email: order[:email] if order[:email] }
       #
       # The delay is seconds, or a duration string as {Sourced::Message#at}
       # takes it (+'30m'+, +'1h30m'+, +'P1D'+), up to weeks: months and years
@@ -601,13 +619,14 @@ module Sourced
       def after(declaration, &block)
         raise DefinitionError, "#{@machine}: the initial position is never entered, so no timers" if @node.initial?
 
-        delay, declared =
-          case declaration
-          in Hash if declaration.size == 1 then declaration.first
-          else raise DefinitionError, "#{@machine}: after declares what it dispatches, ex. after('1h' => Command), got #{declaration.inspect}"
-          end
-        commands = __timer_commands(delay, declared).uniq
-        @node.afters << __timer(delay:, commands:, block:)
+        label = "#{@machine}: #{@node.label}'s after"
+        delay, outputs = Outputs.pair(declaration, label, example: AFTER_PAIR, error: DefinitionError)
+        unless outputs.messages.any? && outputs.messages.all? { it < Sourced::Command }
+          raise DefinitionError, "#{label}(#{delay.inspect}) dispatches commands, got #{outputs}"
+        end
+
+        outputs.check_blockless!(block, "#{label}(#{delay.inspect})", error: DefinitionError)
+        @node.afters << __timer(delay:, outputs:, block:)
       end
 
       # Declare a region, active while this state is. A state with
@@ -767,23 +786,25 @@ module Sourced
         declaration
       end
 
-      # A +#call(context)+ delay is computed when the timer starts; any
-      # other is fixed now.
-      private def __timer(delay:, commands:, block:)
-        return ComputedAfter.new(delay:, commands:, block:) if DelayInterface === delay
+      private def __action(what, declared, block)
+        label = "#{@machine}: #{@node.label}'s #{what}"
+        unless declared.size == 1
+          raise DefinitionError, "#{label} declares what it dispatches, ex. " \
+                                 "#{what} Command do, #{what} Command | nil do, or #{what} nil do"
+        end
 
-        StaticAfter.new(delay:, commands:, block:)
-      rescue InvalidDelayError => e
-        raise DefinitionError, "#{@machine}: #{e.message}"
+        outputs = Outputs.declare(declared.first, label, error: DefinitionError)
+        Action.new(outputs: outputs.check_blockless!(block, label, error: DefinitionError), block:)
       end
 
-      # +after('1h' => A | B)+: a command, or a union of them.
-      private def __timer_commands(delay, declared)
-        case declared
-        in Plumb::Or then declared.children.flat_map { __timer_commands(delay, it) }
-        in Class if declared < Sourced::Command then [declared]
-        else raise DefinitionError, "#{@machine}: after(#{delay.inspect}) dispatches commands, got #{declared.inspect}"
-        end
+      # A +#call(context)+ delay is computed when the timer starts; any
+      # other is fixed now.
+      private def __timer(delay:, outputs:, block:)
+        return ComputedAfter.new(delay:, outputs:, block:) if DelayInterface === delay
+
+        StaticAfter.new(delay:, outputs:, block:)
+      rescue InvalidDelayError => e
+        raise DefinitionError, "#{@machine}: #{e.message}"
       end
     end
 
@@ -1284,13 +1305,14 @@ module Sourced
         # What the runtime reads per message, fixed now that the definition is.
         @__handled_commands = handled_commands.freeze
         @__handled_events = handled_events.freeze
-        @__evolve_types = handled_messages_for_evolve.freeze
+        @__evolve_selector = evolve_selector
+        @__evolve_set = @__evolve_selector.types.to_set.freeze
         @__start_paths = __start_paths.freeze if start_state
         @__transition_classes = __transition_classes.freeze
         @__transition_set = @__transition_classes.to_set.freeze
         @__command_set = @__handled_commands.to_set.freeze
         @__event_set = @__handled_events.to_set.freeze
-        @__region_projection_classes = __region_projection_classes.freeze
+        @__region_projectors = __region_projectors.freeze
         @__eventless_steps = __eventless_steps.freeze
         @validated = true
       ensure
@@ -1324,7 +1346,7 @@ module Sourced
       #   default skips entry and exit actions, timers and joins when +true+
       # @return [Array<Array(Array<Object>, Sourced::Message)>] action/source pairs
       def handle_batch(partition_values, new_messages, history:, replaying: false)
-        types = handled_messages_for_evolve
+        types = @__evolve_set || evolve_selector.types
         evolvable = new_messages.select { |msg| types.include?(msg.to_message.class) }
         __process(partition_values, new_messages, history.messages + evolvable, guard: history.guard, replaying:)
       end
@@ -1361,7 +1383,7 @@ module Sourced
       # @raise [Sourced::MissingPartitionKeyError] if a partition key is missing or nil
       # @raise [UnresolvablePathError] if a path doesn't resolve
       # @raise [ArgumentError] for an initial position, a state in an inactive region, or two states in one region
-      def at(paths, context = Projection::UNSET, **partition_values)
+      def at(paths, context = Projector::Inline::UNSET, **partition_values)
         missing = partition_keys.select { |key| partition_values[key].nil? }
         if missing.any?
           raise Sourced::MissingPartitionKeyError, "#{self} can't be placed without values for partition keys #{missing.inspect}"
@@ -1419,11 +1441,11 @@ module Sourced
         }.select { |_, present| present }.keys
       end
 
-      # The projections of the parts that evolve anything.
+      # The projectors of the parts that evolve anything.
       # @api private
-      def __region_projection_classes
-        @__region_projection_classes ||
-          tree.mounted_machines.map(&:projection_class).reject { |klass| klass.handled_messages.empty? }
+      def __region_projectors
+        @__region_projectors ||
+          tree.mounted_machines.map(&:projector).reject { |klass| klass.selector.none? }
       end
 
       # What a parent's +Started+ enters: this machine's start, and its default configuration.
@@ -1504,6 +1526,8 @@ module Sourced
           end
           __check_transient!(node) if node.transient?
           node.afters.each { |timer| __check_timer!(node, timer, accepted) }
+          node.entries.each { |action| __check_action!(node, 'entry', action) }
+          node.exits.each { |action| __check_action!(node, 'exit', action) }
           node.always.each { |eventless| __check_target!(tree, node, eventless.target) }
           __check_join!(tree, node) if node.dones.any? || node.regions.any?
           node.children_joins.each { |join| __check_children_join!(tree, node, join) }
@@ -1534,11 +1558,19 @@ module Sourced
         end
       end
 
-      # A part's evolve blocks are ours: one per message class, across us and our parts.
+      # A part's evolve blocks are ours: one per message class, across us and our
+      # parts. They run on our context, so it's an inline projector's.
       def __check_part_evolves!(tree)
-        evolved = projection_class.handled_messages.to_h { |klass| [klass, self] }
+        evolving = tree.mounted_machines.reject { |part| part.projector.selector.none? }
+        if evolving.any? && !(projector <= Projector::Inline)
+          raise DefinitionError, "#{self}: #{evolving.join(', ')} evolve#{'s' if evolving.one?} on #{self}'s " \
+                                 "context, but #{self} reads through #{source.inspect}, whose context is " \
+                                 'its messages'
+        end
+
+        evolved = projector.selector.types.to_h { |klass| [klass, self] }
         tree.mounted_machines.each do |part|
-          part.projection_class.handled_messages.each do |klass|
+          part.projector.selector.types.each do |klass|
             raise DefinitionError, "#{self}: #{klass} is evolved by both #{evolved[klass]} and #{part}" if evolved.key?(klass)
 
             evolved[klass] = part
@@ -1606,14 +1638,23 @@ module Sourced
         label = "#{node.label}'s after(#{timer.label})"
         timer.commands.each do |command|
           raise DefinitionError, "#{self}: #{label} dispatches #{command}, which no state accepts" unless accepted.include?(command)
-          next if timer.block
-
-          missing = (command::Payload._schema.resolve({}).errors || {}).keys - partition_keys
-          next if missing.empty?
-
-          raise DefinitionError,
-                "#{self}: #{label} dispatches #{command} without a block, so it can't fill #{command}'s #{missing.join(', ')}"
+          __check_fillable!(label, command) unless timer.block
         end
+      end
+
+      def __check_action!(node, what, action)
+        return if action.block
+
+        action.outputs.messages.each { |message_class| __check_fillable!("#{node.label}'s #{what}", message_class) }
+      end
+
+      # What's dispatched without a block gets the partition keys only.
+      def __check_fillable!(label, message_class)
+        missing = (message_class::Payload._schema.resolve({}).errors || {}).keys - partition_keys
+        return if missing.empty?
+
+        raise DefinitionError, "#{self}: #{label} dispatches #{message_class} without a block, " \
+                               "so it can't fill #{message_class}'s #{missing.join(', ')}"
       end
 
       def __check_join!(tree, node)
@@ -1722,8 +1763,8 @@ module Sourced
     # Place a fresh instance at +paths+, on +context+: see {.at}.
     # @api private
     # @return [self]
-    def __place(paths, context = Projection::UNSET)
-      @projection = self.class.projection_class.new(context) unless Projection::UNSET.equal?(context)
+    def __place(paths, context = Projector::Inline::UNSET)
+      @projection = self.class.projector.new(context) unless Projector::Inline::UNSET.equal?(context)
       @runtime.place(paths)
       moved!
       self
@@ -1769,9 +1810,9 @@ module Sourced
     # @return [Set<Class>]
     def handled_commands = self.class.__command_set
 
-    # Whether an active state accepts +command+. A command dispatched by an
-    # +after+ block is refused once the machine has left the state entry
-    # that started it, even if an active state accepts it.
+    # Whether an active state accepts +command+. A
+    # command dispatched by an +after+ block is refused once the machine has
+    # left the state entry that started it, even if an active state accepts it.
     #
     # {Sourced.handle!} raises {Sourced::CommandNotHandledError} when it doesn't,
     # appending nothing; in background workers the command is acked with no events.
@@ -1895,19 +1936,18 @@ module Sourced
           tree = self.class.tree
           message.payload.exited.each do |path|
             left = tree.node_at(path, message)
-            left.exits.each { |blk| instance_exec(context, message, &blk) }
+            left.exits.each { |action| run_action(action, message, "#{left.path} exit") }
             left.invokes.each { |spec| stop_children(spec.machine, at: left.path) }
           end
           entered = message.payload.entered.map { |path| tree.node_at(path, message) }
           entered.each do |node|
-            node.entries.each { |blk| instance_exec(context, message, &blk) }
+            node.entries.each { |action| run_action(action, message, "#{node.path} entry") }
             start_timers(node, message)
           end
           entered.flat_map(&:stops).uniq.each { |child| stop_children(child, at: nil) }
         end
 
-        method_name = self.class.reaction_handlers[message.to_message.class]
-        method_name ? Array(send(method_name, context, message)).compact : EMPTY_ARRAY
+        __run_reaction(message)
       end
     end
 
@@ -2008,7 +2048,7 @@ module Sourced
     # The projections of our parts, built from our context: their +evolve+
     # blocks apply to the same object as ours.
     def __region_projections
-      @__region_projections ||= self.class.__region_projection_classes.map { |klass| klass.new(projection.context) }
+      @__region_projections ||= self.class.__region_projectors.map { |klass| klass.new(projection.context) }
     end
 
     # The first active state with a passing +always+ moves on.
@@ -2180,6 +2220,20 @@ module Sourced
       !root.initial? && !root.final?
     end
 
+    # Run an +entry+, +exit+ or +after+ action, holding what it dispatches to its outputs.
+    # @param action [Action, StaticAfter, ComputedAfter]
+    # @return [Array<Dispatcher>] what it dispatched
+    def run_action(action, transition, label)
+      __checking_outputs(action.outputs, label) do
+        if action.block
+          instance_exec(context, transition, &action.block)
+        else
+          action.outputs.messages.each { |message_class| dispatch message_class }
+        end
+        EMPTY_ARRAY # its block's return value isn't appended
+      end
+    end
+
     # Timers for a state entry the machine has already left would only be
     # stale when delivered, so they aren't started.
     def start_timers(node, transition)
@@ -2187,19 +2241,7 @@ module Sourced
 
       node.afters.each do |timer|
         delivered_at = transition.created_at + timer_seconds(node, timer)
-        started = @__reaction_dispatchers.size
-        if timer.block
-          instance_exec(context, transition, &timer.block)
-        else
-          timer.commands.each { |command| dispatch command }
-        end
-        @__reaction_dispatchers.drop(started).each do |dispatcher|
-          dispatched = dispatcher.message.class
-          unless timer.commands.include?(dispatched)
-            raise TimerError, "#{self.class}: #{node.path}'s after(#{timer.label}) dispatched #{dispatched}, " \
-                              "but declares #{timer.commands.join(' | ')}"
-          end
-
+        run_action(timer, transition, "#{node.path} after(#{timer.label})").each do |dispatcher|
           dispatcher.at(delivered_at).with_metadata(ENTERED_BY => transition.id, ENTERED_AT => node.path)
         end
       end

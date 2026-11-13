@@ -58,17 +58,17 @@ class GWTTestDecider < Sourced::Decider
     context[:bound] = true
   end
 
-  command GWTTestMessages::BindDevice do |context, cmd|
+  command GWTTestMessages::BindDevice => GWTTestMessages::DeviceBound do |context, cmd|
     raise 'Not found' unless context[:exists]
     raise 'Already bound' if context[:bound]
     event GWTTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
-  command GWTTestMessages::NoopCommand do |_context, _cmd|
+  command GWTTestMessages::NoopCommand => nil do |_context, _cmd|
     # intentionally produces no events
   end
 
-  reaction GWTTestMessages::DeviceBound do |_context, evt|
+  reaction GWTTestMessages::DeviceBound => GWTTestMessages::NotifyBound do |_context, evt|
     GWTTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
   end
 
@@ -92,7 +92,7 @@ class GWTTestSimpleDecider < Sourced::Decider
     context[:exists] = true
   end
 
-  command GWTTestMessages::BindDevice do |context, cmd|
+  command GWTTestMessages::BindDevice => GWTTestMessages::DeviceBound do |context, cmd|
     raise 'Not found' unless context[:exists]
     event GWTTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
@@ -148,7 +148,7 @@ class GWTTestEventSourcedProjector < Sourced::Projector::EventSourced
   end
 end
 
-class GWTTestProjection < Sourced::Projection
+class GWTTestInlineProjector < Sourced::Projector::Inline
   context do
     { list_id: nil, items: [] }
   end
@@ -333,7 +333,7 @@ RSpec.describe Sourced::Testing::RSpec do
       expect {
         with_reactor(GWTTestStateStoredProjector, list_id: 'L1')
           .when(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-      }.to raise_error(ArgumentError, /projector.*given/)
+      }.to raise_error(ArgumentError, /is a projector.*given/)
     end
 
     it 'then! runs each hook once, with or without a block' do
@@ -405,9 +405,9 @@ RSpec.describe Sourced::Testing::RSpec do
 
   end
 
-  describe 'Projection' do
+  describe 'Projector' do
     it 'evolves given messages and yields the context' do
-      with_reactor(GWTTestProjection)
+      with_reactor(GWTTestInlineProjector)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .and(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Pear')
         .and(GWTTestMessages::ItemArchived, list_id: 'L1', name: 'Apple')
@@ -415,23 +415,23 @@ RSpec.describe Sourced::Testing::RSpec do
     end
 
     it 'yields no messages' do
-      with_reactor(GWTTestProjection)
+      with_reactor(GWTTestInlineProjector)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .then { |r| expect([r.pairs, r.messages]).to eq([[], []]) }
     end
 
     it 'accepts then! and an empty expectation' do
-      with_reactor(GWTTestProjection)
+      with_reactor(GWTTestInlineProjector)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .then! { |r| expect(r.context[:items]).to eq(['Apple']) }
 
-      with_reactor(GWTTestProjection)
+      with_reactor(GWTTestInlineProjector)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
         .then(Sourced::Testing::RSpec::NONE)
     end
 
     it 'asserts errors raised while evolving' do
-      with_reactor(GWTTestProjection)
+      with_reactor(GWTTestInlineProjector)
         .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: '')
         .then(ArgumentError, 'no blanks')
     end
@@ -450,21 +450,21 @@ RSpec.describe Sourced::Testing::RSpec do
         .then { |r| expect(r.context).to eq(2) }
     end
 
-    it 'refuses partition values: a projection takes none' do
-      expect { with_reactor(GWTTestProjection, list_id: 'L1') }
+    it 'refuses partition values: an inline projector takes none' do
+      expect { with_reactor(GWTTestInlineProjector, list_id: 'L1') }
         .to raise_error(ArgumentError, /takes no partition values/)
     end
 
-    it 'refuses when: a projection consumes events that already exist' do
+    it 'refuses when: an inline projector consumes events that already exist' do
       expect {
-        with_reactor(GWTTestProjection)
+        with_reactor(GWTTestInlineProjector)
           .when(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
-      }.to raise_error(ArgumentError, /projection.*given/)
+      }.to raise_error(ArgumentError, /is an inline projector.*given/)
     end
 
-    it 'refuses expected messages: a projection produces none' do
+    it 'refuses expected messages: an inline projector produces none' do
       expect {
-        with_reactor(GWTTestProjection)
+        with_reactor(GWTTestInlineProjector)
           .given(GWTTestMessages::ItemAdded, list_id: 'L1', name: 'Apple')
           .then(GWTTestMessages::ItemArchived, list_id: 'L1', name: 'Apple')
       }.to raise_error(ArgumentError, /produces no messages/)

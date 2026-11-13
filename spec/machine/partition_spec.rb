@@ -34,7 +34,7 @@ module MachinePartitionTest
       end
 
       state Open do
-        entry { |_context, _evt| dispatch Notify }
+        entry(Notify) { |_context, _evt| dispatch Notify }
         command Close => Closed
       end
 
@@ -44,7 +44,7 @@ module MachinePartitionTest
     initial { command PlaceOrder => Placed }
     state(Placed) { region :notes, NoteMachine }
 
-    reaction(NoteMachine::NoteAdded) { |_context, _evt| dispatch Acknowledge }
+    reaction(NoteMachine::NoteAdded => Acknowledge) { |_context, _evt| dispatch Acknowledge }
   end
 
   class LineMachine < Sourced::Machine

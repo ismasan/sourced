@@ -7,11 +7,11 @@ Sourced is a Ruby library for aggregateless, stream-less event sourcing. Events 
 ## Core Concepts
 
 - **No streams or aggregates** — all messages share a single append-only log with auto-increment positions.
-- **Partitioning by attributes** — reactors declare which payload attributes define their consistency boundary (e.g. `partition_by :course_id`). The store uses these to build query conditions and claim work.
+- **Partitioning by attributes** — reactors declare which payload attributes define their consistency boundary (e.g. `partition_by :course_id`). The store uses these to build the selectors it reads and to claim work.
 - **Decide → Evolve → React** — reactors handle commands, evolve context from history, and react to events.
 - **Optimistic concurrency** — reads return a `ConsistencyGuard` that detects conflicting writes at append time.
 
-A student enrols in a course from a form, a projector keeps the course roster, and an automation notifies the student:
+A student enrols in a course from a form, a read model keeps the course roster, and an automation notifies the student:
 
 ```mermaid
 eventmodeling
@@ -53,7 +53,7 @@ data StudentNotified {
 }
 ```
 
-In Sourced, a [Decider](#deciders) handles `EnrolStudent` and appends `StudentEnrolled` to the log, a [Projector](#projectors) evolves `CourseRoster` from it, and the projector's [reaction](#reactions) dispatches `NotifyStudent`, which another reactor handles in turn.
+In Sourced, a [Decider](#deciders) handles `EnrolStudent` and appends `StudentEnrolled` to the log, a [projector](#projectors) evolves the `CourseRoster` read model from it, and the projector's [reaction](#reactions) dispatches `NotifyStudent`, which another reactor handles in turn.
 
 ## Messages
 
@@ -91,7 +91,7 @@ end
 event = CourseScheduled.new(payload: { starts_on: Date.new(2026, 1, 2), ... })
 store.append(event)
 
-messages, = store.read(CourseScheduled.to_conditions(course_id: 'c1'))
+messages, = store.read(Sourced::Selector[CourseScheduled].by(:course_id).bind(course_id: 'c1'))
 messages.first.payload.starts_on   # => #<Date 2026-01-02>
 ```
 
@@ -125,23 +125,46 @@ cmd = CreateCourse.new(payload: { course_id: 'c1', course_name: 'Algebra' })
 position = store.append(cmd)  # returns the assigned position
 ```
 
-### Reading with query conditions
+### Reading with selectors
+
+A `Sourced::Selector` describes what to read: message types, the partition keys
+that scope them, and the values bound to those keys. A message of one of the
+types is selected when every one of the keys it carries (in its payload or tags)
+has the bound value, so a message carrying only some of the keys is read into
+every partition sharing them.
 
 ```ruby
-# Build conditions for a specific course
-conditions = CourseCreated.to_conditions(course_id: 'c1')
-# => [QueryCondition('courses.created', attrs: { course_id: 'c1' })]
+# The messages for course c1
+selector = Sourced::Selector[CourseCreated, StudentEnrolled].by(:course_id).bind(course_id: 'c1')
 
-# Read matching messages
-result = store.read(conditions)
+result = store.read(selector)
 result.messages  # => [PositionedMessage, ...]
 result.guard     # => ConsistencyGuard (for optimistic concurrency)
 ```
 
+Selectors are frozen values and compose with `+`, which reads what either side
+selects, even with different keys. One read and one guard cover them all:
+
+```ruby
+selector = Sourced::Selector[CourseCreated].by(:course_id) +
+           Sourced::Selector[UserRegistered].by(:user_id)
+
+store.read(selector.bind(course_id: 'c1', user_id: 'u1'))
+```
+
+`bind` ignores values for keys a selector doesn't have, and can be called in
+steps. `by` and `Selector[]` also take values, scoping and binding in one go:
+`Sourced::Selector[CourseCreated, StudentEnrolled, course_id: 'c1']` is
+`Sourced::Selector[CourseCreated, StudentEnrolled].by(course_id: 'c1')`, which is
+the first example's `.by(:course_id).bind(course_id: 'c1')`. Reading a selector with a key that has no value raises
+`Sourced::Selector::UnboundKeyError`: to read every value of a key, leave it
+out of `by`. A selector without keys (`Sourced::Selector[CourseCreated]`) reads
+every message of its types.
+
 ### Optimistic concurrency
 
 ```ruby
-result = store.read(conditions)
+result = store.read(selector)
 
 # ... later, append with conflict detection
 store.append(new_events, guard: result.guard)
@@ -164,20 +187,9 @@ store.update_schedule!  # => number of messages promoted
 
 There is no separate scheduling method — appending a future-dated message *is* scheduling it. In a reaction handler, `dispatch(Cmd, ...).at(time)` produces a future-dated message, so the same `append` pipeline schedules it — see [Reactions](#reactions).
 
-### Partition reads
-
-`read_partition` uses AND semantics — a message is included only when every partition attribute it declares matches the given value.
-
-```ruby
-result = store.read_partition(
-  { course_id: 'c1' },
-  handled_types: ['courses.created', 'courses.enrolled']
-)
-```
-
 ### Browsing the global log
 
-`read_all` paginates the entire message log, without requiring query conditions or partition attributes. It returns a `ReadAllResult` with `messages` and `last_position` (the current max position in the store), so clients know whether more pages exist.
+`read_all` paginates the entire message log, or only what a selector selects (`store.read_all(Sourced::Selector[CourseCreated], limit: 20)`). It returns a `ReadAllResult` with `messages` and `last_position` (the current max position in the store), so clients know whether more pages exist.
 
 ```ruby
 # First page (default limit: 50, ascending order)
@@ -228,7 +240,7 @@ store.read_all(limit: 20).to_enum.lazy.select { |m|
 Sourced provides four reactor base classes that share the same lifecycle (claim → evolve → handle → append → ack) and the same consumer-group machinery:
 
 - [Deciders](#deciders) — handle commands, enforce invariants, produce events
-- [Projectors](#projectors) — build read models by consuming events
+- [Projectors](#projectors) — build read models by consuming events, and persist them
 - [Durable workflows](#durable-workflows) — imperative orchestrations whose steps are memoised across re-entries
 - [Machines](#machines) — statecharts: commands accepted per state, parallel regions, timers and child machines
 
@@ -250,13 +262,13 @@ class CourseDecider < Sourced::Decider
 
   # Evolve context from events (rebuilds history).
   # Evolve blocks run in the reactor's projection, not the reactor itself:
-  # see Projections below.
+  # see Projectors below.
   evolve CourseCreated do |context, _event|
     context[:name_taken] = true
   end
 
   # Command handler — enforce invariants, then produce events
-  command CreateCourse do |context, cmd|
+  command CreateCourse => CourseCreated do |context, cmd|
     raise "Course '#{cmd.payload.course_name}' already exists" if context[:name_taken]
 
     event CourseCreated,
@@ -265,6 +277,89 @@ class CourseDecider < Sourced::Decider
   end
 end
 ```
+
+A command declares what its handler may emit: `command Cmd => Event`, a union (`=> Created | Rejected`), and `| nil` when it may emit nothing. Emitting anything else raises `Sourced::Decider::UndeclaredEventError`, as does emitting nothing without `| nil`.
+
+```ruby
+command AddItem => ItemAdded | ItemRejected do |context, cmd|
+  if context[:closed]
+    event ItemRejected, cart_id: cmd.payload.cart_id
+  else
+    event ItemAdded, cart_id: cmd.payload.cart_id, sku: cmd.payload.sku
+  end
+end
+```
+
+#### Reading history through a selector
+
+A Decider can read its history through a [Selector](#reading-with-selectors) instead of an inline projector: its handlers then get the partition's messages of the selector's types, in order.
+
+```ruby
+class Carts < Sourced::Decider
+  partition_by :cart_id
+
+  evolve Sourced::Selector[CartStarted, ItemAdded, CartCheckedOut]
+
+  command AddItem => ItemAdded do |history, cmd|
+    event ItemAdded, cart_id: cmd.payload.cart_id, sku: cmd.payload.sku
+  end
+end
+```
+
+#### Asserting history
+
+`Sourced::Assertion` builds quick predicates over a list of messages, by type, for a handler to check the history it got and emit a domain error event when a rule doesn't hold. `Assertion[...]` takes the built-ins, all of which must hold:
+
+| | holds when the history |
+|---|---|
+| `Assertion[A, B]` | includes A and B |
+| `Assertion[A..]` | starts with A |
+| `Assertion[..A]` | ends with A |
+| `Assertion[A.., ..B]` | starts with A and ends with B |
+| `Assertion[]` | is empty |
+
+A range with both ends, or an exclusive one (`A...`), raises `ArgumentError`; Ruby can't build `A..B` for two event classes anyway.
+
+`+` is *and*, `-` is *and not*, `|` is *or* and `~` is *not*. The built-ins are also named: `is_empty`, `includes(T)`, `excludes(T)`, `starts_with(T)` and `ends_with(T)`, and all but `is_empty` chain as *and*: `Assertion.includes(A).includes(B).ends_with(C)`. `holds?(history)` evaluates one, and so does `===`, for `case` / `when`.
+
+```ruby
+Open = Sourced::Assertion[CartStarted] - Sourced::Assertion[..CartCheckedOut] # not checked out, or reopened since
+
+class Carts < Sourced::Decider
+  partition_by :cart_id
+
+  evolve Sourced::Selector[CartStarted, ItemAdded, CartCheckedOut, CartReopened]
+
+  command AddItem => ItemAdded | ItemRejected do |history, cmd|
+    next event(ItemRejected, cart_id: cmd.payload.cart_id, reason: 'cart not open') unless Open === history
+
+    event ItemAdded, cart_id: cmd.payload.cart_id, sku: cmd.payload.sku
+  end
+end
+```
+
+The rejection is a declared output, so it's in the log for other reactors to react to, and in the Topology. An assertion takes an Array of messages (a selector source's context), and raises `ArgumentError` for anything else, ex. an inline projector's context. It isn't a source: `evolve` takes selectors and projectors only.
+
+#### Single-command decisions
+
+For a boundary of its own per command, `Sourced::Decider(source, Command => outputs) { }` builds a Decider that decides just that command. Its consumer group is the command's type, its partition keys are the source selector's (chain `.partition_by(...)` for a source without keys), and the block is its handler:
+
+```ruby
+AddItem = Sourced::Decider(
+  Sourced::Selector[CartStarted, ItemAdded, CartCheckedOut].by(:cart_id),
+  AddItemToCart => ItemAdded
+) do |history, cmd|
+  event ItemAdded, cart_id: cmd.payload.cart_id, sku: cmd.payload.sku
+end
+
+Reserve = Sourced::Decider(StockProjector, ReserveStock => StockReserved | ReservationRejected) do |stock, cmd|
+  # ...
+end.partition_by(:sku)
+
+Sourced.register(AddItem)
+```
+
+Without a source, the block takes only the command (as any one-argument `command` block does), and without partition keys the decision is an id-partitioned queue.
 
 #### Partition schemas and reactor messages
 
@@ -288,7 +383,7 @@ end
 
 Hand-defined messages work too, and every handled message is checked against the schema when the reactor is registered with a Router (and by the GWT test helpers), raising `Sourced::DefinitionError`:
 
-- commands, reactions and a machine's `on` events must declare every key, as required attributes;
+- commands, reactions, a Decider's declared outputs and a machine's `on` events must declare every key, as required attributes;
 - other evolved events must declare at least one key: the store reads a message into a partition when the keys it declares match, so events carrying some of the keys are fine;
 - each declared key must be the schema's type or a stricter one (`String.present` passes for `String`; `Integer` doesn't);
 - at least one handled message must declare every key, or no partition is ever created.
@@ -308,7 +403,13 @@ else
 end
 ```
 
-Raises `Sourced::ConcurrentAppendError` on conflicts, or `RuntimeError` on domain invariant violations (e.g. "Course already exists"). For a reactor registered with `Sourced.register` whose consumer group isn't in the store yet (Sourced not started, or a `store:` it isn't registered in), it raises `Sourced::ConsumerGroupNotRegisteredError` without appending the command: silently not advancing the offset would have a worker decide the command again later.
+Raises `Sourced::ConcurrentAppendError` on conflicts, or `RuntimeError` on domain invariant violations (e.g. "Course already exists"). For a reactor registered with `Sourced.register` whose consumer group isn't in the store yet (Sourced not started, or a `store:` it isn't registered in), it raises `Sourced::ConsumerGroupNotRegisteredError` without appending the command: silently not advancing the offset would have a worker decide the command again later. A command the decider doesn't handle in its current state raises `Sourced::CommandNotHandledError` without appending anything.
+
+`Decider.call(history, command)` decides without a store, for specs and scripts: it evolves `history` (messages, or a `ReadResult`), refuses as `handle!` does, and returns the events.
+
+```ruby
+Carts.call([cart_started], AddItem.new(payload: { cart_id: 'c1', sku: 'apple' })) # => [ItemAdded]
+```
 
 #### CommandContext
 
@@ -424,14 +525,14 @@ decider.context  # => { name_taken: true }
 
 ### Projectors
 
-Projectors consume events to build read models. Two flavours:
+`Sourced::Projector` reactors build read models: for each partition they claim, they run their [inline projector](#inline-projectors) over the claimed events and persist the projection. Two flavours:
 
 #### EventSourced projector
 
 Rebuilds context from full history on every batch (like deciders).
 
 ```ruby
-class CourseCatalogProjector < Sourced::Projector::EventSourced
+class CourseCatalogReadModel < Sourced::Projector::EventSourced
   partition_by :course_id
 
   context do
@@ -468,7 +569,7 @@ end
 Loads persisted context via the `load_context` block, evolves only new (unprocessed) messages on top of it. `load_context` runs in the reactor's scope, so it can read your storage; when it returns `nil`, the `context` block builds the initial context.
 
 ```ruby
-class MyProjector < Sourced::Projector::StateStored
+class MyReadModel < Sourced::Projector::StateStored
   partition_by :course_id
 
   context do
@@ -576,16 +677,16 @@ def execute
 end
 ```
 
-### Projections
+### Inline projectors
 
-A reactor's `context` and `evolve` declarations define a `Sourced::Projection`: a plain in-memory object that builds context from events and knows nothing about stores, partitions, commands or side effects. Evolve blocks run in the projection's scope, so they can't reach the reactor's methods or collaborators, such as a database.
+A reactor's `context` and `evolve` declarations define an inline projector, a `Sourced::Projector::Inline` subclass: the definition of how a projection, a plain in-memory object, builds context from events. An inline projector knows nothing about stores, partitions, commands or side effects. A reactor's inline projector is `Reactor.projector`, and its built-up projection is `reactor.projection`. Evolve blocks run in the projection's scope, so they can't reach the reactor's methods or collaborators, such as a database.
 
 A projection's context is a function of the events it evolves. The `context` block takes no arguments: identifying values, such as a cart's id, come from the events, so set them in `evolve` blocks, or once in a `before_evolve` block (below) when any of several events can come first. A `context` block that declares arguments (`context { |values| ... }`, even `|_|`) raises `ArgumentError` when the class loads.
 
-A projection can also be its own class, unit-tested on its own and shared between reactors:
+An inline projector can also be its own class, unit-tested on its own and shared between reactors:
 
 ```ruby
-class CartProjection < Sourced::Projection
+class CartProjector < Sourced::Projector::Inline
   context do
     { cart_id: nil, items: [] }
   end
@@ -596,7 +697,7 @@ class CartProjection < Sourced::Projection
   end
 end
 
-projection = CartProjection.new
+projection = CartProjector.new
 projection.evolve([item_added])
 projection.context # => { cart_id: 'c1', items: ['i1'] }
 ```
@@ -606,7 +707,7 @@ Handlers (`evolve`, `reaction`, `command`) are declared for a message class, or 
 `before_evolve` runs a block before the handler of every event the projection handles (events without a handler are still skipped), for changes common to all of them:
 
 ```ruby
-class CartProjection < Sourced::Projection
+class CartProjector < Sourced::Projector::Inline
   context { { cart_id: nil, items: [], updated_at: nil } }
 
   before_evolve do |context, event|
@@ -625,14 +726,14 @@ Reactors adopt it with `evolve`:
 ```ruby
 class Carts < Sourced::Decider
   partition_by :cart_id
-  evolve CartProjection
+  evolve CartProjector
 
-  # More evolve blocks extend this reactor's copy, not CartProjection itself
+  # More evolve blocks extend this reactor's copy, not CartProjector itself
   evolve CartClosed do |context, _event|
     context[:closed] = true
   end
 
-  command AddItem do |context, cmd|
+  command AddItem => ItemAdded do |context, cmd|
     raise 'Cart closed' if context[:closed]
     event ItemAdded, cart_id: cmd.payload.cart_id, item_id: cmd.payload.item_id
   end
@@ -640,22 +741,22 @@ end
 
 class CartListing < Sourced::Projector::EventSourced
   partition_by :cart_id
-  evolve CartProjection
+  evolve CartProjector
 
   sync { |context:, **| MyDB.upsert(context) }
 end
 ```
 
-Each reactor works on a projection subclass of its own, so its extra `evolve` blocks never leak into the shared class or other reactors. `evolve SomeProjection` must come before the reactor's own `context` / `evolve` declarations.
+Each reactor works on an inline projector subclass of its own, so its extra `evolve` blocks never leak into the shared class or other reactors. `evolve SomeProjector` must come before the reactor's own `context` / `evolve` declarations.
 
-`Sourced.load` reads a projection's context straight from the log, with no projector or read model. The attributes you pass are its partition:
+`Sourced.load` reads a projection's context straight from the log, without a reactor. The attributes you pass are its partition:
 
 ```ruby
-cart, read_result = Sourced.load(CartProjection, cart_id: 'c1')
+cart, read_result = Sourced.load(CartProjector, cart_id: 'c1')
 cart.context # => { cart_id: 'c1', items: [...] }
 ```
 
-This reads the partition's whole history on every call, so it suits small partitions; persist larger read models with a projector.
+This reads the partition's whole history on every call, so it suits small partitions; persist larger ones with a [projector](#projectors).
 
 ### Machines
 
@@ -747,7 +848,7 @@ class OrderMachine < Sourced::Machine
       state Paying do
         # When a payment transitions to Paying
         # it immediately dispatches the ChargeCard command (handling not shown here)
-        entry { |order, _evt| dispatch ChargeCard, card: order.card }  # order_id filled in
+        entry(ChargeCard) { |order, _evt| dispatch ChargeCard, card: order.card }  # order_id filled in
 
         # Schedule an ExpirePayment command to be dispatched in one hour
         # If by the time the command arrives the machine has moved on from the Paying state
@@ -812,7 +913,7 @@ Command forms:
 | `command Cmd => A | nil do … end` | required | to `A` if the block calls `to(A)`, else stays put |
 | `command Cmd do … end` | required | data only: same as `=> nil` |
 
-Targets can be unions (`A | B | nil`, `nil` last) or Arrays (`[:a, :b, nil]`). `to` picks the target; `event` only appends data events, and raises for a state class. A handler moves the machine at most once, to a declared target, or raises `Sourced::Machine::TransitionError`. Partition keys are filled in on every event a machine emits and every message it dispatches.
+Targets can be unions (`A | B | nil`, `nil` last) or Arrays (`[:a, :b, nil]`). `to` picks the target; `event` only appends data events, and raises for a state class. A handler moves the machine at most once, to a declared target, or raises `Sourced::Machine::TransitionError`. Partition keys are filled in on every event a machine emits and every message it dispatches. An event it appends must declare every partition key, else `Sourced::Machine::InvalidEventError`: one declaring only some would be read into every partition sharing them. Dispatched messages aren't checked, since they're for other reactors' partitions.
 
 How it runs:
 
@@ -833,8 +934,8 @@ How it runs:
   ```
 - **`on Event => Target`** moves the machine when it claims an event another reactor appended, while the state is active. It's decided like a command (same targets, `to`, `nil`; the block gets `(context, event)`), under the claim's guard, and never while replaying. The event must carry the machine's partition keys.
 - **Eventless steps** (`always`, mounted parts' `on_final`, `done`, `children_done`, starting states' children) run after every decision until none applies, each appending its own state event, all in the decision's transaction. Guards see the context with the decision's events applied.
-- **Entry and exit actions are reactions**, run when the machine claims the state event, after the deciding transaction committed, and see the latest state. Leaving a state exits its active regions first. A transient state's entry actions run after the machine has already left it. They're skipped while replaying.
-- **`after(delay => Command)`** dispatches commands delivered that long after the state was entered. The delay is seconds (`after(3600 => Expire)`) or a duration string, as `Message#at` takes it (`'1h'`, `'1h30m'`, `'P1D'`), up to weeks: months and years vary in length, so `after('1M' => …)` raises `Machine::DefinitionError` (give days, `'30d'`). The delay can also be computed from the context when the timer starts (as a block gets it), by a `#call(context)` returning seconds or a duration string: `after ->(ctx) { ctx[:sos_delay] } => SendSOS`. It's read once per entry (a later change to the context doesn't reschedule), and anything else it returns, `nil` included, raises `Machine::TimerError` in the reaction; `to_h` shows it as `delay: nil, computed: <its name>`. The commands are declared, so they show in the topology and `to_h`, and some state must accept them. Without a block, each is dispatched with the partition keys as its payload (so it can't require more). A block dispatches them itself, and only the declared ones (`Machine::TimerError`): `after('1h' => Remind | Expire) { |order, _evt| dispatch Remind, email: order[:email] }`. A timer command delivered after the machine has left that state entry is refused, even where the command is accepted, so timers never need cancelling.
+- **Entry and exit actions are reactions**, run when the machine claims the state event, after the deciding transaction committed, and see the latest state. A transient state's entry actions run after the machine has already left it. They're skipped while replaying. See [Entry and exit actions](#entry-and-exit-actions).
+- **`after(delay => Command)`** dispatches commands delivered that long after the state was entered. The delay is seconds (`after(3600 => Expire)`) or a duration string, as `Message#at` takes it (`'1h'`, `'1h30m'`, `'P1D'`), up to weeks: months and years vary in length, so `after('1M' => …)` raises `Machine::DefinitionError` (give days, `'30d'`). The delay can also be computed from the context when the timer starts (as a block gets it), by a `#call(context)` returning seconds or a duration string: `after ->(ctx) { ctx[:sos_delay] } => SendSOS`. It's read once per entry (a later change to the context doesn't reschedule), and anything else it returns, `nil` included, raises `Machine::TimerError` in the reaction; `to_h` shows it as `delay: nil, computed: <its name>`. The commands are declared, so they show in the topology and `to_h`, and some state must accept them. Without a block, each is dispatched with the partition keys as its payload (so it can't require more). A block dispatches them itself: only the declared ones, and at least one unless it declares `| nil`, as entry and exit actions (else `React::UndeclaredMessageError`): `after('1h' => Remind | Expire) { |order, _evt| dispatch Remind, email: order[:email] }`, `after('1h' => Remind | nil) { … }`. A timer command delivered after the machine has left that state entry is refused, even where the command is accepted, so timers never need cancelling.
 - **History**: `Working.history` targets a state with regions at the states its regions were last in (`Working.history(deep: true)` restores everything below it); regions with no history take their default entry. History is rebuilt from `exited` on replay.
 - `machine` (in handlers) is a read-only view of the configuration: `machine.value`, `machine.paths`, `machine.in?(OrderMachine::Paying)`, `machine.in?(:payment, OrderMachine::Paying)`, `machine.in?('placed.payment.paying')`, `machine.current(:payment)`, `machine.entered_by`, `machine.children(LineItemMachine)`.
 - `available_commands` lists the command classes the active states accept (and a child's `Stop` while it applies), as a frozen Set kept until the machine next transitions. Ex. to show the actions a UI offers:
@@ -846,6 +947,34 @@ How it runs:
   ```
 
   It lists what the states declare: a handler can still reject a command by raising or stay put with `| nil`, and a timer command is refused once its state entry is left (`handles_command?` checks that).
+
+#### Entry and exit actions
+
+A state's `entry` and `exit` blocks declare what they may dispatch, as reactions do: a message class, a union of them, `| nil` when the block may dispatch nothing, or `nil` for one that never dispatches. Each block gets the domain context and the state event being claimed: for `entry`, the event that entered the state, and for `exit`, the event of the move that left it.
+
+```ruby
+state Paid do
+  entry SendReceipt do |order, entered|            # entered: the OrderMachine::Paid event
+    dispatch SendReceipt, total: order.total
+  end
+
+  entry NotifyWarehouse                            # no block: dispatched with the partition keys
+
+  exit ReleaseStock | nil do |order, _left_by|     # the event of the state it moved to
+    dispatch ReleaseStock, skus: order.skus if order.skus.any?
+  end
+end
+```
+
+- **Checked one by one.** Dispatching a message the action doesn't declare, or nothing without `| nil`, raises `Sourced::React::UndeclaredMessageError`. A block that uses braces needs its declaration in parentheses, as in `entry(SendReceipt) { … }`, because `entry SendReceipt { … }` passes the block to `SendReceipt`. `entry` or `exit` without a declaration raises `Sourced::Machine::DefinitionError`.
+- **Without a block,** `entry Notify` (or `exit Notify | Archive`) dispatches each declared message with the partition keys as its payload, so `validate!` raises for one that requires more. `| nil` and `nil` need a block, since they leave the choice to it.
+- **Order.** For each state event it claims, the machine runs, in order:
+  1. the exit actions of the states the move left, innermost first, also stopping the children those states started;
+  2. the entry actions and timers of the states it entered, outermost first: a state's `entry` actions in declaration order, then its `after` timers;
+  3. any `reaction` to the event.
+
+  A state can declare several `entry` and `exit` actions. The initial position is never entered, so it takes no entry actions or timers.
+- **A machine's `reaction`s** ([Reactions](#reactions)) can react to its own state events (`reaction OrderMachine::Paid => NotifyAccounts do … end`) or to any event it claims. They run after the actions, and each one is held to its own declaration: what entry, exit and timer actions dispatch isn't counted against a reaction.
 
 **Read-only configurations.** A machine's configuration is the paths of its active states: JSON-native strings, outermost first, that can be stored and read back later without loading the machine's history. `machine.paths` returns them from an instance, and `OrderMachine.configuration(paths)` reads them back against the machine's definition:
 
@@ -862,7 +991,7 @@ config.in?(OrderMachine::Paying) # => true
 
 An instance's `machine` is a configuration too, read live: it changes as the instance decides. `configuration(paths)` is detached, and the same at any point.
 
-A projection can keep the paths without loading the machine at all: each state event's `exited` and `entered` paths update them, ex. for every record a listing shows:
+A projection can keep the paths without loading the machine at all. Each state event's `exited` and `entered` paths update them, so the projection evolves `OrderMachine.transition_classes`: every event class a move of the machine appends, including its parts' states and, for a child machine, `Started`. For example, for every record a listing shows:
 
 ```ruby
 class OrderListing < Sourced::Projector::StateStored
@@ -938,7 +1067,7 @@ class LineItemMachine < Sourced::Machine
   end
 
   started Added do # where the parent starts it
-    entry { |line, _evt| dispatch ReserveStock }
+    entry(ReserveStock) { |line, _evt| dispatch ReserveStock }
     command StockReserved => Reserved
   end
   
@@ -982,7 +1111,7 @@ class OrderMachine < Sourced::Machine
 end
 ```
 
-`stopped` generates three messages, under `<prefix>.runtime.child`: `Started` (appended by the parent's `start`, entering the child's `started` state; `start`'s attributes beyond the child's keys are its `input`), `Finished` (appended when the child reaches a root final), and the `Stop` command, accepted from any started, non-final position. The constants `Started`, `Finished` and `Stop` are reserved for them. `stopped` places a root final, taking a block as `final` does (`stopped Dropped do entry { … } end`); without one, it marks the root final already placed under that handle, or places a bare one. The parent evolves only its children's `Started` and `Finished`: `machine.children(LineItemMachine)` returns `ChildRef`s (`keys`, `state`, `final?`), and `machine.children` all of them, by machine.
+`stopped` generates three messages, under `<prefix>.runtime.child`: `Started` (appended by the parent's `start`, entering the child's `started` state; `start`'s attributes beyond the child's keys are its `input`), `Finished` (appended when the child reaches a root final), and the `Stop` command, accepted from any started, non-final position. The constants `Started`, `Finished` and `Stop` are reserved for them. `stopped` places a root final, taking a block as `final` does (`stopped Dropped do entry(Notify) { … } end`); without one, it marks the root final already placed under that handle, or places a bare one. The parent evolves only its children's `Started` and `Finished`: `machine.children(LineItemMachine)` returns `ChildRef`s (`keys`, `state`, `final?`), and `machine.children` all of them, by machine.
 
 **Started by handlers.** A handler (`command`, `on` or `children_done`) declares the children it may start with `starts:`, a machine or a union of them built with `|` (`nil` last), and starts them with `start Child, **payload` in its block. Starts are counted after the block runs: too few, or starting a machine `starts:` doesn't name, raises `Sourced::Machine::StartError`.
 
@@ -1083,7 +1212,7 @@ The part class goes wherever a state does: handler targets (`=> Working`, `=> Wo
 Rules for parts:
 
 - **Messages and states**: `Command(:name)` / `Event(:name)` in a part are typed `<owner prefix>.<part prefix>.<name>` and declare the owner's partition keys first; its states are typed `<owner prefix>.runtime.<part prefix>.<name>`. The part prefix defaults to the class name relative to the owner, underscored, without a trailing `Machine` (`OrderMachine::PaymentMachine` → `payment`); `part_of OrderMachine, prefix: 'billing'` sets another. A part declared `part_of` another part belongs to that part's owner, its prefix nested under the enclosing part's. The owner appends a part's state classes as they are (`OrderMachine::PaymentMachine::Captured === evt`, `OrderMachine::Working::State === evt`). A part can be mounted any number of times in its owner's chart, sharing its classes (paths tell the placements apart), but each machine places a part's compound state once.
-- **Context**: a part's `evolve(Event) { |context, evt| … }` blocks run on the owner's context, and its handlers receive it. An event is evolved by one block, across the owner and its parts.
+- **Context**: a part's `evolve(Event) { |context, evt| … }` blocks run on the owner's context, and its handlers receive it. An event is evolved by one block, across the owner and its parts. So an owner whose parts declare `evolve` blocks needs an inline projector context; one that evolves through a selector source (`evolve SomeSelector`) raises `Sourced::Machine::DefinitionError`.
 - **Escalation**: a part's targets are its own states. It reaches the owner through its root finals, which `on_final` maps onto the owner's states, in the deciding decision: the `on_final:` keyword for a region, `on_final Final => Target` in a compound state's block (one line per mapping, or one Hash). Unmapped finals leave the part there. When a decision both makes a region reach a mapped final and completes the owner's `done` join, `on_final` wins. (`done` is the state's own completion, and `start … on_done` a child finishing; `on_final` is an exit from the part.)
 - **Handlers run on the owner's instance**: `event`, `dispatch` and `machine` are the owner's. A part's states may have entry, exit and `after` actions, and may start children.
 - **Not allowed**: `partition_by`, `consumer_group`, `context`, reactions, sync blocks and `stopped` (they're the owner's); mounting a part outside its owner's chart, starting it as a child, or registering it. Mounting a `Sourced::Machine` raises `Sourced::Machine::DefinitionError`: reuse a machine with its own partition as a child.
@@ -1104,7 +1233,7 @@ end
 
 ### Reactions
 
-Both deciders and projectors can react to events to produce follow-up messages, enabling workflow orchestration. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
+Both deciders and projectors can react to events to produce follow-up messages, enabling workflow orchestration. A reaction declares what it may append, as a command handler does: `reaction Event => Command`, `=> Command | Other`, with `| nil` when it may append nothing. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
 
 ```ruby
 class EnrolmentDecider < Sourced::Decider
@@ -1113,35 +1242,37 @@ class EnrolmentDecider < Sourced::Decider
   # ... evolve and command handlers ...
 
   # Dispatch a follow-up message by class
-  reaction StudentEnrolled do |context, event|
+  reaction StudentEnrolled => NotifyStudent do |context, event|
     dispatch(NotifyStudent, student_id: event.payload.student_id)
   end
 
   # Dispatch multiple messages from one block
-  reaction OrderPlaced do |_context, event|
+  reaction OrderPlaced => ReserveInventory | ChargePayment do |_context, event|
     dispatch(ReserveInventory, order_id: event.payload.order_id)
     dispatch(ChargePayment,    order_id: event.payload.order_id)
   end
 
   # Chain .with_metadata and .at for metadata/delay
-  reaction StudentEnrolled do |_context, event|
+  reaction StudentEnrolled => SendReminder do |_context, event|
     dispatch(SendReminder, student_id: event.payload.student_id)
       .with_metadata(channel: 'email')
       .at(Time.now + 300)
   end
 
-  # React to several message types with one block
-  reaction StudentEnrolled, StudentRejoined do |_context, event|
-    dispatch(NotifyStudent, student_id: event.payload.student_id)
+  # React to several message types with one block; it may dispatch nothing
+  reaction StudentEnrolled | StudentRejoined => NotifyStudent | nil do |context, event|
+    dispatch(NotifyStudent, student_id: event.payload.student_id) if context[:notify]
   end
 
   # Wildcard: react to every evolve type without an explicit handler.
   # Useful for side-channel pipelines (audit logs, outbox, etc.).
-  reaction do |_context, event|
+  reaction any: ForwardToOutbox do |_context, event|
     dispatch(ForwardToOutbox, event_id: event.id)
   end
 end
 ```
+
+Appending a message the reaction doesn't declare, by `dispatch` or by returning it, raises `Sourced::React::UndeclaredMessageError`, as does appending nothing without `| nil`; both it and `Sourced::Decider::UndeclaredEventError` are `Sourced::UndeclaredOutputError`s. `reaction_outputs` holds each reaction's declaration (`dispatched_messages` their union), which [Topology](#topology-introspection) draws. Reaction outputs aren't held to the reactor's partition keys: they're mostly commands for other reactors. A bare `reaction Event`, without a block, only subscribes to it.
 
 `dispatch` takes a message class and its payload. The returned `Dispatcher` supports:
 
@@ -1189,7 +1320,7 @@ Multiple `sync` and `after_sync` blocks can be registered; they execute in regis
 ```ruby
 Sourced.register(CourseDecider)
 Sourced.register(EnrolmentDecider)
-Sourced.register(CourseCatalogProjector)
+Sourced.register(CourseCatalogReadModel)
 ```
 
 Each reactor becomes a component of Sourced's configuration, under `reactors` and keyed by its `group_id` with dots replaced by underscores (`Shop::CourseDecider` → `reactors.shop_course_decider`); the router and `Sourced.topology` depend on all of them. Register reactors before Sourced boots: registering once it's booted raises, and so does registering two different reactors with the same `group_id` (registering the same one again is a no-op). Their consumer groups are registered with the store when Sourced starts.
@@ -1198,7 +1329,7 @@ Anything that responds to `to_sourced_reactors` registers what that returns inst
 
 ```ruby
 module Booking
-  def self.to_sourced_reactors = [BookingMachine, BookingsProjector]
+  def self.to_sourced_reactors = [BookingMachine, BookingsReadModel]
 end
 
 Sourced.register(Booking)
@@ -1206,12 +1337,13 @@ Sourced.register(Booking)
 
 ## The reactor protocol
 
-Deciders, projectors and workflows are conveniences over a small duck-typed protocol. **Any class that responds to `handled_messages` and `handle_claim` is a reactor** — it can be registered and driven by the runtime without subclassing or even depending on Sourced. This is how a message handler from another framework can run on Sourced as a durable queue.
+Deciders, projectors and workflows are conveniences over a small duck-typed protocol. **Any class that responds to `claim_selector` and `handle_claim` is a reactor** — it can be registered and driven by the runtime without subclassing or even depending on Sourced. This is how a message handler from another framework can run on Sourced as a durable queue.
 
 ```ruby
 class MyWorker
-  # The message types this reactor claims.
-  def self.handled_messages = [DoThing]
+  # What this reactor claims, and is woken for: DoThing messages, partitioned
+  # by their order_id. The runtime knows reactors only by their selectors.
+  def self.claim_selector = Sourced::Selector[DoThing].by(:order_id)
 
   # Process a claimed batch. Return one [signals, source_message] pair per
   # message: `signals` is one action signal (or a list of them), and
@@ -1238,7 +1370,7 @@ A **signal** is inert data — a plain `Hash` or a `Sourced::Actions` value obje
 | `{ type: :after_sync, work: -> { } }` | run a side effect after commit |
 | `{ type: :ack, delete: false }` | acknowledge the source message; `delete: true` removes it (see below) |
 
-The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name, normalized), `group_label` (the class name), `partition_keys` (`[]`), `exclusive?` (`false`), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate.
+The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name, normalized), `group_label` (the class name), `exclusive?` (`false`), `history_selector` (the history it reads, bound to each claimed partition: none), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate. Built-in reactors derive their `claim_selector` from their DSL: a Decider claims its commands and the events it reacts to, a projector what it evolves from and reacts to, both by their `partition_by` keys.
 
 ## Delete-on-ack queues
 
@@ -1246,17 +1378,17 @@ By default the log is append-only and each reactor keeps its own offset cursor, 
 
 Two ingredients:
 
-- **`exclusive`** — declares the reactor the *sole owner* of its handled message types. The Router raises if another registered reactor also handles one of them, so nothing is left consuming a message the queue deletes. It is a routing marker only — it does not itself delete anything.
+- **`exclusive`** — declares the reactor the *sole owner* of the message types it claims. The Router raises if another registered reactor also claims one of them, so nothing is left consuming a message the queue deletes. It is a routing marker only — it does not itself delete anything.
 - **`delete: true`** on an `:ack` signal — the *only* thing that deletes the source message. Deletion is never implied by partitioning or exclusivity, so forgetting a `partition_by` can never silently drop a message.
 
-An `exclusive` reactor with **no `partition_by`** is partitioned by `Message#id` — one partition per message: a concurrent, unordered queue (the id is indexed under the reserved key `__id`). Id-partitioning is only allowed for `exclusive` reactors; non-exclusive ones must declare a real `partition_by`.
+An `exclusive` reactor claiming **by `__id`** is partitioned by `Message#id` — one partition per message: a concurrent, unordered queue (the id is indexed under the reserved key `__id`). A `Sourced::Consumer` with no `partition_by` claims that way. Id-partitioning is only allowed for `exclusive` reactors; non-exclusive ones must claim by real partition keys.
 
 ```ruby
-# A concurrent, delete-on-ack job queue. No partition_by → one partition per
+# A concurrent, delete-on-ack job queue. Claimed by __id → one partition per
 # message, so jobs run in parallel and unordered. No Sourced base class needed.
 class Jobs
-  def self.exclusive?      = true
-  def self.handled_messages = [RunJob]
+  def self.exclusive?     = true
+  def self.claim_selector = Sourced::Selector[RunJob].by_message_id
 
   def self.handle_claim(claim)
     claim.messages.map do |cmd|
@@ -1681,12 +1813,12 @@ offsets, total_count = store.read_offsets(group_id: 'course_decider')
 
 ## Topology introspection
 
-`Sourced.topology` analyses all registered reactors (deciders, projectors and machines) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for projectors). Each node has at least `type`, `id`, `name`, `group_id`, `group_label` (its reactor's class name, for display), and depending on kind, `consumes` / `produces` / `schema`.
+`Sourced.topology` analyses all registered reactors (deciders, projectors and machines) and returns a flat array of node structs describing the message-flow graph. Nodes are `CommandNode`, `EventNode`, `AutomationNode` (for reactions), and `ReadModelNode` (for projectors' read models). Each node has at least `type`, `id`, `name`, `group_id`, `group_label` (its reactor's class name, for display), and depending on kind, `consumes` / `produces` / `schema`.
 
 ```ruby
 Sourced.register(CourseDecider)
 Sourced.register(EnrolmentDecider)
-Sourced.register(CourseCatalogProjector)
+Sourced.register(CourseCatalogReadModel)
 
 Sourced.topology.each do |node|
   puts "#{node.type}: #{node.name}"
@@ -1695,7 +1827,7 @@ end
 # event: CourseApp::CourseCreated
 # command: CourseApp::EnrolStudent
 # automation: reaction(CourseCreated)
-# readmodel: CourseApp::CourseCatalogProjector
+# readmodel: CourseApp::CourseCatalogReadModel
 # ...
 ```
 
@@ -1708,7 +1840,7 @@ Sourced.topology
   .map(&:name)
 ```
 
-`produces` / `consumes` are resolved statically by parsing reactor source with Prism, so they are only populated when the `prism` gem is available. A machine's declared targets are known without parsing: a command node always lists its target states' types (and those its `always` steps lead to) and the `Started` of the children its `starts:` declares, and adds the events its block emits when Prism is available. Machine entry and `after` actions (`actions(<path>)`), exit actions (`exit(<path>)`, consuming the transitions that can leave the state), `on` transitions, joins, and starting or stopping children appear as automations.
+Command and automation nodes for Deciders' and projectors' handlers produce what each `command Cmd => A | B` and `reaction Evt => C | D` declares, with no parsing of their blocks. A machine's command node lists its target states' types (and those its `always` steps lead to), its `Finished` when a target is a root final, and the `Started` of the children its `starts:` declares. A machine's data events (`event` in a handler) only change its context, so they aren't edges. Machine entry and `after` actions (`actions(<path>)`, producing what they declare), exit actions (`exit(<path>)`, consuming the transitions that can leave the state), `on` transitions, joins, and starting or stopping children appear as automations.
 
 For a machine's own shape, `MyMachine.to_mermaid` returns a Mermaid `stateDiagram-v2`: states, regions as concurrent sections, compound states as nested states, and transitions labelled with the commands, events (`on PaymentCaptured`), joins (`done`, `always [guard]`) that take them, `/ starts LineItemMachine` for the children a handler starts, and `(H)` / `(H*)` for history targets. Data-only handlers that start children, and the children a state `stops`, go in a note on the state.
 
@@ -1735,7 +1867,7 @@ result.reactor.to_h                  # status after the command, including the e
 
 ## Testing
 
-Sourced ships with RSpec helpers for Given-When-Then testing of deciders and projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
+Sourced ships with RSpec helpers for Given-When-Then testing of deciders, machines, projectors and inline projectors. The helpers call `handle_batch` directly — no store, router, or consumer group setup needed.
 
 ```ruby
 require 'sourced/testing/rspec'
@@ -1825,25 +1957,25 @@ Projectors use `.given` (events to evolve) and `.then` with a block that receive
 #### StateStored
 
 ```ruby
-RSpec.describe ItemProjector do
+RSpec.describe ItemReadModel do
   include Sourced::Testing::RSpec
 
   it 'builds context from events' do
-    with_reactor(ItemProjector, list_id: 'L1')
+    with_reactor(ItemReadModel, list_id: 'L1')
       .given(ItemAdded, list_id: 'L1', name: 'Apple')
       .given(ItemAdded, list_id: 'L1', name: 'Banana')
       .then { |r| expect(r.context[:items]).to eq(['Apple', 'Banana']) }
   end
 
   it 'handles removal' do
-    with_reactor(ItemProjector, list_id: 'L1')
+    with_reactor(ItemReadModel, list_id: 'L1')
       .given(ItemAdded, list_id: 'L1', name: 'Apple')
       .and(ItemArchived, list_id: 'L1', name: 'Apple')
       .then { |r| expect(r.context[:items]).to eq([]) }
   end
 
   it 'runs sync actions with then!' do
-    with_reactor(ItemProjector, list_id: 'L1')
+    with_reactor(ItemReadModel, list_id: 'L1')
       .given(ItemAdded, list_id: 'L1', name: 'Apple')
       .then! { |r| expect(r.context[:synced]).to be true }
   end
@@ -1855,11 +1987,11 @@ end
 Same API — the helper creates an instance, evolves from all given messages, and yields the result:
 
 ```ruby
-RSpec.describe CatalogProjector do
+RSpec.describe CatalogReadModel do
   include Sourced::Testing::RSpec
 
   it 'rebuilds context from full history' do
-    with_reactor(CatalogProjector, course_id: 'c1')
+    with_reactor(CatalogReadModel, course_id: 'c1')
       .given(CourseCreated, course_id: 'c1', course_name: 'Algebra')
       .given(StudentEnrolled, course_id: 'c1', student_id: 's1')
       .then { |r| expect(r.context[:students]).to eq(['s1']) }
@@ -1867,22 +1999,39 @@ RSpec.describe CatalogProjector do
 end
 ```
 
-### Testing projections
+### Testing inline projectors
 
-A bare `Sourced::Projection` takes the same `.given` / `.then` chain: the helper builds it, evolves the given messages, and yields the result. Projections take no partition attributes and produce no messages, so passing attributes, `.when` and expected messages raise; an exception class asserts an error raised while evolving.
+A bare `Sourced::Projector::Inline` takes the same `.given` / `.then` chain: the helper builds it, evolves the given messages, and yields the result. Inline projectors take no partition attributes and produce no messages, so passing attributes, `.when` and expected messages raise; an exception class asserts an error raised while evolving.
 
 ```ruby
-RSpec.describe CartProjection do
+RSpec.describe CartProjector do
   include Sourced::Testing::RSpec
 
   it 'collects added items' do
-    with_reactor(CartProjection)
+    with_reactor(CartProjector)
       .given(ItemAdded, cart_id: 'c1', item_id: 'i1')
       .given(ItemAdded, cart_id: 'c1', item_id: 'i2')
       .then { |r| expect(r.context[:items]).to eq(%w[i1 i2]) }
   end
 end
 ```
+
+### Testing machines
+
+`with_reactor` takes a machine as it does a decider. `.given` is the history, `.when` a command (or another reactor's event that an `on` takes), and `.then` the state and data events it appends.
+
+`.at(State)` puts the machine at a state first. It appends to the history the state event that a move there would append from where the history leaves it, entering the state's ancestors and default sub-states, with `trigger: 'at'`. It's setup, like `given`, so no entry actions, timers or eventless steps run. Chain several `.at` calls to position parallel regions, mixed with `.given`. For a part mounted more than once, pass the path of the placement you mean, as in `.at('booking.backup.holding')`. `#history` returns the history so far.
+
+```ruby
+with_reactor(OrderMachine, order_id: 'o1')
+  .at(OrderMachine::Paying)                  # placed, payment at paying
+  .when(ExpirePayment, order_id: 'o1')
+  .then(OrderMachine::Cancelled, order_id: 'o1', trigger: ExpirePayment.type,
+                                 source: 'placed.payment.paying', target: 'cancelled',
+                                 exited: %w[placed.payment.paying placed], entered: %w[cancelled])
+```
+
+To test entry and exit actions, timers and reactions, pass the claimed state event to `.when`. The machine reacts to it as a worker would, and `.then` lists what it dispatches.
 
 ### Message matching
 
@@ -1912,7 +2061,7 @@ See `examples/app/` for a complete Sinatra application with:
 | `store` | `Sourced::Config::StoreInterface` | `Sourced::Store` over `db`. Sets itself up on start |
 | `store.table_prefix` | `String` (an identifier) | `'sourced'`: tables are named `sourced_messages`, ... |
 | `store.install_tables` | `Boolean` | `false`: whether the store creates its tables on start. Apps use a [migration](#database-setup) |
-| `reactors.*` | `#handled_messages`, `#handle_claim` | one per `Sourced.register` |
+| `reactors.*` | `#claim_selector`, `#handle_claim` | one per `Sourced.register` |
 | `router` | `Sourced::Router` | routes to `reactors.*`, using `store` and `error_strategy` |
 | `topology` | `Array` | the message-flow graph of `reactors.*`, built on each read |
 | `workers.count` | `Integer` (0 or more) | `2` |

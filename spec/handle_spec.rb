@@ -23,7 +23,7 @@ module HandleTestMessages
     attribute :device_id, String
   end
 
-  # Handled by HandleTestReactingDecider: a command has one handler.
+  # Handled by HandleTestReactingDecider.
   RegisterDevice = Sourced::Command.define('handle_test.register_device') do
     attribute :device_id, String
     attribute :name, String
@@ -48,12 +48,12 @@ class HandleTestDecider < Sourced::Decider
     context[:active] = true
   end
 
-  command HandleTestMessages::CreateDevice do |context, cmd|
+  command HandleTestMessages::CreateDevice => HandleTestMessages::DeviceCreated do |context, cmd|
     raise 'Already exists' if context[:exists]
     event HandleTestMessages::DeviceCreated, device_id: cmd.payload.device_id, name: cmd.payload.name
   end
 
-  command HandleTestMessages::ActivateDevice do |context, cmd|
+  command HandleTestMessages::ActivateDevice => HandleTestMessages::DeviceActivated do |context, cmd|
     raise 'Not found' unless context[:exists]
     raise 'Already active' if context[:active]
     event HandleTestMessages::DeviceActivated, device_id: cmd.payload.device_id
@@ -69,8 +69,7 @@ module HandleUncheckedMessages
 end
 
 class HandleUncheckedReactor
-  def self.partition_keys = [:device_id]
-  def self.handled_messages = [HandleUncheckedMessages::AddNote]
+  def self.claim_selector = Sourced::Selector[HandleUncheckedMessages::AddNote].by(:device_id)
   def self.handle_claim(claim) = claim.messages.map { |m| [Sourced::Actions::OK, m] }
 
   def initialize(_values); end
@@ -116,7 +115,7 @@ class HandleMixedTestDecider < Sourced::Decider
     context[:touched] = true
   end
 
-  command HandleMixedTestMessages::AddNote do |context, cmd|
+  command HandleMixedTestMessages::AddNote => HandleMixedTestMessages::NotesCounted do |context, cmd|
     event HandleMixedTestMessages::NotesCounted,
           order_id: cmd.payload.order_id, tenant_id: cmd.payload.tenant_id, count: context[:notes].size + 1
   end
@@ -126,11 +125,11 @@ class HandleTestReactingDecider < Sourced::Decider
   partition_by :device_id
   consumer_group 'handle_test_reacting_decider'
 
-  command HandleTestMessages::RegisterDevice do |_context, cmd|
+  command HandleTestMessages::RegisterDevice => HandleTestMessages::DeviceCreated do |_context, cmd|
     event HandleTestMessages::DeviceCreated, device_id: cmd.payload.device_id, name: cmd.payload.name
   end
 
-  reaction HandleTestMessages::DeviceCreated do |_context, evt|
+  reaction HandleTestMessages::DeviceCreated => HandleTestMessages::NotifyCreated do |_context, evt|
     dispatch HandleTestMessages::NotifyCreated, device_id: evt.payload.device_id
   end
 end
@@ -334,7 +333,7 @@ RSpec.describe 'Sourced.handle!' do
 
       expect(store).to have_received(:append).with(
         anything,
-        guard: having_attributes(class: Sourced::ConsistencyGuard, query: an_instance_of(Sourced::PartitionQuery))
+        guard: having_attributes(class: Sourced::ConsistencyGuard, selector: an_instance_of(Sourced::Selector))
       )
     end
   end
@@ -371,7 +370,7 @@ RSpec.describe 'Sourced.handle!' do
     end
 
     it 'does not conflict with a concurrent append to another tenant' do
-      allow(store).to receive(:read_partition).and_wrap_original do |original, *args, **kwargs|
+      allow(store).to receive(:read).and_wrap_original do |original, *args, **kwargs|
         original.call(*args, **kwargs).tap { store.append(happened('concurrent', 't2')) }
       end
 
@@ -379,7 +378,7 @@ RSpec.describe 'Sourced.handle!' do
     end
 
     it 'conflicts with a concurrent append to its tenant' do
-      allow(store).to receive(:read_partition).and_wrap_original do |original, *args, **kwargs|
+      allow(store).to receive(:read).and_wrap_original do |original, *args, **kwargs|
         original.call(*args, **kwargs).tap { store.append(happened('concurrent', 't1')) }
       end
 
@@ -402,9 +401,28 @@ RSpec.describe 'Sourced.handle!' do
 
       nil while router.handle_next_for(HandleMixedTestDecider, worker_id: 'w-1')
 
-      counted = store.read(HandleMixedTestMessages::NotesCounted.to_conditions(order_id: '01', tenant_id: 't1')).messages
+      counted = store.read(Sourced::Selector[HandleMixedTestMessages::NotesCounted].by(:order_id, :tenant_id).bind(order_id: '01', tenant_id: 't1')).messages
       expect(counted.map { |e| e.payload.count }).to eq([3])
     end
+  end
+
+  it 'builds a reactor that reads no history with its partition values by key' do
+    reactor = Class.new do
+      class << self
+        attr_accessor :built_with
+      end
+      def self.group_id = 'handle_test.built_with'
+      def self.claim_selector = Sourced::Selector[HandleUncheckedMessages::AddNote].by(:user_id, :device_id)
+      def self.handle_claim(claim) = []
+
+      def initialize(values) = self.class.built_with = values
+      def handles_command?(_cmd) = true
+      def decide(_cmd) = []
+    end
+    command = HandleUncheckedMessages::AddNote.new(payload: { text: 'x' }).with_tags(user_id: 'u1', device_id: 'd1')
+
+    Sourced.handle!(reactor, command, store:)
+    expect(reactor.built_with).to eq(device_id: 'd1', user_id: 'u1')
   end
 
   it 'raises when a partition key is in neither the payload nor the tags, appending nothing' do

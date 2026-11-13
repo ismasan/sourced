@@ -12,13 +12,13 @@ module Sourced
       #
       # Works with any reactor that responds to the standard
       # <tt>handle_batch(partition_values, new_messages, history:, replaying:)</tt>
-      # contract (Deciders, Projectors, DurableWorkflows), and with projections:
+      # contract (Deciders, Projectors, DurableWorkflows), and with inline projectors:
       # classes with no +handle_batch+ whose instances +evolve+ messages, built
-      # with +new+ (ex. {Sourced::Projection}).
+      # with +new+ (ex. {Sourced::Projector::Inline} subclasses).
       #
-      # @param reactor_class [Class] a reactor or projection class
+      # @param reactor_class [Class] a reactor or inline projector
       # @param partition_attrs [Hash] partition key-value pairs (e.g. device_id: 'd1');
-      #   none for a projection, which takes no partition values
+      #   none for an inline projector, which takes no partition values
       # @return [GWT]
       #
       # @example Decider
@@ -32,8 +32,8 @@ module Sourced
       #     .given(ItemAdded, list_id: 'L1', name: 'Apple')
       #     .then { |r| expect(r.context[:items]).to eq(['Apple']) }
       #
-      # @example Projection — evolve given messages, assert context via block
-      #   with_reactor(CartProjection)
+      # @example Inline projector — evolve given messages, assert context via block
+      #   with_reactor(CartProjector)
       #     .given(ItemAdded, cart_id: 'c1', item_id: 'i1')
       #     .then { |r| expect(r.context[:items]).to eq(['i1']) }
       def with_reactor(reactor_class, **partition_attrs)
@@ -89,11 +89,11 @@ module Sourced
       class GWT
         def initialize(reactor_class, **partition_attrs)
           @reactor_class = reactor_class
-          if projection? && partition_attrs.any?
-            raise ArgumentError, "#{reactor_class} is a projection: it takes no partition values"
+          if inline_projector? && partition_attrs.any?
+            raise ArgumentError, "#{reactor_class} is an inline projector: it takes no partition values"
           end
           # What Router registration would reject fails the spec too.
-          Sourced::PartitionSchema.check!(reactor_class)
+          reactor_class.validate! if reactor_class.respond_to?(:validate!)
 
           @partition_values = partition_attrs
           @given_messages = []
@@ -154,19 +154,19 @@ module Sourced
         # The batch of new messages to process via +handle_batch+. Can be
         # called multiple times to supply several messages.
         #
-        # Not for projectors or projections: they consume events that already
+        # Not for projectors or inline projectors: they consume events that already
         # exist, so the events they process go to {#given}, and there is
         # nothing to dispatch. See {#run_handle_batch}.
         #
         # @param klass_or_instance [Class, Sourced::Message]
         # @param payload [Hash]
         # @return [self]
-        # @raise [ArgumentError] on a projector or projection
+        # @raise [ArgumentError] on a projector or inline projector
         def when(klass_or_instance = nil, **payload)
           raise 'test case already asserted' if @asserted
-          if projector? || projection?
+          if projector? || inline_projector?
             raise ArgumentError,
-                  "#{@reactor_class} is a #{projection? ? 'projection' : 'projector'}: " \
+                  "#{@reactor_class} is #{inline_projector? ? 'an inline projector' : 'a projector'}: " \
                   'it consumes events that already exist, ' \
                   'so pass them to `given` and assert with `then`/`then!`'
           end
@@ -219,9 +219,9 @@ module Sourced
             return self
           end
 
-          if projection? && !build_expected(*expected).empty?
+          if inline_projector? && !build_expected(*expected).empty?
             raise ArgumentError,
-                  "#{@reactor_class} is a projection: it produces no messages, " \
+                  "#{@reactor_class} is an inline projector: it produces no messages, " \
                   'so assert its context with a `then` block'
           end
 
@@ -267,15 +267,15 @@ module Sourced
         # for a projector the {#given} messages are both, and its hooks see
         # them as +messages:+ exactly as they would in production.
         #
-        # A projection has no +handle_batch+: it evolves the {#given}
+        # An inline projector has no +handle_batch+: it evolves the {#given}
         # messages and produces nothing, so evolve errors still surface here.
         def run_handle_batch
-          if projection?
+          if inline_projector?
             @reactor_class.new.evolve(@given_messages)
             return []
           end
 
-          guard = Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 0)
+          guard = Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 0)
           history = Sourced::ReadResult.new(messages: @given_messages, guard: guard)
           @reactor_class.handle_batch(
             @partition_values,
@@ -315,9 +315,9 @@ module Sourced
           end
         end
 
-        # A projection has no +handle_batch+ to drive: the helper builds it with
-        # +new+ and evolves the {#given} messages.
-        def projection?
+        # An inline projector has no +handle_batch+ to drive: the helper builds a
+        # projection with +new+ and evolves the {#given} messages.
+        def inline_projector?
           !@reactor_class.respond_to?(:handle_batch) && @reactor_class.method_defined?(:evolve)
         end
 
@@ -348,7 +348,7 @@ module Sourced
         # blocks against this instance so their context mutations are visible,
         # handing them the messages the +pairs+ would have appended.
         def compute_context(pairs, sync: false)
-          instance = projection? ? @reactor_class.new : @reactor_class.new(@partition_values)
+          instance = inline_projector? ? @reactor_class.new : @reactor_class.new(@partition_values)
           return nil unless instance.respond_to?(:evolve) && instance.respond_to?(:context)
 
           messages = @given_messages + @when_messages

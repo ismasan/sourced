@@ -18,7 +18,7 @@ end
 class ConfigTestDecider < Sourced::Decider
   partition_by :thing_id
 
-  command ConfigTestMessages::AddThing do |_context, cmd|
+  command ConfigTestMessages::AddThing => ConfigTestMessages::ThingAdded do |_context, cmd|
     event ConfigTestMessages::ThingAdded, thing_id: cmd.payload.thing_id
   end
 end
@@ -490,7 +490,7 @@ RSpec.describe Sourced::Config do
       lookalike = Class.new do
         def self.name = 'ConfigTestLookalike'
         def self.group_id = 'config_test_reactor'
-        def self.handled_messages = []
+        def self.claim_selector = Sourced::Selector::NONE
         def self.handle_claim(_claim) = []
       end
 
@@ -531,7 +531,7 @@ RSpec.describe Sourced::Config do
       lookalike = Class.new do
         def self.name = 'ConfigTestLookalike'
         def self.group_id = 'config_test_other'
-        def self.handled_messages = []
+        def self.claim_selector = Sourced::Selector::NONE
         def self.handle_claim(_claim) = []
       end
 
@@ -685,7 +685,7 @@ RSpec.describe 'Sourced.config' do
 
     it 'uses the configured store when store: is not provided' do
       Sourced.start!
-      expect(Sourced.store).to receive(:read_partition).and_call_original
+      expect(Sourced.store).to receive(:read).and_call_original
 
       instance, read_result = Sourced.load(decider_class, thing_id: 'abc')
 

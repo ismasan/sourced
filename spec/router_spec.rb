@@ -89,10 +89,10 @@ class RouterTestMixedKeysReactor
   consumer_group 'router_test_mixed_keys'
 
   def self.handled_messages = [RouterTestMessages::OrderOpened, RouterTestMessages::SomethingHappened]
-  def self.handled_messages_for_evolve = [RouterTestMessages::SomethingHappened, RouterTestMessages::OrderTouched]
+  def self.history_selector = Sourced::Selector[RouterTestMessages::SomethingHappened, RouterTestMessages::OrderTouched].by(:order_id, :tenant_id)
 end
 
-# Overrides context_for with conditions: only SomethingHappened declaring order_id.
+# Declares a narrower selector: only SomethingHappened, by order_id.
 class RouterTestCustomHistoryReactor
   extend Sourced::Consumer
   extend RouterTestHistoryRecorder
@@ -102,10 +102,10 @@ class RouterTestCustomHistoryReactor
 
   def self.handled_messages = [RouterTestMessages::OrderOpened, RouterTestMessages::SomethingHappened]
 
-  def self.context_for(attrs) = RouterTestMessages::SomethingHappened.to_conditions(order_id: attrs[:order_id])
+  def self.history_selector = Sourced::Selector[RouterTestMessages::SomethingHappened].by(:order_id)
 end
 
-# Id-partitioned queue reactor with evolve types: gets no history.
+# Id-partitioned queue reactor: gets no history.
 class RouterTestQueueHistoryReactor
   extend Sourced::Consumer
   extend RouterTestHistoryRecorder
@@ -114,7 +114,6 @@ class RouterTestQueueHistoryReactor
   exclusive
 
   def self.handled_messages = [RouterTestMessages::OrderTouched]
-  def self.handled_messages_for_evolve = [RouterTestMessages::OrderTouched]
 end
 
 # Test decider for router specs
@@ -132,7 +131,7 @@ class RouterTestDecider < Sourced::Decider
     context[:bound] = true
   end
 
-  command RouterTestMessages::BindDevice do |context, cmd|
+  command RouterTestMessages::BindDevice => RouterTestMessages::DeviceBound do |context, cmd|
     raise 'Not found' unless context[:exists]
     raise 'Already bound' if context[:bound]
     event RouterTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
@@ -142,12 +141,12 @@ class RouterTestDecider < Sourced::Decider
     context[:name] = evt.payload.name
   end
 
-  command RouterTestMessages::RenameDevice do |context, cmd|
+  command RouterTestMessages::RenameDevice => RouterTestMessages::DeviceRenamed do |context, cmd|
     raise 'Not found' unless context[:exists]
     event RouterTestMessages::DeviceRenamed, device_id: cmd.payload.device_id, name: cmd.payload.name
   end
 
-  reaction RouterTestMessages::DeviceBound do |_context, evt|
+  reaction RouterTestMessages::DeviceBound => RouterTestMessages::NotifyBound do |_context, evt|
     RouterTestMessages::NotifyBound.new(payload: { device_id: evt.payload.device_id })
   end
 end
@@ -244,7 +243,7 @@ class FakeCommander
 
   # no .group_id → Router defaults it to the class name, normalized ('fake_commander')
   def self.exclusive? = true
-  def self.handled_messages = HANDLED
+  def self.claim_selector = Sourced::Selector[*HANDLED].by_message_id
 
   def self.handle_claim(claim)
     claim.messages.map do |cmd|
@@ -269,7 +268,7 @@ end
 # Same as FakeCommander but NOT exclusive — invalid (no partition_keys).
 class NonExclusiveCommander
   def self.group_id = 'non_exclusive_commander'
-  def self.handled_messages = [RouterQueueMessages::DoThing]
+  def self.claim_selector = Sourced::Selector[RouterQueueMessages::DoThing].by_message_id
   def self.handle_claim(claim) = []
 end
 
@@ -312,8 +311,7 @@ RSpec.describe Sourced::Router do
       twin = Class.new do
         def self.name = 'RouterTestTwin'
         def self.group_id = 'router_test_decider'
-        def self.partition_keys = [:device_id]
-        def self.handled_messages = [RouterTestMessages::DeviceRegistered]
+        def self.claim_selector = Sourced::Selector[RouterTestMessages::DeviceRegistered].by(:device_id)
         def self.handle_claim(_claim) = []
       end
 
@@ -326,8 +324,7 @@ RSpec.describe Sourced::Router do
       odd = Class.new do
         def self.name = 'RouterTestOdd'
         def self.group_id = 'Router::Odd'
-        def self.partition_keys = [:device_id]
-        def self.handled_messages = [RouterTestMessages::DeviceRegistered]
+        def self.claim_selector = Sourced::Selector[RouterTestMessages::DeviceRegistered].by(:device_id)
         def self.handle_claim(_claim) = []
       end
     
@@ -344,10 +341,9 @@ RSpec.describe Sourced::Router do
 
     it 'validates exclusive ownership' do
       rival = Class.new do
-        def self.handled_messages = RouterTestQueueWorker.handled_messages
+        def self.claim_selector = RouterTestQueueWorker.claim_selector
         def self.handle_claim(_claim) = []
         def self.group_id = 'rival'
-        def self.partition_keys = [:queue_id]
       end
 
       expect {
@@ -355,60 +351,43 @@ RSpec.describe Sourced::Router do
       }.to raise_error(ArgumentError, /exclusive reactor/)
     end
 
-    it 'raises for two deciders handling the same command type' do
+    it 'allows two reactors handling the same command type' do
       rival = Class.new(Sourced::Decider) do
         consumer_group 'rival'
         partition_by :device_id
-        command(RouterTestMessages::BindDevice) { |_context, _cmd| nil }
+        command(RouterTestMessages::BindDevice => nil) { |_context, _cmd| nil }
       end
 
       expect {
         Sourced::Router.new(store:, reactors: [RouterTestDecider, rival])
-      }.to raise_error(ArgumentError, /and RouterTestDecider both handle: router_test.bind_device/)
-    end
-
-    it 'raises for two duck-typed reactors declaring the same handled command' do
-      handler = ->(group) {
-        Class.new do
-          define_singleton_method(:group_id) { group }
-          def self.partition_keys = [:n]
-          def self.handled_messages = [RouterQueueMessages::DoThing]
-          def self.handled_commands = [RouterQueueMessages::DoThing]
-          def self.handle_claim(_claim) = []
-        end
-      }
-
-      expect {
-        Sourced::Router.new(store:, reactors: [handler.('one'), handler.('two')])
-      }.to raise_error(ArgumentError, /both handle: router_q.do_thing/)
-    end
-
-    it 'allows two reactors handling the same messages when they declare no handled_commands' do
-      handler = ->(group) {
-        Class.new do
-          define_singleton_method(:group_id) { group }
-          def self.partition_keys = [:n]
-          def self.handled_messages = [RouterQueueMessages::DoThing]
-          def self.handle_claim(_claim) = []
-        end
-      }
-
-      expect {
-        Sourced::Router.new(store:, reactors: [handler.('one'), handler.('two')])
       }.not_to raise_error
     end
 
-    it 'allows two reactors handling the same event types' do
-      listener = Class.new do
-        def self.group_id = 'listener'
-        def self.partition_keys = [:device_id]
-        def self.handled_messages = [RouterTestMessages::DeviceRegistered, RouterTestMessages::DeviceBound]
-        def self.handle_claim(_claim) = []
+    it "raises for a history selector keyed by what the claim selector doesn't partition by" do
+      reactor = Class.new do
+        def self.group_id = 'router_test_unbindable'
+        def self.claim_selector = Sourced::Selector[RouterTestMessages::DeviceRegistered].by(:device_id)
+        def self.history_selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id, :asset_id)
+        def self.handle_claim(_claim, history:) = []
       end
 
       expect {
-        Sourced::Router.new(store:, reactors: [RouterTestDecider, listener])
-      }.not_to raise_error
+        Sourced::Router.new(store:, reactors: [reactor])
+      }.to raise_error(Sourced::DefinitionError, /selector is scoped by asset_id, which its claim_selector \(device_id\) doesn't partition by/)
+    end
+
+    it 'checks history keys for a reactor with a partition_schema and no validate!' do
+      reactor = Class.new do
+        def self.group_id = 'router_test_schema_unbindable'
+        def self.partition_schema = Sourced::Types::Hash[device_id: Sourced::Types::String]
+        def self.claim_selector = Sourced::Selector[RouterTestMessages::DeviceRegistered].by(:device_id)
+        def self.history_selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id, :asset_id)
+        def self.handle_claim(_claim, history:) = []
+      end
+
+      expect {
+        Sourced::Router.new(store:, reactors: [reactor])
+      }.to raise_error(Sourced::DefinitionError, /scoped by asset_id/)
     end
   end
 
@@ -443,8 +422,7 @@ RSpec.describe Sourced::Router do
     let(:failing) do
       Class.new do
         def self.name = 'RouterTestFailing'
-        def self.handled_messages = [RouterTestMessages::DeviceRegistered]
-        def self.partition_keys = [:device_id]
+        def self.claim_selector = Sourced::Selector[RouterTestMessages::DeviceRegistered].by(:device_id)
         def self.handle_claim(_claim) = raise('boom')
       end
     end
@@ -483,15 +461,6 @@ RSpec.describe Sourced::Router do
       expect(router.reactors).to include(RouterTestDecider)
     end
 
-    it 'detects history: for decider, none for projector' do
-      router.register(RouterTestDecider)
-      router.register(RouterTestProjector)
-
-      # Decider needs history, projector does not
-      expect(router.instance_variable_get(:@needs_history)[RouterTestDecider]).to be true
-      expect(router.instance_variable_get(:@needs_history)[RouterTestProjector]).to be false
-    end
-
     it 'passes partition_keys to register_consumer_group' do
       router.register(RouterTestDecider)
 
@@ -524,8 +493,8 @@ RSpec.describe Sourced::Router do
       expect(result).to be true
 
       # DeviceBound event should have been appended to store
-      conds = RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
-      read_result = store.read(conds)
+      selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id).bind(device_id: 'd1')
+      read_result = store.read(selector)
       expect(read_result.messages.size).to eq(1)
       expect(read_result.messages.first).to be_a(RouterTestMessages::DeviceBound)
     end
@@ -543,9 +512,9 @@ RSpec.describe Sourced::Router do
       # Drain: the bound event's deferred reaction takes one more claim.
       5.times { break unless router.handle_next_for(RouterTestDecider) }
 
-      renamed = store.read(RouterTestMessages::DeviceRenamed.to_conditions(device_id: 'd1')).messages
+      renamed = store.read(Sourced::Selector[RouterTestMessages::DeviceRenamed].by(:device_id).bind(device_id: 'd1')).messages
       expect(renamed.map { |m| m.payload.name }).to eq(['Sensor A', 'Sensor B'])
-      bound = store.read(RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')).messages
+      bound = store.read(Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id).bind(device_id: 'd1')).messages
       expect(bound.size).to eq(1)
     end
 
@@ -584,8 +553,7 @@ RSpec.describe Sourced::Router do
       # Offset should be released (not advanced) — can re-claim
       claim = store.claim_next(
         'router_test_decider',
-        partition_by: ['device_id'],
-        handled_types: RouterTestDecider.handled_messages.map(&:type),
+        RouterTestDecider.claim_selector,
         worker_id: 'w-1'
       )
       expect(claim).not_to be_nil
@@ -801,8 +769,8 @@ RSpec.describe Sourced::Router do
       router.drain
 
       # Decider should have produced DeviceBound
-      conds = RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
-      read_result = store.read(conds)
+      selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id).bind(device_id: 'd1')
+      read_result = store.read(selector)
       expect(read_result.messages.size).to eq(1)
 
       # Projector should have processed DeviceRegistered and DeviceBound
@@ -826,8 +794,8 @@ RSpec.describe Sourced::Router do
       router.drain
 
       # Read the DeviceBound event
-      conds = RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
-      bound = store.read(conds).messages.find { |m| m.is_a?(RouterTestMessages::DeviceBound) }
+      selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id).bind(device_id: 'd1')
+      bound = store.read(selector).messages.find { |m| m.is_a?(RouterTestMessages::DeviceBound) }
 
       expect(bound).not_to be_nil
       expect(bound.causation_id).to eq(cmd.id)
@@ -844,12 +812,12 @@ RSpec.describe Sourced::Router do
       router.drain
 
       # Read the DeviceBound event (produced by command handler)
-      bound_conds = RouterTestMessages::DeviceBound.to_conditions(device_id: 'd1')
-      bound = store.read(bound_conds).messages.find { |m| m.is_a?(RouterTestMessages::DeviceBound) }
+      bound_selector = Sourced::Selector[RouterTestMessages::DeviceBound].by(:device_id).bind(device_id: 'd1')
+      bound = store.read(bound_selector).messages.find { |m| m.is_a?(RouterTestMessages::DeviceBound) }
 
       # Read the NotifyBound reaction message (produced by reaction handler)
-      notify_conds = RouterTestMessages::NotifyBound.to_conditions(device_id: 'd1')
-      notify = store.read(notify_conds).messages.find { |m| m.is_a?(RouterTestMessages::NotifyBound) }
+      notify_selector = Sourced::Selector[RouterTestMessages::NotifyBound].by(:device_id).bind(device_id: 'd1')
+      notify = store.read(notify_selector).messages.find { |m| m.is_a?(RouterTestMessages::NotifyBound) }
 
       expect(notify).not_to be_nil
       # Reaction is correlated with the event, not the command
@@ -981,7 +949,7 @@ RSpec.describe Sourced::Router do
       end
 
       it 'raises for an unregistered reactor class, even one whose group exists in the store' do
-        store.register_consumer_group(RouterTestQueueWorker.group_id, partition_by: ['queue_id'])
+        store.register_consumer_group(RouterTestQueueWorker.group_id, RouterTestQueueWorker.claim_selector)
 
         expect {
           router.stop_consumer_group(RouterTestQueueWorker)
@@ -1011,8 +979,8 @@ RSpec.describe Sourced::Router do
       router.drain
 
       # Audit message should have been appended
-      conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
-      audits = store.read(conds).messages
+      selector = Sourced::Selector[RouterTestMessages::DeviceAudited].by(:device_id).bind(device_id: 'd1')
+      audits = store.read(selector).messages
       expect(audits.size).to eq(1)
       expect(audits.first).to be_a(RouterTestMessages::DeviceAudited)
       expect(audits.first.payload.event_type).to eq('router_test.device.registered')
@@ -1024,8 +992,8 @@ RSpec.describe Sourced::Router do
 
       router.drain
 
-      conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
-      audit = store.read(conds).messages.first
+      selector = Sourced::Selector[RouterTestMessages::DeviceAudited].by(:device_id).bind(device_id: 'd1')
+      audit = store.read(selector).messages.first
 
       expect(audit.causation_id).to eq(reg.id)
       expect(audit.correlation_id).to eq(reg.correlation_id)
@@ -1037,15 +1005,15 @@ RSpec.describe Sourced::Router do
 
       router.drain
 
-      d1_conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
-      d2_conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd2')
+      d1_selector = Sourced::Selector[RouterTestMessages::DeviceAudited].by(:device_id).bind(device_id: 'd1')
+      d2_selector = Sourced::Selector[RouterTestMessages::DeviceAudited].by(:device_id).bind(device_id: 'd2')
 
-      expect(store.read(d1_conds).messages.size).to eq(1)
-      expect(store.read(d2_conds).messages.size).to eq(1)
+      expect(store.read(d1_selector).messages.size).to eq(1)
+      expect(store.read(d2_selector).messages.size).to eq(1)
     end
 
-    it 'context_for returns empty conditions (no evolve types)' do
-      expect(RouterTestAuditReactor.context_for(device_id: 'd1')).to eq([])
+    it 'has no history selector (no evolve types)' do
+      expect(RouterTestAuditReactor.history_selector).to eq(Sourced::Selector::NONE)
     end
 
     it 'works alongside deciders and projectors' do
@@ -1060,8 +1028,8 @@ RSpec.describe Sourced::Router do
       router.drain
 
       # Audit reactor sees DeviceRegistered and DeviceBound
-      conds = RouterTestMessages::DeviceAudited.to_conditions(device_id: 'd1')
-      audits = store.read(conds).messages
+      selector = Sourced::Selector[RouterTestMessages::DeviceAudited].by(:device_id).bind(device_id: 'd1')
+      audits = store.read(selector).messages
       types = audits.map { |m| m.payload.event_type }.sort
 
       expect(types).to eq([
@@ -1098,10 +1066,10 @@ RSpec.describe Sourced::Router do
       t1, t2 = RouterTestMixedKeysReactor.histories
       expect(notes(t1)).to eq(['a', :touched, 'c'])
       expect(notes(t2)).to eq(['b', :touched])
-      expect(t1.guard).to have_attributes(class: Sourced::ConsistencyGuard, query: an_instance_of(Sourced::PartitionQuery))
+      expect(t1.guard).to have_attributes(class: Sourced::ConsistencyGuard, selector: an_instance_of(Sourced::Selector))
     end
 
-    it 'reads custom conditions from a context_for override' do
+    it "reads a reactor's own selector" do
       RouterTestCustomHistoryReactor.histories.clear
       router.register(RouterTestCustomHistoryReactor)
 
@@ -1118,8 +1086,38 @@ RSpec.describe Sourced::Router do
       store.append(RouterTestMessages::OrderTouched.new(payload: { order_id: '01' }))
 
       expect(router.handle_next_for(RouterTestQueueHistoryReactor)).to be true
-      expect(RouterTestQueueHistoryReactor.context_for(__id: 'x')).to eq([])
+      expect(RouterTestQueueHistoryReactor.history_selector).to eq(Sourced::Selector::NONE)
       expect(RouterTestQueueHistoryReactor.histories.first.messages).to eq([])
+    end
+  end
+
+  describe 'claim selectors' do
+    it "defaults to the handled messages by the reactor's partition keys" do
+      expect(RouterTestDecider.claim_selector)
+        .to eq(Sourced::Selector[*RouterTestDecider.handled_messages].by(:device_id))
+    end
+
+    it 'defaults to partitions by message id without partition keys' do
+      expect(RouterTestQueueHistoryReactor.claim_selector)
+        .to eq(Sourced::Selector[*RouterTestQueueHistoryReactor.handled_messages].by_message_id)
+    end
+
+    it "claims with the reactor's own claim selector" do
+      reactor = Class.new do
+        extend Sourced::Consumer
+        consumer_group 'router_test_narrow_claims'
+        partition_by :device_id
+        def self.handled_messages = [RouterTestMessages::DeviceRegistered, RouterTestMessages::DeviceRenamed]
+        def self.claim_selector = Sourced::Selector[RouterTestMessages::DeviceRegistered].by(:device_id)
+        def self.handle_claim(claim) = claim.messages.map { |m| [Sourced::Actions::OK, m] }
+      end
+      router.register(reactor)
+
+      store.append(RouterTestMessages::DeviceRenamed.new(payload: { device_id: 'd1', name: 'B' }))
+      expect(router.handle_next_for(reactor)).to be false
+
+      store.append(RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'A' }))
+      expect(router.handle_next_for(reactor)).to be true
     end
   end
 
@@ -1159,7 +1157,7 @@ RSpec.describe Sourced::Router do
 
       router.handle_next_for(RouterTestQueueWorker)
 
-      remaining = store.read(RouterTestMessages::QueueJob.to_conditions(queue_id: 'q1')).messages
+      remaining = store.read(Sourced::Selector[RouterTestMessages::QueueJob].by(:queue_id).bind(queue_id: 'q1')).messages
       expect(remaining.map { |m| m.payload.name }).to eq(%w[fail c])
     end
 
@@ -1170,7 +1168,7 @@ RSpec.describe Sourced::Router do
 
       router.handle_next_for(RouterTestQueueWorker)
 
-      remaining = store.read(RouterTestMessages::QueueJob.to_conditions(queue_id: 'q1')).messages
+      remaining = store.read(Sourced::Selector[RouterTestMessages::QueueJob].by(:queue_id).bind(queue_id: 'q1')).messages
       expect(remaining.map { |m| m.payload.name }).to eq(%w[fail])
     end
 
@@ -1271,8 +1269,7 @@ RSpec.describe Sourced::Router do
 
       # after reactivating the group, the retained message is re-claimable
       store.start_consumer_group('fake_commander')
-      claim = store.claim_next('fake_commander', partition_by: ['__id'],
-        handled_types: ['router_q.do_thing'], worker_id: 'w2')
+      claim = store.claim_next('fake_commander', Sourced::Selector[RouterQueueMessages::DoThing].by_message_id, worker_id: 'w2')
       expect(claim.messages.size).to eq(1)
     end
   end

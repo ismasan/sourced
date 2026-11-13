@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
 module Sourced
-  # Reactor base class for Sourced read-model projectors.
+  # Reactor base class that persists projections, to build read models: for
+  # each partition it claims, it runs its inline projector ({.projector}, a
+  # {Projector::Inline} subclass) over the claimed events and persists the projection.
   class Projector
     include Sourced::Evolve
     include Sourced::React
@@ -13,7 +15,7 @@ module Sourced
       #
       # @return [Array<Class>] evolved and reacted-to message classes
       def handled_messages
-        (handled_messages_for_evolve + handled_messages_for_react).uniq
+        (projector.selector.types + handled_messages_for_react).uniq
       end
 
       private
@@ -56,7 +58,7 @@ module Sourced
     # @example
     #   class CartListing < Sourced::Projector::StateStored
     #     partition_by :cart_id
-    #     evolve CartProjection
+    #     evolve CartProjector
     #
     #     load_context { |partition_values| MyDB.find(partition_values[:cart_id]) }
     #     sync { |context:, **| MyDB.upsert(context) }
@@ -93,11 +95,11 @@ module Sourced
 
       # The projection starts from the stored context when +load_context+ returns one.
       #
-      # @return [Sourced::Projection]
+      # @return [Sourced::Projector::Inline]
       def projection
         @projection ||= begin
           stored = load_context(partition_values)
-          stored.nil? ? self.class.projection_class.new : self.class.projection_class.new(stored)
+          stored.nil? ? self.class.projector.new : self.class.projector.new(stored)
         end
       end
     end

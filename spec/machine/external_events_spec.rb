@@ -50,7 +50,7 @@ module MachineExternalEventsTest
     end
 
     state Paid do
-      entry { |_order, _evt| dispatch NotifyPaid }
+      entry(NotifyPaid) { |_order, _evt| dispatch NotifyPaid }
       command Ship => Shipped
     end
 
@@ -115,7 +115,7 @@ module MachineExternalEventsTest
   class Payments < Sourced::Decider
     partition_by :order_id
 
-    command CapturePayment do |_context, cmd|
+    command CapturePayment => PaymentCaptured do |_context, cmd|
       event PaymentCaptured, order_id: cmd.payload.order_id, amount: cmd.payload.amount
     end
   end
@@ -129,7 +129,7 @@ RSpec.describe 'Sourced::Machine external events' do
   def msg(klass, **attrs) = klass.new(payload: { order_id: 'o1', **attrs })
   def summary(events) = events.map { |e| [e.class, e.payload.to_h] }
   def moves(machine, *transitions) = summary(transitions.map { |trigger, opts| moved(machine, trigger, **opts, order_id: 'o1') })
-  def guard = Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 0)
+  def guard = Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 0)
 
   # Decided events from handling +new_messages+ after +history+, as the GWT helpers do.
   def appended(machine, history, *new_messages, replaying: false)
@@ -241,8 +241,8 @@ RSpec.describe 'Sourced::Machine external events' do
 
     it 'claims and evolves the events it declares' do
       expect(MX::OrderMachine.handled_messages).to include(MX::PaymentCaptured, MX::PaymentFailed)
-      expect(MX::OrderMachine.handled_messages_for_evolve).to include(MX::PaymentCaptured, MX::PaymentFailed)
-      expect(MX::OrderMachine.handled_messages_for_evolve.count(MX::PaymentCaptured)).to eq(1)
+      expect(MX::OrderMachine.history_selector.types).to include(MX::PaymentCaptured, MX::PaymentFailed)
+      expect(MX::OrderMachine.history_selector.types.count(MX::PaymentCaptured)).to eq(1)
       expect(MX::OrderMachine.handled_commands).not_to include(MX::PaymentCaptured)
     end
 

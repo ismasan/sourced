@@ -110,7 +110,7 @@ module MachineTest
     end
 
     state Open do
-      exit { |cart, _transition| dispatch ReleaseStock, skus: cart.items.keys }
+      exit(ReleaseStock) { |cart, _transition| dispatch ReleaseStock, skus: cart.items.keys }
 
       command AddItem do |_cart, cmd|
         event ItemAdded, sku: cmd.payload.sku, qty: cmd.payload.qty, unit_price: cmd.payload.unit_price
@@ -132,7 +132,7 @@ module MachineTest
     end
 
     state Ordered do
-      entry { |cart, _transition| dispatch SendReceipt, total: cart.total }
+      entry(SendReceipt) { |cart, _transition| dispatch SendReceipt, total: cart.total }
       command Pay => Paid
     end
 
@@ -178,7 +178,7 @@ module MachineTest
     end
 
     state :pinged do
-      entry { |s, _transition| dispatch Notify, note: s[:note] }
+      entry(Notify) { |s, _transition| dispatch Notify, note: s[:note] }
     end
   end
 
@@ -204,6 +204,43 @@ RSpec.describe Sourced::Machine do
   let(:item_added) { ItemAdded.new(payload: { cart_id: 'c1', sku: 'A1', qty: 2, unit_price: 50 }) }
   let(:ordered) { moved(CartMachine, 'machine_test.checkout', from: 'open', to: 'ordered', exited: %w[open], cart_id: 'c1') }
 
+  describe 'a selector source' do
+    let(:selecting) do
+      machine do
+        evolve Sourced::Selector[ItemAdded]
+
+        initial { command OpenCart => :open }
+
+        state :open do
+          command AddItem do |_items, cmd|
+            event ItemAdded, sku: cmd.payload.sku, qty: cmd.payload.qty, unit_price: cmd.payload.unit_price
+          end
+
+          command Checkout => :ordered do |items, _cmd|
+            event CheckedOut, total: items.sum { it.payload.qty * it.payload.unit_price }
+          end
+        end
+
+        final :ordered
+      end
+    end
+
+    it 'gives handlers the messages it selects, as its context' do
+      instance = selecting.at(['open'], [item_added], cart_id: 'c1')
+      events = instance.decide(AddItem.new(payload: { cart_id: 'c1', sku: 'B2', qty: 1, unit_price: 10 }))
+      events += instance.decide(Checkout.new(payload: { cart_id: 'c1' }))
+
+      expect(events.grep(CheckedOut).map { it.payload.total }).to eq([110])
+      expect(instance.context.map { it.payload.sku }).to eq(%w[A1 B2])
+      expect(instance.machine.paths).to eq(['ordered'])
+    end
+
+    it 'reads its messages and its own state events in the partition' do
+      expect(selecting.history_selector.types).to include(ItemAdded, selecting::Open, selecting::Ordered)
+      expect(selecting.history_selector.parts.map(&:keys).uniq).to eq([[:cart_id]])
+    end
+  end
+
   describe 'routing' do
     it 'claims every accepted command and its transitions' do
       expect(CartMachine.handled_commands).to contain_exactly(OpenCart, AddItem, Checkout, Reopen, Pay)
@@ -212,7 +249,7 @@ RSpec.describe Sourced::Machine do
     end
 
     it 'evolves its transitions and evolve types' do
-      expect(CartMachine.handled_messages_for_evolve).to contain_exactly(
+      expect(CartMachine.history_selector.types).to contain_exactly(
         CartMachine::Open, CartMachine::Rejected, CartMachine::Ordered, CartMachine::Paid, CartOpened, ItemAdded
       )
     end
@@ -294,13 +331,13 @@ RSpec.describe Sourced::Machine do
       [
         -> { m.context { {} } },
         -> { m.evolve(late) { |_s, _e| nil } },
-        -> { m.evolve(Class.new(Sourced::Projection)) },
+        -> { m.evolve(Class.new(Sourced::Projector::Inline)) },
         -> { m.before_evolve { |_s, _e| nil } },
-        -> { m.reaction(late) { |_s, _e| nil } }
+        -> { m.reaction(late => nil) { |_s, _e| nil } }
       ].each do |declare|
         expect(&declare).to raise_error(Sourced::Machine::DefinitionError, /declared after the machine was validated/)
       end
-      expect(m.handled_messages_for_evolve).not_to include(late)
+      expect(m.history_selector.types).not_to include(late)
     end
 
     it 'locks a part once its owner is validated' do
@@ -341,7 +378,7 @@ RSpec.describe Sourced::Machine do
     end
 
     it 'keeps its transitions out of its projection, so adopting one keeps them' do
-      items = Class.new(Sourced::Projection) do
+      items = Class.new(Sourced::Projector::Inline) do
         context { CartState.new }
         evolve(ItemAdded) { |cart, evt| cart.add(evt.payload.sku, evt.payload.qty, evt.payload.unit_price) }
       end
@@ -351,8 +388,8 @@ RSpec.describe Sourced::Machine do
         evolve items
       end
 
-      expect(m.projection_class.handled_messages).to eq([ItemAdded])
-      expect(m.handled_messages_for_evolve).to contain_exactly(ItemAdded, m::Open)
+      expect(m.projector.selector.types).to eq([ItemAdded])
+      expect(m.history_selector.types).to contain_exactly(ItemAdded, m::Open)
     end
   end
 
@@ -635,7 +672,7 @@ RSpec.describe Sourced::Machine do
       seen = []
       m = machine do
         initial { command Ping => :pinged }
-        state(:pinged) { entry { |s, transition| seen << [s, transition] } }
+        state(:pinged) { entry(nil) { |s, transition| seen << [s, transition] } }
       end
       transition = moved(m, 'machine_test.ping', from: 'initial', to: 'pinged', cart_id: 'c1')
 
@@ -647,8 +684,8 @@ RSpec.describe Sourced::Machine do
       m = machine do
         initial { command Ping => :pinged }
         state :pinged do
-          exit { |_s, _transition| dispatch Notify, note: 'exit' }
-          entry { |_s, _transition| dispatch Notify, note: 'entry' }
+          exit(Notify) { |_s, _transition| dispatch Notify, note: 'exit' }
+          entry(Notify) { |_s, _transition| dispatch Notify, note: 'entry' }
           command Ping => :pinged
         end
       end
@@ -669,11 +706,107 @@ RSpec.describe Sourced::Machine do
         .then(Notify.new(payload: { cart_id: 'c1', note: 'exit' }), Notify.new(payload: { cart_id: 'c1', note: 'entry' }))
     end
 
+    it "holds a reaction to what it appends, not to what entry actions dispatch" do
+      m = machine do
+        initial { command Ping => :pinged }
+        state(:pinged) { entry(Notify) { |_s, _transition| dispatch Notify, note: 'entry' } }
+        reaction(self::Pinged => Ping | nil) { |*| nil }
+      end
+      entered = moved(m, 'machine_test.ping', from: 'initial', to: 'pinged', cart_id: 'c1')
+
+      with_reactor(m, cart_id: 'c1').when(entered).then(Notify.new(payload: { cart_id: 'c1', note: 'entry' }))
+
+      strict = machine do
+        initial { command Ping => :pinged }
+        state(:pinged) { entry(Notify) { |_s, _transition| dispatch Notify, note: 'entry' } }
+        reaction(self::Pinged => Ping) { |*| dispatch Notify, note: 'reaction' }
+      end
+      strict_entered = moved(strict, 'machine_test.ping', from: 'initial', to: 'pinged', cart_id: 'c1')
+      expect { with_reactor(strict, cart_id: 'c1').when(strict_entered).then([]) }
+        .to raise_error(Sourced::React::UndeclaredMessageError, /appended .*Notify, which it doesn't declare/)
+    end
+
     it 'skips them while replaying' do
-      history = Sourced::ReadResult.new(messages: [opened], guard: Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 0))
+      history = Sourced::ReadResult.new(messages: [opened], guard: Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 0))
 
       pairs = CartMachine.handle_batch({ cart_id: 'c1' }, [ordered], history:, replaying: true)
       expect(pairs).to eq([[Sourced::Actions::OK, ordered]])
+    end
+
+    describe 'declared outputs' do
+      def entered(machine) = moved(machine, 'machine_test.ping', from: 'initial', to: 'pinged', cart_id: 'c1')
+
+      it 'dispatches each declared message with the partition keys without a block' do
+        m = machine do
+          initial { command Ping => :pinged }
+          state(:pinged) { entry Pay }
+        end
+
+        with_reactor(m, cart_id: 'c1').when(entered(m)).then(Pay, cart_id: 'c1')
+      end
+
+      it 'raises for a message the action does not declare' do
+        m = machine do
+          initial { command Ping => :pinged }
+          state(:pinged) { entry(Pay) { |*| dispatch Notify, note: 'x' } }
+        end
+
+        expect { with_reactor(m, cart_id: 'c1').when(entered(m)).then([]) }
+          .to raise_error(Sourced::React::UndeclaredMessageError,
+                          /pinged entry appended MachineTest::Notify, which it doesn't declare \(MachineTest::Pay\)/)
+      end
+
+      it 'raises when an action dispatches nothing without | nil' do
+        m = machine do
+          initial { command Ping => :pinged }
+          state(:pinged) { entry(Pay) { |*| nil } }
+        end
+
+        expect { with_reactor(m, cart_id: 'c1').when(entered(m)).then([]) }
+          .to raise_error(Sourced::React::UndeclaredMessageError, /pinged entry appended nothing/)
+      end
+
+      it 'lets an action declaring | nil, or nil, dispatch nothing' do
+        m = machine do
+          initial { command Ping => :pinged }
+          state :pinged do
+            entry(Pay | nil) { |*| nil }
+            entry(nil) { |*| nil }
+          end
+        end
+
+        with_reactor(m, cart_id: 'c1').when(entered(m)).then([])
+      end
+
+      it 'requires a declaration' do
+        expect { machine { state(:open) { entry { nil } } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /entry declares what it dispatches, ex. entry Command do/)
+        expect { machine { state(:open) { exit { nil } } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /exit declares what it dispatches/)
+      end
+
+      it 'requires a block for an optional or empty declaration' do
+        expect { machine { state(:open) { entry Pay | nil } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /entry: MachineTest::Pay \| nil needs a block/)
+        expect { machine { state(:open) { exit nil } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /exit: nil needs a block/)
+      end
+
+      it 'rejects anything that is not a message class' do
+        expect { machine { state(:open) { entry('nope') { nil } } } }
+          .to raise_error(Sourced::Machine::DefinitionError, /entry: "nope" isn't a message class/)
+      end
+
+      it "rejects a blockless action that can't fill its message's payload" do
+        m = machine do
+          initial { command Ping => :pinged }
+          state(:pinged) { exit ReleaseStock }
+        end
+
+        expect { m.validate! }
+          .to raise_error(Sourced::Machine::DefinitionError,
+                          /exit dispatches MachineTest::ReleaseStock without a block, so it can't fill .*skus/)
+      end
     end
   end
 
@@ -800,7 +933,7 @@ RSpec.describe Sourced::Machine do
         named = computed(MachineTest::SosDelay)
 
         expect(timed.to_h.dig(:states, 'open', :after))
-          .to eq([{ delay: nil, computed: 'computed', dispatches: [Expire.type, Checkout.type] }])
+          .to eq([{ delay: nil, computed: 'computed', dispatches: [Expire.type, Checkout.type], optional: false }])
         expect(named.to_h.dig(:states, 'open', :after).first[:computed]).to eq('MachineTest::SosDelay')
         expect { JSON.generate(timed.to_h) }.not_to raise_error
         expect(timed.to_mermaid.lines.map(&:chomp)).to include('  open --> expired : after computed / Expire')
@@ -867,11 +1000,11 @@ RSpec.describe Sourced::Machine do
       claimed = Sourced::PositionedMessage.new(opened, 1)
       claim = Sourced::ClaimResult.new(
         offset_id: 1, key_pair_ids: [], partition_key: 'cart_id:c1', partition_value: { 'cart_id' => 'c1' },
-        messages: [claimed], replaying: false, guard: Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 2)
+        messages: [claimed], replaying: false, guard: Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 2)
       )
       history = Sourced::ReadResult.new(
         messages: [claimed, Sourced::PositionedMessage.new(ordered, 2)],
-        guard: Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 2)
+        guard: Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 2)
       )
 
       expect(TimerMachine.handle_claim(claim, history:)).to eq([[[], claimed]])
@@ -892,10 +1025,11 @@ RSpec.describe Sourced::Machine do
     end
 
     it 'rejects timers that declare no commands' do
-      expect { machine { state(:open) { after(60) { dispatch Expire } } } }.to raise_error(Sourced::Machine::DefinitionError, /declares what it dispatches/)
-      expect { machine { state(:open) { after(60 => Expire, 120 => Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /declares what it dispatches/)
+      expect { machine { state(:open) { after(60) { dispatch Expire } } } }.to raise_error(Sourced::Machine::DefinitionError, /after takes one pair, ex. '1h' => Command/)
+      expect { machine { state(:open) { after(60 => Expire, 120 => Expire) } } }.to raise_error(Sourced::Machine::DefinitionError, /after takes one pair/)
       expect { machine { state(:open) { after(60 => CartOpened) } } }.to raise_error(Sourced::Machine::DefinitionError, /dispatches commands/)
       expect { machine { state(:open) { after(60 => nil) } } }.to raise_error(Sourced::Machine::DefinitionError, /dispatches commands/)
+      expect { machine { state(:open) { after(60 => 'nope') } } }.to raise_error(Sourced::Machine::DefinitionError, /after 60: "nope" isn't a message class/)
     end
 
     it 'takes a union of commands' do
@@ -913,7 +1047,7 @@ RSpec.describe Sourced::Machine do
 
       expect(dispatched.map(&:class)).to eq([Expire, Checkout])
       expect(dispatched.map { it.payload.cart_id }).to eq(%w[c1 c1])
-      expect(timed.to_h.dig(:states, 'open', :after)).to eq([{ delay: 60, dispatches: [Expire.type, Checkout.type] }])
+      expect(timed.to_h.dig(:states, 'open', :after)).to eq([{ delay: 60, dispatches: [Expire.type, Checkout.type], optional: false }])
     end
 
     it 'dispatches what a block builds, from the declared commands only' do
@@ -941,7 +1075,38 @@ RSpec.describe Sourced::Machine do
       end
       transition = moved(undeclared, 'machine_test.open_cart', from: 'initial', to: 'open', cart_id: 'c1')
       instance = undeclared.new(cart_id: 'c1').tap { |m| m.evolve([transition]) }
-      expect { instance.__react(transition) }.to raise_error(Sourced::Machine::TimerError, /dispatched MachineTest::Checkout, but declares MachineTest::Expire/)
+      expect { instance.__react(transition) }
+        .to raise_error(Sourced::React::UndeclaredMessageError,
+                        /open after\(60s\) appended MachineTest::Checkout, which it doesn't declare \(MachineTest::Expire\)/)
+    end
+
+    it 'dispatches nothing from a block only when it declares | nil' do
+      timed = lambda do |declared|
+        machine do
+          initial { command OpenCart => :open }
+          state(:open) do
+            after(60 => declared) { |*| nil }
+            command Expire => :closed
+          end
+          final :closed
+        end
+      end
+
+      optional = timed.call(Expire | nil)
+      transition = moved(optional, 'machine_test.open_cart', from: 'initial', to: 'open', cart_id: 'c1')
+      expect(optional.new(cart_id: 'c1').tap { |m| m.evolve([transition]) }.__react(transition)).to eq([])
+      expect(optional.to_h.dig(:states, 'open', :after)).to eq([{ delay: 60, dispatches: [Expire.type], optional: true }])
+
+      strict = timed.call(Expire)
+      transition = moved(strict, 'machine_test.open_cart', from: 'initial', to: 'open', cart_id: 'c1')
+      instance = strict.new(cart_id: 'c1').tap { |m| m.evolve([transition]) }
+      expect { instance.__react(transition) }
+        .to raise_error(Sourced::React::UndeclaredMessageError, /open after\(60s\) appended nothing/)
+    end
+
+    it 'requires a block for a timer declaring | nil' do
+      expect { machine { state(:open) { after(60 => Expire | nil) } } }
+        .to raise_error(Sourced::Machine::DefinitionError, /after\(60\): MachineTest::Expire \| nil needs a block/)
     end
 
     it 'labels the edge a timer takes from its state, and notes its other commands' do
@@ -1060,7 +1225,9 @@ RSpec.describe Sourced::Machine do
 
       m.validate!
       expect(m.handled_commands).to be_frozen.and eq([Ping])
-      expect(m.handled_messages_for_evolve).to be_frozen.and include(m::Pinged)
+      expect(m.evolve_selector).to equal(m.evolve_selector)
+      expect(m.history_selector.types).to include(m::Pinged)
+      expect(m.history_selector.parts.map(&:keys).uniq).to eq([m.partition_keys])
       expect(m.transition_classes).to be_frozen
     end
 
@@ -1128,7 +1295,7 @@ RSpec.describe Sourced::Machine do
     end
 
     it 'rejects entry actions on the initial position' do
-      expect { machine { initial { entry { nil } } } }
+      expect { machine { initial { entry(nil) { nil } } } }
         .to raise_error(Sourced::Machine::DefinitionError, /no entry actions/)
     end
 

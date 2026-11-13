@@ -70,13 +70,13 @@ module MachineChildrenTest
     evolve(OrderPlaced) { |line, evt| line.currency = evt.payload.currency }
 
     started Added do
-      entry { |line, _evt| dispatch ReserveStock, sku: line.sku, currency: line.currency }
+      entry(ReserveStock) { |line, _evt| dispatch ReserveStock, sku: line.sku, currency: line.currency }
       command StockReserved => Reserved
       command StockUnavailable => Failed
     end
 
     state Reserved do
-      exit { |line, _evt| dispatch ReleaseStock, sku: line.sku }
+      exit(ReleaseStock) { |line, _evt| dispatch ReleaseStock, sku: line.sku }
       command PickLine => Picked
     end
 
@@ -131,7 +131,7 @@ module MachineChildrenTest
     evolve(OrderPlaced) { |pay, evt| pay.amount = evt.payload.total }
 
     started Requested do
-      entry { |pay, _evt| dispatch ChargeCard, amount: pay.amount }
+      entry(ChargeCard) { |pay, _evt| dispatch ChargeCard, amount: pay.amount }
       command GatewayCaptured => Captured
       command GatewayDeclined => Declined
     end
@@ -197,7 +197,7 @@ module MachineChildrenTest
       Packed = State(:packed)
 
       started Packing do
-        entry { |_parcel, _evt| dispatch PrintLabel }
+        entry(PrintLabel) { |_parcel, _evt| dispatch PrintLabel }
         command Pack => Packed
       end
 
@@ -455,13 +455,13 @@ module MachineChildrenTest
         expect(wrap.(log).first.class).to be(Wrapped)
 
         order = OrderMachine.new(order_id: 'o1')
-        order.evolve(wrap.(log.select { |m| OrderMachine.handled_messages_for_evolve.include?(m.to_message.class) }))
+        order.evolve(wrap.(log.select { |m| OrderMachine.history_selector.types.include?(m.to_message.class) }))
         expect(order.machine.value).to eq(OrderMachine::Placed)
         expect(order.machine.children(LineItemMachine).to_h { |ref| [ref.keys[:line_id], [ref.state, ref.final?]] })
           .to eq('l1' => [LineItemMachine::Picked, true], 'l2' => [LineItemMachine::Added, false])
 
         l2 = LineItemMachine.new(order_id: 'o1', line_id: 'l2')
-        l2.evolve(wrap.(log.select { |m| m.payload.to_h[:line_id] == 'l2' && LineItemMachine.handled_messages_for_evolve.include?(m.to_message.class) }))
+        l2.evolve(wrap.(log.select { |m| m.payload.to_h[:line_id] == 'l2' && LineItemMachine.history_selector.types.include?(m.to_message.class) }))
         expect(l2.machine.value).to eq(LineItemMachine::Added)
         stop = Wrapped.new(LineItemMachine::Stop.new(payload: { order_id: 'o1', line_id: 'l2' }))
         expect(l2.handles_command?(stop)).to be(true)
@@ -673,7 +673,7 @@ module MachineChildrenTest
       it "are the owner's children" do
         expect(AccountMachine.tree.children).to eq([SessionMachine])
         expect(AccountMachine.tree.spawned(SessionMachine).stop_on.map(&:path)).to eq(['suspended'])
-        expect(AccountMachine.handled_messages_for_evolve).to include(SessionMachine::Started, SessionMachine::Finished)
+        expect(AccountMachine.history_selector.types).to include(SessionMachine::Started, SessionMachine::Finished)
         expect(Sourced::ReactorDefaults.expand(AccountMachine)).to eq([AccountMachine, SessionMachine])
       end
 
@@ -1298,7 +1298,7 @@ module MachineChildrenTest
       it 'places a root final with its block' do
         child = machine(:order_id, :line_id) do
           started(:added) { command PrintLabel => :cancelled }
-          stopped(:cancelled) { entry { |_line, _evt| nil } }
+          stopped(:cancelled) { entry(nil) { |_line, _evt| nil } }
         end
 
         node = child.nodes.fetch(child::Cancelled)
@@ -1311,7 +1311,7 @@ module MachineChildrenTest
       it 'marks an already-placed root final' do
         child = machine(:order_id, :line_id) do
           started :added
-          final(:cancelled) { entry { |_line, _evt| nil } }
+          final(:cancelled) { entry(nil) { |_line, _evt| nil } }
           stopped self::Cancelled
         end
 
@@ -1324,7 +1324,7 @@ module MachineChildrenTest
           machine(:order_id, :line_id) do
             started :added
             final :cancelled
-            stopped(self::Cancelled) { entry { |_line, _evt| nil } }
+            stopped(self::Cancelled) { entry(nil) { |_line, _evt| nil } }
           end
         end.to raise_error(Sourced::Machine::DefinitionError, /Cancelled is placed twice/)
       end
@@ -1349,7 +1349,7 @@ module MachineChildrenTest
       end
 
       it 'requires reactions to use types with all partition keys' do
-        m = machine(:order_id, :line_id) { reaction(OrderPlaced) { |_s, _e| nil } }
+        m = machine(:order_id, :line_id) { reaction(OrderPlaced => nil) { |_s, _e| nil } }
         expect do
           m.validate!
         end.to raise_error(Sourced::Machine::DefinitionError, /reaction .*OrderPlaced must declare line_id/)

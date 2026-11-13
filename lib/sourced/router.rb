@@ -5,6 +5,18 @@ require 'sourced/error_strategy'
 
 module Sourced
   class Router
+    # A registered reactor's consumer group, read once when it's added, so its
+    # registration and every claim use the same selectors.
+    #
+    # @!attribute claim_selector [Selector] what the group claims
+    # @!attribute history_selector [Selector] what a claim reads as history, bound to its partition
+    # @!attribute needs_history [Boolean] whether the reactor's +handle_claim+ takes +history:+
+    # @!attribute exclusive [Boolean] whether it solely owns its message types
+    Group = Data.define(:claim_selector, :history_selector, :needs_history, :exclusive) do
+      # @return [Array<String>]
+      def handled_types = claim_selector.type_names
+    end
+
     # Raised for a reactor class, or group_id, that isn't registered with this router
     class UnregisteredReactorError < Sourced::Error
       def initialize(reactor_or_id, reactors)
@@ -35,8 +47,7 @@ module Sourced
       @store = store
       @error_strategy = error_strategy
       @reactors = []
-      @needs_history = {}
-      # Consumer group arguments, by reactor: { partition_by:, exclusive:, handled_types: }
+      # {Group}s, by reactor
       @groups = {}
       reactors.each { |reactor| add(reactor) }
     end
@@ -57,10 +68,10 @@ module Sourced
       self
     end
 
-    # Register a reactor. Reactors are duck-typed: only +handled_messages+ and
+    # Register a reactor. Reactors are duck-typed: only +claim_selector+ and
     # +handle_claim+ are required. Optional methods (+group_id+ — defaults to the
     # class name normalized by {Types::GroupId}, +group_label+ — the class name,
-    # +partition_keys+, +exclusive?+, +context_for+, lifecycle hooks)
+    # +exclusive?+, +history_selector+, lifecycle hooks)
     # get defaults so a plain class (e.g. a Sidereal Commander adapter) can
     # register without depending on Sourced.
     #
@@ -82,20 +93,14 @@ module Sourced
       group_id = reactor_class.group_id
       group = @groups.fetch(reactor_class) { raise UnregisteredReactorError.new(reactor_class, @reactors) }
 
-      claim = store.claim_next(
-        group_id,
-        partition_by: group[:partition_by],
-        handled_types: group[:handled_types],
-        worker_id: worker_id,
-        batch_size: batch_size
-      )
+      claim = store.claim_next(group_id, group.claim_selector, worker_id:, batch_size:)
       return false unless claim
 
       begin
         kwargs = {}
-        if @needs_history[reactor_class]
+        if group.needs_history
           attrs = claim.partition_value.transform_keys(&:to_sym)
-          kwargs[:history] = store.read(reactor_class.context_for(attrs))
+          kwargs[:history] = store.read(group.history_selector.bind(**attrs))
         end
 
         action_pairs = reactor_class.handle_claim(claim, **kwargs)
@@ -223,33 +228,37 @@ module Sourced
         raise ArgumentError, "Cannot register #{reactor_class}: #{existing} already uses group_id #{reactor_class.group_id.inspect}"
       end
 
-      exclusive = reactor_class.exclusive?
-      partition_keys = effective_partition_keys(reactor_class)
+      group = Group.new(
+        claim_selector: reactor_class.claim_selector,
+        history_selector: reactor_class.history_selector,
+        needs_history: Injector.resolve_args(reactor_class, :handle_claim).include?(:history),
+        exclusive: reactor_class.exclusive?
+      )
 
       # id-partitioning (declared as `partition_by :__id`, or implied by omitting
       # partition_by) indexes messages by Message#id (key name "__id", chosen to
       # not collide with a payload attribute) and must be sole-owned, so it is only
       # allowed for exclusive reactors. This keeps id-indexing safe: a type is only
       # id-indexed when its lone exclusive owner is id-partitioned.
-      if IdPartition.keys?(partition_keys) && !exclusive
+      if group.claim_selector.id_partitioned? && !group.exclusive
         raise ArgumentError,
           "#{reactor_class} must declare `partition_by`. (Only an `exclusive` reactor may " \
           "be id-partitioned — one partition per message — whether by omitting " \
           "partition_by or declaring `partition_by :__id`.)"
       end
 
-      PartitionSchema.check!(reactor_class)
-      handled_types = reactor_class.handled_messages.map(&:type).uniq
-      validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
-      validate_command_ownership!(reactor_class)
+      PartitionSchema.check_history_keys!(reactor_class)
+      validate_exclusive_ownership!(reactor_class, group)
 
       @reactors << reactor_class
-      @groups[reactor_class] = { partition_by: partition_keys.map(&:to_s), exclusive:, handled_types: }
-      @needs_history[reactor_class] = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
+      @groups[reactor_class] = group
     end
 
     def register_consumer_group(reactor_class)
-      store.register_consumer_group(reactor_class.group_id, label: reactor_class.group_label, **@groups.fetch(reactor_class))
+      group = @groups.fetch(reactor_class)
+      store.register_consumer_group(
+        reactor_class.group_id, group.claim_selector, label: reactor_class.group_label, exclusive: group.exclusive
+      )
     end
 
     # A reactor's own +on_exception+ handles its errors; otherwise this router's
@@ -268,55 +277,24 @@ module Sourced
       store.logger.warn "Sourced: #{e.message}, ignoring"
     end
 
-    # A registered reactor's effective partition keys: its declared keys, or
-    # +[:__id]+ (partition by Message#id) for an exclusive reactor that declared
-    # none (validated when the reactor is added).
-    def effective_partition_keys(reactor)
-      keys = Array(reactor.partition_keys)
-      keys.empty? ? [IdPartition::KEY.to_sym] : keys
-    end
-
     # Enforce that an exclusive reactor is the sole handler of its message types.
     # A message deleted once the exclusive reactor acks it must not be needed by
     # any other reactor.
     #
     # @raise [ArgumentError] on a message-type overlap involving an exclusive reactor
-    def validate_exclusive_ownership!(reactor_class, handled_types, exclusive)
+    def validate_exclusive_ownership!(reactor_class, group)
       @reactors.each do |existing|
-        existing_exclusive = @groups.fetch(existing)[:exclusive]
-        next unless exclusive || existing_exclusive
+        existing_group = @groups.fetch(existing)
+        next unless group.exclusive || existing_group.exclusive
 
-        overlap = handled_types & @groups.fetch(existing)[:handled_types]
+        overlap = group.handled_types & existing_group.handled_types
         next if overlap.empty?
 
-        offender = exclusive ? reactor_class : existing
+        offender = group.exclusive ? reactor_class : existing
         raise ArgumentError, <<~MSG.strip
           Cannot register #{reactor_class}: exclusive reactor #{offender} requires sole ownership of its message types, but #{reactor_class} and #{existing} both handle: #{overlap.sort.join(', ')}
         MSG
       end
-    end
-
-    # A command has one handler: two reactors handling it would decide it twice.
-    # Events don't count, since any number of reactors may consume them.
-    def validate_command_ownership!(reactor_class)
-      commands = handled_command_types(reactor_class)
-      return if commands.empty?
-
-      @reactors.each do |existing|
-        overlap = commands & handled_command_types(existing)
-        next if overlap.empty?
-
-        raise ArgumentError, <<~MSG.strip
-          Cannot register #{reactor_class}: a command has one handler, but #{reactor_class} and #{existing} both handle: #{overlap.sort.join(', ')}
-        MSG
-      end
-    end
-
-    # The messages a reactor handles as commands: its +handled_commands+, if it has any.
-    def handled_command_types(reactor_class)
-      return Plumb::BLANK_ARRAY unless reactor_class.respond_to?(:handled_commands)
-
-      reactor_class.handled_commands.map(&:type).uniq
     end
 
     # Normalize a pair's +signals+ into an array, without Hash-splatting a single

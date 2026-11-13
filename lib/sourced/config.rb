@@ -64,7 +64,6 @@ module Sourced
       :transaction,
       :append,
       :read,
-      :read_partition,
       :claim_next,
       :ack,
       :release,
@@ -87,7 +86,7 @@ module Sourced
     ]
 
     # Reactors are duck-typed (see Router#register)
-    ReactorInterface = T::Interface[:handled_messages, :handle_claim]
+    ReactorInterface = T::Interface[:claim_selector, :handle_claim]
 
     # What a store serializes messages with (see Store::MessageCodec)
     MessageCodecInterface = T::Interface[:compile!, :encode, :decode]

@@ -75,7 +75,7 @@ module MachineRegionsTest
     end
 
     state Placed do
-      exit { |_order, _evt| dispatch NotifyOrderClosed }
+      exit(NotifyOrderClosed) { |_order, _evt| dispatch NotifyOrderClosed }
       command CancelOrder => Cancelled
       command Pause => Paused
       command Restart => Placed                            # re-enters itself
@@ -98,8 +98,8 @@ module MachineRegionsTest
         end
 
         state Charging do
-          entry { |order, _evt| dispatch ChargeCard, card: order.card }
-          exit { |_order, _evt| dispatch VoidPayment }
+          entry(ChargeCard) { |order, _evt| dispatch ChargeCard, card: order.card }
+          exit(VoidPayment) { |_order, _evt| dispatch VoidPayment }
           after(3600 => ExpirePayment)
           command ExpirePayment => Cancelled               # an ancestor region's state
           command Abort => Cancelled
@@ -108,7 +108,7 @@ module MachineRegionsTest
 
         state Rejected
         final(Captured) do
-          entry { |_order, _evt| dispatch SendReceipt }
+          entry(SendReceipt) { |_order, _evt| dispatch SendReceipt }
         end
       end
 
@@ -376,7 +376,7 @@ RSpec.describe 'Sourced::Machine regions' do
     end
 
     it 'appends the join under the guard, with the transition that completes it' do
-      guard = Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 3)
+      guard = Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 3)
       history = Sourced::ReadResult.new(messages: [*history_placed, *history_charging, *history_packed, dispatched], guard:)
       command = msg(CapturePayment)
 
@@ -392,7 +392,7 @@ RSpec.describe 'Sourced::Machine regions' do
     it "doesn't run actions while replaying" do
       history = Sourced::ReadResult.new(
         messages: [*history_placed, *history_charging, *history_packed, dispatched],
-        guard: Sourced::ConsistencyGuard.new(query: Plumb::BLANK_ARRAY, last_position: 3)
+        guard: Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 3)
       )
 
       expect(M.handle_batch({ order_id: 'o1' }, [captured], history:, replaying: true))

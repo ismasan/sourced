@@ -23,9 +23,9 @@ module ProjectionTestMessages
   end
 end
 
-RSpec.describe Sourced::Projection do
-  let(:projection_class) do
-    Class.new(Sourced::Projection) do
+RSpec.describe Sourced::Projector::Inline do
+  let(:projector) do
+    Class.new(Sourced::Projector::Inline) do
       context do
         { items: [] }
       end
@@ -44,33 +44,33 @@ RSpec.describe Sourced::Projection do
 
   describe '#context' do
     it 'builds the initial context from the context block' do
-      expect(projection_class.new.context).to eq(items: [])
+      expect(projector.new.context).to eq(items: [])
     end
 
     it 'builds a fresh context per instance' do
-      first = projection_class.new
+      first = projector.new
       first.evolve([added('i1', 'Apple')])
-      expect(projection_class.new.context).to eq(items: [])
+      expect(projector.new.context).to eq(items: [])
     end
 
     it 'is nil without a context block' do
-      expect(Class.new(Sourced::Projection).new.context).to be_nil
+      expect(Class.new(Sourced::Projector::Inline).new.context).to be_nil
     end
 
     it 'starts from a given context instead of the context block' do
-      projection = projection_class.new({ items: [{ id: 'i0', name: 'Pear' }] })
+      projection = projector.new({ items: [{ id: 'i0', name: 'Pear' }] })
       projection.evolve([added('i1', 'Apple')])
       expect(projection.context[:items].map { |i| i[:id] }).to eq(%w[i0 i1])
     end
 
     it 'keeps an explicit nil starting context' do
-      expect(projection_class.new(nil).context).to be_nil
+      expect(projector.new(nil).context).to be_nil
     end
   end
 
   describe '#evolve' do
     it 'applies registered handlers in order and returns the context' do
-      projection = projection_class.new
+      projection = projector.new
       result = projection.evolve([
         added('i1', 'Apple'),
         added('i2', 'Banana'),
@@ -82,31 +82,31 @@ RSpec.describe Sourced::Projection do
     end
 
     it 'accepts a single message' do
-      projection = projection_class.new
+      projection = projector.new
       projection.evolve(added('i1', 'Apple'))
       expect(projection.context[:items].size).to eq(1)
     end
 
     it 'skips unregistered message types' do
-      projection = projection_class.new
+      projection = projector.new
       projection.evolve([added('i1', 'Apple'), ProjectionTestMessages::Unhandled.new(payload: { foo: 'bar' })])
       expect(projection.context[:items]).to eq([{ id: 'i1', name: 'Apple' }])
     end
 
     it 'dispatches a wrapper by its to_message class, passing the wrapper' do
       seen = []
-      projection_class.evolve(ProjectionTestMessages::Unhandled) { |_context, msg| seen << msg }
+      projector.evolve(ProjectionTestMessages::Unhandled) { |_context, msg| seen << msg }
       wrapped = ProjectionTestMessages::Wrapped.new(added('1', 'Apple'))
       other = ProjectionTestMessages::Wrapped.new(ProjectionTestMessages::Unhandled.new(payload: { foo: 'x' }))
 
-      context = projection_class.new.evolve([wrapped, other])
+      context = projector.new.evolve([wrapped, other])
 
       expect(context[:items]).to eq([{ id: '1', name: 'Apple' }])
       expect(seen).to eq([other])
     end
 
     it 'runs evolve blocks in the projection scope' do
-      klass = Class.new(Sourced::Projection) do
+      klass = Class.new(Sourced::Projector::Inline) do
         context { {} }
         evolve(ProjectionTestMessages::ItemAdded) { |context, _| context[:scope] = self }
       end
@@ -118,46 +118,52 @@ RSpec.describe Sourced::Projection do
 
   describe '.evolve' do
     it 'tracks registered classes once' do
-      projection_class.evolve(ProjectionTestMessages::ItemAdded) { |_, _| nil }
-      expect(projection_class.handled_messages).to eq([
+      projector.evolve(ProjectionTestMessages::ItemAdded) { |_, _| nil }
+      expect(projector.selector.types).to eq([
         ProjectionTestMessages::ItemAdded,
         ProjectionTestMessages::ItemRemoved
       ])
     end
 
-    it 'exposes them as handled_messages_for_evolve too' do
-      expect(projection_class.handled_messages_for_evolve).to equal(projection_class.handled_messages)
+    it 'builds a selector of them, without keys' do
+      expect(projector.selector).to eq(Sourced::Selector[ProjectionTestMessages::ItemAdded, ProjectionTestMessages::ItemRemoved])
     end
 
     it 'rejects context blocks that take arguments' do
-      expect { Class.new(Sourced::Projection) { context { |values| values } } }
+      expect { Class.new(Sourced::Projector::Inline) { context { |values| values } } }
         .to raise_error(ArgumentError, /no arguments/)
-      expect { Class.new(Sourced::Projection) { context { |_| {} } } }
+      expect { Class.new(Sourced::Projector::Inline) { context { |_| {} } } }
         .to raise_error(ArgumentError, /no arguments/)
     end
 
     it 'takes only what answers to_message_class' do
-      expect { projection_class.evolve(:projection_test_item_added) { nil } }
+      expect { projector.evolve(:projection_test_item_added) { nil } }
         .to raise_error(NoMethodError, /to_message_class/)
-      expect { projection_class.evolve(String) { nil } }
+      expect { projector.evolve(String) { nil } }
         .to raise_error(NoMethodError, /to_message_class/)
     end
 
     it 'takes anything whose to_message_class is a message class, and handles that class' do
       declared = Object.new
       declared.define_singleton_method(:to_message_class) { ProjectionTestMessages::Unhandled }
-      projection_class.evolve(declared) { |context, msg| context[:foo] = msg.payload.foo }
+      projector.evolve(declared) { |context, msg| context[:foo] = msg.payload.foo }
 
-      expect(projection_class.handled_messages).to include(ProjectionTestMessages::Unhandled)
-      projection = projection_class.new
+      expect(projector.selector.types).to include(ProjectionTestMessages::Unhandled)
+      projection = projector.new
       projection.evolve(ProjectionTestMessages::Unhandled.new(payload: { foo: 'bar' }))
       expect(projection.context[:foo]).to eq('bar')
     end
   end
 
+  describe '.to_projector' do
+    it 'is itself, as a source' do
+      expect(projector.to_projector).to be(projector)
+    end
+  end
+
   describe '.before_evolve' do
     let(:stamped) do
-      Class.new(projection_class) do
+      Class.new(projector) do
         before_evolve { |context, msg| (context[:log] ||= []) << [:first, msg.class, context[:items].size] }
         before_evolve { |context, _| context[:log] << [:second, self.class] }
       end
@@ -185,18 +191,18 @@ RSpec.describe Sourced::Projection do
 
       expect(child.before_evolve_blocks.size).to eq(3)
       expect(stamped.before_evolve_blocks.size).to eq(2)
-      expect(projection_class.before_evolve_blocks).to be_empty
+      expect(projector.before_evolve_blocks).to be_empty
     end
 
     it 'requires a block' do
-      expect { projection_class.before_evolve }.to raise_error(ArgumentError, /requires a block/)
+      expect { projector.before_evolve }.to raise_error(ArgumentError, /requires a block/)
     end
   end
 
   describe 'inheritance' do
     it 'subclasses inherit the context block and handlers' do
-      subclass = Class.new(projection_class)
-      expect(subclass.handled_messages).to eq(projection_class.handled_messages)
+      subclass = Class.new(projector)
+      expect(subclass.selector.types).to eq(projector.selector.types)
 
       projection = subclass.new
       projection.evolve([added('i1', 'Apple')])
@@ -204,12 +210,12 @@ RSpec.describe Sourced::Projection do
     end
 
     it 'handlers added to a subclass do not change the parent' do
-      subclass = Class.new(projection_class) do
+      subclass = Class.new(projector) do
         evolve(ProjectionTestMessages::Unhandled) { |context, _| context[:seen] = true }
       end
 
-      expect(subclass.handled_messages).to include(ProjectionTestMessages::Unhandled)
-      expect(projection_class.handled_messages).not_to include(ProjectionTestMessages::Unhandled)
+      expect(subclass.selector.types).to include(ProjectionTestMessages::Unhandled)
+      expect(projector.selector.types).not_to include(ProjectionTestMessages::Unhandled)
     end
   end
 end

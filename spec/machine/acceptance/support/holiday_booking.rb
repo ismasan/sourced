@@ -317,7 +317,7 @@ module MachineAcceptanceHoliday
     end
 
     state Quoted do
-      entry { |_tour, _evt| dispatch EmailQuote }
+      entry(EmailQuote) { |_tour, _evt| dispatch EmailQuote }
       after(REMINDER_SECONDS => RemindTraveller)
       command(RemindTraveller) { |_tour, _cmd| event TravellerReminded }
       command ReviseItinerary => Outlining
@@ -335,7 +335,7 @@ module MachineAcceptanceHoliday
 
     started ItineraryMachine do
       on_final ItineraryMachine::Accepted => Agreed
-      entry { |_tour, _evt| dispatch ShareItinerary }
+      entry(ShareItinerary) { |_tour, _evt| dispatch ShareItinerary }
     end
 
     final Agreed
@@ -399,7 +399,7 @@ module MachineAcceptanceHoliday
   class DepositGateway < Sourced::Decider
     partition_by :booking_id
 
-    command ChargeDeposit do |_context, cmd|
+    command ChargeDeposit => DepositReceived do |_context, cmd|
       event DepositReceived, booking_id: cmd.payload.booking_id, reference: "DP-#{cmd.payload.amount}"
     end
   end
@@ -436,7 +436,7 @@ module MachineAcceptanceHoliday
 
     state PlanningMachine do
       on_final PlanningMachine::Agreed => Reserving
-      entry { |_tour, _evt| dispatch StartPlannerChat }
+      entry(StartPlannerChat) { |_tour, _evt| dispatch StartPlannerChat }
       command ChangeDates => ItineraryMachine::Outlining do |_tour, cmd|
         event DatesChanged, depart_on: cmd.payload.depart_on
       end
@@ -452,7 +452,7 @@ module MachineAcceptanceHoliday
     end
 
     state Reserving do
-      entry { |tour, _evt| dispatch ChargeDeposit, amount: tour.deposit }
+      entry(ChargeDeposit) { |tour, _evt| dispatch ChargeDeposit, amount: tour.deposit }
       command CancelTour => Cancelled
 
       region :outbound, FlightLeg, on_final: { FlightLeg::Released => Unavailable }

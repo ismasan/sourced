@@ -79,22 +79,22 @@ module Sourced
         attribute :workflow_id, String
       end)
 
-      # Register all event classes so:
-      #  - Router claims them on our consumer group (`handled_messages`).
-      #  - `context_for(workflow_id:)` reads them as the partition's history.
-      [
+      # The workflow's events are both what the Router claims on our consumer
+      # group (`handled_messages`) and the partition's history (`history_selector`).
+      child.instance_variable_set(:@history_selector, Sourced::Selector[
         child::WorkflowStarted, child::ContextUpdated, child::WorkflowComplete,
         child::WorkflowFailed, child::StepStarted, child::StepFailed,
         child::StepComplete, child::WaitStarted, child::WaitEnded
-      ].each do |klass|
-        child.handled_messages_for_evolve << klass unless child.handled_messages_for_evolve.include?(klass)
-      end
+      ].by(:workflow_id))
     end
 
-    # Message types this consumer claims. Same set as evolve types because
+    # @return [Selector] the workflow's events, by +workflow_id+
+    def self.history_selector = @history_selector || Selector::NONE
+
+    # Message types this consumer claims. Same set as the history's because
     # every workflow event both advances state and re-triggers the workflow.
     def self.handled_messages
-      handled_messages_for_evolve
+      history_selector.types
     end
 
     # Define the initial context hash. Block receives no arguments.
@@ -188,7 +188,7 @@ module Sourced
     end
 
     # Router entry point. Drops claim.messages from the read history (the
-    # router's +store.read(conditions)+ returns the full partition, including
+    # router's +store.read(history_selector)+ returns the full partition, including
     # messages being claimed) and delegates to {.handle_batch}.
     def self.handle_claim(claim, history:)
       values = claim.partition_value.transform_keys(&:to_sym)
@@ -249,8 +249,7 @@ module Sourced
       end
 
       def load
-        handled_types = @klass.handled_messages_for_evolve.map(&:type).uniq
-        result = @store.read_partition({ workflow_id: @workflow_id }, handled_types:)
+        result = @store.read(@klass.history_selector.bind(workflow_id: @workflow_id))
         @instance = @klass.new([@workflow_id])
         @instance.__replay(result.messages)
         @instance

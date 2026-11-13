@@ -1,2 +1,7 @@
 Layout/FirstArgumentIndentation:
   Enabled: false
+
+# `SomeInterface === value` checks a single type or interface; use `case`/`in`
+# when there are several cases to check.
+Style/CaseEquality:
+  AllowOnConstant: true

@@ -5,56 +5,16 @@
 # Sourced's own value objects, so they live here rather than in the gem.
 
 require 'sourced/message'
+require 'sourced/selector'
 
 module Sourced
-  # A query condition for reading messages from the store.
-  # Matches on (message_type AND all attrs key-value pairs).
-  # Multiple conditions are OR'd when passed to {Store#read}.
-  QueryCondition = Data.define(:message_type, :attrs)
-
-  # Partitioning by {Message#id}: one partition per message, the store's queue
-  # case. The id is indexed under a reserved key name, chosen not to collide
-  # with a payload attribute.
-  module IdPartition
-    extend self
-
-    KEY = '__id'
-
-    # Whether +keys+ (a +partition_by+, or a claimed partition's keys) are the id partition.
-    #
-    # @param keys [Array<String, Symbol>]
-    # @return [Boolean]
-    def keys?(keys) = keys.size == 1 && keys.first.to_s == KEY
-  end
-
-  # The messages of +types+ in a partition, matched per message the way claims
-  # match them: a message is in the partition when every partition key it
-  # carries (in its payload or its tags) has the partition's value. Messages
-  # carrying only some of the keys (ex. foreign events) are read into every
-  # partition sharing those values. Pass to {Store#read}.
+  # Optimistic concurrency: detects messages +selector+ selects appended after
+  # +last_position+. Returned by {Store#read} and {Store#claim_next}; pass to
+  # {Store#append} via +guard:+. {Selector::NONE} guards nothing.
   #
-  # Key presence is per message, not per class (a tag may carry any key), so
-  # this can't be expressed as {QueryCondition}s.
-  #
-  # @!attribute attrs [Hash{String => String}] partition values
-  # @!attribute types [Array<String>] message type strings
-  PartitionQuery = Data.define(:attrs, :types) do
-    def initialize(attrs:, types:)
-      super(
-        attrs: attrs.to_h { |k, v| [k.to_s, v.to_s] }.freeze,
-        types: types.map(&:to_s).uniq.freeze
-      )
-    end
-  end
-
-  # Optimistic concurrency: detects messages matching +query+ appended after
-  # +last_position+. Returned by {Store#read}, {Store#read_partition} and
-  # {Store#claim_next}; pass to {Store#append} via +guard:+. An empty
-  # conditions Array guards nothing.
-  #
-  # @!attribute query [PartitionQuery, Array<QueryCondition>] what {Store#read} read
+  # @!attribute selector [Selector] what {Store#read} read
   # @!attribute last_position [Integer]
-  ConsistencyGuard = Data.define(:query, :last_position)
+  ConsistencyGuard = Data.define(:selector, :last_position)
 
   class Message
     # The class-level counterpart of {#to_message}: what handler declarations
@@ -63,30 +23,6 @@ module Sourced
     # machine part, its +Part::State+).
     # @return [Class<Message>]
     def self.to_message_class = self
-
-    # Build a {QueryCondition} for the intersection of this message's declared
-    # attributes and the given key-value pairs. Attributes not declared on this
-    # message class are silently ignored. Returns an array with a single condition
-    # containing all matching attrs, or an empty array if none match.
-    #
-    # Conditions only see declared attributes, not {#tags}: use a
-    # {PartitionQuery} to read a partition.
-    #
-    # @param attrs [Hash{Symbol => String}] partition attribute values
-    # @return [Array<QueryCondition>]
-    #
-    # @example
-    #   CourseCreated.to_conditions(course_name: 'Algebra', user_id: 'joe')
-    #   # => [QueryCondition('course.created', { course_name: 'Algebra' })]
-    #   # user_id ignored — CourseCreated doesn't declare it
-    def self.to_conditions(**attrs)
-      supported = payload_attribute_names
-      matched = attrs.select { |key, _| supported.include?(key) }
-                     .transform_values(&:to_s)
-      return [] if matched.empty?
-
-      [QueryCondition.new(message_type: type, attrs: matched)]
-    end
 
     # Key-value pairs from all top-level payload attributes and {#tags}.
     # Used by {Store#append} to index messages for querying.

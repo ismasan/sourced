@@ -191,7 +191,7 @@ RSpec.describe Sourced::Machine::Part do
     it "are the owner's state classes, declared by the part" do
       expect(pending::Queued.machine).to be(pending)
       expect(payroll.transition_classes).to include(pending::Queued, pending::Approved, check::Checked)
-      expect(payroll.handled_messages_for_evolve).to include(pending::Queued, check::Checked)
+      expect(payroll.history_selector.types).to include(pending::Queued, check::Checked)
     end
 
     it "are shared by a part's placements, told apart by their paths" do
@@ -230,7 +230,7 @@ RSpec.describe Sourced::Machine::Part do
 
     it "can't be registered" do
       expect { Sourced::Router.new(store: Sourced::Store.new(Sequel.sqlite), reactors: [pending]) }
-        .to raise_error(ArgumentError, /PendingMachine isn't a reactor: .*Missing methods: handled_messages, handle_claim/)
+        .to raise_error(ArgumentError, /PendingMachine isn't a reactor: .*Missing methods: claim_selector, handle_claim/)
       expect { Sourced::Config.register(Sourced::Config.build, pending) }
         .to raise_error(ArgumentError, /PendingMachine isn't a reactor/)
     end
@@ -244,11 +244,11 @@ RSpec.describe Sourced::Machine::Part do
 
   describe 'evolve' do
     it "evolves the owner's context" do
-      expect(payroll.handled_messages_for_evolve).to include(pending::Accepted)
+      expect(payroll.history_selector.types).to include(pending::Accepted)
     end
 
     it "adds to the owner's evolve types only the events it evolves" do
-      expect(payroll.handled_messages_for_evolve).not_to include(pending::Unread)
+      expect(payroll.history_selector.types).not_to include(pending::Unread)
     end
 
     it 'needs a block' do
@@ -282,6 +282,14 @@ RSpec.describe Sourced::Machine::Part do
       owner.state(evolving_part(owner, 'one', evt))
 
       expect { owner.validate! }.to raise_error(Sourced::Machine::DefinitionError, /Accepted is evolved by both #{Regexp.escape(owner.to_s)} and /)
+    end
+
+    it 'raises when its owner reads through a selector, whose context is its messages' do
+      owner.evolve(Sourced::Selector[evt])
+      owner.state(evolving_part(owner, 'one', evt))
+
+      expect { owner.validate! }
+        .to raise_error(Sourced::Machine::DefinitionError, /evolves on .*'s context, but .* reads through #<Sourced/)
     end
 
     it 'raises when another part evolves the same event' do
@@ -525,13 +533,13 @@ RSpec.describe Sourced::Machine::Part do
     end
 
     it "evolves only transitions to the part's compound state, not those straight to its sub-states" do
-      projection = Class.new(Sourced::Projection) do
+      projection = Class.new(Sourced::Projector::Inline) do
         context { [] }
         evolve(MachinePartsTest::Payroll::PendingMachine) { |context, evt| context << evt.payload.entered }
       end
       events = decided
 
-      expect(projection.handled_messages).to eq([pending::State])
+      expect(projection.selector.types).to eq([pending::State])
       expect(events.map(&:class)).to include(pending::State, pending::Approved)
       expect(projection.new.evolve(events)).to eq([%w[pending pending.queued]])
     end
@@ -541,7 +549,7 @@ RSpec.describe Sourced::Machine::Part do
         partition_by :payroll_id
         consumer_group 'parts_handler_projector'
         evolve(MachinePartsTest::Payroll::PendingMachine) { |context, _evt| context }
-        reaction(MachinePartsTest::Payroll::PendingMachine) { |_context, _evt| nil }
+        reaction(MachinePartsTest::Payroll::PendingMachine => nil) { |_context, _evt| nil }
       end
 
       expect(projector.handled_messages).to eq([pending::State])

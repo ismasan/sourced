@@ -228,7 +228,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'announces a resumed group only after the enclosing transaction commits' do
-      store.register_consumer_group('g1', partition_by: 'device_id')
+      store.register_consumer_group('g1', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
       store.stop_consumer_group('g1')
 
       store.transaction do
@@ -316,8 +316,8 @@ RSpec.describe Sourced::Store do
                      payload: { device_id: 'dev-1', name: 'Sensor A' }, metadata: meta
                    ))
 
-      cond = Sourced::QueryCondition.new(message_type: 'store_test.device.registered', attrs: { device_id: 'dev-1' })
-      messages, = store.read([cond])
+      cond = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1')
+      messages, = store.read(cond)
       expect(messages.first.metadata).to eq(meta)
     end
 
@@ -330,9 +330,9 @@ RSpec.describe Sourced::Store do
       )
       store.append([source, caused])
 
-      cond1 = Sourced::QueryCondition.new(message_type: 'store_test.device.registered', attrs: { device_id: 'dev-1' })
-      cond2 = Sourced::QueryCondition.new(message_type: 'store_test.asset.registered', attrs: { asset_id: 'asset-1' })
-      messages, = store.read([cond1, cond2])
+      cond1 = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1')
+      cond2 = Sourced::Selector[StoreTestMessages::AssetRegistered].by(:asset_id).bind(asset_id: 'asset-1')
+      messages, = store.read(cond1 + cond2)
 
       src = messages.find { |m| m.type == 'store_test.device.registered' }
       csd = messages.find { |m| m.type == 'store_test.asset.registered' }
@@ -404,11 +404,8 @@ RSpec.describe Sourced::Store do
       expect(db[:sourced_scheduled_messages].count).to eq(0)
       expect(store.latest_position).to eq(1)
 
-      cond = Sourced::QueryCondition.new(
-        message_type: due.type,
-        attrs: { device_id: 'dev-1' }
-      )
-      result = store.read([cond])
+      cond = Sourced::Selector[due.class].by(:device_id).bind(device_id: 'dev-1')
+      result = store.read(cond)
       msg = result.messages.first
 
       expect(msg).to be_a(StoreTestMessages::DeviceRegistered)
@@ -419,12 +416,9 @@ RSpec.describe Sourced::Store do
 
     it 'rolls back scheduling when a guard conflict aborts the append' do
       now = Time.now
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.registered',
-        attrs: { device_id: 'dev-1' }
-      )
+      cond = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1')
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
-      _events, guard = store.read([cond])
+      _events, guard = store.read(cond)
 
       # Concurrent write invalidates the guard.
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A v2' }))
@@ -443,17 +437,14 @@ RSpec.describe Sourced::Store do
 
   describe '#append with guard (conditional append)' do
     let(:cond) do
-      Sourced::QueryCondition.new(
-        message_type: 'store_test.device.registered',
-        attrs: { device_id: 'dev-1' }
-      )
+      Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1')
     end
 
     it 'succeeds when no conflicts exist' do
       msg1 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
       store.append(msg1)
 
-      _events, guard = store.read([cond])
+      _events, guard = store.read(cond)
 
       msg2 = StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
       pos = store.append(msg2, guard: guard)
@@ -464,7 +455,7 @@ RSpec.describe Sourced::Store do
       msg1 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
       store.append(msg1)
 
-      _events, guard = store.read([cond])
+      _events, guard = store.read(cond)
 
       # Concurrent write by another process
       conflicting = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A v2' })
@@ -480,7 +471,7 @@ RSpec.describe Sourced::Store do
       msg1 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
       store.append(msg1)
 
-      _events, guard = store.read([cond])
+      _events, guard = store.read(cond)
 
       # Concurrent write
       conflicting = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A v2' })
@@ -502,7 +493,7 @@ RSpec.describe Sourced::Store do
       msg1 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
       store.append(msg1)
 
-      guard = Sourced::ConsistencyGuard.new(query: [cond], last_position: store.latest_position)
+      guard = Sourced::ConsistencyGuard.new(selector: cond, last_position: store.latest_position)
 
       msg2 = StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
       pos = store.append(msg2, guard: guard)
@@ -542,12 +533,9 @@ RSpec.describe Sourced::Store do
 
         # Seed a message so the guard has a real partition condition to read.
         store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' }))
-        _events, guard = store.read([
-          Sourced::QueryCondition.new(
-            message_type: 'store_test.device.registered',
-            attrs: { device_id: 'dev-1' }
-          )
-        ])
+        _events, guard = store.read(
+          Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1')
+        )
 
         go_r, go_w     = IO.pipe # parent -> child: snapshot taken, you may commit
         done_r, done_w = IO.pipe # child -> parent: I have committed
@@ -772,7 +760,7 @@ RSpec.describe Sourced::Store do
       end
     end
 
-    context 'with conditions' do
+    context 'with a selector' do
       before do
         store.append([
           StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' }),
@@ -782,67 +770,27 @@ RSpec.describe Sourced::Store do
         ])
       end
 
-      it 'filters messages matching conditions' do
-        cond = Sourced::QueryCondition.new(
-          message_type: 'store_test.device.registered',
-          attrs: { device_id: 'dev-1' }
-        )
-        result = store.read_all(conditions: [cond])
-        expect(result.messages.size).to eq(1)
-        expect(result.messages.first.payload.device_id).to eq('dev-1')
-      end
-
-      it 'ORs multiple conditions' do
-        cond1 = Sourced::QueryCondition.new(
-          message_type: 'store_test.device.registered',
-          attrs: { device_id: 'dev-1' }
-        )
-        cond2 = Sourced::QueryCondition.new(
-          message_type: 'store_test.asset.registered',
-          attrs: { asset_id: 'asset-1' }
-        )
-        result = store.read_all(conditions: [cond1, cond2])
-        types = result.messages.map(&:type)
-        expect(types).to eq(['store_test.device.registered', 'store_test.asset.registered'])
-      end
-
-      it 'combines conditions with from_position' do
-        cond = Sourced::QueryCondition.new(
-          message_type: 'store_test.device.registered',
-          attrs: { device_id: 'dev-2' }
-        )
+      it 'combines with from_position' do
+        selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-2')
         # dev-2 registered is at position 4
-        result = store.read_all(conditions: [cond], from_position: 4)
+        result = store.read_all(selector, from_position: 4)
         expect(result.messages.size).to eq(1)
         expect(result.messages.first.payload.device_id).to eq('dev-2')
 
         # from_position past it returns nothing
-        result = store.read_all(conditions: [cond], from_position: 5)
+        result = store.read_all(selector, from_position: 5)
         expect(result.messages).to be_empty
       end
 
-      it 'returns empty messages when conditions match nothing' do
-        cond = Sourced::QueryCondition.new(
-          message_type: 'store_test.device.registered',
-          attrs: { device_id: 'nonexistent' }
-        )
-        result = store.read_all(conditions: [cond])
-        expect(result.messages).to be_empty
+      it 'reads in descending order from from_position' do
+        selector = Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::DeviceBound]
+        expect(store.read_all(selector, order: :desc).messages.map(&:position)).to eq([4, 3, 1])
+        expect(store.read_all(selector, from_position: 3, order: :desc).messages.map(&:position)).to eq([3, 1])
       end
 
-      it 'paginates with to_enum' do
-        cond1 = Sourced::QueryCondition.new(
-          message_type: 'store_test.device.registered',
-          attrs: { device_id: 'dev-1' }
-        )
-        cond2 = Sourced::QueryCondition.new(
-          message_type: 'store_test.device.registered',
-          attrs: { device_id: 'dev-2' }
-        )
-        # DeviceRegistered messages at positions 1 and 4
-        result = store.read_all(conditions: [cond1, cond2], limit: 1)
-        positions = result.to_enum.map(&:position)
-        expect(positions).to eq([1, 4])
+      it 'raises for a selector with unbound keys' do
+        selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id)
+        expect { store.read_all(selector) }.to raise_error(Sourced::Selector::UnboundKeyError, /device_id/)
       end
     end
   end
@@ -857,273 +805,289 @@ RSpec.describe Sourced::Store do
       ])
     end
 
-    it 'queries by message_type and key condition' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.registered',
-        attrs: { device_id: 'dev-1' }
-      )
-      results, guard = store.read([cond])
+    let(:dev1) { Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1') }
+
+    it 'reads by message type and key' do
+      results, = store.read(dev1)
       expect(results.size).to eq(1)
       expect(results.first.type).to eq('store_test.device.registered')
       expect(results.first.payload.device_id).to eq('dev-1')
     end
 
-    it 'returns messages with position' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.registered',
-        attrs: { device_id: 'dev-1' }
-      )
-      results, _guard = store.read([cond])
-      expect(results.first.position).to eq(1)
-    end
-
-    it 'queries with multiple OR conditions' do
-      conditions = [
-        Sourced::QueryCondition.new(
-          message_type: 'store_test.device.registered',
-          attrs: { device_id: 'dev-1' }
-        ),
-        Sourced::QueryCondition.new(
-          message_type: 'store_test.device.bound',
-          attrs: { device_id: 'dev-1' }
-        )
-      ]
-      results, _guard = store.read(conditions)
-      expect(results.size).to eq(2)
-      expect(results.map(&:type)).to contain_exactly(
-        'store_test.device.registered',
-        'store_test.device.bound'
-      )
+    it 'reads several types' do
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::DeviceBound]
+        .by(:device_id).bind(device_id: 'dev-1')
+      results, = store.read(selector)
+      expect(results.map(&:type)).to eq(%w[store_test.device.registered store_test.device.bound])
     end
 
     it 'filters with after_position' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.registered',
-        attrs: { device_id: 'dev-1' }
-      )
       # dev-1 registered is at position 1, so after_position: 1 should return nothing
-      results, _guard = store.read([cond], after_position: 1)
+      results, = store.read(dev1, after_position: 1)
       expect(results).to be_empty
 
       # after_position: 0 should return it
-      results, _guard = store.read([cond], after_position: 0)
+      results, = store.read(dev1, after_position: 0)
       expect(results.size).to eq(1)
     end
 
     it 'applies limit' do
-      conditions = [
-        Sourced::QueryCondition.new(
-          message_type: 'store_test.device.registered',
-          attrs: { device_id: 'dev-1' }
-        ),
-        Sourced::QueryCondition.new(
-          message_type: 'store_test.device.bound',
-          attrs: { device_id: 'dev-1' }
-        )
-      ]
-      results, _guard = store.read(conditions, limit: 1)
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::DeviceBound]
+        .by(:device_id).bind(device_id: 'dev-1')
+      results, = store.read(selector, limit: 1)
       expect(results.size).to eq(1)
       expect(results.first.position).to eq(1) # first by position order
     end
 
-    it 'returns empty for non-matching conditions' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.registered',
-        attrs: { device_id: 'nonexistent' }
-      )
-      results, _guard = store.read([cond])
+    it 'returns empty for a value nothing carries' do
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'nonexistent')
+      results, = store.read(selector)
       expect(results).to be_empty
     end
 
-    it 'returns empty for empty conditions' do
-      results, _guard = store.read([])
+    it 'reads nothing, and guards nothing, for Selector::NONE' do
+      results, guard = store.read(Sourced::Selector::NONE)
       expect(results).to be_empty
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'C' }))
+      expect { store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'D' }), guard:) }
+        .not_to raise_error
+    end
+
+    it 'reads every message of its types with a selector without keys' do
+      results, = store.read(Sourced::Selector[StoreTestMessages::DeviceRegistered])
+      expect(results.map(&:position)).to eq([1, 4])
+    end
+
+    it 'raises for a selector with unbound keys' do
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id, :name).bind(name: 'Sensor A')
+      expect { store.read(selector) }.to raise_error(Sourced::Selector::UnboundKeyError, /device_id/)
     end
 
     it 'deserializes into correct message subclasses' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.registered',
-        attrs: { device_id: 'dev-1' }
-      )
-      results, _guard = store.read([cond])
+      results, = store.read(dev1)
       msg = results.first
       expect(msg).to be_a(StoreTestMessages::DeviceRegistered)
       expect(msg.id).to match(/\A[0-9a-f-]{36}\z/)
       expect(msg.created_at).to be_a(Time)
     end
 
-    it 'returns a ConsistencyGuard over the conditions' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.registered',
-        attrs: { device_id: 'dev-1' }
-      )
-      _results, guard = store.read([cond])
+    it 'returns a ConsistencyGuard over the selector' do
+      _results, guard = store.read(dev1)
       expect(guard).to be_a(Sourced::ConsistencyGuard)
-      expect(guard.query).to eq([cond])
+      expect(guard.selector).to eq(dev1)
     end
 
     it 'guard last_position reflects the last result position' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.registered',
-        attrs: { device_id: 'dev-2' }
-      )
-      results, guard = store.read([cond])
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-2')
+      results, guard = store.read(selector)
       # dev-2 is at position 4
       expect(results.size).to eq(1)
       expect(guard.last_position).to eq(4)
     end
 
-    it 'guard last_position falls back to latest_position when no results' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.registered',
-        attrs: { device_id: 'nonexistent' }
-      )
-      _results, guard = store.read([cond])
-      expect(guard.last_position).to eq(store.latest_position)
+    describe '#read_sql' do
+      it 'is the query #read runs' do
+        selector = Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::DeviceBound]
+          .by(:device_id).bind(device_id: 'dev-1')
+        sql = store.read_sql(selector, after_position: 1, limit: 5)
+
+        expect(sql).to include('LIMIT 5')
+        expect(store.db.fetch(sql).map { |row| row[:position] })
+          .to eq(store.read(selector, after_position: 1, limit: 5).messages.map(&:position))
+      end
+
+      it 'is nil when the read runs no query' do
+        expect(store.read_sql(Sourced::Selector::NONE)).to be_nil
+        expect(store.read_sql(Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'nope'))).to be_nil
+      end
+
+      it 'raises for a selector with unbound keys' do
+        expect { store.read_sql(Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id)) }
+          .to raise_error(Sourced::Selector::UnboundKeyError)
+      end
+    end
+
+    it 'guard last_position falls back to 0 when no results' do
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'nonexistent')
+      _results, guard = store.read(selector)
+      expect(guard.last_position).to eq(0)
     end
 
     it 'guard last_position falls back to after_position when no results and after_position given' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.registered',
-        attrs: { device_id: 'nonexistent' }
-      )
-      _results, guard = store.read([cond], after_position: 2)
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'nonexistent')
+      _results, guard = store.read(selector, after_position: 2)
       expect(guard.last_position).to eq(2)
     end
   end
 
-  describe '#read with compound conditions (AND within, OR across)' do
+  describe '#read with several keys' do
     before do
       store.append([
         # Two DeviceBound events with different (device_id, asset_id) combinations
         StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }),
         StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-2' }),
         StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-2', asset_id: 'asset-1' }),
-        # A single-attr message sharing device_id
+        # A message carrying only one of the keys
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' }),
       ])
     end
 
-    it 'compound condition ANDs attrs — only matches messages with all specified key pairs' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.bound',
-        attrs: { device_id: 'dev-1', asset_id: 'asset-1' }
-      )
-      results, _guard = store.read([cond])
-      expect(results.size).to eq(1)
-      expect(results.first.payload.device_id).to eq('dev-1')
-      expect(results.first.payload.asset_id).to eq('asset-1')
+    let(:selector) do
+      Sourced::Selector[StoreTestMessages::DeviceBound, StoreTestMessages::DeviceRegistered]
+        .by(:device_id, :asset_id).bind(device_id: 'dev-1', asset_id: 'asset-1')
     end
 
-    it 'excludes messages that match only one attr of a compound condition' do
-      # dev-1/asset-2 shares device_id but not asset_id
-      # dev-2/asset-1 shares asset_id but not device_id
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.bound',
-        attrs: { device_id: 'dev-1', asset_id: 'asset-1' }
-      )
-      results, _guard = store.read([cond])
-      expect(results.size).to eq(1)
-      pairs = results.map { |m| [m.payload.device_id, m.payload.asset_id] }
-      expect(pairs).to eq([['dev-1', 'asset-1']])
+    it 'selects messages whose every key they carry has the bound value' do
+      results, = store.read(selector)
+      expect(results.map(&:position)).to eq([1, 4])
     end
 
-    it 'ORs across separate conditions — compound and single-attr mixed' do
-      conditions = [
-        # Compound: only dev-1/asset-1
-        Sourced::QueryCondition.new(
-          message_type: 'store_test.device.bound',
-          attrs: { device_id: 'dev-1', asset_id: 'asset-1' }
-        ),
-        # Single-attr: dev-1 registered
-        Sourced::QueryCondition.new(
-          message_type: 'store_test.device.registered',
-          attrs: { device_id: 'dev-1' }
-        )
-      ]
-      results, _guard = store.read(conditions)
-      expect(results.size).to eq(2)
-      expect(results.map(&:type)).to contain_exactly(
-        'store_test.device.bound',
-        'store_test.device.registered'
-      )
-    end
+    it 'guard detects conflicts in the partition' do
+      _results, guard = store.read(selector)
 
-    it 'guard with compound condition detects conflicts correctly' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.bound',
-        attrs: { device_id: 'dev-1', asset_id: 'asset-1' }
-      )
-      _results, guard = store.read([cond])
+      store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }))
 
-      # Concurrent write: same device_id + asset_id combination
-      conflicting = StoreTestMessages::DeviceBound.new(
-        payload: { device_id: 'dev-1', asset_id: 'asset-1' }
-      )
-      store.append(conflicting)
-
-      new_msg = StoreTestMessages::DeviceBound.new(
-        payload: { device_id: 'dev-1', asset_id: 'asset-1' }
-      )
       expect {
-        store.append(new_msg, guard: guard)
+        store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }), guard:)
       }.to raise_error(Sourced::ConcurrentAppendError)
     end
 
-    it 'guard with compound condition does NOT flag writes to a different partition as conflicts' do
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.bound',
-        attrs: { device_id: 'dev-1', asset_id: 'asset-1' }
-      )
-      _results, guard = store.read([cond])
+    it 'guard detects a message carrying only some of the keys' do
+      _results, guard = store.read(selector)
 
-      # Write to a DIFFERENT partition (dev-1/asset-2) — should NOT conflict
-      other_partition = StoreTestMessages::DeviceBound.new(
-        payload: { device_id: 'dev-1', asset_id: 'asset-2' }
-      )
-      store.append(other_partition)
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor B' }))
 
-      new_msg = StoreTestMessages::DeviceBound.new(
-        payload: { device_id: 'dev-1', asset_id: 'asset-1' }
-      )
       expect {
-        store.append(new_msg, guard: guard)
+        store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }), guard:)
+      }.to raise_error(Sourced::ConcurrentAppendError)
+    end
+
+    it 'guard does NOT flag writes to a different partition as conflicts' do
+      _results, guard = store.read(selector)
+
+      store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-2' }))
+
+      expect {
+        store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }), guard:)
       }.not_to raise_error
     end
   end
 
-  describe '#messages_since' do
-    it 'returns messages after the given position' do
-      msg1 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
-      store.append(msg1)
-      pos = store.latest_position
-
-      msg2 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A Updated' })
-      store.append(msg2)
-
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.registered',
-        attrs: { device_id: 'dev-1' }
-      )
-
-      conflicts, guard = store.messages_since([cond], pos)
-      expect(conflicts.size).to eq(1)
-      expect(conflicts.first.payload.name).to eq('Sensor A Updated')
-      expect(guard).to be_a(Sourced::ConsistencyGuard)
+  describe '#read with several parts' do
+    before do
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' }), # 1
+        StoreTestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'Truck' }),   # 2
+        StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }),   # 3
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'Sensor B' }), # 4
+        StoreTestMessages::AssetRegistered.new(payload: { asset_id: 'asset-2', label: 'Van' })      # 5
+      ])
     end
 
-    it 'returns empty when no new messages' do
-      msg = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
-      store.append(msg)
-      pos = store.latest_position
+    let(:selector) do
+      (Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::DeviceBound].by(:device_id) +
+       Sourced::Selector[StoreTestMessages::AssetRegistered, StoreTestMessages::DeviceBound].by(:asset_id))
+        .bind(device_id: 'dev-1', asset_id: 'asset-1')
+    end
 
-      cond = Sourced::QueryCondition.new(
-        message_type: 'store_test.device.registered',
-        attrs: { device_id: 'dev-1' }
-      )
+    it 'reads what any part selects, in position order, each message once' do
+      results, = store.read(selector)
+      expect(results.map(&:position)).to eq([1, 2, 3])
+    end
 
-      conflicts, _guard = store.messages_since([cond], pos)
-      expect(conflicts).to be_empty
+    it 'pages parts without keys with keyed parts, in either order' do
+      selector = Sourced::Selector[StoreTestMessages::AssetRegistered] +
+                 Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1')
+      expect(store.read_all(selector, limit: 2).to_enum.map(&:position)).to eq([1, 2, 5])
+      expect(store.read_all(selector, limit: 2, order: :desc).to_enum.map(&:position)).to eq([5, 2, 1])
+      expect(store.read(selector, after_position: 1, limit: 1).messages.map(&:position)).to eq([2])
+    end
+
+    it 'raises for a guard over a selector with unbound keys' do
+      guard = Sourced::ConsistencyGuard.new(selector: Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), last_position: 0)
+      expect {
+        store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'X' }), guard:)
+      }.to raise_error(Sourced::Selector::UnboundKeyError)
+    end
+
+    it 'reads several values of one key' do
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1') +
+                 Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-2')
+      results, = store.read(selector)
+      expect(results.map(&:position)).to eq([1, 4])
+    end
+
+    it 'mixes keyed parts and parts without keys' do
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-2') +
+                 Sourced::Selector[StoreTestMessages::AssetRegistered]
+      results, = store.read(selector)
+      expect(results.map(&:position)).to eq([2, 4, 5])
+    end
+
+    it 'reads the parts whose key pairs exist when others have none yet' do
+      selector = (Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id) +
+                  Sourced::Selector[StoreTestMessages::AssetRegistered].by(:asset_id))
+        .bind(device_id: 'dev-1', asset_id: 'asset-9')
+      results, guard = store.read(selector)
+      expect(results.map(&:position)).to eq([1])
+
+      store.append(StoreTestMessages::AssetRegistered.new(payload: { asset_id: 'asset-9', label: 'New' }))
+      expect {
+        store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-9' }), guard:)
+      }.to raise_error(Sourced::ConcurrentAppendError)
+    end
+
+    it 'applies after_position and limit across parts' do
+      results, guard = store.read(selector, after_position: 1, limit: 1)
+      expect(results.map(&:position)).to eq([2])
+      expect(guard.last_position).to eq(2)
+    end
+
+    it 'guard conflicts with an append any part selects' do
+      [
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'X' }),
+        StoreTestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'X' })
+      ].each do |msg|
+        _results, guard = store.read(selector)
+        store.append(msg)
+        expect {
+          store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }), guard:)
+        }.to raise_error(Sourced::ConcurrentAppendError)
+      end
+    end
+
+    it 'guard does not conflict with an append no part selects' do
+      _results, guard = store.read(selector)
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'X' }),
+        StoreTestMessages::AssetRegistered.new(payload: { asset_id: 'asset-2', label: 'X' }),
+        # another value of each part's key
+        StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-2', asset_id: 'asset-2' })
+      ])
+      expect {
+        store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }), guard:)
+      }.not_to raise_error
+    end
+
+    it 'guard and read match the same messages' do
+      appended = [
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'in' }),   # device part
+        StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-7' }), # device part only
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-3', name: 'out' }),  # neither
+        StoreTestMessages::AssetRegistered.new(payload: { asset_id: 'asset-1', label: 'in' })   # asset part
+      ]
+      appended.each do |msg|
+        guard = Sourced::ConsistencyGuard.new(selector: selector, last_position: store.latest_position)
+        store.append(msg)
+        selected = store.read(selector, after_position: guard.last_position).messages.any?
+        conflicts = begin
+          store.append(StoreTestMessages::NoteAdded.new(payload: { text: 'probe' }), guard:)
+          false
+        rescue Sourced::ConcurrentAppendError
+          true
+        end
+        expect(conflicts).to eq(selected), "#{msg.payload.to_h}: read #{selected}, conflict #{conflicts}"
+      end
     end
   end
 
@@ -1174,8 +1138,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
       store.claim_next('test_group',
-        partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'],
+        Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id),
         worker_id: 'w-1')
 
       store.clear!
@@ -1424,8 +1387,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
       store.claim_next('my_group',
-        partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'],
+        Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id),
         worker_id: 'w-1')
 
       expect(db[:sourced_offsets].count).to be > 0
@@ -1441,8 +1403,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
       store.claim_next('my_group',
-        partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'],
+        Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id),
         worker_id: 'w-1')
 
       expect { store.reset_consumer_group('my_group') }
@@ -1456,8 +1417,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
       store.claim_next('my_group',
-        partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'],
+        Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id),
         worker_id: 'w-1')
 
       reactor = double('reactor', group_id: 'my_group')
@@ -1473,8 +1433,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
       store.claim_next('queue_group',
-        partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'],
+        Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id),
         worker_id: 'w-1')
 
       expect(db[:sourced_offsets].count).to be > 0
@@ -1485,7 +1444,7 @@ RSpec.describe Sourced::Store do
 
   describe '#claim_next (single attribute partition)' do
     let(:group_id) { 'single-test' }
-    let(:handled_types) { ['store_test.device.registered'] }
+    let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id) }
 
     before do
       store.register_consumer_group(group_id)
@@ -1496,12 +1455,12 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(db[:sourced_offsets].count).to be >= 1
     end
 
     it 'returns nil when no pending messages' do
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(result).to be_nil
     end
 
@@ -1510,7 +1469,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(result).not_to be_nil
       expect(result).to be_a(Sourced::ClaimResult)
       expect(result.offset_id).to be_a(Integer)
@@ -1521,7 +1480,7 @@ RSpec.describe Sourced::Store do
       expect(result.messages.size).to eq(1)
       expect(result.messages.first).to be_a(StoreTestMessages::DeviceRegistered)
       expect(result.messages.first.position).to eq(1)
-      expect(result.guard).to have_attributes(class: Sourced::ConsistencyGuard, query: an_instance_of(Sourced::PartitionQuery))
+      expect(result.guard).to have_attributes(class: Sourced::ConsistencyGuard, selector: an_instance_of(Sourced::Selector))
     end
 
     it 'returns multiple pending messages for same partition' do
@@ -1530,7 +1489,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
       ])
 
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(result.messages.size).to eq(2)
     end
 
@@ -1540,8 +1499,8 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
       ])
 
-      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-2')
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
+      r2 = store.claim_next(group_id, selector, worker_id: 'w-2')
 
       expect(r1.partition_key).not_to eq(r2.partition_key)
     end
@@ -1551,18 +1510,43 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-2')
+      store.claim_next(group_id, selector, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-2')
       expect(result).to be_nil
     end
 
-    it 'respects handled_types filter' do
+    it "only claims the selector's types" do
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: ['store_test.asset.registered'], worker_id: 'w-1')
+      result = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::AssetRegistered].by(:device_id), worker_id: 'w-1')
       expect(result).to be_nil
+    end
+
+    it 'claims nothing for Selector::NONE' do
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+
+      expect(store.claim_next(group_id, Sourced::Selector::NONE, worker_id: 'w-1')).to be_nil
+    end
+
+    it 'raises for parts with different keys' do
+      mixed = selector + Sourced::Selector[StoreTestMessages::AssetRegistered].by(:asset_id)
+
+      expect { store.claim_next(group_id, mixed, worker_id: 'w-1') }
+        .to raise_error(ArgumentError, /must all have the same partition keys/)
+      expect { store.register_consumer_group('mixed-keys', mixed) }
+        .to raise_error(ArgumentError, /must all have the same partition keys/)
+    end
+
+    it 'raises for a selector without keys' do
+      expect { store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered], worker_id: 'w-1') }
+        .to raise_error(ArgumentError, /has no partition keys/)
+    end
+
+    it 'raises for a bound selector' do
+      expect { store.claim_next(group_id, selector.bind(device_id: 'dev-1'), worker_id: 'w-1') }
+        .to raise_error(ArgumentError, /claims bind its keys/)
     end
 
     it 'only returns messages after last_position' do
@@ -1570,7 +1554,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # Append another message for same partition
@@ -1578,7 +1562,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A updated' })
       )
 
-      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(r2.messages.size).to eq(1)
       expect(r2.messages.first.payload.name).to eq('A updated')
     end
@@ -1589,7 +1573,7 @@ RSpec.describe Sourced::Store do
       )
       store.stop_consumer_group(group_id)
 
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(result).to be_nil
     end
 
@@ -1603,7 +1587,7 @@ RSpec.describe Sourced::Store do
         group.retry(Time.now + 3600)
       end
 
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(result).to be_nil
     end
 
@@ -1618,7 +1602,7 @@ RSpec.describe Sourced::Store do
       Timecop.freeze(Time.utc(2026, 10, 25, 0, 30).getlocal) do
         store.updating_consumer_group(group_id) { |group| group.retry(Time.now + 3600) }
 
-        result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+        result = store.claim_next(group_id, selector, worker_id: 'w-1')
         expect(result).to be_nil
       end
     ensure
@@ -1635,7 +1619,7 @@ RSpec.describe Sourced::Store do
         group.retry(Time.now - 1)
       end
 
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(result).not_to be_nil
       expect(db[:sourced_consumer_groups].where(group_id:).get(:status)).to eq('retrying')
     end
@@ -1644,16 +1628,16 @@ RSpec.describe Sourced::Store do
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }))
 
-      failed = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      failed = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(failed.retrying).to be(false)
       store.release(group_id, offset_id: failed.offset_id)
       store.updating_consumer_group(group_id, offset_id: failed.offset_id) { |group| group.retry(Time.now - 1) }
 
-      again = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      again = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(again.offset_id).to eq(failed.offset_id)
       expect(again.retrying).to be(true)
 
-      other = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-2')
+      other = store.claim_next(group_id, selector, worker_id: 'w-2')
       expect(other.partition_value).to eq('device_id' => 'dev-2')
       expect(other.retrying).to be(false)
     end
@@ -1666,7 +1650,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       # dev-2 was appended first (position 1), so it should be prioritized
       expect(result.partition_value).to eq({ 'device_id' => 'dev-2' })
     end
@@ -1676,7 +1660,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # New partition appears
@@ -1684,7 +1668,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-3', name: 'C' })
       )
 
-      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(r2).not_to be_nil
       expect(r2.partition_value).to eq({ 'device_id' => 'dev-3' })
     end
@@ -1694,10 +1678,10 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
 
       expect(result.guard).to eq(Sourced::ConsistencyGuard.new(
-        query: Sourced::PartitionQuery.new(attrs: { 'device_id' => 'dev-1' }, types: handled_types),
+        selector: Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id).bind(device_id: 'dev-1'),
         last_position: result.messages.last.position
       ))
     end
@@ -1707,7 +1691,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
 
       # No concurrent writes — append with guard succeeds
       new_event = StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
@@ -1721,7 +1705,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
 
       # Simulate concurrent write after claim
       store.append(
@@ -1739,7 +1723,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(result.replaying).to be false
     end
 
@@ -1748,7 +1732,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # New message arrives after ack
@@ -1756,7 +1740,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
       )
 
-      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(r2.replaying).to be false
     end
 
@@ -1767,7 +1751,7 @@ RSpec.describe Sourced::Store do
       ])
 
       # Process and ack — highest_position advances to 2
-      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # Reset offsets — highest_position stays at 2
@@ -1776,7 +1760,7 @@ RSpec.describe Sourced::Store do
       store.start_consumer_group(group_id)
 
       # Re-claim same messages — replaying because positions <= highest_position
-      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(r2.replaying).to be true
       expect(r2.messages.size).to eq(2)
     end
@@ -1787,7 +1771,7 @@ RSpec.describe Sourced::Store do
       )
 
       # Process and ack up to position 1
-      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # Reset offsets
@@ -1801,7 +1785,7 @@ RSpec.describe Sourced::Store do
       )
 
       # Re-claim: both messages, but last position (2) > highest_position (1)
-      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(r2.replaying).to be false
       expect(r2.messages.size).to eq(2)
     end
@@ -1809,7 +1793,7 @@ RSpec.describe Sourced::Store do
 
   describe '#claim_next (lazy discovery)' do
     let(:group_id) { 'discovery-test' }
-    let(:handled_types) { ['store_test.device.registered', 'store_test.device.bound'] }
+    let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::DeviceBound].by(:device_id) }
 
     before do
       store.register_consumer_group(group_id)
@@ -1820,7 +1804,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.claim_next(group_id, selector, worker_id: 'w-1')
 
       cg = db[:sourced_consumer_groups].where(group_id: group_id).first
       expect(cg[:discovery_position]).to be >= 1
@@ -1833,11 +1817,11 @@ RSpec.describe Sourced::Store do
       ])
 
       # First claim discovers both partitions and claims one
-      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # Second claim uses fast path (no discovery needed)
-      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(r2).not_to be_nil
       expect(r2.partition_key).not_to eq(r1.partition_key)
     end
@@ -1848,11 +1832,11 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # No more work
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(result).to be_nil
 
       # New partition arrives
@@ -1861,7 +1845,7 @@ RSpec.describe Sourced::Store do
       )
 
       # Should discover and claim the new partition
-      r2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(r2).not_to be_nil
       expect(r2.partition_value).to eq({ 'device_id' => 'dev-2' })
     end
@@ -1871,7 +1855,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      r1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       cg = db[:sourced_consumer_groups].where(group_id: group_id).first
@@ -1900,7 +1884,7 @@ RSpec.describe Sourced::Store do
       # Should discover and process all partitions
       claimed_partitions = []
       3.times do
-        r = store.claim_next(new_group, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+        r = store.claim_next(new_group, selector, worker_id: 'w-1')
         break unless r
 
         claimed_partitions << r.partition_key
@@ -1927,7 +1911,7 @@ RSpec.describe Sourced::Store do
 
       claimed_partitions = []
       10.times do
-        r = store.claim_next(new_group, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+        r = store.claim_next(new_group, selector, worker_id: 'w-1')
         break unless r
 
         claimed_partitions << r.partition_key
@@ -1941,20 +1925,20 @@ RSpec.describe Sourced::Store do
       )
     end
 
-    it 'only discovers partitions matching handled_types' do
+    it "only discovers partitions of the selector's types" do
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
         StoreTestMessages::AssetRegistered.new(payload: { asset_id: 'a-1', label: 'Truck' })
       ])
 
       # Only handles device events, not asset events
-      result = store.claim_next(group_id, partition_by: 'device_id', handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      result = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
       expect(result).not_to be_nil
       expect(result.partition_value).to eq({ 'device_id' => 'dev-1' })
 
       # No more work for device_id partitions
       store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
-      result2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      result2 = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
       expect(result2).to be_nil
     end
 
@@ -1964,7 +1948,7 @@ RSpec.describe Sourced::Store do
 
     def claim_all
       claimed = []
-      while (claim = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1'))
+      while (claim = store.claim_next(group_id, selector, worker_id: 'w-1'))
         claimed << claim.partition_value['device_id']
         store.ack(group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
       end
@@ -1998,13 +1982,13 @@ RSpec.describe Sourced::Store do
 
   describe '#claim_next (composite partition — conditional AND fetch)' do
     let(:group_id) { 'composite-test' }
-    let(:handled_types) do
-      [
-        'store_test.course.created',
-        'store_test.user.registered',
-        'store_test.user.joined_course',
-        'store_test.course.closed'
-      ]
+    let(:selector) do
+      Sourced::Selector[
+        StoreTestMessages::CourseCreated,
+        StoreTestMessages::UserRegistered,
+        StoreTestMessages::UserJoinedCourse,
+        StoreTestMessages::CourseClosed
+      ].by(:course_name, :user_id)
     end
 
     before do
@@ -2017,7 +2001,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::CourseCreated.new(payload: { course_name: 'Algebra' })
       )
 
-      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(result).to be_nil
 
       # UserJoinedCourse has both — NOW a partition is created
@@ -2025,7 +2009,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
       )
 
-      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(result).not_to be_nil
       expect(result.partition_value).to eq({ 'course_name' => 'Algebra', 'user_id' => 'joe' })
     end
@@ -2037,7 +2021,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
       ])
 
-      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       types = result.messages.map(&:type)
       expect(types).to contain_exactly(
         'store_test.course.created',
@@ -2052,8 +2036,8 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Physics', user_id: 'jake' })
       ])
 
-      r1 = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
-      r2 = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-2')
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
+      r2 = store.claim_next(group_id, selector, worker_id: 'w-2')
 
       expect(r1).not_to be_nil
       expect(r2).not_to be_nil
@@ -2067,7 +2051,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'jake' })
       ])
 
-      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
 
       # The first partition claimed should be one of the two — let's check its messages
       if result.partition_value['user_id'] == 'joe'
@@ -2090,7 +2074,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
       ])
 
-      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       # The join message matches both key_pairs but should appear only once
       expect(result.messages.size).to eq(1)
     end
@@ -2101,7 +2085,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'History', user_id: 'joe' })
       ])
 
-      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
 
       # Whichever partition we get, the other course's join should be excluded
       courses = result.messages.map { |m| m.payload.course_name }
@@ -2114,10 +2098,10 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
       ])
 
-      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
 
       expect(result.guard).to eq(Sourced::ConsistencyGuard.new(
-        query: Sourced::PartitionQuery.new(attrs: { 'course_name' => 'Algebra', 'user_id' => 'joe' }, types: handled_types),
+        selector: selector.bind(course_name: 'Algebra', user_id: 'joe'),
         last_position: result.messages.last.position
       ))
     end
@@ -2128,7 +2112,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
       ])
 
-      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
 
       # Concurrent write: course closed while decider was processing
       store.append(
@@ -2142,9 +2126,49 @@ RSpec.describe Sourced::Store do
     end
   end
 
+  describe '#claim_next (messages carrying some of the partition keys)' do
+    let(:group_id) { 'partial-keys-test' }
+    let(:selector) do
+      Sourced::Selector[StoreTestMessages::UserJoinedCourse, StoreTestMessages::CourseClosed].by(:course_name, :user_id)
+    end
+
+    before do
+      store.register_consumer_group(group_id, selector)
+      %w[joe jake].each do |user_id|
+        store.append(StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: }))
+      end
+      while (claim = store.claim_next(group_id, selector, worker_id: 'w-1'))
+        store.ack(group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
+      end
+    end
+
+    def drain
+      claims = []
+      while (claim = store.claim_next(group_id, selector, worker_id: 'w-1'))
+        claims << claim
+        store.ack(group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
+      end
+      claims
+    end
+
+    it 'claims every partition the message is in, on its own' do
+      store.append(StoreTestMessages::CourseClosed.new(payload: { course_name: 'Algebra' }))
+
+      claims = drain
+      expect(claims.map { |c| c.partition_value['user_id'] }).to contain_exactly('joe', 'jake')
+      expect(claims.map { |c| c.messages.map(&:type) }).to all(eq([StoreTestMessages::CourseClosed.type]))
+    end
+
+    it 'claims no partition when the key it carries has another value' do
+      store.append(StoreTestMessages::CourseClosed.new(payload: { course_name: 'Physics' }))
+
+      expect(drain).to be_empty
+    end
+  end
+
   describe '#claim_next (composite partition — cross-partition false positives)' do
     let(:group_id) { 'cross-partition-test' }
-    let(:handled_types) { ['store_test.user.joined_course'] }
+    let(:selector) { Sourced::Selector[StoreTestMessages::UserJoinedCourse].by(:course_name, :user_id) }
 
     before do
       store.register_consumer_group(group_id)
@@ -2165,13 +2189,13 @@ RSpec.describe Sourced::Store do
       store.append(
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
       )
-      r1 = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       store.append(
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'jake' })
       )
-      r2 = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
       store.ack(group_id, offset_id: r2.offset_id, position: r2.messages.last.position)
 
       # joe: last_position=1, jake: last_position=2. Both fully caught up.
@@ -2183,7 +2207,7 @@ RSpec.describe Sourced::Store do
 
       # Step 3: claim_next should find jake (the partition with real work),
       # not return nil because joe's OR-match on course_name got in the way.
-      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(result).not_to be_nil
       expect(result.partition_value).to eq({ 'course_name' => 'Algebra', 'user_id' => 'jake' })
       expect(result.messages.size).to eq(1)
@@ -2204,7 +2228,7 @@ RSpec.describe Sourced::Store do
         )
       end
       seats.size.times do
-        result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+        result = store.claim_next(group_id, selector, worker_id: 'w-1')
         expect(result).not_to be_nil
         store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
       end
@@ -2220,7 +2244,7 @@ RSpec.describe Sourced::Store do
       # Should claim A3 and A5, not be blocked by A1/A2/A4's stale OR matches
       claimed_users = []
       2.times do |i|
-        result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+        result = store.claim_next(group_id, selector, worker_id: 'w-1')
         expect(result).not_to be_nil, "Expected partition #{i + 1} of 2 to be claimable but got nil (claimed so far: #{claimed_users})"
         claimed_users << result.partition_value['user_id']
         store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
@@ -2229,7 +2253,7 @@ RSpec.describe Sourced::Store do
       expect(claimed_users).to contain_exactly('A3', 'A5')
 
       # No more work
-      result = store.claim_next(group_id, partition_by: ['course_name', 'user_id'], handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(result).to be_nil
     end
   end
@@ -2246,8 +2270,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      result = store.claim_next(group_id, partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      result = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
 
       store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
 
@@ -2264,27 +2287,25 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
       ])
 
-      r1 = store.claim_next(group_id, partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      r1 = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       # No new messages — should return nil
-      r2 = store.claim_next(group_id, partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      r2 = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
       expect(r2).to be_nil
     end
   end
 
   describe '#ack_and_delete' do
     let(:group_id) { 'queue-test' }
-    let(:handled_types) { ['store_test.device.registered'] }
+    let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id) }
 
     before do
-      store.register_consumer_group(group_id, partition_by: 'device_id', exclusive: true)
+      store.register_consumer_group(group_id, selector, exclusive: true)
     end
 
     def claim
-      store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.claim_next(group_id, selector, worker_id: 'w-1')
     end
 
     it 'deletes the processed messages and their key-pair links' do
@@ -2362,13 +2383,13 @@ RSpec.describe Sourced::Store do
       ])
 
       # Claim and delete dev-1's batch
-      dev1 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      dev1 = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(dev1.partition_value).to eq({ 'device_id' => 'dev-1' })
       expect(dev1.messages.map { |m| m.payload.name }).to eq(%w[A1 A2])
       store.ack_and_delete(group_id, offset_id: dev1.offset_id, positions: dev1.messages.map(&:position))
 
       # dev-2 still claimable and intact
-      dev2 = store.claim_next(group_id, partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-2')
+      dev2 = store.claim_next(group_id, selector, worker_id: 'w-2')
       expect(dev2.partition_value).to eq({ 'device_id' => 'dev-2' })
       expect(dev2.messages.map { |m| m.payload.name }).to eq(%w[B1])
     end
@@ -2388,14 +2409,14 @@ RSpec.describe Sourced::Store do
   end
 
   describe '#release_drained_offsets' do
-    let(:handled_types) { ['store_test.device.registered'] }
+    let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id) }
 
     it 'deletes drained queue offsets (unclaimed, no remaining messages)' do
-      store.register_consumer_group('queue_group', partition_by: 'device_id', exclusive: true)
+      store.register_consumer_group('queue_group', selector, exclusive: true)
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      result = store.claim_next('queue_group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next('queue_group', selector, worker_id: 'w-1')
       store.ack_and_delete('queue_group', offset_id: result.offset_id, positions: result.messages.map(&:position))
 
       expect(db[:sourced_offsets].count).to eq(1)
@@ -2406,11 +2427,11 @@ RSpec.describe Sourced::Store do
     end
 
     it 'keeps queue offsets that still have pending messages' do
-      store.register_consumer_group('queue_group', partition_by: 'device_id', exclusive: true)
+      store.register_consumer_group('queue_group', selector, exclusive: true)
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      store.claim_next('queue_group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      store.claim_next('queue_group', selector, worker_id: 'w-1')
       store.release('queue_group', offset_id: db[:sourced_offsets].first[:id])
 
       expect(store.release_drained_offsets).to eq(0)
@@ -2418,11 +2439,11 @@ RSpec.describe Sourced::Store do
     end
 
     it 'keeps a retain (non-deleting) offset whose partition still has messages' do
-      store.register_consumer_group('log_group', partition_by: 'device_id')
+      store.register_consumer_group('log_group', selector)
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      result = store.claim_next('log_group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next('log_group', selector, worker_id: 'w-1')
       # ack retains the message (event-log semantics) -> partition not drained
       store.ack('log_group', offset_id: result.offset_id, position: result.messages.last.position)
 
@@ -2433,11 +2454,11 @@ RSpec.describe Sourced::Store do
     it 'reaps a drained offset for a non-exclusive (log) group that deleted its messages' do
       # Deletion is decoupled from exclusivity: a log-mode reactor may delete via
       # a :delete action. Its drained offset must still be reaped (no leak).
-      store.register_consumer_group('log_group', partition_by: 'device_id')
+      store.register_consumer_group('log_group', selector)
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      result = store.claim_next('log_group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next('log_group', selector, worker_id: 'w-1')
       store.delete_messages(result.messages.map(&:position))
       store.ack('log_group', offset_id: result.offset_id, position: result.messages.last.position)
 
@@ -2446,21 +2467,54 @@ RSpec.describe Sourced::Store do
     end
 
     it 'leaves claimed queue offsets alone' do
-      store.register_consumer_group('queue_group', partition_by: 'device_id', exclusive: true)
+      store.register_consumer_group('queue_group', selector, exclusive: true)
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      result = store.claim_next('queue_group', partition_by: 'device_id', handled_types: handled_types, worker_id: 'w-1')
+      result = store.claim_next('queue_group', selector, worker_id: 'w-1')
       # Delete the message but leave the claim held (simulating an in-flight worker)
       db[:sourced_messages].where(position: result.messages.map(&:position)).delete
 
       expect(store.release_drained_offsets).to eq(0)
       expect(db[:sourced_offsets].count).to eq(1)
     end
+
+    context 'with several partition keys' do
+      let(:selector) do
+        Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::DeviceBound].by(:device_id, :asset_id)
+      end
+
+      before { store.register_consumer_group('binding_group', selector) }
+
+      def delete_bindings
+        store.delete_messages(db[:sourced_messages].where(message_type: StoreTestMessages::DeviceBound.type).select_map(:position))
+      end
+
+      it 'keeps an offset whose partition still has a message carrying some of its keys' do
+        store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+        store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }))
+        delete_bindings
+
+        expect(store.release_drained_offsets).to eq(0)
+        expect(db[:sourced_offsets].count).to eq(1)
+      end
+
+      it 'keeps an offset while messages of other partitions share one of its values' do
+        store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }))
+        store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-2' }))
+        store.delete_messages(db[:sourced_messages].where(message_type: StoreTestMessages::DeviceBound.type).select_map(:position).take(1))
+
+        expect(store.release_drained_offsets).to eq(0)
+        expect(db[:sourced_offsets].count).to eq(2)
+
+        delete_bindings
+        expect(store.release_drained_offsets).to eq(2)
+      end
+    end
   end
 
   describe 'append(index_by: :id) and id-partitioning' do
-    let(:handled_types) { ['store_test.device.registered'] }
+    let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered].by_message_id }
 
     it 'indexes only the message id, not payload attributes' do
       store.append(
@@ -2472,7 +2526,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'resolves index basis from the registered group (no explicit index_by needed)' do
-      store.register_consumer_group('q', partition_by: ['__id'], exclusive: true, handled_types: handled_types)
+      store.register_consumer_group('q', selector, exclusive: true)
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
@@ -2484,20 +2538,20 @@ RSpec.describe Sourced::Store do
       # it has its own Store with an empty @type_index_basis and appends via the
       # default (payload) basis. The reserved __id key must still be indexed, or
       # the id-partitioned reactor could never discover/claim the message.
-      store.register_consumer_group('q', partition_by: ['__id'], exclusive: true, handled_types: handled_types)
+      store.register_consumer_group('q', selector, exclusive: true)
 
       other_process = Sourced::Store.new(db) # never registered the group
       msg = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       other_process.append(msg)
 
-      claim = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w1')
+      claim = store.claim_next('q', selector, worker_id: 'w1')
       expect(claim).not_to be_nil
       expect(claim.messages.map(&:id)).to eq([msg.id])
     end
 
     it 'indexes promoted scheduled messages by id for an id-partitioned type' do
       now = Time.now
-      store.register_consumer_group('q', partition_by: ['__id'], exclusive: true, handled_types: handled_types)
+      store.register_consumer_group('q', selector, exclusive: true)
       msg = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }).at(now + 60)
       store.append(msg) # deferred to scheduled_messages (future-dated)
       Timecop.freeze(now + 61) { store.update_schedule! } # promotes via append — must still index by id
@@ -2505,30 +2559,30 @@ RSpec.describe Sourced::Store do
       expect(db[:sourced_key_pairs].select_map(:name).uniq).to eq(['__id'])
     end
 
-    it 'returns an empty guard that runs no conflict query, as before partition guards' do
-      store.register_consumer_group('q', partition_by: ['__id'], exclusive: true, handled_types: handled_types)
+    it 'returns a guard over Selector::NONE, which runs no conflict query' do
+      store.register_consumer_group('q', selector, exclusive: true)
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
 
-      claim = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w1')
-      expect(claim.guard).to eq(Sourced::ConsistencyGuard.new(query: [], last_position: claim.messages.last.position))
+      claim = store.claim_next('q', selector, worker_id: 'w1')
+      expect(claim.guard).to eq(Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: claim.messages.last.position))
 
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' }))
-      expect(store).not_to receive(:query_messages)
+      expect(store.db).not_to receive(:fetch)
       expect {
         store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'C' }), guard: claim.guard)
       }.not_to raise_error
     end
 
     it 'gives each message its own partition (one offset per message), claimed by disjoint workers' do
-      store.register_consumer_group('q', partition_by: ['__id'], exclusive: true)
+      store.register_consumer_group('q', selector, exclusive: true)
       m1 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       m2 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
       store.append(m1, index_by: :id)
       store.append(m2, index_by: :id)
 
-      c1 = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w1')
-      c2 = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w2')
-      c3 = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w3')
+      c1 = store.claim_next('q', selector, worker_id: 'w1')
+      c2 = store.claim_next('q', selector, worker_id: 'w2')
+      c3 = store.claim_next('q', selector, worker_id: 'w3')
 
       expect(c1.messages.size).to eq(1)
       expect(c2.messages.size).to eq(1)
@@ -2538,13 +2592,13 @@ RSpec.describe Sourced::Store do
     end
 
     it 'delete + reap prunes the drained offset and the orphaned id key_pair' do
-      store.register_consumer_group('q', partition_by: ['__id'], exclusive: true)
+      store.register_consumer_group('q', selector, exclusive: true)
       m1 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       m2 = StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
       store.append(m1, index_by: :id)
       store.append(m2, index_by: :id)
 
-      c1 = store.claim_next('q', partition_by: ['__id'], handled_types: handled_types, worker_id: 'w1')
+      c1 = store.claim_next('q', selector, worker_id: 'w1')
       store.ack_and_delete('q', offset_id: c1.offset_id, positions: c1.messages.map(&:position))
 
       expect(db[:sourced_messages].count).to eq(1) # m2 remains
@@ -2557,7 +2611,7 @@ RSpec.describe Sourced::Store do
 
   describe '#advance_offset' do
     let(:group_id) { 'advance-test' }
-    let(:handled_types) { ['store_test.device.registered', 'store_test.device.bound'] }
+    let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::DeviceBound].by(:device_id) }
 
     before do
       store.register_consumer_group(group_id)
@@ -2647,8 +2701,7 @@ RSpec.describe Sourced::Store do
       )
 
       result = store.claim_next(group_id,
-        partition_by: 'device_id',
-        handled_types: handled_types,
+        selector,
         worker_id: 'w-1'
       )
       expect(result).to be_nil
@@ -2667,8 +2720,7 @@ RSpec.describe Sourced::Store do
       )
 
       result = store.claim_next(group_id,
-        partition_by: 'device_id',
-        handled_types: handled_types,
+        selector,
         worker_id: 'w-1'
       )
       expect(result).not_to be_nil
@@ -2762,8 +2814,7 @@ RSpec.describe Sourced::Store do
       ])
 
       # Claim and ack first partition
-      r1 = store.claim_next(group_id, partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      r1 = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
       result = store.stats
@@ -2837,10 +2888,8 @@ RSpec.describe Sourced::Store do
       ])
 
       # Claim to bootstrap offsets in both groups
-      store.claim_next('group_a', partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
-      store.claim_next('group_b', partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'], worker_id: 'w-2')
+      store.claim_next('group_a', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
+      store.claim_next('group_b', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-2')
 
       result = store.read_offsets
       expect(result.total_count).to be >= 2
@@ -2869,10 +2918,8 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       ])
 
-      store.claim_next('group_a', partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
-      store.claim_next('group_b', partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'], worker_id: 'w-2')
+      store.claim_next('group_a', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
+      store.claim_next('group_b', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-2')
 
       result = store.read_offsets(group_id: 'group_a')
       expect(result.offsets).to all(satisfy { |o| o[:group_name] == 'group_a' })
@@ -2890,8 +2937,7 @@ RSpec.describe Sourced::Store do
 
       # Claim each to bootstrap offsets
       3.times do
-        store.claim_next('group_a', partition_by: 'device_id',
-          handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+        store.claim_next('group_a', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
       end
 
       # Get first page of 2
@@ -2919,8 +2965,7 @@ RSpec.describe Sourced::Store do
       ])
 
       3.times do
-        store.claim_next('group_a', partition_by: 'device_id',
-          handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+        store.claim_next('group_a', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
       end
 
       # Paginate with limit: 1 to force multiple fetches
@@ -2938,8 +2983,7 @@ RSpec.describe Sourced::Store do
       ])
 
       # Claim creates an offset that is claimed
-      claim = store.claim_next('group_a', partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      claim = store.claim_next('group_a', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
 
       result = store.read_offsets(group_id: 'group_a')
       offset = result.offsets.first
@@ -3024,8 +3068,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      result = store.claim_next(group_id, partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      result = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
 
       store.release(group_id, offset_id: result.offset_id)
 
@@ -3039,12 +3082,10 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      r1 = store.claim_next(group_id, partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'], worker_id: 'w-1')
+      r1 = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
       store.release(group_id, offset_id: r1.offset_id)
 
-      r2 = store.claim_next(group_id, partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'], worker_id: 'w-2')
+      r2 = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-2')
 
       expect(r2.offset_id).to eq(r1.offset_id)
       expect(r2.messages.map(&:position)).to eq(r1.messages.map(&:position))
@@ -3055,7 +3096,7 @@ RSpec.describe Sourced::Store do
     let(:group_id) { 'eager-test-group' }
 
     it 'creates offsets during append when partition_by is registered' do
-      store.register_consumer_group(group_id, partition_by: [:device_id])
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
@@ -3067,7 +3108,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'creates offsets for multiple partitions in a single append' do
-      store.register_consumer_group(group_id, partition_by: [:device_id])
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
@@ -3080,7 +3121,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'deduplicates offsets within the same append batch' do
-      store.register_consumer_group(group_id, partition_by: [:device_id])
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
@@ -3092,7 +3133,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'is idempotent across multiple appends' do
-      store.register_consumer_group(group_id, partition_by: [:device_id])
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
       store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }))
@@ -3102,7 +3143,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'skips messages missing partition attributes' do
-      store.register_consumer_group(group_id, partition_by: [:device_id])
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       # AssetRegistered has no device_id
       store.append(StoreTestMessages::AssetRegistered.new(payload: { asset_id: 'a-1', label: 'X' }))
@@ -3111,12 +3152,10 @@ RSpec.describe Sourced::Store do
       expect(offsets).to be_empty
     end
 
-    it 'skips messages of types the group does not handle' do
-      store.register_consumer_group(
-        group_id, partition_by: [:device_id], handled_types: [StoreTestMessages::DeviceRegistered.type]
-      )
+    it 'skips messages of types the group does not claim' do
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
-      # DeviceBound carries device_id, but the group doesn't handle it
+      # DeviceBound carries device_id, but the group doesn't claim it
       store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }))
       expect(db[:sourced_offsets].all).to be_empty
 
@@ -3124,22 +3163,22 @@ RSpec.describe Sourced::Store do
       expect(db[:sourced_offsets].select_map(:partition_key)).to eq(['device_id:dev-1'])
     end
 
-    it 'claims the same partitions as discovery, whether registered before or after the messages' do
-      types = [StoreTestMessages::DeviceRegistered.type]
-      store.register_consumer_group('before', partition_by: %i[device_id asset_id], handled_types: types)
+    it 'claims the partitions discovery finds, whether registered before or after the messages' do
+      # Claims only DeviceRegistered, which carries device_id but not asset_id.
+      # The (dev-1, asset-1) partition is known only from DeviceBound, which it doesn't claim.
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id, :asset_id)
+      store.register_consumer_group('before', selector)
 
-      # (dev-1, asset-1) is known only from DeviceBound, which neither group handles
       store.append(StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' }))
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
-      store.register_consumer_group('after', partition_by: %i[device_id asset_id], handled_types: types)
+      store.register_consumer_group('after', selector)
 
-      %w[before after].each do |g|
-        expect(store.claim_next(g, partition_by: %w[device_id asset_id], handled_types: types, worker_id: 'w-1')).to be_nil
-      end
+      expect(store.claim_next('before', selector, worker_id: 'w-1')).to be_nil
+      expect(store.claim_next('after', selector, worker_id: 'w-1')).to be_nil
     end
 
     it 'creates offsets for composite partitions' do
-      store.register_consumer_group(group_id, partition_by: [:course_name, :user_id])
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::UserJoinedCourse].by(:course_name, :user_id))
 
       store.append(
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
@@ -3151,7 +3190,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'skips messages with only partial composite partition attributes' do
-      store.register_consumer_group(group_id, partition_by: [:course_name, :user_id])
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::UserJoinedCourse].by(:course_name, :user_id))
 
       # CourseCreated only has course_name, not user_id
       store.append(StoreTestMessages::CourseCreated.new(payload: { course_name: 'Algebra' }))
@@ -3169,7 +3208,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'does not create offsets when partition_by is nil (legacy group)' do
-      store.register_consumer_group(group_id) # no partition_by
+      store.register_consumer_group(group_id) # no selector
 
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
 
@@ -3178,8 +3217,8 @@ RSpec.describe Sourced::Store do
     end
 
     it 'creates offsets for multiple registered consumer groups' do
-      store.register_consumer_group('group_a', partition_by: [:device_id])
-      store.register_consumer_group('group_b', partition_by: [:device_id])
+      store.register_consumer_group('group_a', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
+      store.register_consumer_group('group_b', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
 
@@ -3194,22 +3233,22 @@ RSpec.describe Sourced::Store do
     end
 
     it 'persists partition_by in consumer_groups table' do
-      store.register_consumer_group(group_id, partition_by: [:device_id, :name])
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id, :name))
 
       row = db[:sourced_consumer_groups].where(group_id: group_id).first
       expect(JSON.parse(row[:partition_by])).to eq(['device_id', 'name'])
     end
 
     it 'updates partition_by on re-registration' do
-      store.register_consumer_group(group_id, partition_by: [:device_id])
-      store.register_consumer_group(group_id, partition_by: [:asset_id])
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::AssetRegistered].by(:asset_id))
 
       row = db[:sourced_consumer_groups].where(group_id: group_id).first
       expect(JSON.parse(row[:partition_by])).to eq(['asset_id'])
     end
 
     it 'claim_next skips discovery when offsets already exist from append' do
-      store.register_consumer_group(group_id, partition_by: [:device_id])
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
@@ -3218,8 +3257,7 @@ RSpec.describe Sourced::Store do
       # Offsets already exist from append — claim should work without discovery
       result = store.claim_next(
         group_id,
-        partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'],
+        Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id),
         worker_id: 'w-1'
       )
 
@@ -3233,10 +3271,10 @@ RSpec.describe Sourced::Store do
       # last_nil_types_max_pos == the max handled-type position while eager
       # offsets for those very messages are still pending (their appends were
       # not yet visible to the polling worker's snapshot). Because a decider's
-      # handled_types exclude its evolve types, processing those messages only
+      # handled types exclude its evolve types, processing those messages only
       # emits events — never a new command — so the watermark never rises again
       # and the short-circuit would strand the partitions forever.
-      store.register_consumer_group(group_id, partition_by: [:device_id])
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
@@ -3250,8 +3288,7 @@ RSpec.describe Sourced::Store do
 
       result = store.claim_next(
         group_id,
-        partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'],
+        Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id),
         worker_id: 'w-1'
       )
 
@@ -3265,10 +3302,10 @@ RSpec.describe Sourced::Store do
       # For partitioned groups, last_nil_types_max_pos holds a sign-encoded scan
       # version: >= 0 dirty (scan), < 0 latched-clean at version -value (skip).
       # DB triggers bump it on message insert and on claim release.
-      let(:handled) { ['store_test.device.registered'] }
+      let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id) }
 
       def claim(worker: 'w-1', batch_size: nil)
-        store.claim_next(group_id, partition_by: 'device_id', handled_types: handled, worker_id: worker, batch_size: batch_size)
+        store.claim_next(group_id, selector, worker_id: worker, batch_size: batch_size)
       end
 
       def gate_version
@@ -3276,7 +3313,7 @@ RSpec.describe Sourced::Store do
       end
 
       before do
-        store.register_consumer_group(group_id, partition_by: [:device_id])
+        store.register_consumer_group(group_id, selector)
       end
 
       it 'latches clean after an empty scan and short-circuits while nothing changes' do
@@ -3353,13 +3390,12 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      store.register_consumer_group(group_id, partition_by: [:device_id])
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       # claim_next should still find the message via discovery fallback
       result = store.claim_next(
         group_id,
-        partition_by: 'device_id',
-        handled_types: ['store_test.device.registered'],
+        Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id),
         worker_id: 'w-1'
       )
 
@@ -3370,7 +3406,10 @@ RSpec.describe Sourced::Store do
 
   describe 'partition tags' do
     let(:note_type) { StoreTestMessages::NoteAdded.type }
-    let(:handled_types) { [StoreTestMessages::DeviceRegistered.type, note_type] }
+    let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::NoteAdded].by(:device_id) }
+    let(:partition_selector) do
+      Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::NoteAdded].by(:device_id).bind(device_id: 'dev-1')
+    end
 
     def note(text, **tags)
       StoreTestMessages::NoteAdded.new(payload: { text: }).with_tags(**tags)
@@ -3386,13 +3425,6 @@ RSpec.describe Sourced::Store do
       expect(read.first.payload).to eq(tagged.payload)
       expect(read.last.tags).to eq({})
       expect(db[:sourced_messages].order(:position).select_map(:tags)).to eq(['{"device_id":"dev-1"}', nil])
-    end
-
-    it 'indexes tags as key pairs, read by #read with a partition query' do
-      store.append([note('one', device_id: 'dev-1'), note('two', device_id: 'dev-2')])
-
-      messages, = store.read(Sourced::PartitionQuery.new(attrs: { device_id: 'dev-1' }, types: [note_type]))
-      expect(messages.map { |m| m.payload.text }).to eq(['one'])
     end
 
     it 'raises on append, appending nothing, when a tag conflicts with a payload attribute' do
@@ -3418,7 +3450,7 @@ RSpec.describe Sourced::Store do
       expect(db[:sourced_key_pairs].select_map(%i[name value])).to eq([['__id', msg.id]])
     end
 
-    it 'reads tagged messages into a partition with #read_partition' do
+    it 'reads tagged messages into a partition with #read' do
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
         note('one', device_id: 'dev-1'),
@@ -3426,14 +3458,14 @@ RSpec.describe Sourced::Store do
         note('untagged')
       ])
 
-      result = store.read_partition({ device_id: 'dev-1' }, handled_types:)
+      result = store.read(partition_selector)
       expect(result.messages.map(&:type)).to eq([StoreTestMessages::DeviceRegistered.type, note_type])
       expect(result.messages.last.tags).to eq(device_id: 'dev-1')
     end
 
     it 'guards tagged messages: a conflicting tagged append raises' do
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
-      result = store.read_partition({ device_id: 'dev-1' }, handled_types:)
+      result = store.read(partition_selector)
 
       store.append(note('other partition', device_id: 'dev-2'))
       expect { store.append(note('ok'), guard: result.guard) }.not_to raise_error
@@ -3448,18 +3480,18 @@ RSpec.describe Sourced::Store do
       store.register_consumer_group('tags_lazy')
       store.append([note('one', device_id: 'dev-1'), note('untagged')])
 
-      claim = store.claim_next('tags_lazy', partition_by: 'device_id', handled_types:, worker_id: 'w-1')
+      claim = store.claim_next('tags_lazy', selector, worker_id: 'w-1')
       expect(claim.partition_value).to eq('device_id' => 'dev-1')
       expect(claim.messages.map { |m| m.payload.text }).to eq(['one'])
-      expect(store.claim_next('tags_lazy', partition_by: 'device_id', handled_types:, worker_id: 'w-2')).to be_nil
+      expect(store.claim_next('tags_lazy', selector, worker_id: 'w-2')).to be_nil
     end
 
     it 'claims tagged messages into their partition (eager offsets), with a guard that covers them' do
-      store.register_consumer_group('tags_eager', partition_by: [:device_id], handled_types:)
+      store.register_consumer_group('tags_eager', selector)
       store.append(note('one', device_id: 'dev-1'))
       expect(db[:sourced_offsets].select_map(:partition_key)).to eq(['device_id:dev-1'])
 
-      claim = store.claim_next('tags_eager', partition_by: 'device_id', handled_types:, worker_id: 'w-1')
+      claim = store.claim_next('tags_eager', selector, worker_id: 'w-1')
       expect(claim.messages.map { |m| m.payload.text }).to eq(['one'])
 
       store.append(note('two', device_id: 'dev-1'))
@@ -3474,15 +3506,16 @@ RSpec.describe Sourced::Store do
 
       Timecop.freeze(now + 3) { store.update_schedule! }
 
-      messages, = store.read(Sourced::PartitionQuery.new(attrs: { device_id: 'dev-1' }, types: [note_type]))
+      messages, = store.read(Sourced::Selector[StoreTestMessages::NoteAdded].by(:device_id).bind(device_id: 'dev-1'))
       expect(messages.map { |m| m.payload.text }).to eq(['later'])
       expect(messages.first.tags).to eq(device_id: 'dev-1')
     end
   end
 
   describe 'partition keys from payload and tags' do
-    let(:types) { [StoreTestMessages::SomethingHappened.type, StoreTestMessages::OrderTouched.type] }
+    let(:types) { [StoreTestMessages::SomethingHappened, StoreTestMessages::OrderTouched] }
     let(:partition) { { order_id: '01', tenant_id: 't1' } }
+    let(:selector) { Sourced::Selector[StoreTestMessages::SomethingHappened, StoreTestMessages::OrderTouched].by(:order_id, :tenant_id) }
 
     def happened(note, tenant_id)
       StoreTestMessages::SomethingHappened.new(payload: { order_id: '01', note: }).with_tags(tenant_id:)
@@ -3497,28 +3530,26 @@ RSpec.describe Sourced::Store do
     end
 
     it 'claims only the partition matching both keys, plus the foreign partial-key event' do
-      store.register_consumer_group('mixed', partition_by: %i[order_id tenant_id], handled_types: types)
+      store.register_consumer_group('mixed', Sourced::Selector[*types].by(:order_id, :tenant_id))
 
-      claim = store.claim_next('mixed', partition_by: %w[order_id tenant_id], handled_types: types, worker_id: 'w-1')
+      claim = store.claim_next('mixed', Sourced::Selector[*types].by(:order_id, :tenant_id), worker_id: 'w-1')
       expect(claim.partition_value).to eq('order_id' => '01', 'tenant_id' => 't1')
       expect(notes(claim.messages)).to eq(['a', :touched, 'c'])
     end
 
-    it 'reads the same messages with a partition query and #read_partition' do
-      read = store.read(Sourced::PartitionQuery.new(attrs: partition, types:))
+    it 'reads the same messages with a selector bound to the partition' do
+      read = store.read(selector.bind(**partition))
       expect(notes(read.messages)).to eq(['a', :touched, 'c'])
-      expect(read.guard).to eq(Sourced::ConsistencyGuard.new(query: Sourced::PartitionQuery.new(attrs: { 'order_id' => '01', 'tenant_id' => 't1' }, types:), last_position: 4))
-
-      expect(notes(store.read_partition(partition, handled_types: types).messages)).to eq(['a', :touched, 'c'])
+      expect(read.guard).to eq(Sourced::ConsistencyGuard.new(selector: selector.bind(order_id: '01', tenant_id: 't1'), last_position: 4))
     end
 
     it 'reads a partition whose tag key_pair does not exist yet: only the foreign event' do
-      read = store.read_partition({ order_id: '01', tenant_id: 't9' }, handled_types: types)
+      read = store.read(selector.bind(order_id: '01', tenant_id: 't9'))
       expect(notes(read.messages)).to eq([:touched])
     end
 
     it 'honours after_position and limit' do
-      read = store.read(Sourced::PartitionQuery.new(attrs: partition, types:), after_position: 1, limit: 1)
+      read = store.read(selector.bind(**partition), after_position: 1, limit: 1)
       expect(notes(read.messages)).to eq([:touched])
       expect(read.guard.last_position).to eq(3)
     end
@@ -3547,23 +3578,23 @@ RSpec.describe Sourced::Store do
     end
 
     context 'with a claim guard' do
-      before { store.register_consumer_group('mixed', partition_by: %i[order_id tenant_id], handled_types: types) }
+      before { store.register_consumer_group('mixed', Sourced::Selector[*types].by(:order_id, :tenant_id)) }
 
       let!(:guard) do
-        store.claim_next('mixed', partition_by: %w[order_id tenant_id], handled_types: types, worker_id: 'w-1').guard
+        store.claim_next('mixed', Sourced::Selector[*types].by(:order_id, :tenant_id), worker_id: 'w-1').guard
       end
 
       it_behaves_like 'a partition guard'
     end
 
     context 'with a read guard' do
-      let!(:guard) { store.read(Sourced::PartitionQuery.new(attrs: partition, types:)).guard }
+      let!(:guard) { store.read(selector.bind(**partition)).guard }
 
       it_behaves_like 'a partition guard'
     end
 
     context 'with a guard read from an empty partition' do
-      let!(:guard) { store.read_partition({ order_id: '02', tenant_id: 't1' }, handled_types: types).guard }
+      let!(:guard) { store.read(selector.bind(order_id: '02', tenant_id: 't1')).guard }
 
       it 'conflicts with the first append to the partition' do
         store.append(StoreTestMessages::OrderTouched.new(payload: { order_id: '02' }))
@@ -3586,7 +3617,7 @@ RSpec.describe Sourced::Store do
         seats: [{ row: 'A', reserved_on: Date.new(2026, 1, 1) }, { row: 'B', reserved_on: nil }]
       }))
 
-      messages, = store.read(StoreTestMessages::Booking.to_conditions(booking_id: 'b-1'))
+      messages, = store.read(Sourced::Selector[StoreTestMessages::Booking].by(:booking_id).bind(booking_id: 'b-1'))
       payload = messages.first.payload
 
       expect(payload.starts_on).to eq(Date.new(2026, 1, 2))
@@ -3638,7 +3669,7 @@ RSpec.describe Sourced::Store do
       store.append(due)
       Timecop.freeze(now + 3) { expect(store.update_schedule!).to eq(1) }
 
-      messages, = store.read(StoreTestMessages::Booking.to_conditions(booking_id: 'b-1'))
+      messages, = store.read(Sourced::Selector[StoreTestMessages::Booking].by(:booking_id).bind(booking_id: 'b-1'))
       payload = messages.first.payload
 
       expect(payload.starts_on).to eq(Date.new(2026, 1, 2))
@@ -3660,7 +3691,7 @@ RSpec.describe Sourced::Store do
       db[:sourced_messages].update(payload: JSON.dump(booking_id: 'b-1', starts_on: 'not-a-date'))
 
       expect {
-        store.read(StoreTestMessages::Booking.to_conditions(booking_id: 'b-1'))
+        store.read(Sourced::Selector[StoreTestMessages::Booking].by(:booking_id).bind(booking_id: 'b-1'))
       }.to raise_error(Sourced::Store::MessageCodec::DecodeError, /store_test\.booking/)
     end
 
@@ -3675,7 +3706,7 @@ RSpec.describe Sourced::Store do
 
       expect(JSON.parse(db[:sourced_messages].first[:payload])['point']).to eq('1,2')
 
-      messages, = store.read(StoreTestMessages::PointPlotted.to_conditions(plot_id: 'p-1'))
+      messages, = store.read(Sourced::Selector[StoreTestMessages::PointPlotted].by(:plot_id).bind(plot_id: 'p-1'))
       expect(messages.first.payload.point).to eq(point)
     end
   end

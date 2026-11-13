@@ -55,11 +55,6 @@ module Sourced
       # Sourced::Consumer#group_label).
       def group_label = name || group_id
 
-      # No partition keys declared. The Router treats an empty set as an
-      # id-partitioned queue for exclusive reactors, and an error otherwise —
-      # absence of keys never implies deletion.
-      def partition_keys = []
-
       # Not the exclusive owner of its message types (routing concern only).
       def exclusive? = false
 
@@ -67,8 +62,13 @@ module Sourced
       def on_start = nil
       def on_reset = nil
 
-      # No history query conditions.
-      def context_for(_attrs) = []
+      # No history.
+      def history_selector = Selector::NONE
+
+      # What {Sourced.load} reads (see Sourced::Consumer#partition_of).
+      def partition_of(values) = Sourced.partition_keys_of(self).to_h { |key| [key, values[key]] }
+      def history_for(partition) = history_selector.bind(**partition)
+      def for_partition(values) = new(values)
     end
   end
 end

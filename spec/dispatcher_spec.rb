@@ -40,13 +40,13 @@ class DispatchTestDecider < Sourced::Decider
     context[:bound] = true
   end
 
-  command DispatcherTestMessages::BindDevice do |context, cmd|
+  command DispatcherTestMessages::BindDevice => DispatcherTestMessages::DeviceBound do |context, cmd|
     raise 'Not found' unless context[:exists]
     raise 'Already bound' if context[:bound]
     event DispatcherTestMessages::DeviceBound, device_id: cmd.payload.device_id, asset_id: cmd.payload.asset_id
   end
 
-  reaction DispatcherTestMessages::DeviceBound do |_context, evt|
+  reaction DispatcherTestMessages::DeviceBound => DispatcherTestMessages::DelayedNotify do |_context, evt|
     dispatch(DispatcherTestMessages::DelayedNotify, device_id: evt.payload.device_id)
       .at(Time.now + 2)
   end
@@ -140,8 +140,7 @@ RSpec.describe Sourced::Dispatcher do
 
       claim = store.claim_next(
         'dispatch_test_projector',
-        partition_by: ['device_id'],
-        handled_types: DispatchTestProjector.handled_messages.map(&:type),
+        DispatchTestProjector.claim_selector,
         worker_id: 'w1',
         batch_size: 2
       )
@@ -159,8 +158,7 @@ RSpec.describe Sourced::Dispatcher do
 
       claim = store.claim_next(
         'dispatch_test_projector',
-        partition_by: ['device_id'],
-        handled_types: DispatchTestProjector.handled_messages.map(&:type),
+        DispatchTestProjector.claim_selector,
         worker_id: 'w1'
       )
 
@@ -627,8 +625,8 @@ RSpec.describe Sourced::Dispatcher do
         expect(store.update_schedule!).to eq(1)
       end
 
-      conds = DispatcherTestMessages::DelayedNotify.to_conditions(device_id: 'd1')
-      result = store.read(conds)
+      selector = Sourced::Selector[DispatcherTestMessages::DelayedNotify].by(:device_id).bind(device_id: 'd1')
+      result = store.read(selector)
       expect(result.messages.map(&:class)).to include(DispatcherTestMessages::DelayedNotify)
     end
   end

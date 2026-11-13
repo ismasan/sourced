@@ -31,6 +31,10 @@ module Sourced
   # state (its +#handles_command?+ is false). Nothing is appended.
   CommandNotHandledError = Class.new(Error)
 
+  # Raised when a handler emits a message it doesn't declare, or emits
+  # nothing when its declared outputs don't include +nil+ (see {Outputs}).
+  UndeclaredOutputError = Class.new(Error)
+
   # Raised when a reactor's definition is invalid, ex. a handled message that
   # doesn't match its partition schema. Checked when it's registered with a Router.
   DefinitionError = Class.new(Error)
@@ -149,17 +153,20 @@ module Sourced
   end
 
   # Handle a command synchronously: validate, load history, decide, append, ACK.
+  # The partition comes from +reactor_class+'s selectors' keys; its instances
+  # answer +handles_command?(command)+ and +decide(command)+.
   #
   # @raise [CommandNotHandledError] if the loaded reactor's +#handles_command?+ is false
   def self.handle!(reactor_class, command, store: nil)
-    partition_attrs = extract_partition_attrs(command, reactor_class)
-    values = reactor_class.partition_keys.map { |k| partition_attrs[k]&.to_s }
+    keys = partition_keys_of(reactor_class)
+    partition_attrs = extract_partition_attrs(command, keys)
+    values = keys.to_h { |k| [k, partition_attrs[k]&.to_s] }
 
     unless command.valid?
       return HandleResult.new(command: command, reactor: reactor_class.new(values), events: [])
     end
 
-    missing = reactor_class.partition_keys - partition_attrs.keys
+    missing = keys - partition_attrs.keys
     if missing.any?
       raise MissingPartitionKeyError,
             "#{command.type} has no value for #{reactor_class}'s partition keys #{missing.inspect} " \
@@ -169,12 +176,12 @@ module Sourced
     store ||= self.store
     needs_history = Injector.resolve_args(reactor_class, :handle_claim).include?(:history)
     if needs_history
-      instance, read_result = load(reactor_class, store: store, **partition_attrs)
+      instance, read_result = load_partition(reactor_class, partition_attrs, partition_attrs, store:)
     else
       instance = reactor_class.new(values)
     end
 
-    if instance.respond_to?(:handles_command?) && !instance.handles_command?(command)
+    unless instance.handles_command?(command)
       raise CommandNotHandledError, "#{reactor_class} doesn't handle #{command.class} (#{command.type}) in its current state"
     end
 
@@ -197,44 +204,58 @@ module Sourced
     HandleResult.new(command: command, reactor: instance, events: correlated_events)
   end
 
-  # Load a reactor or projection instance from its event history using
-  # AND-filtered partition reads.
+  # Load a reactor or projection instance from its event history: what its
+  # {Selector} selects, bound to the partition.
   # Pass +upto:+ (partition-local rank) to evolve over at most the first N matching
   # messages in the partition — useful for time-travel, deterministic replay, or debugging.
   #
-  # +reactor_class+ must respond to +handled_messages_for_evolve+, and its
-  # instances to +evolve(messages)+. If it responds to +partition_keys+, only
-  # those keys of +values+ are the partition and instances are built with
-  # +new(values)+; otherwise, as for a {Sourced::Projection}, all of +values+ are
-  # the partition and instances are built with +new+.
+  # +reactor_class+ answers +partition_of(values)+ (the partition among
+  # +values+), +history_for(partition)+ (the bound selector it reads) and
+  # +for_partition(values)+ (an instance answering +evolve(messages)+); see
+  # {Consumer} and {Sourced::Projector::Inline}.
   #
   # @raise [MissingPartitionKeyError] if a partition key is missing or nil
   # @example
-  #   cart, read_result = Sourced.load(CartProjection, cart_id: 'c1')
+  #   cart, read_result = Sourced.load(CartProjector, cart_id: 'c1')
   #   cart.context
   def self.load(reactor_class, store: nil, upto: nil, **values)
-    store ||= self.store
-    partitioned = reactor_class.respond_to?(:partition_keys)
-    partition_attrs = partitioned ? reactor_class.partition_keys.to_h { |k| [k, values[k]] } : values
+    partition_attrs = reactor_class.partition_of(values)
     missing = partition_attrs.filter_map { |k, v| k if v.nil? }
     if missing.any?
       raise MissingPartitionKeyError, "#{reactor_class} can't be loaded without values for partition keys #{missing.inspect}"
     end
 
-    handled_types = reactor_class.handled_messages_for_evolve.map(&:type).uniq
-    read_result = store.read_partition(partition_attrs, handled_types:, upto: upto)
-    instance = partitioned ? reactor_class.new(values) : reactor_class.new
+    load_partition(reactor_class, partition_attrs, values, store: store || self.store, upto:)
+  end
+
+  # {.load} for a partition already taken from +values+.
+  private_class_method def self.load_partition(reactor_class, partition_attrs, values, store:, upto: nil)
+    read_result = store.read(reactor_class.history_for(partition_attrs), limit: upto)
+    instance = reactor_class.for_partition(values)
 
     instance.evolve(read_result.messages)
 
     [instance, read_result]
   end
 
-  # Partition values from the command's payload, or else its tags.
-  private_class_method def self.extract_partition_attrs(command, reactor_class)
-    reactor_class.partition_keys.each_with_object({}) do |key, h|
-      value = command.payload&.respond_to?(key) ? command.payload.send(key) : nil
-      value = command.tags[key] if value.nil?
+  # A reactor's partition keys: its claim and history selectors', none when
+  # it's partitioned by message id.
+  # @api private
+  def self.partition_keys_of(reactor_class)
+    claim_selector = reactor_class.claim_selector
+    return Plumb::BLANK_ARRAY if claim_selector.id_partitioned?
+
+    keys = claim_selector.keys
+    reactor_class.respond_to?(:history_selector) ? keys | reactor_class.history_selector.keys : keys
+  end
+
+  # A message's values for +keys+, from its payload or else its tags; keys
+  # without a value are left out.
+  # @api private
+  def self.extract_partition_attrs(message, keys)
+    keys.each_with_object({}) do |key, h|
+      value = message.payload&.respond_to?(key) ? message.payload.public_send(key) : nil
+      value = message.tags[key] if value.nil?
       h[key] = value unless value.nil?
     end
   end
@@ -263,13 +284,15 @@ require 'sourced/config'
 require 'sourced/store'
 require 'sourced/message'
 require 'sourced/message_ext'
+require 'sourced/assertion'
 require 'sourced/actions'
 require 'sourced/action_runner'
 require 'sourced/reactor_defaults'
 require 'sourced/consumer'
 require 'sourced/partition_schema'
-require 'sourced/projection'
+require 'sourced/projector/inline'
 require 'sourced/evolve'
+require 'sourced/outputs'
 require 'sourced/react'
 require 'sourced/sync'
 require 'sourced/decider'

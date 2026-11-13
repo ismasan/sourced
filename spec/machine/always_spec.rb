@@ -57,7 +57,7 @@ module MachineAlwaysTest
     end
 
     state Reviewing do
-      entry { |_trip, _evt| dispatch NotifyOrganiser }
+      entry(NotifyOrganiser) { |_trip, _evt| dispatch NotifyOrganiser }
       always Cancelled, if: ->(trip) { trip.any?('cancelled') }
       always Refused, if: :any_refused?
       always Confirmed, if: :all_confirmed?

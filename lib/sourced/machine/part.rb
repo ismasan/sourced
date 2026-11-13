@@ -128,12 +128,12 @@ module Sourced
         raise DefinitionError, "#{self}: evolve declared after #{owner} was validated" if @__locked
         raise DefinitionError, "#{self}: evolve #{declared} needs a block" unless block
 
-        projection_class.evolve(declared, &block)
+        projector.evolve(declared, &block)
       end
 
       # The part's evolve blocks, which its owner runs on its context.
       # @api private
-      def self.projection_class = @projection_class ||= Class.new(Sourced::Projection)
+      def self.projector = @projector ||= Class.new(Sourced::Projector::Inline)
 
       # Lock the part's DSL once its owner has read it.
       # @api private

@@ -121,7 +121,8 @@ module MachineAcceptanceHoliday
       expect(Booking.to_mermaid).to include('booking_started --> itinerary_ready : done')
       nodes = Sourced::Topology.build([Booking])
       pay = nodes.find { |n| n.type == 'command' && n.id == Pay.type }
-      expect(pay.produces).to include(Booking::BookingConfirmed.type, PaymentCaptured.type, PaymentDeclined.type)
+      expect(pay.produces).to include(Booking::BookingConfirmed.type)
+      expect(pay.produces).not_to include(PaymentCaptured.type, PaymentDeclined.type) # data events
     end
 
     describe 'on a store' do

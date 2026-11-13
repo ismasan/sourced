@@ -39,7 +39,7 @@ class TestItemProjector < Sourced::Projector::StateStored
     context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+  reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::NotifyArchive do |_context, msg|
     ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
   end
 
@@ -69,7 +69,7 @@ class TestItemESProjector < Sourced::Projector::EventSourced
     context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+  reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::NotifyArchive do |_context, msg|
     ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
   end
 
@@ -95,7 +95,7 @@ class TestDelayedItemProjector < Sourced::Projector::StateStored
     context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+  reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::DelayedNotifyArchive do |_context, msg|
     dispatch(ProjectorTestMessages::DelayedNotifyArchive, list_id: msg.payload.list_id)
       .at(Time.now + 10)
   end
@@ -114,7 +114,7 @@ class TestReplayingItemProjector < Sourced::Projector::StateStored
     context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+  reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::NotifyArchive do |_context, msg|
     ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
   end
 
@@ -136,7 +136,7 @@ class TestSelectiveItemProjector < Sourced::Projector::StateStored
     context[:items].delete(msg.payload.name)
   end
 
-  reaction ProjectorTestMessages::ItemArchived do |_context, msg|
+  reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::NotifyArchive do |_context, msg|
     ProjectorTestMessages::NotifyArchive.new(payload: { list_id: msg.payload.list_id })
   end
 
@@ -211,7 +211,7 @@ RSpec.describe Sourced::Projector do
   end
 
   describe '.handle_batch (EventSourced)' do
-    let(:guard) { Sourced::ConsistencyGuard.new(query: [], last_position: 5) }
+    let(:guard) { Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 5) }
 
     def make_history(messages)
       Sourced::ReadResult.new(messages: messages, guard: guard)
@@ -277,7 +277,7 @@ RSpec.describe Sourced::Projector do
   end
 
   describe '.handle_claim' do
-    let(:guard) { Sourced::ConsistencyGuard.new(query: [], last_position: 2) }
+    let(:guard) { Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 2) }
 
     def make_claim(messages, replaying: false)
       Sourced::ClaimResult.new(
@@ -383,7 +383,7 @@ RSpec.describe Sourced::Projector do
   end
 
   describe 'EventSourced' do
-    let(:guard) { Sourced::ConsistencyGuard.new(query: [], last_position: 5) }
+    let(:guard) { Sourced::ConsistencyGuard.new(selector: Sourced::Selector::NONE, last_position: 5) }
 
     def make_claim(messages, replaying: false)
       Sourced::ClaimResult.new(
@@ -538,7 +538,7 @@ RSpec.describe Sourced::Projector do
         load_context { |values| find(values[:list_id]) }
 
         # Reactions see the evolved context, so they show what handle_batch built.
-        reaction ProjectorTestMessages::ItemArchived do |context, msg|
+        reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::NotifyArchive do |context, msg|
           ProjectorTestMessages::NotifyArchive.new(payload: { list_id: context[:items].join(',') })
         end
 
@@ -577,12 +577,51 @@ RSpec.describe Sourced::Projector do
     end
   end
 
-  describe '.context_for' do
-    it 'builds a partition query over handled_messages_for_evolve' do
-      query = TestItemProjector.context_for(list_id: 'L1')
-      expect(query.attrs).to eq('list_id' => 'L1')
-      expect(query.types).to include('projector_test.item.added')
-      expect(query.types).to include('projector_test.item.archived')
+  describe 'a selector source (StateStored)' do
+    let(:stored) { {} }
+
+    def build(with_load_context:)
+      db = stored
+      Class.new(Sourced::Projector::StateStored) do
+        partition_by :list_id
+        evolve Sourced::Selector[ProjectorTestMessages::ItemAdded, ProjectorTestMessages::ItemArchived]
+
+        load_context { |values| db[values[:list_id]] } if with_load_context
+
+        # Reactions see the evolved context: the messages, as names.
+        reaction ProjectorTestMessages::ItemArchived => ProjectorTestMessages::NotifyArchive do |messages, _msg|
+          ProjectorTestMessages::NotifyArchive.new(payload: { list_id: messages.map { it.payload.name }.join(',') })
+        end
+      end
+    end
+
+    def positioned(klass, name, position)
+      Sourced::PositionedMessage.new(klass.new(payload: { list_id: 'L1', name: }), position)
+    end
+
+    def notified(projector)
+      batch = [positioned(ProjectorTestMessages::ItemAdded, 'Apple', 3),
+               positioned(ProjectorTestMessages::ItemArchived, 'Apple', 4)]
+      projector.handle_batch({ list_id: 'L1' }, batch)
+        .flat_map { |actions, _| Array(actions) }
+        .grep(Sourced::Actions::Append).flat_map(&:messages)
+        .map { it.payload.list_id }
+    end
+
+    it "claims the selector's types" do
+      expect(build(with_load_context: false).handled_messages)
+        .to eq([ProjectorTestMessages::ItemAdded, ProjectorTestMessages::ItemArchived])
+    end
+
+    it 'evolves the claimed batch alone without load_context' do
+      expect(notified(build(with_load_context: false))).to eq(['Apple,Apple'])
+    end
+
+    it 'evolves the claimed batch on top of the messages load_context returns' do
+      stored['L1'] = [ProjectorTestMessages::ItemAdded.new(payload: { list_id: 'L1', name: 'Stored' })]
+
+      expect(notified(build(with_load_context: true))).to eq(['Stored,Apple,Apple'])
+      expect(stored['L1'].size).to eq(1)
     end
   end
 end

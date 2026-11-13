@@ -42,9 +42,9 @@ module MachineTopologyTest
     end
 
     state Opened do
-      entry { |_s, _evt| dispatch Remind }
+      entry(Remind) { |_s, _evt| dispatch Remind }
       # Its commands are declared, whatever the block does.
-      after('1h' => Cancel) { |_s, _evt| nil }
+      after('1h' => Cancel | nil) { |_s, _evt| nil }
       command(Note) { |_s, _cmd| event Noted }
       command AddLeg, starts: LegMachine
       command Book => Booked
@@ -60,7 +60,7 @@ module MachineTopologyTest
         initial { command Ship => :shipped }
         final :shipped
       end
-      exit { |_s, _evt| dispatch Archive }
+      exit(Archive) { |_s, _evt| dispatch Archive }
       command Cancel => Cancelled
       done Done
     end
@@ -81,9 +81,9 @@ module MachineTopologyTest
       def command(name) = nodes.find { |n| n.type == 'command' && n.id == t(name) }
       def automation(name) = nodes.find { |n| n.type == 'automation' && n.name == name }
 
-      it "has commands produce their targets' state classes, data events and started children" do
+      it "has commands produce their targets' state classes and started children, not data events" do
         expect(command(:open).produces).to eq([trip(:opened)])
-        expect(command(:note).produces).to eq([t(:noted)])
+        expect(command(:note).produces).to eq([])
         expect(command(:add_leg).produces).to eq([t('leg_machine.runtime.child.started')])
         expect(command(:cancel).produces).to eq([trip(:cancelled)])
         # Reaching a root final finishes the child, which its parent's joins consume.
@@ -194,9 +194,10 @@ module MachineTopologyTest
         expect(confirm.produces).to eq([t('outer.runtime.busy.finished'), t('outer.runtime.done')])
       end
 
-      it 'includes state classes, child events and data events' do
+      it 'includes state classes and child events' do
         events = nodes.select { |n| n.type == 'event' }.map(&:id)
-        expect(events).to include(trip(:opened), t(:noted), t('leg_machine.runtime.child.started'), leg(:confirmed))
+        expect(events).to include(trip(:opened), t('leg_machine.runtime.child.started'), leg(:confirmed))
+        expect(events).not_to include(t(:noted)) # a data event TripMachine doesn't evolve
       end
     end
 

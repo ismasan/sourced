@@ -10,6 +10,11 @@ module Sourced
     PREFIX = 'sourced_reaction'
     EMPTY_ARRAY = [].freeze
 
+    REACTION_PAIR = 'Event => Command | Other | nil, A | B => Command, or any: Command'
+
+    # See {ClassMethods#reaction}.
+    UndeclaredMessageError = Class.new(UndeclaredOutputError)
+
     def self.included(base)
       super
       base.extend ClassMethods
@@ -18,11 +23,7 @@ module Sourced
     # Run reaction handlers for one or more messages.
     # Supports both explicit message returns and dispatch(...) calls.
     def react(messages)
-      handlers = self.class.reaction_handlers
-      __handling_reactions(Array(messages)) do |message|
-        method_name = handlers[message.to_message.class]
-        method_name ? Array(send(method_name, context, message)).compact : EMPTY_ARRAY
-      end
+      __handling_reactions(Array(messages)) { |message| __run_reaction(message) }
     end
 
     # Whether this reactor registers a reaction handler for +message+.
@@ -64,6 +65,43 @@ module Sourced
     end
 
     private
+
+    def __run_reaction(message)
+      klass = message.to_message.class
+      method_name = self.class.reaction_handlers[klass]
+      return EMPTY_ARRAY unless method_name
+
+      returned = nil
+      __checking_outputs(self.class.reaction_outputs.fetch(klass), "#{klass} reaction") do
+        returned = Array(send(method_name, context, message)).compact
+        returned.reject { |value| value.is_a?(Dispatcher) }
+      end
+      returned
+    end
+
+    # Run the block, holding what it dispatches and returns to +outputs+.
+    # @yieldreturn [Array<Sourced::Message>] messages it appends besides its dispatches
+    # @return [Array<Dispatcher>] what it dispatched
+    def __checking_outputs(outputs, label)
+      started = @__reaction_dispatchers.size
+      returned = yield
+      dispatched = @__reaction_dispatchers.drop(started)
+      __check_outputs!(outputs, returned + dispatched.map(&:message), label)
+      dispatched
+    end
+
+    def __check_outputs!(outputs, appended, label)
+      appended.each do |msg|
+        next if outputs.include?(msg.to_message.class)
+
+        raise UndeclaredMessageError, "#{self.class}: the #{label} appended #{msg.to_message.class}, " \
+                                      "which it doesn't declare (#{outputs})"
+      end
+      return if appended.any? || outputs.optional
+
+      raise UndeclaredMessageError, "#{self.class}: the #{label} appended nothing; " \
+                                    "declare #{outputs} | nil if it may append none"
+    end
 
     def __handling_reactions(messages)
       messages.flat_map do |message|
@@ -108,12 +146,12 @@ module Sourced
     # @return [Dispatcher] chainable wrapper around the dispatched message
     #
     # @example Dispatch
-    #   reaction StudentEnrolled do |_context, event|
+    #   reaction StudentEnrolled => NotifyStudent do |_context, event|
     #     dispatch(NotifyStudent, student_id: event.payload.student_id)
     #   end
     #
     # @example Dispatch with delay and metadata
-    #   reaction StudentEnrolled do |_context, event|
+    #   reaction StudentEnrolled => NotifyStudent do |_context, event|
     #     dispatch(NotifyStudent, student_id: event.payload.student_id)
     #       .with_metadata(channel: 'email')
     #       .at(Time.now + 300)
@@ -138,12 +176,21 @@ module Sourced
           subclass.catch_all_react_events << klass
         end
         subclass.reaction_handlers.merge!(reaction_handlers)
+        subclass.reaction_outputs.merge!(reaction_outputs)
       end
 
       # @return [Hash{Class => Symbol}] each reacted-to message class's reaction method
       def reaction_handlers
         @reaction_handlers ||= {}
       end
+
+      # @return [Hash{Class => Outputs}] each reacted-to message class's declared outputs
+      def reaction_outputs
+        @reaction_outputs ||= {}
+      end
+
+      # @return [Array<Class>] every message class a reaction may append
+      def dispatched_messages = reaction_outputs.values.flat_map(&:messages).uniq
 
       def handled_messages_for_react
         @handled_messages_for_react ||= []
@@ -153,42 +200,75 @@ module Sourced
         @catch_all_react_events ||= Set.new
       end
 
-      # Register a reaction handler for one or more messages types.
+      # Register a reaction handler, and what it may append (see {Outputs}).
+      # Appending an undeclared class, or nothing without +| nil+, raises
+      # {UndeclaredMessageError}.
       #
-      # Accepts one or more message classes (or objects whose +to_message_class+
-      # returns one, see {Sourced::Message.to_message_class}), or no arguments for a
-      # catch-all reaction across all evolve types without an explicit handler.
-      # Handlers are looked up by +message.to_message.class+.
+      # The reacted-to side is a message class, a union of them (+A | B+), or
+      # +:any+ for every evolve type without a handler of its own. Without a
+      # block, +reaction A+ only subscribes to +A+.
       #
-      # @example React to a specific event class
-      #   reaction StudentEnrolled do |context, event|
-      #     dispatch(NotifyStudent, student_id: event.payload.student_id)
+      # @example React to several message classes, maybe appending nothing
+      #   reaction StudentEnrolled | StudentRejoined => NotifyStudent | nil do |context, event|
+      #     dispatch(NotifyStudent, student_id: event.payload.student_id) if context[:notify]
       #   end
       #
-      # @example React to several message classes
-      #   reaction StudentEnrolled, StudentRejoined do |context, event|
-      #     dispatch(NotifyStudent, student_id: event.payload.student_id)
+      # @example React to every evolved type without a handler
+      #   reaction any: Audit do |context, event|
+      #     dispatch(Audit, type: event.type)
       #   end
+      #
+      # @raise [ArgumentError] for a block without declared outputs, or outputs without a block
       def reaction(*args, &block)
         case args
-        in []
-          handled_messages_for_evolve.each do |message_class|
-            next if reaction_handlers.key?(message_class)
+        in [Hash => declaration] if declaration.size == 1
+          raise ArgumentError, "#{self}.reaction #{declaration.inspect} needs a block" unless block
 
-            catch_all_react_events << message_class
-            reaction(message_class, &block)
+          reacted, outputs = Outputs.pair(declaration, "#{self}.reaction", example: REACTION_PAIR)
+          if reacted == :any
+            __react_to_any(outputs, &block)
+          else
+            __reacted_classes(reacted).each { |message_class| __react_to(message_class, outputs, &block) }
           end
-
-        in [_, _, *] => values
-          values.each { |value| reaction(value, &block) }
-        in [declared]
-          message_class = declared.to_message_class
-          __validate_message_for_reaction!(message_class)
-          handled_messages_for_react << message_class
-          if block_given?
-            reaction_handlers[message_class] = define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
-          end
+        in _ if block
+          # Not one pair (that's matched above), so this raises its error.
+          Outputs.pair(args.size == 1 ? args.first : args, "#{self}.reaction", example: REACTION_PAIR)
+        in [_, *] => values
+          values.each { |value| __subscribe(value.to_message_class) }
         end
+      end
+
+      # @api private
+      def __react_to_any(outputs, &block)
+        # evolve_selector: what it evolves from, however it's partitioned.
+        evolve_selector.types.each do |message_class|
+          next if reaction_handlers.key?(message_class)
+
+          catch_all_react_events << message_class
+          __react_to(message_class, outputs, &block)
+        end
+      end
+
+      # @api private
+      def __react_to(message_class, outputs, &block)
+        __subscribe(message_class)
+        reaction_outputs[message_class] = outputs
+        method_name = Sourced.message_method_name(PREFIX, message_class.to_s)
+        reaction_handlers[message_class] = define_method(method_name, &block)
+      end
+
+      # @api private
+      def __subscribe(message_class)
+        __validate_message_for_reaction!(message_class)
+        handled_messages_for_react << message_class unless handled_messages_for_react.include?(message_class)
+      end
+
+      # @api private
+      def __reacted_classes(reacted)
+        classes = Outputs.flatten(reacted)
+        raise ArgumentError, "#{self}.reaction: nil isn't a message class" if classes.include?(nil)
+
+        classes
       end
 
       def __validate_message_for_reaction!(_message_class)

@@ -162,6 +162,8 @@ module Sourced
     #   partition_by :order_id, item_id: Types::UUID::V4
     #
     # Messages handled by the reactor are checked against it (see {PartitionSchema}).
+    #
+    # @return [self]
     def partition_by(*keys, **typed)
       __check_no_messages_defined!(:partition_by)
       schema = keys.flatten.to_h { |key| [key.to_sym, Types::String] }
@@ -175,6 +177,7 @@ module Sourced
       end
       @partition_keys = nil
       @partition_schema = Types::Hash[schema]
+      self
     end
 
     # The consumer group id: the declared {.consumer_group}, or else the class
@@ -249,24 +252,39 @@ module Sourced
       @exclusive ||= false
     end
 
-    # Message types this consumer evolves from. Used by {#context_for}
-    # to build query conditions for history reads.
-    # Defaults to empty; overridden by Sourced::Evolve mixin.
-    def handled_messages_for_evolve
-      @handled_messages_for_evolve ||= []
+    # The history the Router reads for a claimed partition, bound to it.
+    # {Selector::NONE} by default; overridden by Sourced::Evolve.
+    #
+    # @return [Selector]
+    def history_selector
+      Selector::NONE
     end
 
-    # The history query {Router} reads for a claimed partition: a
-    # {PartitionQuery} over the evolve types, matching messages as the claim
-    # does. Empty (no history) when the reactor evolves nothing or is
-    # id-partitioned. Override to return custom +QueryCondition+s instead.
-    #
-    # @param partition_attrs [Hash{Symbol => String}]
-    # @return [PartitionQuery, Array<QueryCondition>]
-    def context_for(partition_attrs)
-      return Plumb::BLANK_ARRAY if handled_messages_for_evolve.empty? || IdPartition.keys?(partition_attrs.keys)
+    # {Sourced.load} protocol: each partition key's value (nil when missing).
+    def partition_of(values) = Sourced.partition_keys_of(self).to_h { |key| [key, values[key]] }
 
-      PartitionQuery.new(attrs: partition_attrs, types: handled_messages_for_evolve.map(&:type))
+    # {Sourced.load} protocol: {#history_selector} bound to +partition+.
+    def history_for(partition) = history_selector.bind(**partition)
+
+    # {Sourced.load} protocol: an instance for the partition.
+    def for_partition(values) = new(values)
+
+    # What the Router claims and wakes the reactor for: +handled_messages+ by
+    # the partition keys, or by message id when it declares none (exclusive
+    # reactors only).
+    #
+    # @return [Selector]
+    def claim_selector
+      selector = Selector[*handled_messages]
+      partition_keys.empty? ? selector.by_message_id : selector.by(*partition_keys)
+    end
+
+    # Run {PartitionSchema.check!}. The Router calls it when the reactor is added.
+    #
+    # @raise [DefinitionError]
+    # @return [void]
+    def validate!
+      PartitionSchema.check!(self)
     end
 
     # Called by {Router#stop_consumer_group} after the group is marked as stopped.

@@ -1,6 +1,25 @@
 # frozen_string_literal: true
 
 module Sourced
+  # A Decider that decides one command, reading +source+ (see
+  # {SourceInterface}). Its consumer group is the command's type, and its
+  # partition keys the source selector's, unless chained (+.partition_by(:sku)+).
+  # Without partition keys it's an id-partitioned queue.
+  #
+  #   AddItem = Sourced::Decider(Selector[CartStarted, ItemAdded].by(:cart_id), Add => ItemAdded) do |history, cmd|
+  #     event ItemAdded, **cmd.payload.to_h
+  #   end
+  #
+  # @param source [SourceInterface, nil]
+  # @param declaration [Hash] see {Decider.command}
+  # @yield [context, command], or +[command]+
+  # @return [Class<Decider>]
+  def self.Decider(source = nil, declaration = nil, &block)
+    return Decider.__single(nil, source, &block) if declaration.nil?
+
+    Decider.__single(source, declaration, &block)
+  end
+
   # Reactor base class for command-handling workflows in Sourced.
   class Decider
     include Sourced::Evolve
@@ -10,6 +29,14 @@ module Sourced
 
     PREFIX = 'sourced_decide'
 
+    COMMAND_PAIR = 'Command => Event | Other | nil'
+
+    # An emitted event carries another partition's value for a partition key.
+    InvalidEventError = Class.new(Error)
+
+    # See {Decider.command}.
+    UndeclaredEventError = Class.new(UndeclaredOutputError)
+
     class << self
       # @return [Array<Class>] command message classes handled by this decider
       def handled_commands
@@ -17,22 +44,81 @@ module Sourced
       end
 
       # Messages to claim: commands to decide on + events to react to.
-      # Evolve types are NOT included — they are only for context_for().
+      # Evolve types are NOT included — they are only for the history selector.
       #
       # @return [Array<Class>] command and reaction message classes
       def handled_messages
         handled_commands + handled_messages_for_react
       end
 
-      # Register a command handler.
+      # @return [Hash{Class => Outputs}] each handled command's declared outputs
+      def command_outputs
+        @command_outputs ||= {}
+      end
+
+      # @return [Array<Class>] every message class a command handler may emit
+      def produced_messages = command_outputs.values.flat_map(&:messages).uniq
+
+      # Register a command handler, and what it may emit: a message class, a
+      # union of them, with +| nil+ when it may emit none. Emitting an
+      # undeclared class, or nothing without +| nil+, raises {UndeclaredEventError}.
       #
-      # @param declared [Class, #to_message_class] command class to handle (see {Sourced::Message.to_message_class})
-      # @yield [context, message] command handler block
+      # @example
+      #   command AddItem => ItemAdded | ItemRejected do |context, cmd|
+      #     event ItemAdded, cart_id: cmd.payload.cart_id, sku: cmd.payload.sku
+      #   end
+      #
+      # @param declaration [Hash{Class => Class, Plumb::Or, nil}] one +Command => outputs+ pair
+      # @yield [context, message], or +[message]+
       # @return [void]
-      def command(declared, &block)
+      # @raise [ArgumentError] without exactly one pair of message classes
+      def command(declaration, &block)
+        declared, outputs = Outputs.pair(declaration, "#{self}.command", example: COMMAND_PAIR)
         message_class = declared.to_message_class
+        command_outputs[message_class] = outputs
         handled_commands << message_class
-        define_method(Sourced.message_method_name(PREFIX, message_class.to_s), &block)
+        method_name = Sourced.message_method_name(PREFIX, message_class.to_s)
+        return define_method(method_name, &block) unless block.arity == 1
+
+        # Its own method, so +return+ in the block returns from the handler.
+        command_method = :"#{method_name}_command"
+        define_method(command_method, &block)
+        define_method(method_name) { |_context, cmd| send(command_method, cmd) }
+      end
+
+      # @api private
+      # @see Sourced.Decider
+      def __single(source, declaration, &block)
+        declared, = Outputs.pair(declaration, 'Sourced::Decider', example: COMMAND_PAIR)
+        input = declared.to_message_class
+        Class.new(self) do
+          consumer_group input.type
+          if source
+            evolve source
+            keys = source.selector.keys
+            partition_by(*keys) if keys.any?
+          end
+          command(declaration, &block)
+          define_singleton_method(:exclusive?) { partition_keys.empty? || super() }
+        end
+      end
+
+      # {Sourced.handle!} without a store: the partition is the command's
+      # values for the partition keys (payload, else tags).
+      #
+      # @param history [#to_a] messages, or a {ReadResult}
+      # @param command [Sourced::Message]
+      # @return [Array<Sourced::Message>] the events it decides
+      # @raise [Sourced::MissingPartitionKeyError]
+      # @raise [Sourced::CommandNotHandledError] see {#handles_command?}
+      def call(history, command)
+        instance = new(__partition_values_of(command))
+        instance.evolve(history.to_a)
+        unless instance.handles_command?(command)
+          raise CommandNotHandledError, "#{self} doesn't handle #{command.class} (#{command.type}) in its current state"
+        end
+
+        instance.decide(command)
       end
 
       # Build executable actions for a batch of claimed messages.
@@ -133,6 +219,14 @@ module Sourced
         handle_batch(values, claim.messages, history: history.excluding(claim.messages), replaying: claim.replaying)
       end
 
+      private def __partition_values_of(command)
+        values = Sourced.extract_partition_attrs(command.to_message, partition_keys).transform_values(&:to_s)
+        missing = partition_keys - values.keys
+        return values if missing.empty?
+
+        raise MissingPartitionKeyError, "#{command.type} has no value for #{self}'s partition keys #{missing.inspect}"
+      end
+
       # Copy registered command handlers into subclasses.
       #
       # @param subclass [Class] subclass being created
@@ -142,6 +236,7 @@ module Sourced
         handled_commands.each do |cmd_class|
           subclass.handled_commands << cmd_class
         end
+        subclass.command_outputs.merge!(command_outputs)
       end
     end
 
@@ -180,11 +275,21 @@ module Sourced
     #
     # @param command [Sourced::Message] command to handle
     # @return [Array<Sourced::Message>] newly produced events
+    # @raise [UndeclaredEventError]
     def decide(command)
       @uncommitted_events = []
-      method_name = Sourced.message_method_name(PREFIX, command.to_message.class.to_s)
+      klass = command.to_message.class
+      @deciding = self.class.command_outputs[klass]
+      method_name = Sourced.message_method_name(PREFIX, klass.to_s)
       send(method_name, context, command) if respond_to?(method_name)
+      if @deciding && @uncommitted_events.empty? && !@deciding.optional
+        raise UndeclaredEventError, "#{self.class}: the #{klass} handler emitted nothing; " \
+                                    "declare command #{klass} => #{@deciding} | nil to allow it"
+      end
+
       @uncommitted_events.dup
+    ensure
+      @deciding = nil
     end
 
     # Produce a new event from within a command handler and apply it
@@ -195,14 +300,36 @@ module Sourced
     # @return [Sourced::Message] the newly built event
     #
     # @example
-    #   command RegisterDevice do |_context, cmd|
+    #   command RegisterDevice => DeviceRegistered do |_context, cmd|
     #     event DeviceRegistered, device_id: cmd.payload.device_id
     #   end
+    # @raise [UndeclaredEventError]
+    # @raise [InvalidEventError]
     def event(event_class, payload = {})
+      if @deciding && !@deciding.include?(event_class.to_message_class)
+        raise UndeclaredEventError, "#{self.class}: emitted #{event_class}, which its command doesn't declare " \
+                                    "(it declares #{@deciding})"
+      end
+
       evt = event_class.new(payload: payload)
+      check_partition!(evt)
       @uncommitted_events << evt
       evolve([evt])
       evt
+    end
+
+    private
+
+    # An event carrying another partition's value would be read into that partition.
+    def check_partition!(evt)
+      Sourced.extract_partition_attrs(evt, self.class.partition_keys).each do |key, value|
+        value = value.to_s
+        expected = partition_values[key]
+        next if expected.nil? || value == expected.to_s
+
+        raise InvalidEventError, "#{self.class}: #{evt.class} has #{key} #{value.inspect}, but is emitted in " \
+                                 "the partition where #{key} is #{expected.to_s.inspect}"
+      end
     end
   end
 end

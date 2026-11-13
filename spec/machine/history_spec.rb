@@ -44,7 +44,7 @@ module MachineHistoryTest
       end
       region :layout do
         initial { command Layout => :laid_out }
-        state(:laid_out) { entry { |_doc, _evt| dispatch NotifyLaidOut } }
+        state(:laid_out) { entry(NotifyLaidOut) { |_doc, _evt| dispatch NotifyLaidOut } }
       end
       command Block => Blocked
       command Refresh => Editing.history(deep: true)

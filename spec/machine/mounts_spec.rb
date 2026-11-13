@@ -44,8 +44,8 @@ module MachineMountsTest
       end
 
       state :authorizing do
-        entry { |order, _evt| dispatch ChargeCard, card: order.card }
-        exit { |_order, _evt| dispatch VoidPayment }
+        entry(ChargeCard) { |order, _evt| dispatch ChargeCard, card: order.card }
+        exit(VoidPayment) { |_order, _evt| dispatch VoidPayment }
         after(3600 => expire)
         command capture => :captured
         command expire => :expired
@@ -86,8 +86,8 @@ module MachineMountsTest
       end
 
       state Authorizing do
-        entry { |order, _evt| dispatch ChargeCard, card: order.card }
-        exit { |_order, _evt| dispatch VoidPayment }
+        entry(ChargeCard) { |order, _evt| dispatch ChargeCard, card: order.card }
+        exit(VoidPayment) { |_order, _evt| dispatch VoidPayment }
         after(3600 => ExpirePayment)
         command Capture => Captured
         command ExpirePayment => Expired
@@ -136,8 +136,8 @@ module MachineMountsTest
         end
 
         state Authorizing do
-          entry { |order, _evt| dispatch ChargeCard, card: order.card }
-          exit { |_order, _evt| dispatch VoidPayment }
+          entry(ChargeCard) { |order, _evt| dispatch ChargeCard, card: order.card }
+          exit(VoidPayment) { |_order, _evt| dispatch VoidPayment }
           after(3600 => ExpirePayment)
           command Capture => :captured
           command ExpirePayment => :expired
@@ -356,7 +356,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
       expect(region.parent.key).to eq(MM::MountedOrder::Placed)
       expect(region.nodes.keys).to eq([:initial, pay::Authorizing, pay::Captured, pay::Expired])
       expect(machine.handled_commands).to include(pay::StartPayment, pay::Capture)
-      expect(machine.handled_messages_for_evolve).to include(pay::PaymentInfoAdded, authorizing)
+      expect(machine.history_selector.types).to include(pay::PaymentInfoAdded, authorizing)
     end
 
     it "types the part's messages and states under the owner's prefix" do
@@ -499,7 +499,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
 
       expect(commands.map(&:name)).to include(pay::StartPayment.name, pay::Capture.name)
       expect(commands.find { |n| n.name == pay::StartPayment.name }.produces)
-        .to contain_exactly(pay::Authorizing.type, pay::PaymentInfoAdded.type)
+        .to contain_exactly(pay::Authorizing.type)
       expect(automations).to include('actions(placed.payment.authorizing)')
     end
   end
@@ -538,7 +538,7 @@ RSpec.describe 'Sourced::Machine region mounts' do
 
     it 'rejects mounting a machine, pointing to parts and children' do
       mounted = stub_const('MachineMountsTest::Mounted', Class.new(Sourced::Machine) do
-        reaction(MachineMountsTest::Ship) { |_context, _evt| nil }
+        reaction(MachineMountsTest::Ship => nil) { |_context, _evt| nil }
       end)
 
       expect { machine { state(:placed) { region :payment, mounted } } }
