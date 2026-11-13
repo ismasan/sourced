@@ -2,10 +2,9 @@
 
 require 'spec_helper'
 require 'sourced'
-require 'sourced/thread_executor'
 require 'timeout'
 
-RSpec.describe Sourced::PeriodicTask do
+RSpec.describe Sourced::PeriodicTask, :async do
   let(:task_class) do
     Class.new(described_class) do
       attr_reader :ticks, :first_ticks
@@ -37,7 +36,7 @@ RSpec.describe Sourced::PeriodicTask do
     end.new(interval: 0.01, logger:)
     expect(logger).to receive(:error).with(/RuntimeError: boom/).once
 
-    failing.start(Sourced::ThreadExecutor.new)
+    failing.start(Async::Task.current)
     Timeout.timeout(2) { sleep 0.005 until failing.ticks >= 3 }
 
     expect(failing).to be_running
@@ -47,7 +46,7 @@ RSpec.describe Sourced::PeriodicTask do
   subject(:periodic) { task_class.new(interval: 0.01) }
 
   it 'ticks right after starting, then every interval, until stopped' do
-    periodic.start(Sourced::ThreadExecutor.new)
+    periodic.start(Async::Task.current)
     Timeout.timeout(2) { sleep 0.005 until periodic.ticks >= 3 }
 
     expect(periodic.first_ticks).to eq(1)
@@ -62,13 +61,13 @@ RSpec.describe Sourced::PeriodicTask do
 
   it 'wakes from its sleep to stop, instead of sleeping the interval out' do
     slow = task_class.new(interval: 60)
-    slow.start(Sourced::ThreadExecutor.new)
+    slow.start(Async::Task.current)
     Timeout.timeout(2) { sleep 0.005 until slow.running? }
 
     expect(slow.stop).to be(true)
   end
 
-  it 'runs in threads when the context cannot spawn' do
+  it 'spawns into the current Async task when the context cannot spawn' do
     periodic.start(Thread.current)
     Timeout.timeout(2) { sleep 0.005 until periodic.ticks >= 1 }
 
@@ -76,20 +75,20 @@ RSpec.describe Sourced::PeriodicTask do
   end
 
   it 'starts again after stopping' do
-    periodic.start(Sourced::ThreadExecutor.new)
+    periodic.start(Async::Task.current)
     Timeout.timeout(2) { sleep 0.005 until periodic.ticks >= 1 }
     periodic.stop
 
-    periodic.start(Sourced::ThreadExecutor.new)
+    periodic.start(Async::Task.current)
     Timeout.timeout(2) { sleep 0.005 until periodic.first_ticks == 2 }
     expect(periodic).to be_running
     periodic.stop
   end
 
   it 'is a no-op when started while running' do
-    periodic.start(Sourced::ThreadExecutor.new)
+    periodic.start(Async::Task.current)
     Timeout.timeout(2) { sleep 0.005 until periodic.running? }
-    periodic.start(Sourced::ThreadExecutor.new)
+    periodic.start(Async::Task.current)
 
     expect(periodic.first_ticks).to eq(1)
     periodic.stop
@@ -114,7 +113,7 @@ RSpec.describe Sourced::PeriodicTask do
     gate = Thread::Queue.new
     blocked = task_class.new(interval: 0.01)
     blocked.gate = gate
-    blocked.start(Sourced::ThreadExecutor.new)
+    blocked.start(Async::Task.current)
     Timeout.timeout(2) { sleep 0.005 until blocked.ticks >= 1 }
 
     expect(blocked.stop(timeout: 0.05)).to be(false)
@@ -125,10 +124,11 @@ RSpec.describe Sourced::PeriodicTask do
   end
 
   it 'can run in the caller until stopped from elsewhere' do
-    thread = Thread.new { periodic.run }
+    running = Async { periodic.run }
     Timeout.timeout(2) { sleep 0.005 until periodic.ticks >= 1 }
 
     periodic.stop
-    expect(thread.join(2)).to be(thread)
+    Timeout.timeout(2) { running.wait }
+    expect(running).to be_completed
   end
 end

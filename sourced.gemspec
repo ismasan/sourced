@@ -32,7 +32,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'async'
   spec.add_dependency 'plumb', '0.4.0'
   spec.add_dependency 'sequel'
-  spec.add_dependency 'sqlite3'
+  spec.add_dependency 'sqlite3', '>= 2.10.2'
   spec.add_dependency 'sourced-message', '>= 0.5.3'
   spec.add_dependency 'sourced-component', '~> 0.1', '>= 0.1.1'
 

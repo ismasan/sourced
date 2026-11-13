@@ -5,6 +5,7 @@ require 'set'
 require 'sourced/inline_notifier'
 require 'sourced/installer'
 require 'sourced/store/message_codec'
+require 'sourced/store/busy_handler'
 
 module Sourced
   # Wraps a Message with a storage position. Delegates all message methods.
@@ -914,6 +915,18 @@ module Sourced
       ids.size
     end
 
+    # Release every claim +worker_id+ holds, ex. ones it was left holding when an
+    # ack or release failed. For a worker processing nothing: its claims aren't
+    # in flight. Their versions are unchanged, as for {#release}.
+    #
+    # @param worker_id [String]
+    # @return [Integer] number of claims released
+    def release_worker_claims(worker_id)
+      db[@offsets_table]
+        .where(claimed: 1, claimed_by: worker_id)
+        .update(claimed: 0, claimed_at: nil, claimed_by: nil)
+    end
+
     # Release claims held by workers that haven't heartbeated within ttl_seconds.
     #
     # @param ttl_seconds [Integer] age threshold
@@ -1224,10 +1237,16 @@ module Sourced
 
       attr_names = eager_groups.flat_map { |gi| gi[:partition_by] }.uniq
 
-      # Pre-fetch relevant key_pair IDs in one query, keyed by "name:value"
+      # Pre-fetch the appended messages' partition key_pair IDs, keyed by "name:value"
+      values_by_name = Hash.new { |h, k| h[k] = Set.new }
+      indexed_keys.each do |pairs|
+        pairs.each { |name, value| values_by_name[name] << value if attr_names.include?(name) }
+      end
       kp_id_cache = {}
-      db[@key_pairs_table].where(name: attr_names).each do |row|
-        kp_id_cache["#{row[:name]}:#{row[:value]}"] = row[:id]
+      values_by_name.each do |name, values|
+        db[@key_pairs_table].where(name:, value: values.to_a).each do |row|
+          kp_id_cache["#{row[:name]}:#{row[:value]}"] = row[:id]
+        end
       end
 
       eager_groups.each do |group_info|

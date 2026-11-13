@@ -3216,6 +3216,26 @@ RSpec.describe Sourced::Store do
     end
   end
 
+  describe '#release_worker_claims' do
+    let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id) }
+
+    it "releases every claim the worker holds, and no other worker's" do
+      store.register_consumer_group('g', selector)
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-3', name: 'C' })
+      ])
+      2.times { store.claim_next('g', selector, worker_id: 'w-1') }
+      other = store.claim_next('g', selector, worker_id: 'w-2')
+
+      expect(store.release_worker_claims('w-1')).to eq(2)
+
+      claimed = db[:sourced_offsets].where(claimed: 1).select_map(%i[id claimed_by])
+      expect(claimed).to eq([[other.offset_id, 'w-2']])
+    end
+  end
+
   describe 'eager offset creation' do
     let(:group_id) { 'eager-test-group' }
 

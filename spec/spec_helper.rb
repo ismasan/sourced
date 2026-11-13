@@ -70,6 +70,19 @@ RSpec.configure do |config|
 
   config.include Sourced::Testing::RSpec
 
+  # Examples tagged :async run as a fiber in an Async reactor, so what they start
+  # (workers, pollers) runs as fibers next to them; tasks still running at the
+  # end are stopped.
+  config.around(:each, :async) do |example|
+    Sync do |task|
+      example.run
+    ensure
+      children = []
+      task.children&.each { children << _1 }
+      children.each(&:stop)
+    end
+  end
+
   # Stores share one codec per format, compiled once per process — the store
   # component does it at boot, this does it for specs that build stores directly.
   config.before(:suite) { Sourced::Store::MessageCodec.default.compile! }

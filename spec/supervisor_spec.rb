@@ -3,7 +3,6 @@
 require 'spec_helper'
 require 'sourced'
 require 'timeout'
-require 'sourced/thread_executor'
 
 RSpec.describe Sourced::Supervisor do
   let(:config) do
@@ -28,16 +27,15 @@ RSpec.describe Sourced::Supervisor do
     config.teardown! if config.boot_status == :started
   end
 
-  # Runs the supervisor in a thread, waiting until the tree has started
+  # Runs the supervisor (which blocks in its executor's reactor) in a thread of
+  # the spec's, waiting until the tree has started
   def run_in_background(supervisor)
     thread = Thread.new { supervisor.start }
     Timeout.timeout(2) { sleep 0.01 until config.boot_status == :started || !thread.alive? }
     thread
   end
 
-  context 'with a ThreadExecutor' do
-    before { config.config!('executor') { Sourced::ThreadExecutor.new } }
-
+  context 'with the default AsyncExecutor' do
     it 'boots the tree, and tears it down on #stop' do
       supervisor = described_class.new(config:)
       thread = run_in_background(supervisor)
@@ -105,7 +103,6 @@ RSpec.describe Sourced::Supervisor do
   it "boots the root of a host's tree" do
     host = Sourced::Component.new
     host.mount('sourced', config)
-    host.config!('sourced.executor') { Sourced::ThreadExecutor.new }
 
     supervisor = described_class.new(config:)
     thread = Thread.new { supervisor.start }

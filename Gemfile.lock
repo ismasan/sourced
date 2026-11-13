@@ -15,7 +15,7 @@ PATH
       sequel
       sourced-component (~> 0.1, >= 0.1.1)
       sourced-message (>= 0.5.3)
-      sqlite3
+      sqlite3 (>= 2.10.2)
 
 GEM
   remote: https://rubygems.org/
@@ -60,7 +60,6 @@ GEM
     lint_roller (1.1.0)
     logger (1.7.0)
     metrics (0.15.0)
-    mini_portile2 (2.8.9)
     parallel (1.26.3)
     parser (3.3.7.1)
       ast (~> 2.4.1)
@@ -116,9 +115,8 @@ GEM
     sourced-message (0.5.3)
       fugit
       plumb (>= 0.4)
-    sqlite3 (2.8.0)
-      mini_portile2 (~> 2.8.0)
-    sqlite3 (2.8.0-arm64-darwin)
+    sqlite3 (2.10.2-arm64-darwin)
+    sqlite3 (2.10.2-x86_64-linux-gnu)
     stringio (3.2.0)
     timecop (0.9.10)
     traces (0.18.2)
