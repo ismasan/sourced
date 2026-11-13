@@ -134,6 +134,30 @@ class HandleTestReactingDecider < Sourced::Decider
   end
 end
 
+# Each transition's entry action dispatches Alert.
+class HandleTestDoorMachine < Sourced::Machine
+  partition_by :door_id
+  consumer_group 'handle_test.door_machine'
+
+  Opened = State(:opened)
+  Closed = State(:closed)
+  OpenDoor = Command(:open_door)
+  CloseDoor = Command(:close_door)
+  Alert = Command(:alert)
+
+  initial { command OpenDoor => Opened }
+
+  state Opened do
+    entry Alert
+    command CloseDoor => Closed
+  end
+
+  state Closed do
+    entry Alert
+    command OpenDoor => Opened
+  end
+end
+
 # Refuses ActivateDevice until the device exists, instead of raising.
 class HandleTestGatedDecider < HandleTestDecider
   consumer_group 'handle_test_gated_decider'
@@ -488,6 +512,83 @@ RSpec.describe 'Sourced.handle!' do
         handle_test.device_created
         handle_test.notify_created
       ])
+    end
+
+    describe 'commands handled before workers catch up' do
+      before do
+        router.register(HandleTestReactingDecider)
+        Sourced.register(HandleTestReactingDecider)
+      end
+
+      def register(device_id, name = 'Sensor')
+        HandleTestMessages::RegisterDevice.new(payload: { device_id:, name: })
+      end
+
+      def log_types = store.read_all(limit: 100).messages.map(&:type)
+
+      it "runs reactions to every command's events in the partition" do
+        Sourced.handle!(HandleTestReactingDecider, register('d1', 'a'), store:)
+        Sourced.handle!(HandleTestReactingDecider, register('d1', 'b'), store:)
+        router.drain
+
+        expect(log_types.count('handle_test.notify_created')).to eq(2)
+      end
+
+      it "runs reactions to another partition's earlier events" do
+        Sourced.handle!(HandleTestReactingDecider, register('d1'), store:)
+        Sourced.handle!(HandleTestReactingDecider, register('d2'), store:)
+        router.drain
+
+        expect(log_types.count('handle_test.notify_created')).to eq(2)
+      end
+
+      it "doesn't decide a command again for a worker holding the partition's claim" do
+        Sourced.handle!(HandleTestReactingDecider, register('d1', 'a'), store:)
+        claim = store.claim_next(HandleTestReactingDecider.group_id, HandleTestReactingDecider.claim_selector, worker_id: 'w')
+
+        Sourced.handle!(HandleTestReactingDecider, register('d1', 'b'), store:)
+        store.ack(HandleTestReactingDecider.group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
+        router.drain
+
+        expect(log_types.count('handle_test.device_created')).to eq(2)
+      end
+
+      it 'acks a claim of only marked commands, without running the reactor' do
+        Sourced.handle!(HandleTestReactingDecider, register('d1', 'a'), store:)
+        claim = store.claim_next(HandleTestReactingDecider.group_id, HandleTestReactingDecider.claim_selector, worker_id: 'w')
+        cmd = register('d1', 'b')
+        Sourced.handle!(HandleTestReactingDecider, cmd, store:)
+        store.release(HandleTestReactingDecider.group_id, offset_id: claim.offset_id)
+        store.advance_offset(HandleTestReactingDecider.group_id, partition: { 'device_id' => 'd1' }, position: claim.messages.last.position)
+
+        count = store.latest_position
+        expect(router.handle_next_for(HandleTestReactingDecider, worker_id: 'w', batch_size: 1)).to be(true)
+        expect(store.latest_position).to eq(count)
+
+        next_claim = store.claim_next(HandleTestReactingDecider.group_id, HandleTestReactingDecider.claim_selector, worker_id: 'w')
+        expect(next_claim.messages.map(&:causation_id)).to eq([cmd.id])
+      end
+
+      it 'marks the stored command, not the events correlated from it' do
+        cmd = register('d1')
+        result = Sourced.handle!(HandleTestReactingDecider, cmd, store:)
+
+        stored = store.read_all(limit: 10).messages
+        expect(stored.first.metadata[Sourced::HANDLED_BY_KEY]).to eq([HandleTestReactingDecider.group_id, cmd.id])
+        expect(result.command.metadata[Sourced::HANDLED_BY_KEY]).to eq([HandleTestReactingDecider.group_id, cmd.id])
+        expect(stored.drop(1).map { |m| m.metadata[Sourced::HANDLED_BY_KEY] }).to all(be_nil)
+      end
+
+      it "runs a machine's entry actions for every transition" do
+        router.register(HandleTestDoorMachine)
+        Sourced.register(HandleTestDoorMachine)
+
+        Sourced.handle!(HandleTestDoorMachine, HandleTestDoorMachine::OpenDoor.new(payload: { door_id: 'x' }), store:)
+        Sourced.handle!(HandleTestDoorMachine, HandleTestDoorMachine::CloseDoor.new(payload: { door_id: 'x' }), store:)
+        router.drain
+
+        expect(log_types.count(HandleTestDoorMachine::Alert.type)).to eq(2)
+      end
     end
 
     it "raises when the reactor is registered but Sourced hasn't started, without appending the command" do

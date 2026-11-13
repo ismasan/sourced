@@ -57,7 +57,7 @@ module Sourced
       @columns[:last_nil_types_max_pos] = 0
     end
 
-    # Reset a stopped or failed group's discovery; the store deletes its offsets.
+    # Reset a stopped or failed group's discovery; the store rewinds its offsets.
     def reset
       move!(ConsumerGroupMachine::Reset)
       @columns.merge!(discovery_position: 0, last_nil_types_max_pos: 0)

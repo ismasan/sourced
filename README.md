@@ -390,7 +390,7 @@ Hand-defined messages work too, and every handled message is checked against the
 
 #### Synchronous command handling
 
-`Sourced.handle!` loads history, runs the decider, appends the command + events, and advances the decider's consumer group offset so workers skip the command — all in one call and one transaction. Designed for web controllers. It uses `Sourced.store`, so Sourced must be started (or pass `store:`).
+`Sourced.handle!` loads history, runs the decider, and appends the command + events in one call and one transaction. The stored command is marked as handled by the decider's consumer group (`metadata[:handled_by]`), so its workers skip it but still claim the events it produced and run reactions to them. Designed for web controllers. It uses `Sourced.store`, so Sourced must be started (or pass `store:`).
 
 ```ruby
 cmd = CreateCourse.new(payload: { course_id: 'c1', course_name: 'Algebra' })
@@ -1621,9 +1621,11 @@ To replay a group, stop it, reset it, and start it again:
 
 ```ruby
 Sourced.stop_consumer_group(CourseDecider, 'rebuilding projections')
-Sourced.reset_consumer_group(CourseDecider)  # offsets cleared; still stopped
+Sourced.reset_consumer_group(CourseDecider)  # offsets rewound; still stopped
 Sourced.start_consumer_group(CourseDecider)  # reprocesses from the beginning
 ```
+
+Each partition's claims up to where its cursor was before the reset come back with `replaying: true`.
 
 Workers move groups too: the error strategy's `Retry` and `Fail`, and `Recover` once the partition a retrying group failed on is processed. These never raise: where a status doesn't accept one, the group stays as it is, ex. a batch that was still running when an operator stopped the group fails afterwards, and the group stays `stopped`.
 

@@ -1381,20 +1381,46 @@ RSpec.describe Sourced::Store do
   end
 
   describe '#reset_consumer_group' do
-    it 'deletes all offsets' do
-      store.register_consumer_group('my_group', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
-      store.append(
-        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
-      )
-      store.claim_next('my_group',
-        Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id),
-        worker_id: 'w-1')
+    it 'rewinds every offset, recording where its cursor was as replay_until' do
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id)
+      store.register_consumer_group('my_group', selector)
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
+      ])
+      claim = store.claim_next('my_group', selector, worker_id: 'w-1')
+      store.ack('my_group', offset_id: claim.offset_id, position: claim.messages.last.position)
+      store.claim_next('my_group', selector, worker_id: 'w-1')
 
-      expect(db[:sourced_offsets].count).to be > 0
       store.stop_consumer_group('my_group')
       store.reset_consumer_group('my_group')
-      expect(db[:sourced_offsets].count).to eq(0)
+
+      offsets = db[:sourced_offsets].order(:partition_key).all
+      expect(offsets.map { |o| o.values_at(:partition_key, :last_position, :replay_until, :claimed) })
+        .to eq([['device_id:dev-1', 0, 1, 0], ['device_id:dev-2', 0, 0, 0]])
       expect(store.consumer_group_active?('my_group')).to be(false)
+    end
+
+    it 'keeps replay_until across resets until the cursor passes it' do
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id)
+      store.register_consumer_group('my_group', selector)
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
+      ])
+      claim = store.claim_next('my_group', selector, worker_id: 'w-1')
+      store.ack('my_group', offset_id: claim.offset_id, position: 2)
+      store.stop_consumer_group('my_group')
+      store.reset_consumer_group('my_group')
+      store.start_consumer_group('my_group')
+
+      claim = store.claim_next('my_group', selector, worker_id: 'w-1', batch_size: 1)
+      store.ack('my_group', offset_id: claim.offset_id, position: 1)
+      store.stop_consumer_group('my_group')
+      store.reset_consumer_group('my_group')
+      store.start_consumer_group('my_group')
+
+      expect(store.claim_next('my_group', selector, worker_id: 'w-1').replaying).to be(true)
     end
 
     it 'raises for an active group, keeping its offsets' do
@@ -1421,10 +1447,9 @@ RSpec.describe Sourced::Store do
         worker_id: 'w-1')
 
       reactor = double('reactor', group_id: 'my_group')
-      expect(db[:sourced_offsets].count).to be > 0
       store.stop_consumer_group(reactor)
       store.reset_consumer_group(reactor)
-      expect(db[:sourced_offsets].count).to eq(0)
+      expect(db[:sourced_offsets].select_map(:claimed)).to all(eq(0))
     end
 
     it 'is a no-op for queue-mode groups (offsets kept)' do
@@ -1775,22 +1800,21 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
       ])
 
-      # Process and ack — highest_position advances to 2
       r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
       store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
 
-      # Reset offsets — highest_position stays at 2
+      # Reset: the cursor was at 2
       store.stop_consumer_group(group_id)
       store.reset_consumer_group(group_id)
       store.start_consumer_group(group_id)
 
-      # Re-claim same messages — replaying because positions <= highest_position
+      # Re-claim same messages: replaying, at or below replay_until
       r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(r2.replaying).to be true
       expect(r2.messages.size).to eq(2)
     end
 
-    it 'replaying transitions to false once consumer passes highest_position after reset' do
+    it 'replaying transitions to false once consumer passes replay_until after reset' do
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
@@ -1809,10 +1833,48 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
       )
 
-      # Re-claim: both messages, but last position (2) > highest_position (1)
+      # Re-claim: both messages, but last position (2) > replay_until (1)
       r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(r2.replaying).to be false
       expect(r2.messages.size).to eq(2)
+    end
+
+    it "replaying is false for a partition behind another partition's acks" do
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'C' })
+      ])
+
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
+      expect(r1.messages.map(&:position)).to eq([1, 3])
+      store.ack(group_id, offset_id: r1.offset_id, position: 3)
+
+      r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
+      expect(r2.messages.map(&:position)).to eq([2])
+      expect(r2.replaying).to be false
+    end
+
+    it 'replaying after reset is per partition' do
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'C' })
+      ])
+      # Only dev-1 is processed before the reset.
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
+      store.ack(group_id, offset_id: r1.offset_id, position: 3)
+
+      store.stop_consumer_group(group_id)
+      store.reset_consumer_group(group_id)
+      store.start_consumer_group(group_id)
+
+      claims = 2.times.map do
+        claim = store.claim_next(group_id, selector, worker_id: 'w-1')
+        store.ack(group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
+        [claim.partition_value['device_id'], claim.replaying]
+      end
+      expect(claims).to contain_exactly(['dev-1', true], ['dev-2', false])
     end
   end
 
@@ -2375,18 +2437,6 @@ RSpec.describe Sourced::Store do
       expect(offset[:claimed_by]).to be_nil
     end
 
-    it 'advances the consumer group highest_position' do
-      store.append(
-        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
-      )
-      result = claim
-      last = result.messages.last.position
-      store.ack_and_delete(group_id, offset_id: result.offset_id, positions: [last])
-
-      cg = db[:sourced_consumer_groups].where(group_id: group_id).first
-      expect(cg[:highest_position]).to eq(last)
-    end
-
     it 'a subsequent claim returns only undeleted messages, in order' do
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
@@ -2660,18 +2710,41 @@ RSpec.describe Sourced::Store do
       expect(offset[:last_position]).to eq(1)
     end
 
-    it 'advances highest_position on the consumer group' do
-      store.append(
-        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
-      )
+    def offset_position(device_id)
+      db[:sourced_offsets].where(partition_key: "device_id:#{device_id}").get(:last_position)
+    end
 
-      store.advance_offset(group_id,
-        partition: { 'device_id' => 'dev-1' },
-        position: 1
-      )
+    it 'with pending:, advances a caught-up offset' do
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'C' })
+      ])
+      store.advance_offset(group_id, partition: { 'device_id' => 'dev-1' }, position: 1)
 
-      cg = db[:sourced_consumer_groups].where(group_id: group_id).first
-      expect(cg[:highest_position]).to eq(1)
+      # dev-2's message is in another partition: nothing of dev-1's is pending before 3.
+      expect(store.advance_offset(group_id, partition: { 'device_id' => 'dev-1' }, position: 3, pending: selector)).to be(true)
+      expect(offset_position('dev-1')).to eq(3)
+    end
+
+    it "with pending:, doesn't advance past the partition's unprocessed messages" do
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
+      ])
+
+      expect(store.advance_offset(group_id, partition: { 'device_id' => 'dev-1' }, position: 2, pending: selector)).to be(true)
+      expect(offset_position('dev-1')).to eq(0)
+    end
+
+    it "with pending:, doesn't advance a claimed offset" do
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+      store.claim_next(group_id, selector, worker_id: 'w-1')
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' }))
+      db[:sourced_offsets].update(last_position: 1) # caught up, but still claimed
+
+      store.advance_offset(group_id, partition: { 'device_id' => 'dev-1' }, position: 2, pending: selector)
+      expect(offset_position('dev-1')).to eq(1)
     end
 
     it 'never decreases the offset' do
@@ -2695,26 +2768,6 @@ RSpec.describe Sourced::Store do
         .where(Sequel[:sourced_consumer_groups][:group_id] => group_id)
         .first
       expect(offset[:last_position]).to eq(2)
-    end
-
-    it 'never decreases highest_position' do
-      store.append([
-        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
-        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
-      ])
-
-      store.advance_offset(group_id,
-        partition: { 'device_id' => 'dev-1' },
-        position: 2
-      )
-
-      store.advance_offset(group_id,
-        partition: { 'device_id' => 'dev-2' },
-        position: 1
-      )
-
-      cg = db[:sourced_consumer_groups].where(group_id: group_id).first
-      expect(cg[:highest_position]).to eq(2)
     end
 
     it 'causes claim_next to skip the advanced partition' do

@@ -96,6 +96,20 @@ module Sourced
       claim = store.claim_next(group_id, group.claim_selector, worker_id:, batch_size:)
       return false unless claim
 
+      # Commands Sourced.handle! decided for this group are skipped.
+      handled, unhandled = claim.messages.partition { |msg| msg.metadata[HANDLED_BY_KEY] == [group_id, msg.id] }
+      if handled.any?
+        if unhandled.empty?
+          store.transaction do
+            recover(claim, group_id)
+            store.ack(group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
+          end
+          return true
+        end
+
+        claim = claim.with(messages: unhandled)
+      end
+
       begin
         kwargs = {}
         if group.needs_history
@@ -110,13 +124,7 @@ module Sourced
           return true
         end
 
-        execute_actions(action_pairs, claim, reactor_class) do
-          # The partition a retrying group failed on went through: the group
-          # recovers, in the ack's transaction.
-          if claim.retrying
-            store.updating_consumer_group(group_id) { |updater| updater.recover(offset_id: claim.offset_id) }
-          end
-        end
+        execute_actions(action_pairs, claim, reactor_class) { recover(claim, group_id) }
         true
 
       # The group's retry or failure is recorded while the claim is held, so
@@ -318,6 +326,14 @@ module Sourced
                   @reactors.find { |r| r.group_id == reactor_or_id || r.group_id == group_id }
                 end
       reactor || raise(UnregisteredReactorError.new(reactor_or_id, @reactors))
+    end
+
+    # The partition a retrying group failed on went through: the group
+    # recovers, in the ack's transaction.
+    def recover(claim, group_id)
+      return unless claim.retrying
+
+      store.updating_consumer_group(group_id) { |updater| updater.recover(offset_id: claim.offset_id) }
     end
 
     # Interpret the reactor's returned action signals against the store, then

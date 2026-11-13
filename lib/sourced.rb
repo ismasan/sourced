@@ -42,6 +42,11 @@ module Sourced
   # Default logger for components built outside a configured system, ex. in specs.
   NULL_LOGGER = Logger.new(nil)
 
+  # Metadata key {.handle!} marks a command it handled with: +[group_id, message_id]+.
+  # That group's Router skips the message; the id keeps the mark from applying
+  # to messages correlated from it, which copy its metadata.
+  HANDLED_BY_KEY = :handled_by
+
   # Raised when a batch is partially processed before a message raises.
   # Carries the action_pairs for successfully processed messages,
   # the failed message, and the original exception as #cause.
@@ -186,19 +191,24 @@ module Sourced
     end
 
     raw_events = instance.decide(command)
+    # Correlated before it's marked: what's correlated takes its metadata.
     correlated_events = raw_events.map { |e| command.correlate(e) }
+    registered = config.declared?(Config.reactor_key(reactor_class))
+    command = command.with_metadata(HANDLED_BY_KEY => [reactor_class.group_id, command.id]) if registered
 
     guard = read_result&.guard
     # One transaction, so a command whose offset can't be advanced isn't committed either.
-    # The command is appended on its own to learn its position: offsets advance past the
-    # command only, so the reactor's workers still claim the events it just produced and
-    # run its reactions to them. The transaction holds the write lock, so nothing lands
-    # between the two appends, and the guard is checked by whichever appends to the log first.
+    # The command is appended on its own to learn its position. Its mark has the
+    # reactor's workers skip it; offsets advance past it, where nothing is pending
+    # before it, so workers needn't claim it. The reactor's workers still claim the
+    # events it produced and run its reactions to them. The transaction holds the
+    # write lock, so nothing lands between the two appends, and the guard is
+    # checked by whichever appends to the log first.
     store.transaction do
       command_position = store.append(command, guard: guard)
       store.append(correlated_events, guard: command_position ? nil : guard)
       # nil when the command itself was future-dated and scheduled: nothing to skip past.
-      advance_registered_offsets(store, reactor_class, partition_attrs, command_position) if command_position
+      advance_registered_offsets(store, reactor_class, partition_attrs, command_position) if registered && command_position
     end
 
     HandleResult.new(command: command, reactor: instance, events: correlated_events)
@@ -260,16 +270,15 @@ module Sourced
     end
   end
 
-  # Skip the handled command for a registered reactor's workers. The group
-  # exists once Sourced has started; before that, advancing would silently do
-  # nothing and a worker would decide the command again later.
+  # Advance a registered reactor's offset past the command it handled, when its
+  # cursor is caught up. The group exists once Sourced has started: handling a
+  # command for a registered reactor before then raises.
   private_class_method def self.advance_registered_offsets(store, reactor_class, partition_attrs, position)
-    return unless config.declared?(Config.reactor_key(reactor_class))
-
     advanced = store.advance_offset(
       reactor_class.group_id,
       partition: partition_attrs.transform_keys(&:to_s),
-      position: position
+      position: position,
+      pending: (reactor_class.claim_selector unless partition_attrs.empty?)
     )
     return if advanced
 
