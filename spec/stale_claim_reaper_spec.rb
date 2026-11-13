@@ -120,7 +120,7 @@ RSpec.describe 'Store worker heartbeat and stale claim release' do
       )
 
       # Ack the first claim so d1 partition is free, then claim d2 with w2
-      store.ack('reaper_test_projector', offset_id: @claim.offset_id, position: @claim.messages.last.position)
+      store.ack('reaper_test_projector', offset_id: @claim.offset_id, version: @claim.offset_version, position: @claim.messages.last.position)
 
       claim2 = store.claim_next(
         'reaper_test_projector',
@@ -214,7 +214,7 @@ RSpec.describe Sourced::StaleClaimReaper do
         StaleClaimReaperTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
       )
       claim = store.claim_next('q_group', Sourced::Selector[StaleClaimReaperTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w1')
-      store.ack_and_delete('q_group', offset_id: claim.offset_id, positions: claim.messages.map(&:position))
+      store.ack_and_delete('q_group', offset_id: claim.offset_id, version: claim.offset_version, positions: claim.messages.map(&:position))
 
       expect(db[:sourced_offsets].count).to eq(1)
       reaper.send(:reap)

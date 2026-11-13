@@ -97,12 +97,15 @@ module Sourced
       return false unless claim
 
       # Commands Sourced.handle! decided for this group are skipped.
-      handled, unhandled = claim.messages.partition { |msg| msg.metadata[HANDLED_BY_KEY] == [group_id, msg.id] }
+      handled, unhandled = claim.messages.partition do |msg|
+        (mark = msg.metadata[HANDLED_BY_KEY]) && mark[0] == group_id && mark[1] == msg.id
+      end
+      ack_through = claim.messages.last.position
       if handled.any?
         if unhandled.empty?
           store.transaction do
             recover(claim, group_id)
-            store.ack(group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
+            store.ack(group_id, offset_id: claim.offset_id, version: claim.offset_version, position: claim.messages.last.position)
           end
           return true
         end
@@ -120,11 +123,11 @@ module Sourced
         action_pairs = reactor_class.handle_claim(claim, **kwargs)
 
         if action_pairs == Actions::RETRY
-          store.release(group_id, offset_id: claim.offset_id)
+          store.release(group_id, offset_id: claim.offset_id, version: claim.offset_version)
           return true
         end
 
-        execute_actions(action_pairs, claim, reactor_class) { recover(claim, group_id) }
+        execute_actions(action_pairs, claim, reactor_class, ack_through:) { recover(claim, group_id) }
         true
 
       # The group's retry or failure is recorded while the claim is held, so
@@ -139,7 +142,7 @@ module Sourced
         end
         true
       rescue Sourced::ConcurrentAppendError
-        store.release(group_id, offset_id: claim.offset_id)
+        store.release(group_id, offset_id: claim.offset_id, version: claim.offset_version)
         true
       rescue StandardError => e
         begin
@@ -147,7 +150,7 @@ module Sourced
             handle_exception(reactor_class, e, claim.messages.first, group)
           end
         ensure
-          store.release(group_id, offset_id: claim.offset_id)
+          store.release(group_id, offset_id: claim.offset_id, version: claim.offset_version)
         end
         true
       end
@@ -339,8 +342,10 @@ module Sourced
     # Interpret the reactor's returned action signals against the store, then
     # finalize the claim: advance the offset cursor and delete any messages the
     # reactor explicitly marked for deletion via a +delete: true+ signal.
-    # A block runs in the same transaction, before the ack.
-    def execute_actions(action_pairs, claim, reactor)
+    # A block runs in the same transaction, before the ack. +ack_through+ is the
+    # claimed batch's last position, skipped messages included: the ack reaches
+    # it when the reactor processed every message it was given.
+    def execute_actions(action_pairs, claim, reactor, ack_through: nil)
       group_id = reactor.group_id
       # One runner per batch: it carries the batch's append floor (see ActionRunner).
       interpreter = ActionRunner.new(store)
@@ -358,14 +363,15 @@ module Sourced
           end
         end
         yield if block_given?
+        last_position = ack_through if ack_through && last_position == claim.messages.last.position
 
         if last_position
           # Deletion is driven solely by :delete signals — never by the reactor's
           # partitioning or exclusivity.
           store.delete_messages(flagged_deletes) if flagged_deletes.any?
-          store.ack(group_id, offset_id: claim.offset_id, position: last_position)
+          store.ack(group_id, offset_id: claim.offset_id, version: claim.offset_version, position: last_position)
         else
-          store.release(group_id, offset_id: claim.offset_id)
+          store.release(group_id, offset_id: claim.offset_id, version: claim.offset_version)
         end
       end
 

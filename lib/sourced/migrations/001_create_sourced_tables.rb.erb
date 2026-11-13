@@ -72,6 +72,9 @@ Sequel.migration do
       # Claims whose last message is at or below this are replays: it's where
       # the partition's cursor was when its group was last reset.
       Integer :replay_until, null: false, default: 0
+      # Bumped by every claim and by reset: acks and releases match it, so a
+      # claim that was reaped, re-claimed or reset can't move the cursor.
+      Integer :version, null: false, default: 0
       Integer :claimed, null: false, default: 0
       String :claimed_at
       String :claimed_by

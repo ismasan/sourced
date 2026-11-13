@@ -32,8 +32,11 @@ module Sourced
   # Returned by {Store#claim_next} with everything needed to process and ack a partition.
   # +retrying+ is true for the claim of the partition whose failure its retrying
   # group is waiting on: processing it recovers the group (see {GroupUpdater#recover}).
-  ClaimResult = Data.define(:offset_id, :key_pair_ids, :partition_key, :partition_value, :messages, :replaying, :guard, :retrying) do
-    def initialize(retrying: false, **) = super
+  # +offset_version+ is the offset's version as claimed: {Store#ack} and
+  # {Store#release} take it, and do nothing once the offset has been claimed
+  # again or reset.
+  ClaimResult = Data.define(:offset_id, :offset_version, :key_pair_ids, :partition_key, :partition_value, :messages, :replaying, :guard, :retrying) do
+    def initialize(retrying: false, offset_version: 0, **) = super
   end
 
   # Returned by {Store#read} with messages and a consistency guard.
@@ -656,7 +659,8 @@ module Sourced
     # Rewind every offset of a stopped or failed consumer group to the
     # beginning, so it processes its partitions again once it's started. Each
     # offset records where its cursor was as +replay_until+: claims up to there
-    # are flagged +replaying+ (see {#claim_next}). It stays stopped or failed.
+    # are flagged +replaying+ (see {#claim_next}). Bumping each offset's version
+    # makes acks for claims taken before the reset no-ops. It stays stopped or failed.
     #
     # @param group_id [String, #group_id] identifier or object responding to +#group_id+
     # @return [void]
@@ -678,6 +682,7 @@ module Sourced
         db[@offsets_table].where(consumer_group_id: cg[:id]).update(
           replay_until: Sequel.function(:max, :replay_until, :last_position),
           last_position: 0,
+          version: Sequel[:version] + 1,
           claimed: 0,
           claimed_at: nil,
           claimed_by: nil
@@ -696,9 +701,9 @@ module Sourced
     # guard over that ({Selector::NONE} for id-partitioned queue claims).
     #
     # The +replaying+ flag indicates whether the returned messages have been
-    # processed by this consumer group before: the batch's last message is at
-    # or before the partition's +replay_until+, where its cursor was when the
-    # group was last reset.
+    # processed by this consumer group before: its messages are at or before
+    # the partition's +replay_until+, where its cursor was when the group was
+    # last reset. A batch that would cross it is cut there.
     #
     # @param group_id [String] consumer group identifier
     # @param selector [Selector]
@@ -765,10 +770,15 @@ module Sourced
       selector = Selector.new(parts: selector.parts).bind(**partition_value)
       key_pair_index = key_pairs.to_h { |id, name, value| [[name, value], id] }
       messages = select_messages(selector, after: claimed[:last_position], limit: batch_size, key_pair_index:)
+      # A batch is all replay or all new: cut one that crosses replay_until.
+      replay_until = claimed[:replay_until]
+      if messages.any? && messages.first.position <= replay_until && messages.last.position > replay_until
+        messages = messages.take_while { |m| m.position <= replay_until }
+      end
 
       # If no messages pass the conditional AND filter, release and return nil
       if messages.empty?
-        release(group_id, offset_id: claimed[:offset_id])
+        release(group_id, offset_id: claimed[:offset_id], version: claimed[:version])
         return nil
       end
 
@@ -778,10 +788,11 @@ module Sourced
       guard_selector = selector.id_partitioned? ? Selector::NONE : selector
       guard = ConsistencyGuard.new(selector: guard_selector, last_position: last_pos)
 
-      replaying = messages.last.position <= claimed[:replay_until]
+      replaying = messages.last.position <= replay_until
 
       ClaimResult.new(
         offset_id: claimed[:offset_id],
+        offset_version: claimed[:version],
         key_pair_ids: key_pair_ids,
         partition_key: claimed[:partition_key],
         partition_value: partition_value,
@@ -800,16 +811,18 @@ module Sourced
     end
 
     # Acknowledge processing: advance the offset to +position+ and release the claim.
+    # A no-op once the offset has moved on from +version+ (claimed again, or reset).
     #
     # @param group_id [String] consumer group identifier
     # @param offset_id [Integer] offset ID from the claim result
+    # @param version [Integer] the claim result's +offset_version+
     # @param position [Integer] position of the last processed message
     # @return [void]
-    def ack(group_id, offset_id:, position:)
+    def ack(group_id, offset_id:, version:, position:)
       cg = db[@consumer_groups_table].where(group_id: group_id).first
       return unless cg
 
-      db[@offsets_table].where(id: offset_id, consumer_group_id: cg[:id]).update(
+      db[@offsets_table].where(id: offset_id, version:, consumer_group_id: cg[:id]).update(
         last_position: position,
         claimed: 0,
         claimed_at: nil,
@@ -827,27 +840,27 @@ module Sourced
     # are removed automatically via the foreign-key cascade. Shared key_pairs rows
     # are left in place.
     #
+    # Like {#ack}, a no-op (deleting nothing) once the offset has moved on from +version+.
+    #
     # @param group_id [String] consumer group identifier
     # @param offset_id [Integer] offset ID from the claim result
+    # @param version [Integer] the claim result's +offset_version+
     # @param positions [Array<Integer>] positions of the processed messages to delete
     # @return [void]
-    def ack_and_delete(group_id, offset_id:, positions:)
+    def ack_and_delete(group_id, offset_id:, version:, positions:)
       cg = db[@consumer_groups_table].where(group_id: group_id).first
       return unless cg
 
       positions = Array(positions)
       return if positions.empty?
 
-      last_position = positions.max
-
-      delete_messages(positions)
-
-      db[@offsets_table].where(id: offset_id, consumer_group_id: cg[:id]).update(
-        last_position: last_position,
+      acked = db[@offsets_table].where(id: offset_id, version:, consumer_group_id: cg[:id]).update(
+        last_position: positions.max,
         claimed: 0,
         claimed_at: nil,
         claimed_by: nil
       )
+      delete_messages(positions) unless acked.zero?
     end
 
     # Delete messages by position. Their message_key_pairs cascade away via the FK.
@@ -868,12 +881,14 @@ module Sourced
     #
     # @param group_id [String] consumer group identifier
     # @param offset_id [Integer] offset ID from the claim result
+    # @param version [Integer] the claim result's +offset_version+; a no-op once
+    #   the offset has moved on from it
     # @return [void]
-    def release(group_id, offset_id:)
+    def release(group_id, offset_id:, version:)
       cg = db[@consumer_groups_table].where(group_id: group_id).first
       return unless cg
 
-      db[@offsets_table].where(id: offset_id, consumer_group_id: cg[:id]).update(
+      db[@offsets_table].where(id: offset_id, version:, consumer_group_id: cg[:id]).update(
         claimed: 0,
         claimed_at: nil,
         claimed_by: nil
@@ -1393,7 +1408,15 @@ module Sourced
     def caught_up?(offset, selector, position)
       return false unless offset[:claimed].zero?
 
-      select_messages(selector, after: offset[:last_position], through: position - 1, limit: 1).empty?
+      candidates, filter = selector_sql(selector, after: offset[:last_position], through: position - 1)
+      return true unless candidates
+
+      db.fetch(<<~SQL).first.nil?
+        SELECT 1 FROM (#{candidates}) pk
+        JOIN #{@messages_table} m ON m.position = pk.position
+        WHERE #{filter}
+        LIMIT 1
+      SQL
     end
 
     # Find the next unclaimed partition with pending messages and claim it.
@@ -1404,7 +1427,7 @@ module Sourced
     # @param partition_by [Array<String>]
     # @param handled_types [Array<String>]
     # @param worker_id [String] claiming worker identifier
-    # @return [Hash, nil] +{ offset_id:, partition_key:, last_position:, replay_until: }+ or nil
+    # @return [Hash, nil] +{ offset_id:, partition_key:, last_position:, replay_until:, version: }+ or nil
     def find_and_claim_partition(cg_id, partition_by, handled_types, worker_id)
       types_list = handled_types.map { |t| db.literal(t) }.join(', ')
       names_list = partition_by.map { |n| db.literal(n) }.join(', ')
@@ -1413,7 +1436,7 @@ module Sourced
       # index-backed: message_key_pairs(key_pair_id, message_position) and the
       # message_key_pairs, key_pairs and offset_key_pairs PKs.
       offset = db.fetch(<<~SQL).first
-        SELECT o.id, o.partition_key, o.last_position, o.replay_until
+        SELECT o.id, o.partition_key, o.last_position, o.replay_until, o.version
         FROM #{@offsets_table} o
         WHERE o.consumer_group_id = #{db.literal(cg_id)}
           AND o.claimed = 0
@@ -1445,8 +1468,8 @@ module Sourced
 
       now = Time.now.iso8601
       updated = db[@offsets_table]
-        .where(id: offset[:id], claimed: 0)
-        .update(claimed: 1, claimed_at: now, claimed_by: worker_id)
+        .where(id: offset[:id], claimed: 0, version: offset[:version])
+        .update(claimed: 1, claimed_at: now, claimed_by: worker_id, version: offset[:version] + 1)
 
       # Lost the race to a sibling worker between SELECT and UPDATE.
       return nil if updated == 0
@@ -1455,7 +1478,8 @@ module Sourced
         offset_id: offset[:id],
         partition_key: offset[:partition_key],
         last_position: offset[:last_position],
-        replay_until: offset[:replay_until]
+        replay_until: offset[:replay_until],
+        version: offset[:version] + 1
       }
     end
 

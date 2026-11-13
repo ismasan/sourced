@@ -547,7 +547,7 @@ RSpec.describe 'Sourced.handle!' do
         claim = store.claim_next(HandleTestReactingDecider.group_id, HandleTestReactingDecider.claim_selector, worker_id: 'w')
 
         Sourced.handle!(HandleTestReactingDecider, register('d1', 'b'), store:)
-        store.ack(HandleTestReactingDecider.group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
+        store.ack(HandleTestReactingDecider.group_id, offset_id: claim.offset_id, version: claim.offset_version, position: claim.messages.last.position)
         router.drain
 
         expect(log_types.count('handle_test.device_created')).to eq(2)
@@ -558,7 +558,7 @@ RSpec.describe 'Sourced.handle!' do
         claim = store.claim_next(HandleTestReactingDecider.group_id, HandleTestReactingDecider.claim_selector, worker_id: 'w')
         cmd = register('d1', 'b')
         Sourced.handle!(HandleTestReactingDecider, cmd, store:)
-        store.release(HandleTestReactingDecider.group_id, offset_id: claim.offset_id)
+        store.release(HandleTestReactingDecider.group_id, offset_id: claim.offset_id, version: claim.offset_version)
         store.advance_offset(HandleTestReactingDecider.group_id, partition: { 'device_id' => 'd1' }, position: claim.messages.last.position)
 
         count = store.latest_position
@@ -567,6 +567,21 @@ RSpec.describe 'Sourced.handle!' do
 
         next_claim = store.claim_next(HandleTestReactingDecider.group_id, HandleTestReactingDecider.claim_selector, worker_id: 'w')
         expect(next_claim.messages.map(&:causation_id)).to eq([cmd.id])
+      end
+
+      it 'acks through a marked command that ends the batch' do
+        Sourced.handle!(HandleTestReactingDecider, register('d1', 'a'), store:)
+        claim = store.claim_next(HandleTestReactingDecider.group_id, HandleTestReactingDecider.claim_selector, worker_id: 'w')
+        cmd = register('d1', 'b')
+        Sourced.handle!(HandleTestReactingDecider, cmd, store:)
+        store.release(HandleTestReactingDecider.group_id, offset_id: claim.offset_id, version: claim.offset_version)
+
+        # [first command's event, marked command]
+        expect(router.handle_next_for(HandleTestReactingDecider, worker_id: 'w', batch_size: 2)).to be(true)
+
+        next_claim = store.claim_next(HandleTestReactingDecider.group_id, HandleTestReactingDecider.claim_selector, worker_id: 'w')
+        expect(next_claim.messages.map(&:type)).to eq(%w[handle_test.device_created])
+        expect(next_claim.messages.last.causation_id).to eq(cmd.id)
       end
 
       it 'marks the stored command, not the events correlated from it' do
