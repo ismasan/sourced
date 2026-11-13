@@ -65,7 +65,7 @@ RSpec.describe 'Store worker heartbeat and stale claim release' do
 
   describe '#release_stale_claims' do
     before do
-      store.register_consumer_group('reaper_test_projector')
+      store.register_consumer_group('reaper_test_projector', Sourced::Selector[StaleClaimReaperTestMessages::DeviceRegistered].by(:device_id))
 
       # Append a message to create a partition
       store.append(
