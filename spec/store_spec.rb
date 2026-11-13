@@ -1381,20 +1381,46 @@ RSpec.describe Sourced::Store do
   end
 
   describe '#reset_consumer_group' do
-    it 'deletes all offsets' do
-      store.register_consumer_group('my_group', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
-      store.append(
-        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
-      )
-      store.claim_next('my_group',
-        Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id),
-        worker_id: 'w-1')
+    it 'rewinds every offset, recording where its cursor was as replay_until' do
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id)
+      store.register_consumer_group('my_group', selector)
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
+      ])
+      claim = store.claim_next('my_group', selector, worker_id: 'w-1')
+      store.ack('my_group', offset_id: claim.offset_id, version: claim.offset_version, position: claim.messages.last.position)
+      store.claim_next('my_group', selector, worker_id: 'w-1')
 
-      expect(db[:sourced_offsets].count).to be > 0
       store.stop_consumer_group('my_group')
       store.reset_consumer_group('my_group')
-      expect(db[:sourced_offsets].count).to eq(0)
+
+      offsets = db[:sourced_offsets].order(:partition_key).all
+      expect(offsets.map { |o| o.values_at(:partition_key, :last_position, :replay_until, :claimed) })
+        .to eq([['device_id:dev-1', 0, 1, 0], ['device_id:dev-2', 0, 0, 0]])
       expect(store.consumer_group_active?('my_group')).to be(false)
+    end
+
+    it 'keeps replay_until across resets until the cursor passes it' do
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id)
+      store.register_consumer_group('my_group', selector)
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
+      ])
+      claim = store.claim_next('my_group', selector, worker_id: 'w-1')
+      store.ack('my_group', offset_id: claim.offset_id, version: claim.offset_version, position: 2)
+      store.stop_consumer_group('my_group')
+      store.reset_consumer_group('my_group')
+      store.start_consumer_group('my_group')
+
+      claim = store.claim_next('my_group', selector, worker_id: 'w-1', batch_size: 1)
+      store.ack('my_group', offset_id: claim.offset_id, version: claim.offset_version, position: 1)
+      store.stop_consumer_group('my_group')
+      store.reset_consumer_group('my_group')
+      store.start_consumer_group('my_group')
+
+      expect(store.claim_next('my_group', selector, worker_id: 'w-1').replaying).to be(true)
     end
 
     it 'raises for an active group, keeping its offsets' do
@@ -1421,10 +1447,9 @@ RSpec.describe Sourced::Store do
         worker_id: 'w-1')
 
       reactor = double('reactor', group_id: 'my_group')
-      expect(db[:sourced_offsets].count).to be > 0
       store.stop_consumer_group(reactor)
       store.reset_consumer_group(reactor)
-      expect(db[:sourced_offsets].count).to eq(0)
+      expect(db[:sourced_offsets].select_map(:claimed)).to all(eq(0))
     end
 
     it 'is a no-op for queue-mode groups (offsets kept)' do
@@ -1468,7 +1493,7 @@ RSpec.describe Sourced::Store do
 
       claim = store.claim_next('elsewhere', selector, worker_id: 'w-1')
       expect(claim.partition_value).to eq('device_id' => 'dev-1')
-      store.ack('elsewhere', offset_id: claim.offset_id, position: claim.messages.last.position)
+      store.ack('elsewhere', offset_id: claim.offset_id, version: claim.offset_version, position: claim.messages.last.position)
       expect(store.claim_next('elsewhere', selector, worker_id: 'w-1')).to be_nil
 
       store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' }))
@@ -1580,7 +1605,7 @@ RSpec.describe Sourced::Store do
       )
 
       r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+      store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: r1.messages.last.position)
 
       # Append another message for same partition
       store.append(
@@ -1655,7 +1680,7 @@ RSpec.describe Sourced::Store do
 
       failed = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(failed.retrying).to be(false)
-      store.release(group_id, offset_id: failed.offset_id)
+      store.release(group_id, offset_id: failed.offset_id, version: failed.offset_version)
       store.updating_consumer_group(group_id, offset_id: failed.offset_id) { |group| group.retry(Time.now - 1) }
 
       again = store.claim_next(group_id, selector, worker_id: 'w-1')
@@ -1686,7 +1711,7 @@ RSpec.describe Sourced::Store do
       )
 
       r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+      store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: r1.messages.last.position)
 
       # New partition appears
       store.append(
@@ -1722,7 +1747,7 @@ RSpec.describe Sourced::Store do
       new_event = StoreTestMessages::DeviceBound.new(payload: { device_id: 'dev-1', asset_id: 'asset-1' })
       expect { store.append(new_event, guard: result.guard) }.not_to raise_error
 
-      store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
+      store.ack(group_id, offset_id: result.offset_id, version: result.offset_version, position: result.messages.last.position)
     end
 
     it 'guard detects concurrent conflicting writes' do
@@ -1758,7 +1783,7 @@ RSpec.describe Sourced::Store do
       )
 
       r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+      store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: r1.messages.last.position)
 
       # New message arrives after ack
       store.append(
@@ -1775,29 +1800,28 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
       ])
 
-      # Process and ack — highest_position advances to 2
       r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+      store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: r1.messages.last.position)
 
-      # Reset offsets — highest_position stays at 2
+      # Reset: the cursor was at 2
       store.stop_consumer_group(group_id)
       store.reset_consumer_group(group_id)
       store.start_consumer_group(group_id)
 
-      # Re-claim same messages — replaying because positions <= highest_position
+      # Re-claim same messages: replaying, at or below replay_until
       r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(r2.replaying).to be true
       expect(r2.messages.size).to eq(2)
     end
 
-    it 'replaying transitions to false once consumer passes highest_position after reset' do
+    it 'replaying transitions to false once consumer passes replay_until after reset' do
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
       # Process and ack up to position 1
       r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+      store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: r1.messages.last.position)
 
       # Reset offsets
       store.stop_consumer_group(group_id)
@@ -1809,10 +1833,78 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
       )
 
-      # Re-claim: both messages, but last position (2) > highest_position (1)
+      # The batch is cut at replay_until (1): a replay, then what's new
       r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
+      expect(r2.messages.map(&:position)).to eq([1])
+      expect(r2.replaying).to be true
+      store.ack(group_id, offset_id: r2.offset_id, version: r2.offset_version, position: 1)
+
+      r3 = store.claim_next(group_id, selector, worker_id: 'w-1')
+      expect(r3.messages.map(&:position)).to eq([2])
+      expect(r3.replaying).to be false
+    end
+
+    it "makes acks for claims taken before a reset no-ops" do
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+      stale = store.claim_next(group_id, selector, worker_id: 'w-1')
+
+      store.stop_consumer_group(group_id)
+      store.reset_consumer_group(group_id)
+      store.ack(group_id, offset_id: stale.offset_id, version: stale.offset_version, position: 1)
+      store.start_consumer_group(group_id)
+
+      expect(store.claim_next(group_id, selector, worker_id: 'w-2').messages.map(&:position)).to eq([1])
+    end
+
+    it "makes a reaped claim's late ack and release no-ops once the partition is claimed again" do
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+      stale = store.claim_next(group_id, selector, worker_id: 'w-1')
+      store.release(group_id, offset_id: stale.offset_id, version: stale.offset_version) # as the reaper would
+      current = store.claim_next(group_id, selector, worker_id: 'w-2')
+
+      store.release(group_id, offset_id: stale.offset_id, version: stale.offset_version)
+      store.ack(group_id, offset_id: stale.offset_id, version: stale.offset_version, position: 1)
+
+      offset = db[:sourced_offsets].where(id: current.offset_id).first
+      expect(offset.values_at(:claimed, :claimed_by, :last_position)).to eq([1, 'w-2', 0])
+    end
+
+    it "replaying is false for a partition behind another partition's acks" do
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'C' })
+      ])
+
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
+      expect(r1.messages.map(&:position)).to eq([1, 3])
+      store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: 3)
+
+      r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
+      expect(r2.messages.map(&:position)).to eq([2])
       expect(r2.replaying).to be false
-      expect(r2.messages.size).to eq(2)
+    end
+
+    it 'replaying after reset is per partition' do
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'C' })
+      ])
+      # Only dev-1 is processed before the reset.
+      r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
+      store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: 3)
+
+      store.stop_consumer_group(group_id)
+      store.reset_consumer_group(group_id)
+      store.start_consumer_group(group_id)
+
+      claims = 2.times.map do
+        claim = store.claim_next(group_id, selector, worker_id: 'w-1')
+        store.ack(group_id, offset_id: claim.offset_id, version: claim.offset_version, position: claim.messages.last.position)
+        [claim.partition_value['device_id'], claim.replaying]
+      end
+      expect(claims).to contain_exactly(['dev-1', true], ['dev-2', false])
     end
   end
 
@@ -1845,7 +1937,7 @@ RSpec.describe Sourced::Store do
 
       # First claim discovers both partitions and claims one
       r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+      store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: r1.messages.last.position)
 
       # Second claim uses fast path (no discovery needed)
       r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
@@ -1860,7 +1952,7 @@ RSpec.describe Sourced::Store do
       )
 
       r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+      store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: r1.messages.last.position)
 
       # No more work
       result = store.claim_next(group_id, selector, worker_id: 'w-1')
@@ -1883,7 +1975,7 @@ RSpec.describe Sourced::Store do
       )
 
       r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+      store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: r1.messages.last.position)
 
       cg = db[:sourced_consumer_groups].where(group_id: group_id).first
       expect(cg[:discovery_position]).to be > 0
@@ -1915,7 +2007,7 @@ RSpec.describe Sourced::Store do
         break unless r
 
         claimed_partitions << r.partition_key
-        store.ack(new_group, offset_id: r.offset_id, position: r.messages.last.position)
+        store.ack(new_group, offset_id: r.offset_id, version: r.offset_version, position: r.messages.last.position)
       end
 
       expect(claimed_partitions.size).to eq(3)
@@ -1942,7 +2034,7 @@ RSpec.describe Sourced::Store do
         break unless r
 
         claimed_partitions << r.partition_key
-        store.ack(new_group, offset_id: r.offset_id, position: r.messages.last.position)
+        store.ack(new_group, offset_id: r.offset_id, version: r.offset_version, position: r.messages.last.position)
       end
 
       expect(claimed_partitions.size).to eq(5)
@@ -1964,7 +2056,7 @@ RSpec.describe Sourced::Store do
       expect(result.partition_value).to eq({ 'device_id' => 'dev-1' })
 
       # No more work for device_id partitions
-      store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
+      store.ack(group_id, offset_id: result.offset_id, version: result.offset_version, position: result.messages.last.position)
       result2 = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
       expect(result2).to be_nil
     end
@@ -1977,7 +2069,7 @@ RSpec.describe Sourced::Store do
       claimed = []
       while (claim = store.claim_next(group_id, selector, worker_id: 'w-1'))
         claimed << claim.partition_value['device_id']
-        store.ack(group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
+        store.ack(group_id, offset_id: claim.offset_id, version: claim.offset_version, position: claim.messages.last.position)
       end
       claimed
     end
@@ -2165,7 +2257,7 @@ RSpec.describe Sourced::Store do
         store.append(StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: }))
       end
       while (claim = store.claim_next(group_id, selector, worker_id: 'w-1'))
-        store.ack(group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
+        store.ack(group_id, offset_id: claim.offset_id, version: claim.offset_version, position: claim.messages.last.position)
       end
     end
 
@@ -2173,7 +2265,7 @@ RSpec.describe Sourced::Store do
       claims = []
       while (claim = store.claim_next(group_id, selector, worker_id: 'w-1'))
         claims << claim
-        store.ack(group_id, offset_id: claim.offset_id, position: claim.messages.last.position)
+        store.ack(group_id, offset_id: claim.offset_id, version: claim.offset_version, position: claim.messages.last.position)
       end
       claims
     end
@@ -2217,13 +2309,13 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'joe' })
       )
       r1 = store.claim_next(group_id, selector, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+      store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: r1.messages.last.position)
 
       store.append(
         StoreTestMessages::UserJoinedCourse.new(payload: { course_name: 'Algebra', user_id: 'jake' })
       )
       r2 = store.claim_next(group_id, selector, worker_id: 'w-1')
-      store.ack(group_id, offset_id: r2.offset_id, position: r2.messages.last.position)
+      store.ack(group_id, offset_id: r2.offset_id, version: r2.offset_version, position: r2.messages.last.position)
 
       # joe: last_position=1, jake: last_position=2. Both fully caught up.
 
@@ -2257,7 +2349,7 @@ RSpec.describe Sourced::Store do
       seats.size.times do
         result = store.claim_next(group_id, selector, worker_id: 'w-1')
         expect(result).not_to be_nil
-        store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
+        store.ack(group_id, offset_id: result.offset_id, version: result.offset_version, position: result.messages.last.position)
       end
 
       # All caught up. Now append new messages for A3 and A5 only.
@@ -2274,7 +2366,7 @@ RSpec.describe Sourced::Store do
         result = store.claim_next(group_id, selector, worker_id: 'w-1')
         expect(result).not_to be_nil, "Expected partition #{i + 1} of 2 to be claimable but got nil (claimed so far: #{claimed_users})"
         claimed_users << result.partition_value['user_id']
-        store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
+        store.ack(group_id, offset_id: result.offset_id, version: result.offset_version, position: result.messages.last.position)
       end
 
       expect(claimed_users).to contain_exactly('A3', 'A5')
@@ -2299,7 +2391,7 @@ RSpec.describe Sourced::Store do
 
       result = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
 
-      store.ack(group_id, offset_id: result.offset_id, position: result.messages.last.position)
+      store.ack(group_id, offset_id: result.offset_id, version: result.offset_version, position: result.messages.last.position)
 
       offset = db[:sourced_offsets].where(id: result.offset_id).first
       expect(offset[:last_position]).to eq(result.messages.last.position)
@@ -2315,7 +2407,7 @@ RSpec.describe Sourced::Store do
       ])
 
       r1 = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+      store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: r1.messages.last.position)
 
       # No new messages — should return nil
       r2 = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
@@ -2335,6 +2427,18 @@ RSpec.describe Sourced::Store do
       store.claim_next(group_id, selector, worker_id: 'w-1')
     end
 
+    it "is a no-op, deleting nothing, once the offset has been claimed again" do
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+      stale = claim
+      store.release(group_id, offset_id: stale.offset_id, version: stale.offset_version)
+      claim
+
+      store.ack_and_delete(group_id, offset_id: stale.offset_id, version: stale.offset_version, positions: [1])
+
+      expect(db[:sourced_messages].count).to eq(1)
+      expect(db[:sourced_offsets].get(:last_position)).to eq(0)
+    end
+
     it 'deletes the processed messages and their key-pair links' do
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
@@ -2343,7 +2447,7 @@ RSpec.describe Sourced::Store do
 
       result = claim
       positions = result.messages.map(&:position)
-      store.ack_and_delete(group_id, offset_id: result.offset_id, positions: positions)
+      store.ack_and_delete(group_id, offset_id: result.offset_id, version: result.offset_version, positions: positions)
 
       expect(db[:sourced_messages].where(position: positions).count).to eq(0)
       expect(db[:sourced_message_key_pairs].where(message_position: positions).count).to eq(0)
@@ -2354,7 +2458,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
       result = claim
-      store.ack_and_delete(group_id, offset_id: result.offset_id, positions: result.messages.map(&:position))
+      store.ack_and_delete(group_id, offset_id: result.offset_id, version: result.offset_version, positions: result.messages.map(&:position))
 
       expect(db[:sourced_key_pairs].where(name: 'device_id', value: 'dev-1').count).to eq(1)
     end
@@ -2365,7 +2469,7 @@ RSpec.describe Sourced::Store do
       )
       result = claim
       last = result.messages.last.position
-      store.ack_and_delete(group_id, offset_id: result.offset_id, positions: [last])
+      store.ack_and_delete(group_id, offset_id: result.offset_id, version: result.offset_version, positions: [last])
 
       offset = db[:sourced_offsets].where(id: result.offset_id).first
       expect(offset).not_to be_nil
@@ -2375,24 +2479,12 @@ RSpec.describe Sourced::Store do
       expect(offset[:claimed_by]).to be_nil
     end
 
-    it 'advances the consumer group highest_position' do
-      store.append(
-        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
-      )
-      result = claim
-      last = result.messages.last.position
-      store.ack_and_delete(group_id, offset_id: result.offset_id, positions: [last])
-
-      cg = db[:sourced_consumer_groups].where(group_id: group_id).first
-      expect(cg[:highest_position]).to eq(last)
-    end
-
     it 'a subsequent claim returns only undeleted messages, in order' do
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
       r1 = claim
-      store.ack_and_delete(group_id, offset_id: r1.offset_id, positions: r1.messages.map(&:position))
+      store.ack_and_delete(group_id, offset_id: r1.offset_id, version: r1.offset_version, positions: r1.messages.map(&:position))
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' }),
@@ -2413,7 +2505,7 @@ RSpec.describe Sourced::Store do
       dev1 = store.claim_next(group_id, selector, worker_id: 'w-1')
       expect(dev1.partition_value).to eq({ 'device_id' => 'dev-1' })
       expect(dev1.messages.map { |m| m.payload.name }).to eq(%w[A1 A2])
-      store.ack_and_delete(group_id, offset_id: dev1.offset_id, positions: dev1.messages.map(&:position))
+      store.ack_and_delete(group_id, offset_id: dev1.offset_id, version: dev1.offset_version, positions: dev1.messages.map(&:position))
 
       # dev-2 still claimable and intact
       dev2 = store.claim_next(group_id, selector, worker_id: 'w-2')
@@ -2426,7 +2518,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
       result = claim
-      store.ack_and_delete(group_id, offset_id: result.offset_id, positions: [first])
+      store.ack_and_delete(group_id, offset_id: result.offset_id, version: result.offset_version, positions: [first])
 
       second = store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
@@ -2444,7 +2536,7 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
       result = store.claim_next('queue_group', selector, worker_id: 'w-1')
-      store.ack_and_delete('queue_group', offset_id: result.offset_id, positions: result.messages.map(&:position))
+      store.ack_and_delete('queue_group', offset_id: result.offset_id, version: result.offset_version, positions: result.messages.map(&:position))
 
       expect(db[:sourced_offsets].count).to eq(1)
       reaped = store.release_drained_offsets
@@ -2458,8 +2550,8 @@ RSpec.describe Sourced::Store do
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
-      store.claim_next('queue_group', selector, worker_id: 'w-1')
-      store.release('queue_group', offset_id: db[:sourced_offsets].first[:id])
+      claim = store.claim_next('queue_group', selector, worker_id: 'w-1')
+      store.release('queue_group', offset_id: claim.offset_id, version: claim.offset_version)
 
       expect(store.release_drained_offsets).to eq(0)
       expect(db[:sourced_offsets].count).to eq(1)
@@ -2472,7 +2564,7 @@ RSpec.describe Sourced::Store do
       )
       result = store.claim_next('log_group', selector, worker_id: 'w-1')
       # ack retains the message (event-log semantics) -> partition not drained
-      store.ack('log_group', offset_id: result.offset_id, position: result.messages.last.position)
+      store.ack('log_group', offset_id: result.offset_id, version: result.offset_version, position: result.messages.last.position)
 
       expect(store.release_drained_offsets).to eq(0)
       expect(db[:sourced_offsets].count).to eq(1)
@@ -2487,7 +2579,7 @@ RSpec.describe Sourced::Store do
       )
       result = store.claim_next('log_group', selector, worker_id: 'w-1')
       store.delete_messages(result.messages.map(&:position))
-      store.ack('log_group', offset_id: result.offset_id, position: result.messages.last.position)
+      store.ack('log_group', offset_id: result.offset_id, version: result.offset_version, position: result.messages.last.position)
 
       expect(store.release_drained_offsets).to eq(1)
       expect(db[:sourced_offsets].count).to eq(0)
@@ -2626,7 +2718,7 @@ RSpec.describe Sourced::Store do
       store.append(m2, index_by: :id)
 
       c1 = store.claim_next('q', selector, worker_id: 'w1')
-      store.ack_and_delete('q', offset_id: c1.offset_id, positions: c1.messages.map(&:position))
+      store.ack_and_delete('q', offset_id: c1.offset_id, version: c1.offset_version, positions: c1.messages.map(&:position))
 
       expect(db[:sourced_messages].count).to eq(1) # m2 remains
 
@@ -2660,18 +2752,41 @@ RSpec.describe Sourced::Store do
       expect(offset[:last_position]).to eq(1)
     end
 
-    it 'advances highest_position on the consumer group' do
-      store.append(
-        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
-      )
+    def offset_position(device_id)
+      db[:sourced_offsets].where(partition_key: "device_id:#{device_id}").get(:last_position)
+    end
 
-      store.advance_offset(group_id,
-        partition: { 'device_id' => 'dev-1' },
-        position: 1
-      )
+    it 'with pending:, advances a caught-up offset' do
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'C' })
+      ])
+      store.advance_offset(group_id, partition: { 'device_id' => 'dev-1' }, position: 1)
 
-      cg = db[:sourced_consumer_groups].where(group_id: group_id).first
-      expect(cg[:highest_position]).to eq(1)
+      # dev-2's message is in another partition: nothing of dev-1's is pending before 3.
+      expect(store.advance_offset(group_id, partition: { 'device_id' => 'dev-1' }, position: 3, pending: selector)).to be(true)
+      expect(offset_position('dev-1')).to eq(3)
+    end
+
+    it "with pending:, doesn't advance past the partition's unprocessed messages" do
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' })
+      ])
+
+      expect(store.advance_offset(group_id, partition: { 'device_id' => 'dev-1' }, position: 2, pending: selector)).to be(true)
+      expect(offset_position('dev-1')).to eq(0)
+    end
+
+    it "with pending:, doesn't advance a claimed offset" do
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+      store.claim_next(group_id, selector, worker_id: 'w-1')
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' }))
+      db[:sourced_offsets].update(last_position: 1) # caught up, but still claimed
+
+      store.advance_offset(group_id, partition: { 'device_id' => 'dev-1' }, position: 2, pending: selector)
+      expect(offset_position('dev-1')).to eq(1)
     end
 
     it 'never decreases the offset' do
@@ -2695,26 +2810,6 @@ RSpec.describe Sourced::Store do
         .where(Sequel[:sourced_consumer_groups][:group_id] => group_id)
         .first
       expect(offset[:last_position]).to eq(2)
-    end
-
-    it 'never decreases highest_position' do
-      store.append([
-        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
-        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
-      ])
-
-      store.advance_offset(group_id,
-        partition: { 'device_id' => 'dev-1' },
-        position: 2
-      )
-
-      store.advance_offset(group_id,
-        partition: { 'device_id' => 'dev-2' },
-        position: 1
-      )
-
-      cg = db[:sourced_consumer_groups].where(group_id: group_id).first
-      expect(cg[:highest_position]).to eq(2)
     end
 
     it 'causes claim_next to skip the advanced partition' do
@@ -2844,7 +2939,7 @@ RSpec.describe Sourced::Store do
 
       # Claim and ack first partition
       r1 = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
-      store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+      store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: r1.messages.last.position)
 
       result = store.stats
       expect(result.max_position).to eq(2)
@@ -3021,7 +3116,7 @@ RSpec.describe Sourced::Store do
       expect(offset[:claimed_by]).to eq('w-1')
 
       # Ack releases the claim
-      store.ack('group_a', offset_id: claim.offset_id, position: claim.messages.last.position)
+      store.ack('group_a', offset_id: claim.offset_id, version: claim.offset_version, position: claim.messages.last.position)
 
       result = store.read_offsets(group_id: 'group_a')
       offset = result.offsets.first
@@ -3099,7 +3194,7 @@ RSpec.describe Sourced::Store do
 
       result = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
 
-      store.release(group_id, offset_id: result.offset_id)
+      store.release(group_id, offset_id: result.offset_id, version: result.offset_version)
 
       offset = db[:sourced_offsets].where(id: result.offset_id).first
       expect(offset[:last_position]).to eq(0) # not advanced
@@ -3112,7 +3207,7 @@ RSpec.describe Sourced::Store do
       )
 
       r1 = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-1')
-      store.release(group_id, offset_id: r1.offset_id)
+      store.release(group_id, offset_id: r1.offset_id, version: r1.offset_version)
 
       r2 = store.claim_next(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), worker_id: 'w-2')
 
@@ -3382,7 +3477,7 @@ RSpec.describe Sourced::Store do
 
         # Partial ack releases the claim; the trigger re-opens the gate so the
         # remainder isn't stranded behind the sibling's latch.
-        store.ack(group_id, offset_id: r1.offset_id, position: r1.messages.last.position)
+        store.ack(group_id, offset_id: r1.offset_id, version: r1.offset_version, position: r1.messages.last.position)
         r2 = claim(worker: 'w-2')
         expect(r2).not_to be_nil
         expect(r2.messages.map { |m| m.payload.name }).to eq(['B'])
@@ -3397,7 +3492,7 @@ RSpec.describe Sourced::Store do
         expect(claim(worker: 'w-2')).to be_nil
         expect(gate_version).to be_negative
 
-        store.release(group_id, offset_id: r1.offset_id)
+        store.release(group_id, offset_id: r1.offset_id, version: r1.offset_version)
         r2 = claim(worker: 'w-2')
         expect(r2).not_to be_nil
         expect(r2.messages.size).to eq(1)
