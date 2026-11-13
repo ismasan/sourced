@@ -67,6 +67,7 @@ module Sourced
       :claim_next,
       :ack,
       :release,
+      :release_worker_claims,
       :register_consumer_group,
       :worker_heartbeat,
       :release_stale_claims,
@@ -140,9 +141,12 @@ module Sourced
           build do |db, notifier, logger, prefix, install_tables, message_codec|
             Store.new(db, notifier:, logger:, prefix:, install_tables:, message_codec:)
           end
-          # With the tables there (installed by a migration, or here when asked), compile
-          # the store's codec: a no-op unless it was given an uncompiled one
+          # Waiting for a locked SQLite database lets the lock's holder run (see
+          # Store::BusyHandler). With the tables there (installed by a migration, or
+          # here when asked), compile the store's codec: a no-op unless it was given
+          # an uncompiled one
           start do |store, _|
+            Store::BusyHandler.apply(store.db)
             store.install! # a no-op unless store.install_tables
             unless store.installed?
               raise Store::NotInstalledError,

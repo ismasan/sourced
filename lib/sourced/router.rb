@@ -89,6 +89,10 @@ module Sourced
       self
     end
 
+    # Release every claim +worker_id+ holds (see {Store#release_worker_claims}).
+    # @return [Integer] number of claims released
+    def release_worker_claims(worker_id) = store.release_worker_claims(worker_id)
+
     def handle_next_for(reactor_class, worker_id: 'default', batch_size: nil)
       group_id = reactor_class.group_id
       group = @groups.fetch(reactor_class) { raise UnregisteredReactorError.new(reactor_class, @reactors) }
@@ -141,7 +145,7 @@ module Sourced
           execute_actions(e.action_pairs, claim, reactor_class)
         end
         true
-      rescue Sourced::ConcurrentAppendError
+      rescue Sourced::ConcurrentAppendError, Sourced::StoreBusyError
         store.release(group_id, offset_id: claim.offset_id, version: claim.offset_version)
         true
       rescue StandardError => e

@@ -2,8 +2,8 @@
 
 require 'spec_helper'
 require 'sourced'
+require 'timeout'
 require 'sequel'
-require 'sourced/thread_executor'
 
 module DispatcherTestMessages
   DeviceRegistered = Sourced::Message.define('dispatch_test.device.registered') do
@@ -343,7 +343,7 @@ RSpec.describe Sourced::Dispatcher do
     end
   end
 
-  describe '#stop waiting for workers' do
+  describe '#stop waiting for workers', :async do
     let(:blocking_router) { Sourced::Router.new(store:, reactors: [DispatchTestBlocking]).setup! }
 
     def build_blocking_dispatcher(shutdown_timeout: 30)
@@ -361,10 +361,10 @@ RSpec.describe Sourced::Dispatcher do
       store.append(DispatcherTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' }))
     end
 
-    # Started in threads, with a worker blocked mid-batch
+    # Started in the example's reactor, with a worker blocked mid-batch
     def start_blocked_dispatcher(...)
       dispatcher = build_blocking_dispatcher(...)
-      dispatcher.start(Sourced::ThreadExecutor.new)
+      dispatcher.start(Async::Task.current)
       append_message
       expect(DispatchTestBlocking.entered.pop(timeout: 2)).to be(true)
       dispatcher
@@ -374,13 +374,13 @@ RSpec.describe Sourced::Dispatcher do
 
     it 'waits for workers to finish the batch they are processing' do
       dispatcher = start_blocked_dispatcher
-      stopping = Thread.new { dispatcher.stop }
+      stopping = Async { dispatcher.stop }
 
       sleep 0.1
-      expect(stopping).to be_alive
+      expect(stopping).to be_running
 
       DispatchTestBlocking.release << true
-      expect(stopping.join(2)&.value).to be(true)
+      expect(Timeout.timeout(2) { stopping.wait }).to be(true)
       expect(dispatcher.workers.map(&:running?)).to all(be(false))
 
       # The batch was acked: nothing left to process
@@ -403,7 +403,7 @@ RSpec.describe Sourced::Dispatcher do
           DispatchTestBlocking.release << true
         end
         events << (dispatcher.stop ? :stopped : :timed_out)
-      end
+      end.wait
 
       expect(events).to eq(%i[released stopped])
     end
@@ -429,7 +429,7 @@ RSpec.describe Sourced::Dispatcher do
     end
   end
 
-  describe 'restarting' do
+  describe 'restarting', :async do
     let(:blocking_router) { Sourced::Router.new(store:, reactors: [DispatchTestBlocking]).setup! }
 
     before do
@@ -470,7 +470,7 @@ RSpec.describe Sourced::Dispatcher do
       dispatcher = build_dispatcher
       expect(dispatcher).not_to be_running
 
-      dispatcher.start(Sourced::ThreadExecutor.new)
+      dispatcher.start(Async::Task.current)
       expect(dispatcher).to be_running
 
       dispatcher.stop
@@ -514,10 +514,10 @@ RSpec.describe Sourced::Dispatcher do
 
     it 'processes messages appended after a restart' do
       dispatcher = build_dispatcher
-      dispatcher.start(Sourced::ThreadExecutor.new)
+      dispatcher.start(Async::Task.current)
       expect(dispatcher.stop).to be(true)
 
-      dispatcher.start(Sourced::ThreadExecutor.new)
+      dispatcher.start(Async::Task.current)
       append_message
 
       expect(DispatchTestBlocking.entered.pop(timeout: 2)).to be(true)
@@ -527,17 +527,17 @@ RSpec.describe Sourced::Dispatcher do
 
     it 'drops notifications while stopped, leaving messages appended then to the catch-up poll' do
       dispatcher = build_dispatcher
-      dispatcher.start(Sourced::ThreadExecutor.new)
+      dispatcher.start(Async::Task.current)
       dispatcher.stop
 
       expect(dispatcher.push(DispatchTestBlocking)).to be(false)
       append_message # its notification is dropped too
-      dispatcher.start(Sourced::ThreadExecutor.new)
+      dispatcher.start(Async::Task.current)
       expect(DispatchTestBlocking.entered.pop(timeout: 0.2)).to be_nil
 
       # The catch-up poller (a component depending on the dispatcher) pushes every reactor when it starts
       poller = Sourced::CatchUpPoller.new(work_queue: dispatcher, reactors: dispatcher.reactors, interval: 60)
-      poller.start(Sourced::ThreadExecutor.new)
+      poller.start(Async::Task.current)
       expect(DispatchTestBlocking.entered.pop(timeout: 2)).to be(true)
 
       DispatchTestBlocking.release << true
@@ -548,23 +548,23 @@ RSpec.describe Sourced::Dispatcher do
     it "refuses to start while the last run's workers are still running, after a stop that timed out" do
       allow(logger).to receive(:warn)
       dispatcher = build_dispatcher(shutdown_timeout: 0.1)
-      dispatcher.start(Sourced::ThreadExecutor.new)
+      dispatcher.start(Async::Task.current)
       append_message
       expect(DispatchTestBlocking.entered.pop(timeout: 2)).to be(true)
       expect(dispatcher.stop).to be(false)
 
-      expect { dispatcher.start(Sourced::ThreadExecutor.new) }
+      expect { dispatcher.start(Async::Task.current) }
         .to raise_error(Sourced::Dispatcher::StillRunningError, /worker-0 still running/)
 
       DispatchTestBlocking.release << true
       expect(dispatcher.workers.first.wait(timeout: 2)).to be(true)
-      expect { dispatcher.start(Sourced::ThreadExecutor.new) }.not_to raise_error
+      expect { dispatcher.start(Async::Task.current) }.not_to raise_error
       expect(dispatcher.stop).to be(true)
     end
 
     it 'once stopped, #stop and #stop! say whether the workers finished, without stopping anything again' do
       dispatcher = build_dispatcher
-      dispatcher.start(Sourced::ThreadExecutor.new)
+      dispatcher.start(Async::Task.current)
       dispatcher.stop
 
       expect(logger).not_to receive(:info).with(/stopping/)

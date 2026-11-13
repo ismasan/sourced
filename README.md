@@ -1406,7 +1406,7 @@ Reactors that use the `Sourced::Consumer` mixin (for `partition_by`, `each_with_
 
 ## Background processing
 
-Workers run in the `dispatcher` component, which spawns them into the context Sourced is started with: `Sourced.start!(task)` runs them as fibers in an `Async::Task`, and `Sourced.start!` runs them in threads; either way the call returns. Three loops run alongside, as components of their own:
+Workers run in the `dispatcher` component, which spawns them into the context Sourced is started with: `Sourced.start!(task)` runs them as fibers in an `Async::Task`, and `Sourced.start!` in the current Async task (raising `Sourced::Spawner::NoTaskError` outside one); either way the call returns. Sourced runs on fibers only: start it in your server's async context, or with the supervisor. Three loops run alongside, as components of their own:
 
 | Component | Does | Depends on |
 | --- | --- | --- |
@@ -1539,7 +1539,7 @@ Sourced.config['error_strategy'].on_fail do |retry_count:, exception:, message:|
   )
 end
 
-Sourced.start!
+Sourced.start!(task)
 ```
 
 `on_retry` / `on_fail` also accept any callable, or an object responding to
@@ -2095,7 +2095,7 @@ Sourced.config.component!('db') do
 end
 
 Sourced.register(CourseDecider)
-Sourced.start!   # build every component, set up the store and consumer groups, start workers in threads
+Sourced.start!(task) # build every component, set up the store and consumer groups, start workers as fibers in task
 # ...
 Sourced.teardown! # stop workers, then tear down in reverse dependency order
 ```
@@ -2212,7 +2212,7 @@ Two things the codec does not reach:
 
 ### Database setup
 
-The migration creates the tables and indexes, and sets the database to `journal_mode = WAL`: a property of the file, so once is enough, and it runs outside a transaction (SQLite can't change the journal mode inside one; every statement is idempotent, so a half-applied run is re-run). `Store#install!` applies the same migration directly, for scripts, tests and quick prototyping. Per-connection settings are the connection's: Sequel's SQLite adapter enables foreign keys and a 5s busy timeout on each connection it opens, configurable with `Sequel.sqlite(path, foreign_keys:, timeout:)`.
+The migration creates the tables and indexes, and sets the database to `journal_mode = WAL`: a property of the file, so once is enough, and it runs outside a transaction (SQLite can't change the journal mode inside one; every statement is idempotent, so a half-applied run is re-run). `Store#install!` applies the same migration directly, for scripts, tests and quick prototyping. Per-connection settings are the connection's: Sequel's SQLite adapter enables foreign keys and a 5s busy timeout on each connection it opens, configurable with `Sequel.sqlite(path, foreign_keys:, timeout:)`. On start, Sourced has the connections wait for a locked database by sleeping in Ruby between retries (`Sourced::Store::BusyHandler`), so a fiber waiting for a lock another process holds yields to the scheduler instead of blocking every fiber on its thread. A wait that still times out raises `Sourced::Store::BusyError`; workers release the claim they were processing and retry it later.
 
 When Sourced starts, the `store` component checks the tables are there, raising `Store::NotInstalledError` if not, and compiles the message codec. Planner statistics (`ANALYZE`) are refreshed by the stale claim reaper, on its first tick and hourly. By default, booting Sourced doesn't create tables. Set `store.install_tables` for environments without migrations, ex. an in-memory database in tests, and the store installs them on start, before setting up:
 

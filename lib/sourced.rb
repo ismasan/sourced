@@ -15,6 +15,12 @@ module Sourced
 
   ConcurrentAppendError = Class.new(Error)
 
+  # Included by a store's errors for a database too busy to answer in time,
+  # ex. {Store::BusyError} for SQLite's lock. Transient: the Router releases the
+  # claim it was processing, for the partition to be claimed again, rather than
+  # treating it as the reactor's failure.
+  StoreBusyError = Module.new
+
   # Raised by a component's stop (Dispatcher#stop!, PeriodicTask#stop!) when what
   # it runs is still running after its shutdown timeout
   ShutdownTimeoutError = Class.new(Error)
@@ -96,9 +102,8 @@ module Sourced
   end
 
   # Boot a standalone Sourced: build every component, set up the store and
-  # consumer groups, and spawn the workers and pollers into +context+: an
-  # Async::Task to run them as fibers in its reactor, or by default threads
-  # (see {Spawner}); either way this returns. Set +workers.count+ to 0 to run
+  # consumer groups, and spawn the workers and pollers as fibers into +context+,
+  # an Async::Task, or by default the current one (see {Spawner}); this returns. Set +workers.count+ to 0 to run
   # no workers in this process. To block until the process is signalled, see
   # {Supervisor}. A mounted Sourced is booted by its host's root.
   # @return [Sourced::Component]

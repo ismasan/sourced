@@ -42,7 +42,7 @@ class ConfigTestOtherReactor
   def self.handle_claim(_claim) = []
 end
 
-RSpec.describe Sourced::Config do
+RSpec.describe Sourced::Config, :async do
   let(:task) { CollectingTask.new }
 
   subject(:config) do
@@ -164,6 +164,12 @@ RSpec.describe Sourced::Config do
       expect(config['error_strategy']).to be_frozen
     end
 
+    it "makes SQLite connections wait for a locked database with Store::BusyHandler" do
+      config.start!
+
+      expect(config['db']).to be_a(Sourced::Store::BusyHandler)
+    end
+
     it 'spawns the dispatcher into the context it starts with' do
       config.config!('workers.count') { 2 }
       config.start!(task)
@@ -174,7 +180,7 @@ RSpec.describe Sourced::Config do
       config.teardown!
     end
 
-    it 'runs workers and pollers in threads when the context cannot spawn' do
+    it 'runs workers and pollers as fibers in the current Async task when the context cannot spawn' do
       config.config!('workers.count') { 2 }
 
       config.start!(Thread.current)
@@ -585,7 +591,7 @@ RSpec.describe Sourced::Config do
   end
 end
 
-RSpec.describe 'Sourced.config' do
+RSpec.describe 'Sourced.config', :async do
   before do
     Sourced.reset!
     Sourced.config.config!('logger') { Sourced::NULL_LOGGER }
@@ -635,7 +641,7 @@ RSpec.describe 'Sourced.config' do
     expect(Sourced.config.boot_status).to eq(:torn_down)
   end
 
-  it 'runs workers in threads by default, and stops them on teardown' do
+  it 'runs workers as fibers in the current Async task by default, and stops them on teardown' do
     Sourced.config.config!('workers.count') { 2 }
     Sourced.config.config!('workers.catchup_interval') { 0.05 }
     Sourced.config.config!('housekeeping.interval') { 0.05 }

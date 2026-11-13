@@ -2,7 +2,7 @@
 
 require 'spec_helper'
 require 'sourced'
-require 'sourced/thread_executor'
+require 'timeout'
 require 'sequel'
 
 module StaleClaimReaperTestMessages
@@ -222,7 +222,7 @@ RSpec.describe Sourced::StaleClaimReaper do
     end
   end
 
-  describe '#run and #stop' do
+  describe '#run and #stop', :async do
     it 'reaps on startup then stops' do
       reaper = described_class.new(
         store: store,
@@ -234,10 +234,10 @@ RSpec.describe Sourced::StaleClaimReaper do
 
       expect(store).to receive(:release_stale_claims).at_least(:once).and_return(0)
 
-      thread = Thread.new { reaper.run }
+      running = Async { reaper.run }
       sleep 0.05
       reaper.stop
-      thread.join(1)
+      Timeout.timeout(1) { running.wait }
 
       expect(logger).to have_received(:info).with('Sourced::StaleClaimReaper: stopped')
     end
@@ -252,7 +252,7 @@ RSpec.describe Sourced::StaleClaimReaper do
       )
       expect(store).to receive(:optimize!).once.and_call_original
 
-      reaper.start(Sourced::ThreadExecutor.new)
+      reaper.start(Async::Task.current)
       sleep 0.05
       expect(reaper.stop).to be(true)
     end

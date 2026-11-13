@@ -38,6 +38,7 @@ module Sourced
       @logger = logger
       @started = false
       @stopped = false
+      @holding_claims = false
       # Closed when #run returns. A Thread::Queue, so #wait blocks a thread, or
       # yields to the fiber scheduler in a fiber.
       @finished = Thread::Queue.new
@@ -94,6 +95,7 @@ module Sourced
     # @param reactor [Class] reactor class to drain messages for
     # @return [void]
     def drain(reactor)
+      release_claims if @holding_claims
       rounds = 0
       while !@stopped && rounds < @max_drain_rounds
         found = @router.handle_next_for(reactor, worker_id: name, batch_size: @batch_size)
@@ -103,6 +105,21 @@ module Sourced
       end
       # More work likely — re-enqueue so another worker (or this one) continues
       @work_queue.push(reactor) if !@stopped && rounds >= @max_drain_rounds
+    rescue StandardError => e
+      # What the Router doesn't handle for a claim, ex. a locked database while
+      # claiming or releasing. The worker keeps running: the reactor is picked
+      # up again on its next signal or catch-up poll, and the worker releases
+      # any claim it was left holding before it claims again.
+      @holding_claims = true
+      @logger.error "Sourced::Worker #{name}: #{reactor} raised #{e.class}: #{e.message}"
+    end
+
+    # Release the claims a failure left this worker holding. Raises, leaving
+    # them to the next drain, when it fails too.
+    private def release_claims
+      released = @router.release_worker_claims(name)
+      @holding_claims = false
+      @logger.warn "Sourced::Worker #{name}: released #{released} claims it was left holding" if released.positive?
     end
 
     # Process one tick of work for a specific reactor. Convenience for testing.

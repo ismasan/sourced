@@ -559,6 +559,25 @@ RSpec.describe Sourced::Router do
       expect(claim).not_to be_nil
     end
 
+    it "releases on a store's busy error, without counting it as the reactor's failure" do
+      store.append(
+        RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
+      )
+      store.append(
+        RouterTestMessages::BindDevice.new(payload: { device_id: 'd1', asset_id: 'a1' })
+      )
+      allow(RouterTestDecider).to receive(:handle_claim).and_raise(Sourced::Store::BusyError, 'database is locked')
+      allow(RouterTestDecider).to receive(:on_exception)
+
+      expect(router.handle_next_for(RouterTestDecider)).to be true
+
+      expect(RouterTestDecider).not_to have_received(:on_exception)
+      expect(store.consumer_group_active?(RouterTestDecider.group_id)).to be true
+      row = db[:sourced_consumer_groups].where(group_id: RouterTestDecider.group_id).first
+      expect(row[:status]).to eq('active')
+      expect(store.claim_next('router_test_decider', RouterTestDecider.claim_selector, worker_id: 'w-1')).not_to be_nil
+    end
+
     it 'releases on StandardError and calls on_exception' do
       store.append(
         RouterTestMessages::DeviceRegistered.new(payload: { device_id: 'd1', name: 'Sensor' })
