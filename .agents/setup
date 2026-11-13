@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Prepares an Amp orb: Ruby (via mise, precompiled) and the bundle.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+step() {
+  local label="$1"; shift
+  local start=$SECONDS
+  echo "==> $label"
+  "$@"
+  echo "    done in $((SECONDS - start))s"
+}
+
+mise_bin="$HOME/.local/bin/mise"
+shims="$HOME/.local/share/mise/shims"
+
+install_system_packages() {
+  # sqlite3 is built against the system library (see configure_bundler).
+  local missing=()
+  for pkg in libsqlite3-dev libyaml-dev libffi-dev build-essential; do
+    dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+  done
+  if ((${#missing[@]})); then
+    sudo apt-get update -qq
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}"
+  fi
+}
+
+install_mise() {
+  [ -x "$mise_bin" ] || curl -fsSL https://mise.run | sh
+}
+
+install_ruby() {
+  # sourced.gemspec requires Ruby >= 4.0.1; mise installs a precompiled build.
+  "$mise_bin" use -g --yes ruby@4.0
+}
+
+configure_bundler() {
+  # The lockfile has no precompiled x86_64-linux sqlite3 gem; linking the
+  # system SQLite avoids compiling SQLite itself (~90s).
+  PATH="$shims:$PATH" bundle config set --global build.sqlite3 --enable-system-libraries
+}
+
+install_gems() {
+  export PATH="$shims:$PATH"
+  bundle check >/dev/null 2>&1 || bundle install --jobs "$(nproc)"
+}
+
+persist_path() {
+  # Amp and supervised services start from login shells, which read
+  # ~/.bash_profile (not ~/.profile or ~/.bashrc).
+  local marker="# sourced: mise Ruby shims"
+  if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
+    cat >>"$HOME/.bash_profile" <<EOF
+
+$marker
+case ":\$PATH:" in
+  *":$shims:"*) ;;
+  *) export PATH="$shims:$HOME/.local/bin:\$PATH" ;;
+esac
+EOF
+  fi
+}
+
+step "System packages" install_system_packages
+step "mise" install_mise
+step "Ruby" install_ruby
+step "Bundler config" configure_bundler
+step "Gems" install_gems
+step "Login shell PATH" persist_path

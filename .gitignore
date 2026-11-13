@@ -8,3 +8,4 @@ pkg
 .claude
 bench/
 
+.amp/portals/*
