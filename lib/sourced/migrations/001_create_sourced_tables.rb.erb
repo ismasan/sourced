@@ -104,8 +104,8 @@ Sequel.migration do
     # Triggers live in the database — not in Store code — so invalidation holds
     # for every writer: any process (including ones that never registered the
     # group), the scheduled-message promoter, stale-claim reaping, or raw SQL.
-    # Groups with NULL partition_by (legacy lazy-discovery) keep the column's
-    # original max-position watermark semantics and are excluded.
+    # Groups with NULL partition_by were registered without a claim selector,
+    # so they can't be claimed, and are excluded.
     #
     # 1. Any new message may create claimable work for any partitioned group.
     run <<~SQL

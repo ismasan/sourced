@@ -1133,7 +1133,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'clears consumer groups, offsets, and offset_key_pairs' do
-      store.register_consumer_group('test_group')
+      store.register_consumer_group('test_group', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
@@ -1382,7 +1382,7 @@ RSpec.describe Sourced::Store do
 
   describe '#reset_consumer_group' do
     it 'deletes all offsets' do
-      store.register_consumer_group('my_group')
+      store.register_consumer_group('my_group', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
@@ -1398,7 +1398,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'raises for an active group, keeping its offsets' do
-      store.register_consumer_group('my_group')
+      store.register_consumer_group('my_group', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
@@ -1412,7 +1412,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'accepts an object responding to #group_id' do
-      store.register_consumer_group('my_group')
+      store.register_consumer_group('my_group', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
@@ -1428,7 +1428,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'is a no-op for queue-mode groups (offsets kept)' do
-      store.register_consumer_group('queue_group', exclusive: true)
+      store.register_consumer_group('queue_group', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id), exclusive: true)
       store.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
@@ -1447,7 +1447,32 @@ RSpec.describe Sourced::Store do
     let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id) }
 
     before do
-      store.register_consumer_group(group_id)
+      store.register_consumer_group(group_id, selector)
+    end
+
+    it 'raises for a group registered without partition keys' do
+      store.register_consumer_group('keyless')
+      expect { store.claim_next('keyless', selector, worker_id: 'w-1') }
+        .to raise_error(ArgumentError, /registered with partition keys nil, not \["device_id"\]/)
+    end
+
+    it 'raises for a group registered with other partition keys' do
+      store.register_consumer_group('by_asset', Sourced::Selector[StoreTestMessages::AssetRegistered].by(:asset_id))
+      expect { store.claim_next('by_asset', selector, worker_id: 'w-1') }
+        .to raise_error(ArgumentError, /registered with partition keys \["asset_id"\], not \["device_id"\]/)
+    end
+
+    it 'claims a group registered by another store, with offsets it discovers' do
+      Sourced::Store.new(db).register_consumer_group('elsewhere', selector)
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+
+      claim = store.claim_next('elsewhere', selector, worker_id: 'w-1')
+      expect(claim.partition_value).to eq('device_id' => 'dev-1')
+      store.ack('elsewhere', offset_id: claim.offset_id, position: claim.messages.last.position)
+      expect(store.claim_next('elsewhere', selector, worker_id: 'w-1')).to be_nil
+
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'B' }))
+      expect(store.claim_next('elsewhere', selector, worker_id: 'w-1').messages.map { _1.payload.name }).to eq(['B'])
     end
 
     it 'lazily discovers and creates offsets for new partitions' do
@@ -1794,13 +1819,15 @@ RSpec.describe Sourced::Store do
   describe '#claim_next (lazy discovery)' do
     let(:group_id) { 'discovery-test' }
     let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::DeviceBound].by(:device_id) }
+    # Another process's store, which doesn't create the group's offsets on append
+    let(:appender) { Sourced::Store.new(db) }
 
     before do
-      store.register_consumer_group(group_id)
+      store.register_consumer_group(group_id, selector)
     end
 
     it 'advances discovery_position after discovering partitions' do
-      store.append(
+      appender.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
@@ -1811,7 +1838,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'does not re-scan earlier messages on subsequent discovery calls' do
-      store.append([
+      appender.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
       ])
@@ -1828,7 +1855,7 @@ RSpec.describe Sourced::Store do
 
     it 'discovers new partitions added after initial discovery' do
       # First batch of messages
-      store.append(
+      appender.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
@@ -1840,7 +1867,7 @@ RSpec.describe Sourced::Store do
       expect(result).to be_nil
 
       # New partition arrives
-      store.append(
+      appender.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' })
       )
 
@@ -1851,7 +1878,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'resets discovery_position when consumer group is reset' do
-      store.append(
+      appender.append(
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
@@ -1871,7 +1898,7 @@ RSpec.describe Sourced::Store do
 
     it 'a new reactor catches up on old messages without explicit bootstrap' do
       # Pre-populate with multiple partitions
-      store.append([
+      appender.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }),
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-3', name: 'C' })
@@ -1879,7 +1906,7 @@ RSpec.describe Sourced::Store do
 
       # New reactor with no prior offsets
       new_group = 'new-reactor'
-      store.register_consumer_group(new_group)
+      store.register_consumer_group(new_group, selector)
 
       # Should discover and process all partitions
       claimed_partitions = []
@@ -1898,7 +1925,7 @@ RSpec.describe Sourced::Store do
     it 'does not short-circuit remaining partitions after acking the one at max position' do
       # Regression: highest_position short-circuit skipped unprocessed partitions
       # when one partition's last message happened to be at types_max_pos.
-      store.append([
+      appender.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'B' }),
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-3', name: 'C' }),
@@ -1907,7 +1934,7 @@ RSpec.describe Sourced::Store do
       ])
 
       new_group = 'multi-catch-up'
-      store.register_consumer_group(new_group)
+      store.register_consumer_group(new_group, selector)
 
       claimed_partitions = []
       10.times do
@@ -1926,7 +1953,7 @@ RSpec.describe Sourced::Store do
     end
 
     it "only discovers partitions of the selector's types" do
-      store.append([
+      appender.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
         StoreTestMessages::AssetRegistered.new(payload: { asset_id: 'a-1', label: 'Truck' })
       ])
@@ -1959,19 +1986,19 @@ RSpec.describe Sourced::Store do
       batch = Sourced::Store::DISCOVERY_BATCH_SIZE
       # dev-0's second message is the newest, so the batch's highest position
       # is past the first messages of the partitions that didn't fit in it.
-      store.append(registered('dev-0'))
-      store.append((1..batch + 1).map { |i| registered("dev-#{i}") })
-      store.append(registered('dev-0'))
+      appender.append(registered('dev-0'))
+      appender.append((1..batch + 1).map { |i| registered("dev-#{i}") })
+      appender.append(registered('dev-0'))
 
       expect(claim_all).to match_array((0..batch + 1).map { |i| "dev-#{i}" })
     end
 
     it 'discovers a message appended while discovery runs' do
-      store.append(registered('dev-1'))
+      appender.append(registered('dev-1'))
       # A concurrent append lands just before discovery reads the latest position.
       appended = false
       allow(store).to receive(:latest_position).and_wrap_original do |original|
-        store.append(registered('dev-2')) unless appended
+        appender.append(registered('dev-2')) unless appended
         appended = true
         original.call
       end
@@ -1992,7 +2019,7 @@ RSpec.describe Sourced::Store do
     end
 
     before do
-      store.register_consumer_group(group_id)
+      store.register_consumer_group(group_id, selector)
     end
 
     it 'bootstraps composite partitions (only messages with ALL attributes create partitions)' do
@@ -2171,7 +2198,7 @@ RSpec.describe Sourced::Store do
     let(:selector) { Sourced::Selector[StoreTestMessages::UserJoinedCourse].by(:course_name, :user_id) }
 
     before do
-      store.register_consumer_group(group_id)
+      store.register_consumer_group(group_id, selector)
     end
 
     it 'acked partition with shared key_pair does not block other partitions with pending work' do
@@ -2262,7 +2289,7 @@ RSpec.describe Sourced::Store do
     let(:group_id) { 'ack-test' }
 
     before do
-      store.register_consumer_group(group_id)
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
     end
 
     it 'advances offset and releases claim' do
@@ -2614,7 +2641,7 @@ RSpec.describe Sourced::Store do
     let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered, StoreTestMessages::DeviceBound].by(:device_id) }
 
     before do
-      store.register_consumer_group(group_id)
+      store.register_consumer_group(group_id, selector)
     end
 
     it 'creates and advances offset for a new partition' do
@@ -2733,13 +2760,15 @@ RSpec.describe Sourced::Store do
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
       )
 
-      advanced = store.advance_offset('nonexistent',
-        partition: { 'device_id' => 'dev-1' },
-        position: 1
-      )
+      advanced = nil
+      expect {
+        advanced = store.advance_offset('nonexistent',
+          partition: { 'device_id' => 'dev-1' },
+          position: 1
+        )
+      }.not_to change { db[:sourced_offsets].count }
 
       expect(advanced).to be(false)
-      expect(db[:sourced_offsets].count).to eq(0)
     end
 
     it 'is a no-op when partition has no messages in the store' do
@@ -2806,7 +2835,7 @@ RSpec.describe Sourced::Store do
 
     it 'reflects processing state after claim and ack' do
       group_id = 'stats_test'
-      store.register_consumer_group(group_id)
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
@@ -2879,8 +2908,8 @@ RSpec.describe Sourced::Store do
     end
 
     it 'returns all offsets across groups with group_name and group_status' do
-      store.register_consumer_group('group_a')
-      store.register_consumer_group('group_b')
+      store.register_consumer_group('group_a', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
+      store.register_consumer_group('group_b', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
@@ -2911,8 +2940,8 @@ RSpec.describe Sourced::Store do
     end
 
     it 'filters by group_id when provided' do
-      store.register_consumer_group('group_a')
-      store.register_consumer_group('group_b')
+      store.register_consumer_group('group_a', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
+      store.register_consumer_group('group_b', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
@@ -2927,7 +2956,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'paginates with from_id and limit (inclusive)' do
-      store.register_consumer_group('group_a')
+      store.register_consumer_group('group_a', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
@@ -2956,7 +2985,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'to_enum iterates across pages' do
-      store.register_consumer_group('group_a')
+      store.register_consumer_group('group_a', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }),
@@ -2976,7 +3005,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'includes claim status fields' do
-      store.register_consumer_group('group_a')
+      store.register_consumer_group('group_a', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
 
       store.append([
         StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
@@ -3060,7 +3089,7 @@ RSpec.describe Sourced::Store do
     let(:group_id) { 'release-test' }
 
     before do
-      store.register_consumer_group(group_id)
+      store.register_consumer_group(group_id, Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id))
     end
 
     it 'releases claim without advancing' do
@@ -3477,7 +3506,7 @@ RSpec.describe Sourced::Store do
     end
 
     it 'claims tagged messages into their partition (lazy discovery)' do
-      store.register_consumer_group('tags_lazy')
+      store.register_consumer_group('tags_lazy', selector)
       store.append([note('one', device_id: 'dev-1'), note('untagged')])
 
       claim = store.claim_next('tags_lazy', selector, worker_id: 'w-1')

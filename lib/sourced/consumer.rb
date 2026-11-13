@@ -53,8 +53,7 @@ module Sourced
     # Resume a stopped or failed group, or a retrying one without waiting.
     def start
       move!(ConsumerGroupMachine::Start)
-      # Reset the scan latch/watermark so the group rescans on resume.
-      # 0 is "dirty" for partitioned groups and "no latch" for legacy ones.
+      # Mark the scan latch dirty (0) so the group rescans on resume.
       @columns[:last_nil_types_max_pos] = 0
     end
 

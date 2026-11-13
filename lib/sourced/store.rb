@@ -698,7 +698,8 @@ module Sourced
     # @param worker_id [String] identifier for the claiming worker
     # @param batch_size [Integer, nil] max messages to fetch per claim (nil = unlimited)
     # @return [ClaimResult, nil] nil when there's nothing to claim, or for {Selector::NONE}
-    # @raise [ArgumentError] unless every part of +selector+ has the same keys, none bound
+    # @raise [ArgumentError] unless every part of +selector+ has the same keys, none bound,
+    #   and the group was registered with those keys (see {#register_consumer_group})
     def claim_next(group_id, selector, worker_id:, batch_size: nil)
       return nil if selector.none?
 
@@ -713,70 +714,39 @@ module Sourced
         .first
       return nil unless cg
 
-      claimed = nil
-      group_info = @registered_groups[group_id]
+      registered_keys = cg[:partition_by] && JSON.parse(cg[:partition_by])
+      unless registered_keys == partition_by
+        raise ArgumentError,
+              "consumer group #{group_id.inspect} is registered with partition keys #{registered_keys.inspect}, " \
+              "not #{partition_by.inspect}: register it with the selector it claims"
+      end
 
-      if group_info&.fetch(:partition_by, nil)
-        # Partitioned path (eager offsets and id-partitioned queues). For these
-        # groups `last_nil_types_max_pos` holds a sign-encoded scan version
-        # maintained by the dirty-triggers installed with the schema (see the
-        # migration template): >= 0 means claimable work may have changed since
-        # the last empty scan, < 0 means an empty scan completed at version
-        # -value and nothing has changed since — so an idle poll is O(1) instead
-        # of a scan over every unclaimed offset.
-        #
-        # The old form of this gate compared the version against MAX(position)
-        # over handled_types — which for a Decider excludes its evolve types and
-        # was never invalidated by append or release, so it could latch while
-        # partitions were still pending and strand them forever. Trigger-driven
-        # invalidation closes that: anything that can create claimable work
-        # (message insert, claim release) bumps the version at the DB level,
-        # regardless of which process or code path performs the write.
-        scan_version = cg[:last_nil_types_max_pos]
-        return nil if scan_version.negative?
+      # `last_nil_types_max_pos` is a sign-encoded scan version, kept by the
+      # triggers installed with the schema (see the migration template): >= 0
+      # means claimable work may have changed since the last empty scan, < 0
+      # means an empty scan completed at version -value and nothing has changed
+      # since, so an idle poll is O(1) instead of a scan over every unclaimed
+      # offset. The triggers bump it on any message insert or claim release, from
+      # any process, for every group registered with partition keys.
+      scan_version = cg[:last_nil_types_max_pos]
+      return nil if scan_version.negative?
 
+      claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
+      unless claimed
+        discover_new_partitions(cg[:id], partition_by, handled_types)
         claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
-        unless claimed
-          discover_new_partitions(cg[:id], partition_by, handled_types)
-          claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
-        end
+      end
 
-        unless claimed
-          # Latch clean via compare-and-set: only if the version is unchanged
-          # since we read it before scanning. A concurrent trigger bump during
-          # the scan (new message, released claim) makes the WHERE miss, so the
-          # group stays dirty and the next poll rescans. Versions are strictly
-          # monotonic (abs + 1), so a stale read can never alias a newer state.
-          db[@consumer_groups_table]
-            .where(id: cg[:id], last_nil_types_max_pos: scan_version)
-            .update(last_nil_types_max_pos: -(scan_version + 1))
-          return nil
-        end
-      else
-        # Legacy path: offsets are created on demand, so the messages table is
-        # the source of truth and the message-position short-circuit is sound.
-        types_max_pos = db[@messages_table]
-          .where(message_type: handled_types)
-          .max(:position) || 0
-
-        # Short-circuit: no new messages since the last nil claim.
-        return nil if types_max_pos <= cg[:last_nil_types_max_pos]
-
-        has_offsets = db[@offsets_table].where(consumer_group_id: cg[:id]).limit(1).any?
-        if has_offsets && types_max_pos <= cg[:discovery_position]
-          claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
-        end
-        unless claimed
-          discover_new_partitions(cg[:id], partition_by, handled_types)
-          claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
-        end
-
-        unless claimed
-          # Remember types_max_pos so next poll short-circuits instantly
-          db[@consumer_groups_table].where(id: cg[:id])
-            .update(last_nil_types_max_pos: types_max_pos)
-          return nil
-        end
+      unless claimed
+        # Latch clean via compare-and-set: only if the version is unchanged
+        # since we read it before scanning. A concurrent trigger bump during
+        # the scan (new message, released claim) makes the WHERE miss, so the
+        # group stays dirty and the next poll rescans. Versions are strictly
+        # monotonic (abs + 1), so a stale read can never alias a newer state.
+        db[@consumer_groups_table]
+          .where(id: cg[:id], last_nil_types_max_pos: scan_version)
+          .update(last_nil_types_max_pos: -(scan_version + 1))
+        return nil
       end
 
       key_pairs = db[@key_pairs_table]
