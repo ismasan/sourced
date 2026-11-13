@@ -198,7 +198,7 @@ RSpec.describe Sourced::React do
         expect(result.first.correlation_id).to eq(source.correlation_id)
         expect(result.first.metadata[:producer]).to eq('ccc_reactor')
         expect(result.first.metadata[:foo]).to eq('bar')
-        expect(result.first.created_at).to eq(now + 10)
+        expect(result.first.created_at).to eq((now + 10).floor(6))
       end
     end
 

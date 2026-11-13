@@ -313,7 +313,7 @@ RSpec.describe Sourced::DurableWorkflow do
         # WaitEnded is dated to the wait target, so the store defers it to
         # scheduled_messages and promotes it when due.
         expect(next_action.messages.first).to be_a(DurableTests::WithDelay::WaitEnded)
-        expect(next_action.messages.first.created_at).to eq(now + 10)
+        expect(next_action.messages.first.created_at).to eq((now + 10).floor(6))
         expect(next_action.messages.first.payload.workflow_id).to eq('durable-test-1')
 
         history << next_action.messages.first

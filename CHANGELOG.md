@@ -303,6 +303,10 @@
 
 ### Fixed
 
+- On Linux, messages handed to `sync` / `after_sync` hooks and returned by `handle!` didn't
+  equal their stored copies: `Time.now` has nanoseconds there, and the store keeps
+  `created_at` to the microsecond. sourced-message 0.5.3, which Sourced now requires, keeps
+  `created_at` to the microsecond everywhere.
 - A retrying consumer group's `retry_at` is stored in UTC, and `claim_next` compares it with
   the current UTC time. Both were local-time ISO 8601 strings, which compare as times only
   within one UTC offset: when clocks went back, a retry an hour away could be claimed at once.
