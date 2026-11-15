@@ -164,10 +164,11 @@ RSpec.describe Sourced::Config, :async do
       expect(config['error_strategy']).to be_frozen
     end
 
-    it "makes SQLite connections wait for a locked database with Store::BusyHandler" do
+    it "applies Store::BusyHandler's extensions to an SQLite database: waiting for its lock, and queueing its writes" do
       config.start!
 
-      expect(config['db']).to be_a(Sourced::Store::BusyHandler)
+      expect(config['db']).to be_a(Sequel::SourcedSQLiteBusyWait)
+      expect(config['db']).to be_a(Sequel::SourcedSQLiteWriteQueue)
     end
 
     it 'spawns the dispatcher into the context it starts with' do

@@ -144,8 +144,8 @@ module Sourced
           build do |db, notifier, logger, prefix, install_tables, message_codec|
             Store.new(db, notifier:, logger:, prefix:, install_tables:, message_codec:)
           end
-          # Waiting for a locked SQLite database lets the lock's holder run (see
-          # Store::BusyHandler). With the tables there (installed by a migration, or
+          # Waiting for a locked SQLite database lets the lock's holder run, and the
+          # process's writes take turns for it (see Store::BusyHandler). With the tables there (installed by a migration, or
           # here when asked), compile the store's codec: a no-op unless it was given
           # an uncompiled one
           start do |store, _|
