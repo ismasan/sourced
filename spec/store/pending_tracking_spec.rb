@@ -334,6 +334,69 @@ RSpec.describe Sourced::Store, 'offsets next_position' do
     expect(pending.values).to all(be_nil)
   end
 
+  describe 'sweep_pending' do
+    # A store that doesn't register the group: its appends mark nothing.
+    let(:unregistered) { described_class.new(db) }
+
+    before do
+      store.append([joined('Algebra', 'joe'), joined('Algebra', 'jake'), joined('Physics', 'ann')])
+      drain
+      store.sweep_pending # starts at the log's end
+    end
+
+    it "marks the partitions of messages appended since, that nothing marked" do
+      position = unregistered.append(joined('Algebra', 'joe'))
+      fanout = unregistered.append(closed('Physics'))
+      expect(pending.values).to all(be_nil)
+
+      expect(store.sweep_pending).to eq(group_id => 2)
+
+      expect(pending).to eq(joe => position, jake => nil, ann => fanout)
+      expect(store.sweep_pending).to eq({})
+    end
+
+    it 'leaves claimed partitions, and those whose cursor is past the message' do
+      unregistered.append([joined('Algebra', 'joe'), joined('Physics', 'ann')])
+      store.append(joined('Algebra', 'jake')) # marked by its append
+      ack(claim) # jake's: caught up
+      db[:sourced_offsets].where(partition_key: ann).update(claimed: 1)
+      db[:sourced_offsets].where(partition_key: joe).update(last_position: db[:sourced_messages].max(:position))
+
+      expect(store.sweep_pending).to eq({})
+      expect(pending).to eq(joe => nil, jake => nil, ann => nil)
+    end
+
+    it 'checks up to limit positions further on each call' do
+      positions = 3.times.map { |i| unregistered.append(joined('Algebra', "u#{i}")) }
+      %w[u0 u1 u2].each { |u| store.append(joined('Algebra', u)) } # offsets for them
+      db[:sourced_offsets].update(next_position: nil, last_position: 0)
+
+      expect(store.sweep_pending(limit: 2)).to eq(group_id => 2)
+      expect(store.sweep_pending(limit: 2)).to eq(group_id => 1)
+      expect(pending.values_at(*%w[u0 u1 u2].map { "course_name:Algebra|user_id:#{_1}" })).to eq(positions)
+    end
+
+    it 'leaves a group whose row has another rule to the store that took it' do
+      unregistered.append(joined('Algebra', 'joe'))
+      db[:sourced_consumer_groups].update(claim_digest: 'another-deploy')
+
+      expect(store.sweep_pending).to eq({})
+      expect(pending[joe]).to be_nil
+    end
+
+    it 'runs in maintain, which warns about what it marked' do
+      logger = instance_double('Logger', info: nil, warn: nil, debug: nil)
+      logged = described_class.new(db, logger:).tap { _1.register_consumer_group(group_id, selector) }
+      logged.maintain
+      unregistered.append(joined('Algebra', 'joe'))
+
+      logged.maintain
+
+      expect(logger).to have_received(:warn).with(/marked 1 partitions of pending-tracking with pending work nothing had marked/).once
+      expect(pending[joe]).not_to be_nil
+    end
+  end
+
   describe 'discovery' do
     it 'sets it on the offsets it creates for messages appended before the group registered' do
       first = store.append(joined('Algebra', 'joe'))

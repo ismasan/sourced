@@ -133,6 +133,8 @@ module Sourced
     # Partitions one claim_next tries past false positives (marks with
     # nothing pending) before giving up until the next one.
     EMPTY_CLAIMS_LIMIT = 100
+    # Log positions each #maintain checks for unmarked pending work, per group.
+    SWEEP_POSITIONS = 5_000
 
     # How a group's pending messages are found: the types it claims and its
     # partition keys, both sorted. +digest+ identifies the rule on the group's
@@ -208,6 +210,9 @@ module Sourced
 
       # Groups claim_next found registered with another rule, logged once each.
       @foreign_rule_groups = Set.new
+
+      # Where #sweep_pending continues, per group: the last position it checked.
+      @sweep_positions = {}
 
       # How each message type should be indexed, derived from its consuming
       # group's partitioning. { type_string => :id }. Types absent here default
@@ -998,7 +1003,58 @@ module Sourced
       taken = reclaim_consumer_groups
       logger.warn "Sourced::Store: took consumer groups #{taken.join(', ')} under this process's message types" if taken.any?
 
+      sweep_pending.each do |group_id, marked|
+        logger.warn "Sourced::Store: marked #{marked} partitions of #{group_id} with pending work nothing had marked " \
+                    '(appended by a process that doesn\'t register the group?)'
+      end
+
       optimize!
+    end
+
+    # A backstop for +next_position+'s invariant (a partition with a pending
+    # message has it set): marks again what the messages appended since the
+    # last sweep would have marked, up to +limit+ positions further each
+    # call, for each group this store registered and whose row has its rule.
+    # Only unclaimed offsets without a mark whose cursor is before the message
+    # (see {#mark_pending}). Appends mark what they write, so this finds only
+    # what they didn't: messages appended by a process that doesn't register
+    # the group, or a bug, which then costs a delay instead of work that's
+    # never claimed. Costs what appending those messages did: it follows the
+    # log, not the group's offsets. Starts at the log's end on its first
+    # call.
+    #
+    # @param limit [Integer] positions per call
+    # @return [Hash{String => Integer}] partitions marked, by group id, for groups with any
+    def sweep_pending(limit: SWEEP_POSITIONS)
+      latest = latest_position
+      @registered_groups.each_with_object({}) do |(group_id, group), marked|
+        rule = group[:rule] or next
+        after = @sweep_positions[group_id] ||= latest
+        upper = [after + limit, latest].min
+        next if upper <= after
+        next unless db[@consumer_groups_table].where(id: group[:cg_id]).get(:claim_digest) == rule.digest
+
+        rows = db.fetch(<<~SQL).all
+          SELECT m.position, m.message_type, kp.id AS kp_id, kp.name, kp.value
+          FROM #{@messages_table} m
+          JOIN #{@message_key_pairs_table} mkp ON mkp.message_position = m.position
+          JOIN #{@key_pairs_table} kp ON kp.id = mkp.key_pair_id
+          WHERE m.position > #{db.literal(after)} AND m.position <= #{db.literal(upper)}
+            AND m.message_type IN (#{rule.types.map { |t| db.literal(t) }.join(', ')})
+            AND kp.name IN (#{rule.partition_by.map { |n| db.literal(n) }.join(', ')})
+          ORDER BY m.position
+        SQL
+        @sweep_positions[group_id] = upper
+
+        by_position = rows.group_by { _1[:position] }
+        positions = by_position.keys
+        types = by_position.values.map { _1.first[:message_type] }
+        indexed_keys = by_position.values.map { |rs| rs.map { [_1[:name], _1[:value]] } }
+        kp_id_cache = rows.to_h { ["#{_1[:name]}:#{_1[:value]}", _1[:kp_id]] }
+        count = mark_pending(group[:cg_id], rule.partition_by, rule.types.to_set, types, indexed_keys, positions,
+                             kp_id_cache, sweep: true)
+        marked[group_id] = count if count.positive?
+      end
     end
 
     # Take each group this store registered under its rule, where the
@@ -1375,9 +1431,14 @@ module Sourced
     # id from the offset_key_pairs(key_pair_id, offset_id) subquery instead of
     # walking every offset of the group.
     #
+    # With +sweep+ (see {#sweep_pending}), only unclaimed offsets whose cursor
+    # is before the message: one that has processed it, or is processing it,
+    # isn't pending for it.
+    #
     # @param kp_id_cache [Hash{String => Integer}] +"name:value"+ => key pair id
-    # @return [void]
-    def mark_pending(cg_id, partition_by, group_types, types, indexed_keys, positions, kp_id_cache)
+    # @param sweep [Boolean]
+    # @return [Integer] offsets marked
+    def mark_pending(cg_id, partition_by, group_types, types, indexed_keys, positions, kp_id_cache, sweep: false)
       first_by_key = {}
       first_by_pairs = {}
       indexed_keys.each_with_index do |pairs, i|
@@ -1392,21 +1453,24 @@ module Sourced
         end
       end
 
+      marked = 0
       first_by_key.each_slice(500) do |slice|
-        cases = slice.map { |key, position| "WHEN #{db.literal(key)} THEN #{db.literal(position)}" }.join(' ')
-        db.run(<<~SQL)
-          UPDATE #{@offsets_table} SET next_position = CASE partition_key #{cases} END
+        cases = "CASE partition_key #{slice.map { |key, position| "WHEN #{db.literal(key)} THEN #{db.literal(position)}" }.join(' ')} END"
+        marked += db.execute_dui(<<~SQL)
+          UPDATE #{@offsets_table} SET next_position = #{cases}
           WHERE consumer_group_id = #{db.literal(cg_id)}
             AND partition_key IN (#{slice.map { |key, _| db.literal(key) }.join(', ')})
             AND next_position IS NULL
+            #{"AND claimed = 0 AND last_position < #{cases}" if sweep}
         SQL
       end
 
       first_by_pairs.each do |kp_ids, position|
-        db.run(<<~SQL)
+        marked += db.execute_dui(<<~SQL)
           UPDATE #{@offsets_table} SET next_position = #{db.literal(position)}
           WHERE +consumer_group_id = #{db.literal(cg_id)}
             AND next_position IS NULL
+            #{"AND claimed = 0 AND last_position < #{db.literal(position)}" if sweep}
             AND id IN (
               SELECT offset_id FROM #{@offset_key_pairs_table}
               WHERE key_pair_id IN (#{kp_ids.map { |id| db.literal(id) }.join(', ')})
@@ -1415,6 +1479,7 @@ module Sourced
             )
         SQL
       end
+      marked
     end
 
     # Build canonical partition key string from attribute names and values.
