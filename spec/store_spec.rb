@@ -165,6 +165,30 @@ RSpec.describe Sourced::Store do
     end
   end
 
+  describe '#maintain' do
+    let(:logger) { instance_double('Logger', info: nil, warn: nil, debug: nil) }
+    let(:store) { described_class.new(db, logger:) }
+    let(:selector) { Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id) }
+
+    it 'refreshes planner statistics' do
+      store.append(StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }))
+
+      store.maintain
+      expect(db[:sqlite_stat1].count).to be > 0
+    end
+
+    it "takes this store's groups under its rules, and says so" do
+      store.register_consumer_group('maintained', selector)
+      db[:sourced_consumer_groups].update(claim_digest: 'another-deploy')
+
+      store.maintain
+      store.maintain
+
+      expect(logger).to have_received(:warn).with(/took consumer groups maintained/).once
+      expect(db[:sourced_consumer_groups].get(:claim_digest)).not_to eq('another-deploy')
+    end
+  end
+
   describe '#optimize!' do
     it 'populates SQLite planner statistics' do
       store.append(

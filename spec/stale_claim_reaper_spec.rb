@@ -193,7 +193,7 @@ RSpec.describe Sourced::StaleClaimReaper do
       reaper.send(:reap)
     end
 
-    it 'also reaps drained queue offsets' do
+    it "runs the store's housekeeping" do
       reaper = described_class.new(
         store: store,
         interval: 30,
@@ -202,7 +202,7 @@ RSpec.describe Sourced::StaleClaimReaper do
       )
 
       allow(store).to receive(:release_stale_claims).and_return(0)
-      expect(store).to receive(:release_drained_offsets).and_return(0)
+      expect(store).to receive(:maintain)
       reaper.send(:reap)
     end
 
@@ -242,25 +242,9 @@ RSpec.describe Sourced::StaleClaimReaper do
       expect(logger).to have_received(:info).with('Sourced::StaleClaimReaper: stopped')
     end
 
-    it "takes consumer groups under its process's rule, on every tick" do
+    it "runs the store's housekeeping on its first tick and every tick" do
       reaper = described_class.new(store: store, interval: 0.01, ttl_seconds: 120, logger: logger)
-      expect(store).to receive(:reclaim_consumer_groups).at_least(:twice).and_return(['some.group'], [])
-      allow(logger).to receive(:warn)
-
-      reaper.start(Async::Task.current)
-      sleep 0.05
-      expect(reaper.stop).to be(true)
-      expect(logger).to have_received(:warn).with(/took consumer groups some\.group/).once
-    end
-
-    it 'refreshes planner statistics on every tick' do
-      reaper = described_class.new(
-        store: store,
-        interval: 0.01,
-        ttl_seconds: 120,
-        logger: logger
-      )
-      expect(store).to receive(:optimize!).at_least(:twice).and_call_original
+      expect(store).to receive(:maintain).at_least(:twice).and_call_original
 
       reaper.start(Async::Task.current)
       sleep 0.05

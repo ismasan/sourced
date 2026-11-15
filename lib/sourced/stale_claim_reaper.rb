@@ -3,8 +3,10 @@
 require 'sourced/periodic_task'
 
 module Sourced
-  # Periodic loop that heartbeats active workers and releases claims
-  # held by workers that have stopped heartbeating (crashed or killed).
+  # Periodic loop that heartbeats active workers, releases claims held by
+  # workers that have stopped heartbeating (crashed or killed), and runs the
+  # store's own housekeeping (+maintain+, see Config::StoreInterface), so a
+  # store's housekeeping runs where workers run.
   #
   # Combines heartbeating and reaping in one loop since Sourced doesn't have
   # a separate HouseKeeper like the main Sourced module.
@@ -55,16 +57,7 @@ module Sourced
       released = @store.release_stale_claims(ttl_seconds: @ttl_seconds)
       logger.info "Sourced::StaleClaimReaper: released #{released} stale claims" if released > 0
 
-      reaped = @store.release_drained_offsets
-      logger.info "Sourced::StaleClaimReaper: reaped #{reaped} drained offsets" if reaped > 0
-
-      pruned = @store.prune_orphan_key_pairs
-      logger.info "Sourced::StaleClaimReaper: pruned #{pruned} orphan key_pairs" if pruned && pruned > 0
-
-      reclaimed = @store.reclaim_consumer_groups
-      logger.warn "Sourced::StaleClaimReaper: took consumer groups #{reclaimed.join(', ')} under this process's message types" if reclaimed.any?
-
-      @store.optimize! # planner statistics, where tables are new or grew
+      @store.maintain
     end
   end
 end

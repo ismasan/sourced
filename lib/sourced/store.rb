@@ -981,12 +981,32 @@ module Sourced
         .update(claimed: 0, claimed_at: nil, claimed_by: nil)
     end
 
+    # Housekeeping, run where workers run ({StaleClaimReaper}: its first tick
+    # and every tick after): removes drained queue offsets and orphan key
+    # pairs, takes this process's groups under its rules
+    # ({#reclaim_consumer_groups}), and refreshes planner statistics
+    # ({#optimize!}). Logs what it changed.
+    #
+    # @return [void]
+    def maintain
+      reaped = release_drained_offsets
+      logger.info "Sourced::Store: reaped #{reaped} drained offsets" if reaped > 0
+
+      pruned = prune_orphan_key_pairs
+      logger.info "Sourced::Store: pruned #{pruned} orphan key_pairs" if pruned && pruned > 0
+
+      taken = reclaim_consumer_groups
+      logger.warn "Sourced::Store: took consumer groups #{taken.join(', ')} under this process's message types" if taken.any?
+
+      optimize!
+    end
+
     # Take each group this store registered under its rule, where the
     # group's row has another, and mark what's pending under it (ex. messages
     # of a type the group didn't claim, already in the log). The row's rule
     # is the one claims and recomputes run under (see {#claim_next}).
     # Registration sets a rule only on a group without one, so a rule
-    # changes hands here: {StaleClaimReaper} calls it on its first tick and
+    # changes hands here: {#maintain} calls it, on the reaper's first tick and
     # every tick after, where workers run. While two deploys' workers run,
     # the group passes between them.
     #

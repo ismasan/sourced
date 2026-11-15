@@ -71,6 +71,9 @@ module Sourced
       :register_consumer_group,
       :worker_heartbeat,
       :release_stale_claims,
+      # The store's own housekeeping, whatever it needs: the stale claim
+      # reaper calls it where workers run, on its first tick and every tick.
+      :maintain,
       :notifier
     ]
 
