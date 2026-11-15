@@ -1580,6 +1580,17 @@ store.stop_consumer_group('course_app.course_decider')
 
 All three raise `Sourced::Store::UnknownConsumerGroupError`, naming the registered groups, for a group that isn't registered with the store (a typo, or a reactor that isn't registered): consumer groups are registered when Sourced starts.
 
+### How workers find work
+
+Each partition's offset records whether it has a pending message, so a claim takes the unclaimed partition with the earliest pending message in one index lookup, however many partitions are idle. Appends mark the partitions their messages are in, for the consumer groups registered in the appending process: `Sourced.start!` registers every reactor's group, in web processes too, so Sourced's own paths are covered. A script appending through a bare `Store` registers the groups it feeds, each with its reactor's `claim_selector` (`store.register_consumer_group(Reactor.group_id, Reactor.claim_selector)`): registering with another selector hands the group to that selector's rule, and the reactor's workers stop claiming it (see below). Unregistered, a group's existing partitions aren't marked for the script's messages, and workers find only its new partitions.
+
+A group runs under the message types and partition keys it was last registered with. When a deploy changes them, ex. a Decider gains a command or a reaction:
+
+- Registering the group marks the partitions with messages pending under the new types, including messages of a new type already in the log, so they're processed without a reset.
+- Workers whose reactor claims other types (the previous deploy's, during a rolling deploy) stop claiming the group, logging a warning, and leave it to the workers of the deploy that registered it last.
+- The stale claim reaper, which runs where workers run, registers its process's groups again on every tick where another deploy's registration replaced them. A group a process since gone registered (ex. an old worker restarted mid-deploy) comes back to the running workers within a tick; while two deploys run, it passes between them.
+- Types a reactor only evolves (its history) don't count: adding one to a Decider changes nothing here. A Projector that evolves a new type still needs a reset, to rebuild its saved projections.
+
 ### Consumer group statuses
 
 A group's status follows `Sourced::ConsumerGroupMachine`, a statechart that isn't registered as a reactor: it's only the rules. Its states are the statuses, stored as their paths in the group's `status` column:
@@ -2267,10 +2278,15 @@ CREATE INDEX idx_sourced_ccc_offsets_cg_pending
   ON sourced_offsets (consumer_group_id, claimed, next_position)
   WHERE next_position IS NOT NULL;
 CREATE INDEX idx_sourced_ccc_okp_key_pair ON sourced_offset_key_pairs (key_pair_id, offset_id);
-UPDATE sourced_offsets SET next_position = 0;
+
+-- consumer_groups.claim_digest (the rule a group runs under), replacing the claim-scan triggers
+ALTER TABLE sourced_consumer_groups ADD COLUMN claim_digest TEXT;
+DROP TRIGGER IF EXISTS trg_sourced_ccc_dirty_on_message;
+DROP TRIGGER IF EXISTS trg_sourced_ccc_dirty_on_release;
+DROP INDEX IF EXISTS idx_sourced_ccc_offsets_cg_claimed_pos;
 ```
 
-The last statement marks every partition pending once: a pending mark may be a false positive, never a miss.
+Each group's first registration after the upgrade marks its partitions' pending messages, since it has no `claim_digest` to compare with yet. `consumer_groups.last_nil_types_max_pos` is no longer used, and can stay or be dropped. Stop every worker of the earlier version before starting the new one: earlier workers don't check which deploy registered a group, and claim by scanning.
 
 #### Custom table prefix
 

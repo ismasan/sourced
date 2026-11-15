@@ -1288,7 +1288,7 @@ RSpec.describe Sourced::Router do
 
       # after reactivating the group, the retained message is re-claimable
       store.start_consumer_group('fake_commander')
-      claim = store.claim_next('fake_commander', Sourced::Selector[RouterQueueMessages::DoThing].by_message_id, worker_id: 'w2')
+      claim = store.claim_next('fake_commander', FakeCommander.claim_selector, worker_id: 'w2')
       expect(claim.messages.size).to eq(1)
     end
   end

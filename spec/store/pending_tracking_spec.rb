@@ -166,7 +166,95 @@ RSpec.describe Sourced::Store, 'offsets next_position' do
       other.ack(group_id, offset_id: c.offset_id, version: c.offset_version, position: c.messages.last.position)
 
       expect(pending).to eq(joe => c.messages.last.position)
+      expect(claim).to be_nil
+      expect(pending).to eq(joe => nil)
     end
+  end
+
+  describe 'a group registered with new types' do
+    let(:wider) do
+      Sourced::Selector[
+        PendingTrackingMessages::Joined, PendingTrackingMessages::Closed, PendingTrackingMessages::Noted,
+        PendingTrackingMessages::Unclaimed
+      ].by(:course_name, :user_id)
+    end
+    let(:new_deploy) { described_class.new(db) }
+
+    def unclaimed(course_name, user_id)
+      PendingTrackingMessages::Unclaimed.new(payload: { course_name:, user_id: })
+    end
+
+    it 'marks messages of the new types already in the log' do
+      store.append(joined('Algebra', 'joe'))
+      drain
+      position = store.append(unclaimed('Algebra', 'joe'))
+      expect(pending).to eq(joe => nil)
+
+      new_deploy.register_consumer_group(group_id, wider)
+
+      expect(pending).to eq(joe => position)
+      c = new_deploy.claim_next(group_id, wider, worker_id: 'w-2')
+      expect(c.messages.map(&:position)).to eq([position])
+    end
+
+    it 'is claimed only by workers with the registered types' do
+      store.append(joined('Algebra', 'joe'))
+      new_deploy.register_consumer_group(group_id, wider)
+
+      expect(claim).to be_nil
+      expect(new_deploy.claim_next(group_id, wider, worker_id: 'w-2')).not_to be_nil
+    end
+
+    it "is taken back by a store whose registration was replaced, marking under its rule" do
+      store.append(joined('Algebra', 'joe'))
+      new_deploy.register_consumer_group(group_id, wider)
+      position = new_deploy.append(unclaimed('Algebra', 'joe'))
+      store.register_consumer_group(group_id, selector) # an old process registers after it
+      expect(new_deploy.claim_next(group_id, wider, worker_id: 'w-2')).to be_nil
+      expect(store.reclaim_consumer_groups).to eq([])
+
+      expect(new_deploy.reclaim_consumer_groups).to eq([group_id])
+
+      c = new_deploy.claim_next(group_id, wider, worker_id: 'w-2')
+      expect(c.messages.map(&:position)).to include(position)
+      expect(new_deploy.reclaim_consumer_groups).to eq([])
+    end
+
+    it 'keeps a partition pending when a claim from before the registration is acked' do
+      store.append(joined('Algebra', 'joe'))
+      c = claim
+      new_deploy.register_consumer_group(group_id, wider)
+      position = new_deploy.append(unclaimed('Algebra', 'joe'))
+
+      ack(c)
+
+      expect(pending[joe]).to eq(c.messages.last.position)
+      claimed = new_deploy.claim_next(group_id, wider, worker_id: 'w-2')
+      expect(claimed.messages.map(&:position)).to eq([position])
+    end
+  end
+
+  it 'claims past partitions marked with nothing pending' do
+    store.append(joined('Physics', 'ann'))
+    c = claim
+    described_class.new(db).ack(group_id, offset_id: c.offset_id, version: c.offset_version, position: c.messages.last.position)
+    position = store.append(joined('Algebra', 'joe'))
+    expect(pending).to eq(ann => c.messages.last.position, joe => position)
+
+    expect(claim.partition_key).to eq(joe)
+    expect(pending[ann]).to be_nil
+  end
+
+  it 'marks what is pending when a group without a stored rule (an upgraded database) registers' do
+    store.append(joined('Physics', 'ann'))
+    position = store.append(joined('Algebra', 'joe'))
+    expect(claim.tap { ack(_1) }.partition_key).to eq(ann)
+    db[:sourced_offsets].update(next_position: nil)
+    db[:sourced_consumer_groups].update(claim_digest: nil)
+
+    described_class.new(db).register_consumer_group(group_id, selector)
+
+    expect(pending).to eq(joe => position, ann => nil)
   end
 
   it 'releasing a claim keeps it' do

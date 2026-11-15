@@ -242,6 +242,17 @@ RSpec.describe Sourced::StaleClaimReaper do
       expect(logger).to have_received(:info).with('Sourced::StaleClaimReaper: stopped')
     end
 
+    it "takes back consumer groups another deploy's registration replaced, on every tick" do
+      reaper = described_class.new(store: store, interval: 0.01, ttl_seconds: 120, logger: logger)
+      expect(store).to receive(:reclaim_consumer_groups).at_least(:twice).and_return(['some.group'], [])
+      allow(logger).to receive(:warn)
+
+      reaper.start(Async::Task.current)
+      sleep 0.05
+      expect(reaper.stop).to be(true)
+      expect(logger).to have_received(:warn).with(/took back consumer groups some\.group/).once
+    end
+
     it 'refreshes planner statistics on every tick' do
       reaper = described_class.new(
         store: store,

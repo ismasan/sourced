@@ -53,14 +53,12 @@ module Sourced
     # Resume a stopped or failed group, or a retrying one without waiting.
     def start
       move!(ConsumerGroupMachine::Start)
-      # Mark the scan latch dirty (0) so the group rescans on resume.
-      @columns[:last_nil_types_max_pos] = 0
     end
 
     # Reset a stopped or failed group's discovery; the store rewinds its offsets.
     def reset
       move!(ConsumerGroupMachine::Reset)
-      @columns.merge!(discovery_position: 0, last_nil_types_max_pos: 0)
+      @columns[:discovery_position] = 0
     end
 
     # Try the group again at +time+, recording +exception+ and the claim that failed.

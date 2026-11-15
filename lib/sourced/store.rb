@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'digest'
 require 'set'
 require 'sourced/inline_notifier'
 require 'sourced/installer'
@@ -129,6 +130,21 @@ module Sourced
     # Groups {#claim_next} claims from.
     CLAIMABLE = [ACTIVE, RETRYING].freeze
     DISCOVERY_BATCH_SIZE = 100
+    # Partitions one claim_next tries past false positives (marks with
+    # nothing pending) before giving up until the next one.
+    EMPTY_CLAIMS_LIMIT = 100
+
+    # How a group's pending messages are found: the types it claims and its
+    # partition keys, both sorted. +digest+ identifies the rule on the group's
+    # row (+claim_digest+): claims and recomputes run only under the rule the
+    # group was last registered with.
+    ClaimRule = Data.define(:types, :partition_by, :digest) do
+      def self.for(types, partition_by)
+        types = types.to_a.sort.freeze
+        partition_by = partition_by.sort.freeze
+        new(types:, partition_by:, digest: Digest::SHA256.hexdigest(JSON.dump([types, partition_by]))[0, 32])
+      end
+    end
 
     # @return [Sequel::SQLite::Database]
     attr_reader :db
@@ -186,9 +202,12 @@ module Sourced
       # { group_id => { cg_id: Integer, partition_by: Array<String> | nil } }
       @registered_groups = {}
 
-      # How each group's pending messages are found: { group_id => [types, partition_by] },
+      # How each group's pending messages are found: { group_id => ClaimRule },
       # from register_consumer_group and claim_next (see #next_position_after).
       @pending_rules = {}
+
+      # Groups claim_next found registered with another rule, logged once each.
+      @foreign_rule_groups = Set.new
 
       # How each message type should be indexed, derived from its consuming
       # group's partitioning. { type_string => :id }. Types absent here default
@@ -568,12 +587,18 @@ module Sourced
     def register_consumer_group(group_id, selector = nil, label: nil, exclusive: false)
       partition_by_sorted = selector && !selector.none? ? claim_keys(selector) : nil
       partition_by_json = partition_by_sorted ? JSON.dump(partition_by_sorted) : nil
+      rule = partition_by_sorted && ClaimRule.for(selector.type_names, partition_by_sorted)
       now = Time.now.iso8601
-      db.run(<<~SQL)
-        INSERT INTO #{@consumer_groups_table} (group_id, label, status, partition_by, created_at, updated_at)
-        VALUES (#{db.literal(group_id)}, #{db.literal(label)}, '#{ACTIVE}', #{db.literal(partition_by_json)}, #{db.literal(now)}, #{db.literal(now)})
-        ON CONFLICT(group_id) DO UPDATE SET label = #{db.literal(label)}, partition_by = #{db.literal(partition_by_json)}, updated_at = #{db.literal(now)}
-      SQL
+      db.transaction(mode: :immediate) do
+        previous = db[@consumer_groups_table].where(group_id: group_id).select(:id, :claim_digest).first
+        db.run(<<~SQL)
+          INSERT INTO #{@consumer_groups_table} (group_id, label, status, partition_by, claim_digest, created_at, updated_at)
+          VALUES (#{db.literal(group_id)}, #{db.literal(label)}, '#{ACTIVE}', #{db.literal(partition_by_json)}, #{db.literal(rule&.digest)}, #{db.literal(now)}, #{db.literal(now)})
+          ON CONFLICT(group_id) DO UPDATE SET label = #{db.literal(label)}, partition_by = #{db.literal(partition_by_json)},
+            claim_digest = #{db.literal(rule&.digest)}, updated_at = #{db.literal(now)}
+        SQL
+        mark_pending_under(previous[:id], rule) if rule && previous && previous[:claim_digest] != rule.digest
+      end
 
       # id-partitioned groups (reserved "__id" key) must have their message types
       # indexed by id so they are claimable regardless of which code path appends
@@ -585,9 +610,9 @@ module Sourced
       cg = db[@consumer_groups_table].where(group_id: group_id).first
       @registered_groups[group_id] = {
         cg_id: cg[:id], partition_by: partition_by_sorted, exclusive: exclusive, id_partitioned:,
-        types: selector ? selector.type_names.to_set.freeze : Set.new.freeze
+        types: selector ? selector.type_names.to_set.freeze : Set.new.freeze, rule:
       }
-      record_pending_rule(group_id, selector.type_names, partition_by_sorted) if partition_by_sorted
+      @pending_rules[group_id] = rule if rule
     end
 
     # Whether the consumer group exists and workers claim it: it's active or
@@ -718,9 +743,7 @@ module Sourced
       return nil if selector.none?
 
       partition_by = claim_keys(selector)
-      handled_types = selector.type_names
-      record_pending_rule(group_id, handled_types, partition_by)
-      now = Time.now.iso8601
+      rule = (@pending_rules[group_id] = ClaimRule.for(selector.type_names, partition_by))
       cg = db[@consumer_groups_table]
         .where(group_id: group_id, status: CLAIMABLE)
         # retry_at is UTC (see GroupUpdater#updates): ISO 8601 strings compare
@@ -736,34 +759,39 @@ module Sourced
               "not #{partition_by.inspect}: register it with the selector it claims"
       end
 
-      # `last_nil_types_max_pos` is a sign-encoded scan version, kept by the
-      # triggers installed with the schema (see the migration template): >= 0
-      # means claimable work may have changed since the last empty scan, < 0
-      # means an empty scan completed at version -value and nothing has changed
-      # since, so an idle poll is O(1) instead of a scan over every unclaimed
-      # offset. The triggers bump it on any message insert or claim release, from
-      # any process, for every group registered with partition keys.
-      scan_version = cg[:last_nil_types_max_pos]
-      return nil if scan_version.negative?
-
-      claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
-      unless claimed
-        discover_new_partitions(cg[:id], partition_by, handled_types)
-        claimed = find_and_claim_partition(cg[:id], partition_by, handled_types, worker_id)
-      end
-
-      unless claimed
-        # Latch clean via compare-and-set: only if the version is unchanged
-        # since we read it before scanning. A concurrent trigger bump during
-        # the scan (new message, released claim) makes the WHERE miss, so the
-        # group stays dirty and the next poll rescans. Versions are strictly
-        # monotonic (abs + 1), so a stale read can never alias a newer state.
-        db[@consumer_groups_table]
-          .where(id: cg[:id], last_nil_types_max_pos: scan_version)
-          .update(last_nil_types_max_pos: -(scan_version + 1))
+      # The latest registration owns the group: a worker whose reactor claims
+      # other types (an older or newer deploy) leaves it to that one's workers.
+      unless cg[:claim_digest] == rule.digest
+        if @foreign_rule_groups.add?(group_id)
+          logger.warn "Sourced: not claiming consumer group #{group_id}: it's registered with other message types " \
+                      'or partition keys (by another deploy?)'
+        end
         return nil
       end
+      @foreign_rule_groups.delete(group_id)
 
+      # A claim that reads nothing (a false positive) clears its mark and
+      # tries the next partition, so false positives don't hold real work up.
+      discovered = false
+      EMPTY_CLAIMS_LIMIT.times do
+        claimed = find_and_claim_partition(cg[:id], worker_id)
+        unless claimed || discovered
+          discovered = true
+          discover_new_partitions(cg[:id], rule)
+          claimed = find_and_claim_partition(cg[:id], worker_id)
+        end
+        return nil unless claimed
+
+        result = read_claim(group_id, cg, claimed, selector, batch_size)
+        return result if result
+      end
+      nil
+    end
+
+    # Read a claimed partition's batch into a {ClaimResult}, or, when nothing
+    # is pending after all, recompute its +next_position+, release it and
+    # return nil.
+    def read_claim(group_id, cg, claimed, selector, batch_size)
       key_pairs = db[@key_pairs_table]
         .where(id: db[@offset_key_pairs_table].where(offset_id: claimed[:offset_id]).select(:key_pair_id))
         .select_map(%i[id name value])
@@ -779,8 +807,6 @@ module Sourced
         messages = messages.take_while { |m| m.position <= replay_until }
       end
 
-      # Nothing pending after all (next_position was a false positive):
-      # recompute it and release.
       if messages.empty?
         db[@offsets_table].where(id: claimed[:offset_id], version: claimed[:version]).update(
           next_position: next_position_after(group_id, claimed[:last_position]),
@@ -793,11 +819,8 @@ module Sourced
 
       # The guard covers the selector's types, so types not yet seen are
       # conflicts too. An id partition holds one message: nothing to guard.
-      last_pos = messages.last.position
       guard_selector = selector.id_partitioned? ? Selector::NONE : selector
-      guard = ConsistencyGuard.new(selector: guard_selector, last_position: last_pos)
-
-      replaying = messages.last.position <= replay_until
+      guard = ConsistencyGuard.new(selector: guard_selector, last_position: messages.last.position)
 
       ClaimResult.new(
         offset_id: claimed[:offset_id],
@@ -806,7 +829,7 @@ module Sourced
         partition_key: claimed[:partition_key],
         partition_value: partition_value,
         messages: messages,
-        replaying: replaying,
+        replaying: messages.last.position <= replay_until,
         guard: guard,
         retrying: retrying_claim?(cg, claimed[:offset_id])
       )
@@ -954,6 +977,31 @@ module Sourced
         .where(claimed: 1)
         .where(claimed_by: stale_worker_ids)
         .update(claimed: 0, claimed_at: nil, claimed_by: nil)
+    end
+
+    # Re-register the rule of each group this store registered, where the
+    # group's row has another (another deploy registered it since): the latest
+    # registration owns a group (see {#claim_next}), so a deploy whose
+    # workers are still running takes back a group that a process since gone
+    # registered. While two deploys run, the group passes between them.
+    # {StaleClaimReaper} calls it on every tick, where workers run.
+    #
+    # @return [Array<String>] the group ids taken back
+    def reclaim_consumer_groups
+      @registered_groups.filter_map do |group_id, group|
+        rule = group[:rule] or next
+
+        db.transaction(mode: :immediate) do
+          row = db[@consumer_groups_table].where(group_id:).select(:id, :claim_digest).first
+          next if row.nil? || row[:claim_digest] == rule.digest
+
+          db[@consumer_groups_table].where(id: row[:id]).update(
+            claim_digest: rule.digest, partition_by: JSON.dump(rule.partition_by), updated_at: Time.now.iso8601
+          )
+          mark_pending_under(row[:id], rule)
+          group_id
+        end
+      end
     end
 
     # Delete drained partition offsets — offsets whose partition has no remaining
@@ -1352,10 +1400,11 @@ module Sourced
     # appended meanwhile is left for the next call rather than skipped.
     #
     # @param cg_id [Integer] consumer group internal ID
-    # @param partition_by [Array<String>] sorted attribute names
-    # @param handled_types [Array<String>] message type strings
+    # @param rule [ClaimRule] the group's types and partition keys
     # @return [void]
-    def discover_new_partitions(cg_id, partition_by, handled_types)
+    def discover_new_partitions(cg_id, rule)
+      partition_by = rule.partition_by
+      handled_types = rule.types
       cg = db[@consumer_groups_table].where(id: cg_id).first
       discovery_pos = cg[:discovery_position]
       upper = latest_position
@@ -1414,7 +1463,7 @@ module Sourced
             # INSERT OR IGNORE handles duplicates — no need to pre-filter.
             # At most DISCOVERY_BATCH_SIZE (100) tuples per call, so the
             # cost of re-attempting known offsets is bounded.
-            create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids, rule: [handled_types, partition_by])
+            create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids, rule:)
           end
         end
       end
@@ -1456,8 +1505,8 @@ module Sourced
     # @param partition_by [Array<String>] sorted attribute names
     # @param values [Hash{String => String}] attribute values keyed by name
     # @param kp_ids [Array<Integer>] key_pair IDs
-    # @param rule [Array(Array<String>, Array<String>), nil] the group's types and
-    #   partition keys: set +next_position+ on an offset without one. Appends
+    # @param rule [ClaimRule, nil] the group's: set +next_position+ on an offset
+    #   without one. Appends
     #   mark the offsets they create themselves.
     # @return [Integer] offset ID
     def create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids, rule: nil)
@@ -1543,53 +1592,58 @@ module Sourced
     # pending message's position, or NULL. Evaluated by the UPDATE, under the
     # write lock, so a message appended since the claim was read is seen.
     #
-    # Without the group's types (a group neither registered nor claimed by this
-    # store), +after+ itself: pending, position unknown. A claim resolves it.
+    # Only under the rule the group is registered with: otherwise (this
+    # store's rule is another deploy's, or it has none) +after+ itself,
+    # pending at an unknown position, which a claim under the group's rule
+    # resolves.
     #
     # @param group_id [String]
     # @param after [Integer, Sequel::SQL::Expression]
     # @return [Sequel::LiteralString, Integer, Sequel::SQL::Expression]
     def next_position_after(group_id, after)
       rule = @pending_rules[group_id]
-      rule ? pending_position_sql(rule, db.literal(after)) : after
+      return after unless rule
+
+      after = db.literal(after)
+      Sequel.lit(<<~SQL.chomp)
+        CASE WHEN (SELECT claim_digest FROM #{@consumer_groups_table} cg WHERE cg.id = #{@offsets_table}.consumer_group_id) = #{db.literal(rule.digest)}
+        THEN #{db.literal(pending_position_sql(rule, after))} ELSE #{after} END
+      SQL
     end
 
-    # @param rule [Array(Array<String>, Array<String>)] types and partition keys
+    # Mark a group's unmarked offsets with what's pending under +rule+, a
+    # rule the group just took (ex. with a type it didn't claim): messages of
+    # new types already in the log included.
+    def mark_pending_under(cg_id, rule)
+      db[@offsets_table].where(consumer_group_id: cg_id, next_position: nil)
+        .update(next_position: pending_position_sql(rule, "#{@offsets_table}.last_position"))
+    end
+
+    # @param rule [ClaimRule]
     # @param after [String] SQL for the position
     # @return [Sequel::LiteralString] the first pending message's position for
     #   the offsets row being updated, or NULL
     def pending_position_sql(rule, after)
-      Sequel.lit("(SELECT MIN(mkp.message_position) #{pending_messages_sql("#{@offsets_table}.id", after, *rule)})")
+      Sequel.lit(
+        "(SELECT MIN(mkp.message_position) " \
+        "#{pending_messages_sql("#{@offsets_table}.id", after, rule.types, rule.partition_by)})"
+      )
     end
 
-    # Remember how +group_id+'s pending messages are found, for
-    # {#next_position_after}.
-    def record_pending_rule(group_id, types, partition_by)
-      return if partition_by.nil? || partition_by.empty?
-
-      @pending_rules[group_id] = [types.to_a.sort.freeze, partition_by.sort.freeze].freeze
-    end
-
-    # Find the next unclaimed partition with pending messages and claim it.
-    # Pending is the partition rule the claim then reads with (see
-    # {#partition_filter_sql}).
+    # Claim the unclaimed partition with the earliest pending message
+    # (+next_position+), one probe of the partial pending index.
     #
     # @param cg_id [Integer] consumer group internal ID
-    # @param partition_by [Array<String>]
-    # @param handled_types [Array<String>]
     # @param worker_id [String] claiming worker identifier
     # @return [Hash, nil] +{ offset_id:, partition_key:, last_position:, replay_until:, version: }+ or nil
-    def find_and_claim_partition(cg_id, partition_by, handled_types, worker_id)
-      # The lowest-last_position unclaimed offset with a pending message, all
-      # index-backed: message_key_pairs(key_pair_id, message_position) and the
-      # message_key_pairs, key_pairs and offset_key_pairs PKs.
+    def find_and_claim_partition(cg_id, worker_id)
       offset = db.fetch(<<~SQL).first
-        SELECT o.id, o.partition_key, o.last_position, o.replay_until, o.version
-        FROM #{@offsets_table} o
-        WHERE o.consumer_group_id = #{db.literal(cg_id)}
-          AND o.claimed = 0
-          AND EXISTS (SELECT 1 #{pending_messages_sql('o.id', 'o.last_position', handled_types, partition_by)})
-        ORDER BY o.last_position
+        SELECT id, partition_key, last_position, replay_until, version
+        FROM #{@offsets_table}
+        WHERE consumer_group_id = #{db.literal(cg_id)}
+          AND claimed = 0
+          AND next_position IS NOT NULL
+        ORDER BY next_position
         LIMIT 1
       SQL
 
