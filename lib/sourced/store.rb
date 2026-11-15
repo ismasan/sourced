@@ -137,7 +137,7 @@ module Sourced
     # How a group's pending messages are found: the types it claims and its
     # partition keys, both sorted. +digest+ identifies the rule on the group's
     # row (+claim_digest+): claims and recomputes run only under the rule the
-    # group was last registered with.
+    # group's row has (see {#reclaim_consumer_groups}).
     ClaimRule = Data.define(:types, :partition_by, :digest) do
       def self.for(types, partition_by)
         types = types.to_a.sort.freeze
@@ -595,9 +595,11 @@ module Sourced
           INSERT INTO #{@consumer_groups_table} (group_id, label, status, partition_by, claim_digest, created_at, updated_at)
           VALUES (#{db.literal(group_id)}, #{db.literal(label)}, '#{ACTIVE}', #{db.literal(partition_by_json)}, #{db.literal(rule&.digest)}, #{db.literal(now)}, #{db.literal(now)})
           ON CONFLICT(group_id) DO UPDATE SET label = #{db.literal(label)}, partition_by = #{db.literal(partition_by_json)},
-            claim_digest = #{db.literal(rule&.digest)}, updated_at = #{db.literal(now)}
+            claim_digest = COALESCE(claim_digest, #{db.literal(rule&.digest)}), updated_at = #{db.literal(now)}
         SQL
-        mark_pending_under(previous[:id], rule) if rule && previous && previous[:claim_digest] != rule.digest
+        # A rule for a group that had none (an upgraded database): mark what's
+        # pending under it.
+        mark_pending_under(previous[:id], rule) if rule && previous && previous[:claim_digest].nil?
       end
 
       # id-partitioned groups (reserved "__id" key) must have their message types
@@ -759,12 +761,12 @@ module Sourced
               "not #{partition_by.inspect}: register it with the selector it claims"
       end
 
-      # The latest registration owns the group: a worker whose reactor claims
-      # other types (an older or newer deploy) leaves it to that one's workers.
+      # A worker whose reactor claims other types than the group's row (an
+      # older or newer deploy) leaves the group to that deploy's workers.
       unless cg[:claim_digest] == rule.digest
         if @foreign_rule_groups.add?(group_id)
-          logger.warn "Sourced: not claiming consumer group #{group_id}: it's registered with other message types " \
-                      'or partition keys (by another deploy?)'
+          logger.warn "Sourced: not claiming consumer group #{group_id}: it runs under other message types " \
+                      "or partition keys (another deploy's workers?)"
         end
         return nil
       end
@@ -979,14 +981,16 @@ module Sourced
         .update(claimed: 0, claimed_at: nil, claimed_by: nil)
     end
 
-    # Re-register the rule of each group this store registered, where the
-    # group's row has another (another deploy registered it since): the latest
-    # registration owns a group (see {#claim_next}), so a deploy whose
-    # workers are still running takes back a group that a process since gone
-    # registered. While two deploys run, the group passes between them.
-    # {StaleClaimReaper} calls it on every tick, where workers run.
+    # Take each group this store registered under its rule, where the
+    # group's row has another, and mark what's pending under it (ex. messages
+    # of a type the group didn't claim, already in the log). The row's rule
+    # is the one claims and recomputes run under (see {#claim_next}).
+    # Registration sets a rule only on a group without one, so a rule
+    # changes hands here: {StaleClaimReaper} calls it on its first tick and
+    # every tick after, where workers run. While two deploys' workers run,
+    # the group passes between them.
     #
-    # @return [Array<String>] the group ids taken back
+    # @return [Array<String>] the group ids taken
     def reclaim_consumer_groups
       @registered_groups.filter_map do |group_id, group|
         rule = group[:rule] or next
@@ -1341,27 +1345,41 @@ module Sourced
     end
 
     # Set +next_position+ on the offsets of one group that appended messages
-    # are in, where it isn't set: a message of the group's types is in every
-    # partition whose offset has all the partition key pairs it carries (one
-    # offset when it carries every key, each partition sharing them when it
-    # carries some). One UPDATE per distinct set of key pairs, at its first
-    # position. Positions only grow, so a set +next_position+ is already
-    # at or before the message. The unary + keeps consumer_group_id off the
-    # offsets indexes, so SQLite looks offsets up by id from the
-    # offset_key_pairs(key_pair_id, offset_id) subquery instead of walking
-    # every offset of the group.
+    # are in, where it isn't set, at each one's first position (positions
+    # only grow, so a set +next_position+ is already at or before the
+    # message). A message carrying every partition key is in one partition,
+    # marked by its partition key (the offsets' unique index), in chunks. One
+    # carrying some is in every partition whose offset has the key pairs it
+    # carries: one UPDATE per distinct set of them, where the unary + keeps
+    # consumer_group_id off the offsets indexes, so SQLite looks offsets up by
+    # id from the offset_key_pairs(key_pair_id, offset_id) subquery instead of
+    # walking every offset of the group.
     #
     # @param kp_id_cache [Hash{String => Integer}] +"name:value"+ => key pair id
     # @return [void]
     def mark_pending(cg_id, partition_by, group_types, types, indexed_keys, positions, kp_id_cache)
+      first_by_key = {}
       first_by_pairs = {}
       indexed_keys.each_with_index do |pairs, i|
         next unless group_types.include?(types[i])
 
-        kp_ids = pairs.filter_map { |name, value| kp_id_cache["#{name}:#{value}"] if partition_by.include?(name) }
-        next if kp_ids.empty?
+        values = pairs.to_h.slice(*partition_by)
+        if values.size == partition_by.size
+          first_by_key[build_partition_key(partition_by, values)] ||= positions[i]
+        elsif values.any?
+          kp_ids = values.map { |name, value| kp_id_cache["#{name}:#{value}"] }.compact
+          first_by_pairs[kp_ids.sort] ||= positions[i] if kp_ids.any?
+        end
+      end
 
-        first_by_pairs[kp_ids.uniq.sort] ||= positions[i]
+      first_by_key.each_slice(500) do |slice|
+        cases = slice.map { |key, position| "WHEN #{db.literal(key)} THEN #{db.literal(position)}" }.join(' ')
+        db.run(<<~SQL)
+          UPDATE #{@offsets_table} SET next_position = CASE partition_key #{cases} END
+          WHERE consumer_group_id = #{db.literal(cg_id)}
+            AND partition_key IN (#{slice.map { |key, _| db.literal(key) }.join(', ')})
+            AND next_position IS NULL
+        SQL
       end
 
       first_by_pairs.each do |kp_ids, position|

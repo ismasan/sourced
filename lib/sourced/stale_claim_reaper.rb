@@ -62,7 +62,7 @@ module Sourced
       logger.info "Sourced::StaleClaimReaper: pruned #{pruned} orphan key_pairs" if pruned && pruned > 0
 
       reclaimed = @store.reclaim_consumer_groups
-      logger.warn "Sourced::StaleClaimReaper: took back consumer groups #{reclaimed.join(', ')} from another deploy's registration" if reclaimed.any?
+      logger.warn "Sourced::StaleClaimReaper: took consumer groups #{reclaimed.join(', ')} under this process's message types" if reclaimed.any?
 
       @store.optimize! # planner statistics, where tables are new or grew
     end
