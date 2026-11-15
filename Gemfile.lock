@@ -11,7 +11,7 @@ PATH
   specs:
     sourced (0.0.1)
       async
-      plumb (= 0.4.0)
+      plumb (>= 0.4.1)
       sequel
       sourced-component (~> 0.1, >= 0.1.1)
       sourced-message (>= 0.5.3)
@@ -64,7 +64,7 @@ GEM
     parser (3.3.7.1)
       ast (~> 2.4.1)
       racc
-    plumb (0.4.0)
+    plumb (0.4.1)
       bigdecimal
       concurrent-ruby
     psych (5.1.2)
