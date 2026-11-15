@@ -1768,6 +1768,7 @@ Each offset in the result is a Hash with:
 | `:group_status`  | `String`      | `"active"`, `"stopped"`, or `"failed"`               |
 | `:partition_key` | `String`      | Partition identifier (e.g. `"device_id:dev-1"`)      |
 | `:last_position` | `Integer`     | Highest acked position for this partition             |
+| `:next_position` | `Integer`, `nil`| Position of a message pending for this partition, `nil` when none is |
 | `:claimed`       | `Boolean`     | Whether a worker currently holds this partition       |
 | `:claimed_at`    | `String`, `nil`| ISO8601 timestamp of the claim                      |
 | `:claimed_by`    | `String`, `nil`| Worker ID holding the claim                         |
@@ -2214,7 +2215,7 @@ Two things the codec does not reach:
 
 The migration creates the tables and indexes, and sets the database to `journal_mode = WAL`: a property of the file, so once is enough, and it runs outside a transaction (SQLite can't change the journal mode inside one; every statement is idempotent, so a half-applied run is re-run). `Store#install!` applies the same migration directly, for scripts, tests and quick prototyping. Per-connection settings are the connection's: Sequel's SQLite adapter enables foreign keys and a 5s busy timeout on each connection it opens, configurable with `Sequel.sqlite(path, foreign_keys:, timeout:)`. On start, Sourced has the connections wait for a locked database by sleeping in Ruby between retries (`Sourced::Store::BusyHandler`), so a fiber waiting for a lock another process holds yields to the scheduler instead of blocking every fiber on its thread. A wait that still times out raises `Sourced::Store::BusyError`; workers release the claim they were processing and retry it later.
 
-When Sourced starts, the `store` component checks the tables are there, raising `Store::NotInstalledError` if not, and compiles the message codec. Planner statistics (`ANALYZE`) are refreshed by the stale claim reaper, on its first tick and hourly. By default, booting Sourced doesn't create tables. Set `store.install_tables` for environments without migrations, ex. an in-memory database in tests, and the store installs them on start, before setting up:
+When Sourced starts, the `store` component checks the tables are there, raising `Store::NotInstalledError` if not, and compiles the message codec. Planner statistics are refreshed by the stale claim reaper on every tick, with `PRAGMA optimize`, which analyzes only the tables that are new or have grown a lot since. By default, booting Sourced doesn't create tables. Set `store.install_tables` for environments without migrations, ex. an in-memory database in tests, and the store installs them on start, before setting up:
 
 ```ruby
 Sourced.config.config!('store.install_tables') { true }
@@ -2251,6 +2252,25 @@ Then run your migrations as usual:
 ```bash
 sequel -m db/migrations sqlite://my_app.db
 ```
+
+#### Upgrading an installed database
+
+The migration template creates the current schema. A database installed from an earlier copy of it needs these statements (with your table prefix in place of `sourced_`):
+
+```sql
+-- offsets.version (stale acks are no-ops)
+ALTER TABLE sourced_offsets ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+
+-- offsets.next_position (pending work per partition)
+ALTER TABLE sourced_offsets ADD COLUMN next_position INTEGER;
+CREATE INDEX idx_sourced_ccc_offsets_cg_pending
+  ON sourced_offsets (consumer_group_id, claimed, next_position)
+  WHERE next_position IS NOT NULL;
+CREATE INDEX idx_sourced_ccc_okp_key_pair ON sourced_offset_key_pairs (key_pair_id, offset_id);
+UPDATE sourced_offsets SET next_position = 0;
+```
+
+The last statement marks every partition pending once: a pending mark may be a false positive, never a miss.
 
 #### Custom table prefix
 

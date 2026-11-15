@@ -75,6 +75,10 @@ Sequel.migration do
       # Bumped by every claim and by reset: acks and releases match it, so a
       # claim that was reaped, re-claimed or reset can't move the cursor.
       Integer :version, null: false, default: 0
+      # A pending message's position, or NULL when the partition has none
+      # pending: claims find work through it (see Store#claim_next). Marked
+      # by appends, recomputed by acks and empty claims.
+      Integer :next_position
       Integer :claimed, null: false, default: 0
       String :claimed_at
       String :claimed_by
@@ -83,12 +87,16 @@ Sequel.migration do
       # Claims walk a group's unclaimed offsets in last_position order and stop
       # at the first with pending work (Store#find_and_claim_partition).
       index %i[consumer_group_id claimed last_position], name: 'idx_<%= prefix %>_ccc_offsets_cg_claimed_pos'
+      index %i[consumer_group_id claimed next_position], name: 'idx_<%= prefix %>_ccc_offsets_cg_pending',
+                                                        where: Sequel.lit('next_position IS NOT NULL')
     end
 
     create_table?(:<%= offset_key_pairs_table %>) do
       foreign_key :offset_id, :<%= offsets_table %>, on_delete: :cascade
       foreign_key :key_pair_id, :<%= key_pairs_table %>
       primary_key %i[offset_id key_pair_id]
+      # Appends find the offsets a message is in by its key pairs.
+      index %i[key_pair_id offset_id], name: 'idx_<%= prefix %>_ccc_okp_key_pair'
     end
 
     create_table?(:<%= workers_table %>) do

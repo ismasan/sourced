@@ -242,15 +242,14 @@ RSpec.describe Sourced::StaleClaimReaper do
       expect(logger).to have_received(:info).with('Sourced::StaleClaimReaper: stopped')
     end
 
-    it 'refreshes planner statistics on its first tick, then only every optimize_interval' do
+    it 'refreshes planner statistics on every tick' do
       reaper = described_class.new(
         store: store,
         interval: 0.01,
         ttl_seconds: 120,
-        optimize_interval: 3600,
         logger: logger
       )
-      expect(store).to receive(:optimize!).once.and_call_original
+      expect(store).to receive(:optimize!).at_least(:twice).and_call_original
 
       reaper.start(Async::Task.current)
       sleep 0.05

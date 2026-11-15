@@ -186,6 +186,10 @@ module Sourced
       # { group_id => { cg_id: Integer, partition_by: Array<String> | nil } }
       @registered_groups = {}
 
+      # How each group's pending messages are found: { group_id => [types, partition_by] },
+      # from register_consumer_group and claim_next (see #next_position_after).
+      @pending_rules = {}
+
       # How each message type should be indexed, derived from its consuming
       # group's partitioning. { type_string => :id }. Types absent here default
       # to :payload. Populated by register_consumer_group.
@@ -268,27 +272,19 @@ module Sourced
       true
     end
 
-    # Refresh SQLite planner statistics (sqlite_stat1) with a bounded ANALYZE.
+    # Refresh SQLite planner statistics (sqlite_stat1) where they're missing or
+    # stale: `PRAGMA optimize` analyzes the tables never analyzed, and those whose
+    # row counts changed by a large factor since, with a bounded row sample
+    # (0x10002: every table, not just those this connection queried). A no-op
+    # when little changed, so {StaleClaimReaper} runs it every tick.
     #
-    # Without statistics the planner guesses, and for {#find_and_claim_partition}
-    # it guesses wrong: it drives the pending-work EXISTS from the low-selectivity
-    # message_type index, degrading an idle scan to ~O(offsets × messages) — in
-    # practice a hang on large stores. With statistics it picks the key_pair-first
-    # plan, which is fully index-backed.
-    #
-    # `analysis_limit` caps rows scanned per index, making this cheap enough to run
-    # at boot ({#install!}) and periodically ({StaleClaimReaper}) — the approximate
-    # stats it produces are ample for the planner's join-order choice. Both
-    # statements are pinned to one pooled connection: analysis_limit is
-    # per-connection, so running them on separate connections would leave the
-    # ANALYZE unbounded.
+    # Claims and pending-work recomputes don't depend on statistics (see
+    # {#pending_messages_sql}); other reads, ex. history and guards, are planned
+    # by SQLite from them.
     #
     # @return [void]
     def optimize!
-      db.synchronize do |conn|
-        conn.execute('PRAGMA analysis_limit = 400')
-        conn.execute('ANALYZE')
-      end
+      db.run('PRAGMA optimize=0x10002')
     end
 
     # Drop all tables. Test-only guard.
@@ -355,6 +351,7 @@ module Sourced
       indexed_keys = to_append.map { |msg| effective_keys(msg, index_by) }
 
       last_position = nil
+      positions = []
 
       # #transaction is IMMEDIATE: this reads (the guard conflict check) before
       # it writes (the inserts), which under WAL would otherwise risk
@@ -389,6 +386,7 @@ module Sourced
               tags: tags_json,
               created_at: msg.created_at.iso8601(6)
             )
+            positions << last_position
 
             # Upsert key pairs and link to message in 2 statements (was 3):
             # 1. INSERT OR IGNORE the key_pair
@@ -404,9 +402,9 @@ module Sourced
             end
           end
 
-          # Only immediate messages advance offsets; scheduled ones get offsets
+          # Only immediate messages create and mark offsets; scheduled ones do
           # when promoted (re-appended) by #update_schedule!.
-          ensure_offsets_for_registered_groups(to_append.map(&:type), indexed_keys)
+          ensure_offsets_for_registered_groups(to_append.map(&:type), indexed_keys, positions)
         end
 
         # Announce once the messages are visible: after the *outermost*
@@ -589,6 +587,7 @@ module Sourced
         cg_id: cg[:id], partition_by: partition_by_sorted, exclusive: exclusive, id_partitioned:,
         types: selector ? selector.type_names.to_set.freeze : Set.new.freeze
       }
+      record_pending_rule(group_id, selector.type_names, partition_by_sorted) if partition_by_sorted
     end
 
     # Whether the consumer group exists and workers claim it: it's active or
@@ -683,6 +682,8 @@ module Sourced
         db[@offsets_table].where(consumer_group_id: cg[:id]).update(
           replay_until: Sequel.function(:max, :replay_until, :last_position),
           last_position: 0,
+          # Pending again from the start: a claim reads from 0 either way.
+          next_position: Sequel.case({ Sequel[:last_position] > 0 => 0 }, :next_position),
           version: Sequel[:version] + 1,
           claimed: 0,
           claimed_at: nil,
@@ -718,6 +719,7 @@ module Sourced
 
       partition_by = claim_keys(selector)
       handled_types = selector.type_names
+      record_pending_rule(group_id, handled_types, partition_by)
       now = Time.now.iso8601
       cg = db[@consumer_groups_table]
         .where(group_id: group_id, status: CLAIMABLE)
@@ -777,9 +779,15 @@ module Sourced
         messages = messages.take_while { |m| m.position <= replay_until }
       end
 
-      # If no messages pass the conditional AND filter, release and return nil
+      # Nothing pending after all (next_position was a false positive):
+      # recompute it and release.
       if messages.empty?
-        release(group_id, offset_id: claimed[:offset_id], version: claimed[:version])
+        db[@offsets_table].where(id: claimed[:offset_id], version: claimed[:version]).update(
+          next_position: next_position_after(group_id, claimed[:last_position]),
+          claimed: 0,
+          claimed_at: nil,
+          claimed_by: nil
+        )
         return nil
       end
 
@@ -825,6 +833,7 @@ module Sourced
 
       db[@offsets_table].where(id: offset_id, version:, consumer_group_id: cg[:id]).update(
         last_position: position,
+        next_position: next_position_after(group_id, position),
         claimed: 0,
         claimed_at: nil,
         claimed_by: nil
@@ -857,6 +866,7 @@ module Sourced
 
       acked = db[@offsets_table].where(id: offset_id, version:, consumer_group_id: cg[:id]).update(
         last_position: positions.max,
+        next_position: next_position_after(group_id, positions.max),
         claimed: 0,
         claimed_at: nil,
         claimed_by: nil
@@ -1021,14 +1031,17 @@ module Sourced
       cg = db[@consumer_groups_table].where(group_id: group_id).first
       return false unless cg
 
-      offset_id = ensure_offset_for_partition(cg[:id], partition)
+      offset_id = ensure_offset_for_partition(cg[:id], partition, group_id:)
       return true unless offset_id
 
       offset = db[@offsets_table].where(id: offset_id).first
       return true if offset[:last_position] >= position
       return true if pending && !caught_up?(offset, pending.bind(**partition.transform_keys(&:to_sym)), position)
 
-      db[@offsets_table].where(id: offset_id).update(last_position: position)
+      db[@offsets_table].where(id: offset_id).update(
+        last_position: position,
+        next_position: next_position_after(group_id, position)
+      )
       true
     end
 
@@ -1101,6 +1114,7 @@ module Sourced
           Sequel[@consumer_groups_table][:status].as(:group_status),
           Sequel[@offsets_table][:partition_key],
           Sequel[@offsets_table][:last_position],
+          Sequel[@offsets_table][:next_position],
           Sequel[@offsets_table][:claimed],
           Sequel[@offsets_table][:claimed_at],
           Sequel[@offsets_table][:claimed_by]
@@ -1224,7 +1238,7 @@ module Sourced
     # @param indexed_keys [Array<Array<Array(String, String)>>] each appended
     #   message's {#effective_keys}, as indexed
     # @return [void]
-    def ensure_offsets_for_registered_groups(types, indexed_keys)
+    def ensure_offsets_for_registered_groups(types, indexed_keys, positions)
       return if @registered_groups.empty?
 
       # Collect partition attribute names across eagerly-offset groups.
@@ -1273,6 +1287,47 @@ module Sourced
 
           create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids)
         end
+
+        mark_pending(cg_id, partition_by, group_types, types, indexed_keys, positions, kp_id_cache)
+      end
+    end
+
+    # Set +next_position+ on the offsets of one group that appended messages
+    # are in, where it isn't set: a message of the group's types is in every
+    # partition whose offset has all the partition key pairs it carries (one
+    # offset when it carries every key, each partition sharing them when it
+    # carries some). One UPDATE per distinct set of key pairs, at its first
+    # position. Positions only grow, so a set +next_position+ is already
+    # at or before the message. The unary + keeps consumer_group_id off the
+    # offsets indexes, so SQLite looks offsets up by id from the
+    # offset_key_pairs(key_pair_id, offset_id) subquery instead of walking
+    # every offset of the group.
+    #
+    # @param kp_id_cache [Hash{String => Integer}] +"name:value"+ => key pair id
+    # @return [void]
+    def mark_pending(cg_id, partition_by, group_types, types, indexed_keys, positions, kp_id_cache)
+      first_by_pairs = {}
+      indexed_keys.each_with_index do |pairs, i|
+        next unless group_types.include?(types[i])
+
+        kp_ids = pairs.filter_map { |name, value| kp_id_cache["#{name}:#{value}"] if partition_by.include?(name) }
+        next if kp_ids.empty?
+
+        first_by_pairs[kp_ids.uniq.sort] ||= positions[i]
+      end
+
+      first_by_pairs.each do |kp_ids, position|
+        db.run(<<~SQL)
+          UPDATE #{@offsets_table} SET next_position = #{db.literal(position)}
+          WHERE +consumer_group_id = #{db.literal(cg_id)}
+            AND next_position IS NULL
+            AND id IN (
+              SELECT offset_id FROM #{@offset_key_pairs_table}
+              WHERE key_pair_id IN (#{kp_ids.map { |id| db.literal(id) }.join(', ')})
+              GROUP BY offset_id
+              HAVING COUNT(*) = #{kp_ids.size}
+            )
+        SQL
       end
     end
 
@@ -1359,7 +1414,7 @@ module Sourced
             # INSERT OR IGNORE handles duplicates — no need to pre-filter.
             # At most DISCOVERY_BATCH_SIZE (100) tuples per call, so the
             # cost of re-attempting known offsets is bounded.
-            create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids)
+            create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids, rule: [handled_types, partition_by])
           end
         end
       end
@@ -1382,7 +1437,7 @@ module Sourced
     # @param cg_id [Integer] consumer group internal ID
     # @param partition [Hash{String => String}] attribute names and values
     # @return [Integer, nil] offset ID, or nil if key_pairs not found
-    def ensure_offset_for_partition(cg_id, partition)
+    def ensure_offset_for_partition(cg_id, partition, group_id:)
       partition_by = partition.keys.sort
       kp_ids = []
       partition_by.each do |attr|
@@ -1392,7 +1447,7 @@ module Sourced
         kp_ids << kp[:id]
       end
 
-      create_offset_with_key_pairs(cg_id, partition_by, partition, kp_ids)
+      create_offset_with_key_pairs(cg_id, partition_by, partition, kp_ids, rule: @pending_rules[group_id])
     end
 
     # Create an offset row and its key_pair associations. Idempotent via INSERT OR IGNORE.
@@ -1401,8 +1456,11 @@ module Sourced
     # @param partition_by [Array<String>] sorted attribute names
     # @param values [Hash{String => String}] attribute values keyed by name
     # @param kp_ids [Array<Integer>] key_pair IDs
+    # @param rule [Array(Array<String>, Array<String>), nil] the group's types and
+    #   partition keys: set +next_position+ on an offset without one. Appends
+    #   mark the offsets they create themselves.
     # @return [Integer] offset ID
-    def create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids)
+    def create_offset_with_key_pairs(cg_id, partition_by, values, kp_ids, rule: nil)
       partition_key = build_partition_key(partition_by, values)
 
       db.run(<<~SQL)
@@ -1417,6 +1475,11 @@ module Sourced
           INSERT OR IGNORE INTO #{@offset_key_pairs_table} (offset_id, key_pair_id)
           VALUES (#{db.literal(offset_id)}, #{db.literal(kp_id)})
         SQL
+      end
+
+      if rule
+        db[@offsets_table].where(id: offset_id, next_position: nil)
+          .update(next_position: pending_position_sql(rule, "#{@offsets_table}.last_position"))
       end
 
       offset_id
@@ -1438,6 +1501,75 @@ module Sourced
       SQL
     end
 
+    # FROM/WHERE of the messages pending for an offset, by the partition rule
+    # (see {#partition_filter_sql}): of +types+, after +after+, carrying one
+    # of the offset's key pairs and none of +partition_by+ with another value.
+    # Driven from the offset's key pairs (CROSS JOIN fixes SQLite's join order):
+    # offset_key_pairs PK, then a range of message_key_pairs(key_pair_id,
+    # message_position) after +after+, then messages by position. Left to the
+    # planner, it walks every message of +types+ after +after+ instead.
+    #
+    # @param offset [String] SQL for the offset's id, ex. +"o.id"+
+    # @param after [String, Integer] SQL for the position pending messages follow
+    # @param types [Enumerable<String>] message types
+    # @param partition_by [Enumerable<String>] partition key names
+    # @return [String]
+    def pending_messages_sql(offset, after, types, partition_by)
+      types_list = types.map { |t| db.literal(t) }.join(', ')
+      names_list = partition_by.map { |n| db.literal(n) }.join(', ')
+      <<~SQL
+        FROM #{@offset_key_pairs_table} okp
+        CROSS JOIN #{@message_key_pairs_table} mkp ON okp.key_pair_id = mkp.key_pair_id
+        CROSS JOIN #{@messages_table} m ON mkp.message_position = m.position
+        WHERE okp.offset_id = #{offset}
+          AND mkp.message_position > #{after}
+          AND m.message_type IN (#{types_list})
+          AND NOT EXISTS (
+            SELECT 1
+            FROM #{@message_key_pairs_table} other
+            JOIN #{@key_pairs_table} kp ON kp.id = other.key_pair_id
+            WHERE other.message_position = m.position
+              AND kp.name IN (#{names_list})
+              AND NOT EXISTS (
+                SELECT 1 FROM #{@offset_key_pairs_table} own
+                WHERE own.offset_id = #{offset} AND own.key_pair_id = other.key_pair_id
+              )
+          )
+      SQL
+    end
+
+    # The value an offset's +next_position+ takes when its cursor moves to
+    # +after+, as an expression for an UPDATE of the offsets table: its first
+    # pending message's position, or NULL. Evaluated by the UPDATE, under the
+    # write lock, so a message appended since the claim was read is seen.
+    #
+    # Without the group's types (a group neither registered nor claimed by this
+    # store), +after+ itself: pending, position unknown. A claim resolves it.
+    #
+    # @param group_id [String]
+    # @param after [Integer, Sequel::SQL::Expression]
+    # @return [Sequel::LiteralString, Integer, Sequel::SQL::Expression]
+    def next_position_after(group_id, after)
+      rule = @pending_rules[group_id]
+      rule ? pending_position_sql(rule, db.literal(after)) : after
+    end
+
+    # @param rule [Array(Array<String>, Array<String>)] types and partition keys
+    # @param after [String] SQL for the position
+    # @return [Sequel::LiteralString] the first pending message's position for
+    #   the offsets row being updated, or NULL
+    def pending_position_sql(rule, after)
+      Sequel.lit("(SELECT MIN(mkp.message_position) #{pending_messages_sql("#{@offsets_table}.id", after, *rule)})")
+    end
+
+    # Remember how +group_id+'s pending messages are found, for
+    # {#next_position_after}.
+    def record_pending_rule(group_id, types, partition_by)
+      return if partition_by.nil? || partition_by.empty?
+
+      @pending_rules[group_id] = [types.to_a.sort.freeze, partition_by.sort.freeze].freeze
+    end
+
     # Find the next unclaimed partition with pending messages and claim it.
     # Pending is the partition rule the claim then reads with (see
     # {#partition_filter_sql}).
@@ -1448,9 +1580,6 @@ module Sourced
     # @param worker_id [String] claiming worker identifier
     # @return [Hash, nil] +{ offset_id:, partition_key:, last_position:, replay_until:, version: }+ or nil
     def find_and_claim_partition(cg_id, partition_by, handled_types, worker_id)
-      types_list = handled_types.map { |t| db.literal(t) }.join(', ')
-      names_list = partition_by.map { |n| db.literal(n) }.join(', ')
-
       # The lowest-last_position unclaimed offset with a pending message, all
       # index-backed: message_key_pairs(key_pair_id, message_position) and the
       # message_key_pairs, key_pairs and offset_key_pairs PKs.
@@ -1459,26 +1588,7 @@ module Sourced
         FROM #{@offsets_table} o
         WHERE o.consumer_group_id = #{db.literal(cg_id)}
           AND o.claimed = 0
-          AND EXISTS (
-            SELECT 1
-            FROM #{@offset_key_pairs_table} okp
-            JOIN #{@message_key_pairs_table} mkp ON okp.key_pair_id = mkp.key_pair_id
-            JOIN #{@messages_table} m ON mkp.message_position = m.position
-            WHERE okp.offset_id = o.id
-              AND m.position > o.last_position
-              AND m.message_type IN (#{types_list})
-              AND NOT EXISTS (
-                SELECT 1
-                FROM #{@message_key_pairs_table} other
-                JOIN #{@key_pairs_table} kp ON kp.id = other.key_pair_id
-                WHERE other.message_position = m.position
-                  AND kp.name IN (#{names_list})
-                  AND NOT EXISTS (
-                    SELECT 1 FROM #{@offset_key_pairs_table} own
-                    WHERE own.offset_id = o.id AND own.key_pair_id = other.key_pair_id
-                  )
-              )
-          )
+          AND EXISTS (SELECT 1 #{pending_messages_sql('o.id', 'o.last_position', handled_types, partition_by)})
         ORDER BY o.last_position
         LIMIT 1
       SQL
