@@ -66,6 +66,42 @@ RSpec.describe Sourced::Store::BusyHandler do
     end
   end
 
+  it "queues a fiber's write behind another fiber's transaction, instead of timing out on SQLite's lock", :async do
+    db = described_class.apply(sqlite(timeout: 50))
+    db.create_table?(:items) { String :name }
+    order = []
+
+    holder = Async do
+      db.transaction do
+        db[:items].insert(name: 'first')
+        sleep 0.2 # longer than the timeout, with SQLite's lock held
+        order << :first
+      end
+    end
+    waiter = Async do
+      db[:items].insert(name: 'second')
+      order << :second
+    end
+
+    Timeout.timeout(2) { [holder, waiter].each(&:wait) }
+    expect(order).to eq(%i[first second])
+    expect(db[:items].select_map(:name)).to eq(%w[first second])
+  end
+
+  it 'runs nested transactions and their statements in the fiber holding the queue', :async do
+    db = described_class.apply(sqlite(timeout: 50))
+    db.create_table?(:items) { String :name }
+
+    Timeout.timeout(2) do
+      db.transaction do
+        db[:items].insert(name: 'outer')
+        db.transaction(savepoint: true) { db[:items].insert(name: 'inner') }
+      end
+    end
+
+    expect(db[:items].select_map(:name)).to eq(%w[outer inner])
+  end
+
   it "lets other fibers run while a fiber waits for another connection's lock, including connections opened before it was applied", :async do
     db = sqlite(timeout: 3000)
     db.test_connection

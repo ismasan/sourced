@@ -21,6 +21,15 @@ module Sourced
     # the database's +:timeout+ option (Sequel's default, 5000ms). A wait that
     # times out raises {BusyError}.
     #
+    # SQLite has one writer, so the database's writes (transactions, and
+    # statements outside one) queue on a Mutex first: one fiber or thread of
+    # the process at a time waits for SQLite's lock, against other processes,
+    # and the rest wait their turn in the Mutex, woken in order. Otherwise a
+    # waiting fiber polls SQLite's lock between sleeps, and the process's
+    # other fibers take it whenever it's free, ahead of it, until its wait
+    # times out. A fiber already holding the Mutex (a nested transaction, a
+    # statement in its transaction) goes straight on.
+    #
     # @example
     #   db = Sequel.sqlite('app.db', timeout: 10_000)
     #   Sourced::Store::BusyHandler.apply(db)
@@ -40,6 +49,7 @@ module Sourced
       end
 
       def self.extended(db)
+        db.send(:init_write_lock)
         db.pool.all_connections { |conn| db.send(:wait_when_busy, conn) }
       end
 
@@ -47,7 +57,31 @@ module Sourced
         wait_when_busy(super)
       end
 
+      def transaction(opts = Sequel::OPTS, &block)
+        writing { super }
+      end
+
+      def execute_dui(sql, opts = Sequel::OPTS, &block)
+        writing { super }
+      end
+
+      def execute_insert(sql, opts = Sequel::OPTS, &block)
+        writing { super }
+      end
+
+      def execute_ddl(sql, opts = Sequel::OPTS, &block)
+        writing { super }
+      end
+
       private
+
+      def init_write_lock
+        @write_lock = Mutex.new
+      end
+
+      def writing(&block)
+        @write_lock.owned? ? yield : @write_lock.synchronize(&block)
+      end
 
       def wait_when_busy(conn)
         conn.busy_handler_timeout = typecast_value_integer(opts.fetch(:timeout, DEFAULT_TIMEOUT))
