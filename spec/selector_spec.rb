@@ -160,6 +160,17 @@ RSpec.describe Sourced::Selector do
       expect(selector.to_projector.new.evolve([e1, e3])).to eq([e1])
       expect(selector.to_projector.new([e1]).context).to eq([e1])
     end
+
+    it 'tracks the newest position among the messages of its types' do
+      selector = described_class[SelectorTestMessages::E1].by(:account_id)
+      e1 = Sourced::PositionedMessage.new(SelectorTestMessages::E1.new(payload: { account_id: 'a1' }), 2)
+      e3 = Sourced::PositionedMessage.new(SelectorTestMessages::E3.new(payload: { user_id: 'u1' }), 5)
+      projection = selector.to_projector.new
+      projection.evolve([e1, e3])
+
+      expect(projection.last_position).to eq(2)
+      expect(projection.current?(e1)).to be(true)
+    end
   end
 
   describe '#inspect' do

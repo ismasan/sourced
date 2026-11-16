@@ -116,6 +116,37 @@ RSpec.describe Sourced::Projector::Inline do
     end
   end
 
+  describe '#last_position / #current?' do
+    def at(position, message) = Sourced::PositionedMessage.new(message, position)
+
+    let(:removed) { ProjectionTestMessages::ItemRemoved.new(payload: { item_id: 'i1' }) }
+
+    it 'is nil before any message, and every message is current' do
+      projection = projector.new
+      expect(projection.last_position).to be_nil
+      expect(projection.current?(at(1, added('i1', 'Apple')))).to be(true)
+    end
+
+    it 'is the newest position among the handled messages evolved' do
+      first = at(3, added('i1', 'Apple'))
+      last = at(7, removed)
+      projection = projector.new
+      projection.evolve([first, last, at(9, ProjectionTestMessages::Unhandled.new(payload: { foo: 'x' }))])
+
+      expect(projection.last_position).to eq(7)
+      expect(projection.current?(first)).to be(false)
+      expect(projection.current?(last)).to be(true)
+    end
+
+    it 'ignores messages without a position' do
+      projection = projector.new
+      projection.evolve([at(2, added('i1', 'Apple')), removed])
+
+      expect(projection.last_position).to eq(2)
+      expect(projection.current?(removed)).to be(true)
+    end
+  end
+
   describe '.evolve' do
     it 'tracks registered classes once' do
       projector.evolve(ProjectionTestMessages::ItemAdded) { |_, _| nil }

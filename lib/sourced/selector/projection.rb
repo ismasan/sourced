@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative '../projector/positions'
+
 module Sourced
   class Selector
     # A selector as a projector (see {Evolve}), one subclass per selector
@@ -7,6 +9,8 @@ module Sourced
     # order, filtered by type only: the store read is already the partition's.
     # It takes no inline declarations.
     class Projection
+      include Projector::Positions
+
       class << self
         # @return [Selector]
         attr_reader :selector
@@ -46,7 +50,12 @@ module Sourced
       # @return [Array<Sourced::Message>] the context
       def evolve(messages)
         types = self.class.types
-        Array(messages).each { |msg| @messages << msg if types.include?(msg.to_message.class) }
+        Array(messages).each do |msg|
+          next unless types.include?(msg.to_message.class)
+
+          track_position(msg)
+          @messages << msg
+        end
         context
       end
 

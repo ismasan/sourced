@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative 'positions'
+
 module Sourced
   class Projector
     # Defines how a projection, an in-memory context, is evolved from messages.
@@ -25,6 +27,8 @@ module Sourced
     #   projection.evolve(messages)
     #   projection.context # => { items: [...] }
     class Inline
+      include Positions
+
       PREFIX = 'sourced_evolution'
 
       # Default for the +context+ argument, distinct from an explicit +nil+ context.
@@ -114,6 +118,7 @@ module Sourced
 
       # Handlers are looked up by +msg.to_message.class+, so wrapped messages
       # dispatch too; they receive +msg+ as given. Unhandled messages are skipped.
+      # Handled ones advance {#last_position} (see {Positions}).
       #
       # @param messages [Sourced::Message, Array<Sourced::Message>]
       # @return [Object] the evolved context
@@ -123,6 +128,7 @@ module Sourced
           method_name = handlers[msg.to_message.class]
           next unless method_name
 
+          track_position(msg)
           self.class.before_evolve_blocks.each { |blk| instance_exec(context, msg, &blk) }
           send(method_name, context, msg)
         end
