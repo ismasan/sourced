@@ -260,6 +260,106 @@ RSpec.describe Sourced::Store, 'offsets next_position' do
     expect(pending[ann]).to be_nil
   end
 
+  describe 'a partition a claim reads nothing from' do
+    let(:logger) { instance_double('Logger', info: nil, warn: nil, debug: nil, error: nil) }
+    let(:logged) { described_class.new(db, logger:).tap { _1.register_consumer_group(group_id, selector) } }
+
+    def logged_claim = logged.claim_next(group_id, selector, worker_id: 'w-1')
+
+    it "isn't tried again in the same claim, and is logged when its pending check and the read disagree" do
+      p1 = store.append(joined('Algebra', 'joe'))
+      ack(claim)
+      db[:sourced_offsets].update(next_position: p1) # a false positive
+      p2 = store.append(joined('Physics', 'ann'))
+      # A pending check that disagrees with the read: it finds ann's message in joe's partition.
+      allow(logged).to receive(:pending_position_sql).and_return(Sequel.lit(p2.to_s))
+
+      expect(logged_claim.partition_key).to eq(ann)
+      expect(pending[joe]).to eq(p2)
+      expect(logger).to have_received(:error).with(/partition #{Regexp.escape(joe)} is marked pending at #{p2}, but a claim reads nothing after #{p1}/).once
+    end
+
+    it "isn't logged for a message appended since the read" do
+      p1 = store.append(joined('Algebra', 'joe'))
+      ack(claim)
+      db[:sourced_offsets].update(next_position: p1)
+      p2 = nil
+      allow(logged).to receive(:check_empty_claim_mark).and_wrap_original do |m, *args|
+        p2 = store.append(joined('Algebra', 'joe')) # by the time the empty claim's mark is checked
+        m.call(*args)
+      end
+
+      expect(logged_claim).to be_nil
+      expect(pending[joe]).to eq(p2)
+      expect(logger).not_to have_received(:error)
+    end
+  end
+
+  it "agrees with the claims' reads on every partition's first pending message, over a mixed workload" do
+    logger = instance_double('Logger', info: nil, warn: nil, debug: nil, error: nil)
+    rng = Random.new(7)
+    courses = %w[Algebra Physics]
+    users = %w[joe jake ann]
+    wider = Sourced::Selector[
+      PendingTrackingMessages::Joined, PendingTrackingMessages::Closed, PendingTrackingMessages::Noted,
+      PendingTrackingMessages::Unclaimed
+    ].by(:course_name, :user_id)
+    # A deploy whose reactor claims one more type, which takes the group halfway through
+    new_deploy = described_class.new(db, logger:).tap { _1.register_consumer_group(group_id, wider) }
+    current = [store, selector]
+    workload = lambda do |steps|
+      steps.times do
+        course = courses.sample(random: rng)
+        user = users.sample(random: rng)
+        case rng.rand(7)
+        when 0, 1 then store.append(joined(course, user))
+        when 2 then store.append(closed(course)) # partial key
+        when 3 then store.append(PendingTrackingMessages::Noted.new(payload: { text: 'x' }).with_tags(course_name: course)) # partial key, by tag
+        when 4 then store.append(PendingTrackingMessages::Noted.new(payload: { text: 'x' }).with_tags(course_name: course, user_id: user))
+        when 5 then store.append(PendingTrackingMessages::Unclaimed.new(payload: { course_name: course, user_id: user }))
+        else
+          st, sel = current
+          c = st.claim_next(group_id, sel, worker_id: 'w-1', batch_size: rng.rand(1..3))
+          next unless c
+
+          position = c.messages.take(rng.rand(1..c.messages.size)).last.position # partial acks too
+          st.ack(group_id, offset_id: c.offset_id, version: c.offset_version, position:)
+        end
+      end
+    end
+
+    workload.(150)
+    store.stop_consumer_group(group_id)
+    store.reset_consumer_group(group_id) # replay boundaries
+    store.start_consumer_group(group_id)
+    workload.(80)
+    new_deploy.reclaim_consumer_groups # the group takes a new type
+    current = [new_deploy, wider]
+    workload.(80)
+    while (c = new_deploy.claim_next(group_id, wider, worker_id: 'w-1'))
+      new_deploy.ack(group_id, offset_id: c.offset_id, version: c.offset_version, position: c.messages.last.position)
+    end
+    store.append([joined('Algebra', 'joe'), closed('Physics')]) # some partitions pending, others caught up
+
+    # Every partition a candidate: a claim reads each one, its ack at the cursor recomputes the mark.
+    db[:sourced_offsets].update(next_position: 0)
+    claims = []
+    while (c = new_deploy.claim_next(group_id, wider, worker_id: 'w-1', batch_size: 1))
+      claims << c
+    end
+    unclaimed = pending.reject { |key, _| claims.map(&:partition_key).include?(key) }
+    expect(unclaimed.values).to all(be_nil)
+
+    cursors = store.read_offsets(group_id:, limit: 1000).offsets.to_h { |o| [o[:partition_key], o[:last_position]] }
+    claims.each do |c|
+      new_deploy.ack(group_id, offset_id: c.offset_id, version: c.offset_version, position: cursors[c.partition_key])
+    end
+    expect(pending.slice(*claims.map(&:partition_key))).to eq(claims.to_h { [_1.partition_key, _1.messages.first.position] })
+    expect(claims.size).to be > 3
+    expect(unclaimed.size).to be > 0
+    expect(logger).not_to have_received(:error)
+  end
+
   it 'marks what is pending when a group without a stored rule (an upgraded database) registers' do
     store.append(joined('Physics', 'ann'))
     position = store.append(joined('Algebra', 'joe'))

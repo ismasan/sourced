@@ -779,18 +779,22 @@ module Sourced
 
       # A claim that reads nothing (a false positive) clears its mark and
       # tries the next partition, so false positives don't hold real work up.
+      # Partitions it read nothing from aren't tried again in this call.
       discovered = false
+      tried = []
       EMPTY_CLAIMS_LIMIT.times do
-        claimed = find_and_claim_partition(cg[:id], worker_id)
+        claimed = find_and_claim_partition(cg[:id], worker_id, skip: tried)
         unless claimed || discovered
           discovered = true
           discover_new_partitions(cg[:id], rule)
-          claimed = find_and_claim_partition(cg[:id], worker_id)
+          claimed = find_and_claim_partition(cg[:id], worker_id, skip: tried)
         end
         return nil unless claimed
 
         result = read_claim(group_id, cg, claimed, selector, batch_size)
         return result if result
+
+        tried << claimed[:offset_id]
       end
       nil
     end
@@ -821,6 +825,7 @@ module Sourced
           claimed_at: nil,
           claimed_by: nil
         )
+        check_empty_claim_mark(group_id, claimed, selector, key_pair_index)
         return nil
       end
 
@@ -840,6 +845,21 @@ module Sourced
         guard: guard,
         retrying: retrying_claim?(cg, claimed[:offset_id])
       )
+    end
+
+    # After an empty claim's recompute: a mark the claim's read doesn't find
+    # either is a message appended since the read, or the recompute
+    # (+pending_messages_sql+) and the read (+select_messages+) disagree on
+    # what's pending, which would leave the mark set for every claim to find
+    # empty. Logs the disagreement. Runs only on empty claims.
+    def check_empty_claim_mark(group_id, claimed, selector, key_pair_index)
+      mark = db[@offsets_table].where(id: claimed[:offset_id]).get(:next_position)
+      return if mark.nil? || mark <= claimed[:last_position]
+      return if select_messages(selector, after: claimed[:last_position], limit: 1, key_pair_index:).any?
+
+      logger.error "Sourced: consumer group #{group_id}'s partition #{claimed[:partition_key]} is marked " \
+                   "pending at #{mark}, but a claim reads nothing after #{claimed[:last_position]}: " \
+                   'its pending check and its read disagree (a bug)'
     end
 
     # Whether +offset_id+ is the claim a retrying group's failure was for.
@@ -1738,14 +1758,17 @@ module Sourced
     #
     # @param cg_id [Integer] consumer group internal ID
     # @param worker_id [String] claiming worker identifier
+    # @param skip [Array<Integer>] offset ids not to claim
     # @return [Hash, nil] +{ offset_id:, partition_key:, last_position:, replay_until:, version: }+ or nil
-    def find_and_claim_partition(cg_id, worker_id)
+    def find_and_claim_partition(cg_id, worker_id, skip: [])
+      skipped = skip.empty? ? '' : "AND id NOT IN (#{skip.map { |id| db.literal(id) }.join(', ')})"
       offset = db.fetch(<<~SQL).first
         SELECT id, partition_key, last_position, replay_until, version
         FROM #{@offsets_table}
         WHERE consumer_group_id = #{db.literal(cg_id)}
           AND claimed = 0
           AND next_position IS NOT NULL
+          #{skipped}
         ORDER BY next_position
         LIMIT 1
       SQL
