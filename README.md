@@ -2263,30 +2263,6 @@ Then run your migrations as usual:
 sequel -m db/migrations sqlite://my_app.db
 ```
 
-#### Upgrading an installed database
-
-The migration template creates the current schema. A database installed from an earlier copy of it needs these statements (with your table prefix in place of `sourced_`):
-
-```sql
--- offsets.version (stale acks are no-ops)
-ALTER TABLE sourced_offsets ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
-
--- offsets.next_position (pending work per partition)
-ALTER TABLE sourced_offsets ADD COLUMN next_position INTEGER;
-CREATE INDEX idx_sourced_ccc_offsets_cg_pending
-  ON sourced_offsets (consumer_group_id, claimed, next_position)
-  WHERE next_position IS NOT NULL;
-CREATE INDEX idx_sourced_ccc_okp_key_pair ON sourced_offset_key_pairs (key_pair_id, offset_id);
-
--- consumer_groups.claim_digest (the rule a group runs under), replacing the claim-scan triggers
-ALTER TABLE sourced_consumer_groups ADD COLUMN claim_digest TEXT;
-DROP TRIGGER IF EXISTS trg_sourced_ccc_dirty_on_message;
-DROP TRIGGER IF EXISTS trg_sourced_ccc_dirty_on_release;
-DROP INDEX IF EXISTS idx_sourced_ccc_offsets_cg_claimed_pos;
-```
-
-Each group's first registration after the upgrade marks its partitions' pending messages, since it has no `claim_digest` to compare with yet. `consumer_groups.last_nil_types_max_pos` is no longer used, and can stay or be dropped. Stop every worker of the earlier version before starting the new one: earlier workers don't check which deploy registered a group, and claim by scanning.
-
 #### Custom table prefix
 
 By default, tables are prefixed with `sourced_` (e.g. `sourced_messages`, `sourced_consumer_groups`). Configure `store.table_prefix` to customise this — for example when running multiple Sourced stores in the same database:
