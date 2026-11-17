@@ -1402,7 +1402,7 @@ end
 Sourced.register(Jobs)
 ```
 
-Reactors that use the `Sourced::Consumer` mixin (for `partition_by`, `each_with_partial_ack`, and lifecycle hooks) can be queues too — declare `exclusive` and return `{ type: :ack, delete: true }` from `handle_claim`. When a queue drains, the `StaleClaimReaper` reclaims the emptied partition offsets and prunes orphaned id key-pairs.
+Reactors that use the `Sourced::Consumer` mixin (for `partition_by`, `each_with_partial_ack`, and lifecycle hooks) can be queues too — declare `exclusive` and return `{ type: :ack, delete: true }` from `handle_claim`. When a queue drains, the store's housekeeping (`Store#maintain`, which the `StaleClaimReaper` runs) removes the emptied partition offsets and prunes orphaned id key-pairs.
 
 ## Background processing
 
@@ -1411,7 +1411,7 @@ Workers run in the `dispatcher` component, which spawns them into the context So
 | Component | Does | Depends on |
 | --- | --- | --- |
 | `dispatcher.catchup_poller` | pushes every reactor to the dispatcher each `workers.catchup_interval`, as a safety net for missed notifications | `dispatcher` |
-| `dispatcher.stale_claim_reaper` | heartbeats the dispatcher's workers and releases claims of dead ones, each `housekeeping.interval` | `dispatcher` |
+| `dispatcher.stale_claim_reaper` | heartbeats the dispatcher's workers, releases claims of dead ones and runs the store's housekeeping (`maintain`), each `housekeeping.interval` | `dispatcher` |
 | `scheduled_messages.poller` | promotes due scheduled messages into the log, each `scheduled_messages.interval` | `dispatcher`, `store` |
 
 All three are `Sourced::PeriodicTask`s: `start(context)` spawns the loop, `stop` wakes it and waits for it to finish (raising `Sourced::ShutdownTimeoutError` from the component's stop if a tick outlives the timeout), and it can start again. All three depend on the dispatcher, so they start after its workers, stop before them, and are deferred, stopped and started along with it: a process that runs the dispatcher only while it's the leader runs the pollers only then too. The scheduled messages poller depends on the dispatcher only for that; re-implement it with a dependency on `store` alone to promote scheduled messages in a process without workers. Any of them can also be deferred on its own.
@@ -1579,6 +1579,16 @@ store.stop_consumer_group('course_app.course_decider')
 ```
 
 All three raise `Sourced::Store::UnknownConsumerGroupError`, naming the registered groups, for a group that isn't registered with the store (a typo, or a reactor that isn't registered): consumer groups are registered when Sourced starts.
+
+### How workers find work
+
+Each partition's offset records whether it has a pending message, so a claim takes the unclaimed partition with the earliest pending message in one index lookup, however many partitions are idle. Appends mark the partitions their messages are in, for the consumer groups registered in the appending process: `Sourced.start!` registers every reactor's group, in web processes too, so Sourced's own paths are covered. A script appending through a bare `Store` registers the groups it feeds, each with its reactor's `claim_selector` (`store.register_consumer_group(Reactor.group_id, Reactor.claim_selector)`): registering with another selector hands the group to that selector's rule, and the reactor's workers stop claiming it (see below). Unregistered, its appends don't mark the group's existing partitions: the store's housekeeping finds them, on its next tick, and logs a warning.
+
+A group runs under one set of message types and partition keys, its rule, recorded on the group: the rule of the first process that registered it, then of the workers that took it. Registering a group doesn't change its rule, so a web process booting with a new deploy leaves it to the running workers. When a deploy changes a group's types, ex. a Decider gains a command or a reaction:
+
+- The store's housekeeping (`Store#maintain`), which the stale claim reaper runs where workers run (only on the leader, when the dispatcher is deferred to one), takes its process's groups under its rule on its first tick, and checks again every tick. Taking a group marks the partitions with messages pending under the new types, including messages of a new type already in the log, so they're processed without a reset.
+- Workers whose reactor claims other types (the previous deploy's, during a rolling deploy) stop claiming the group, logging a warning, and leave it to the workers that took it. When workers of two deploys run at once, the group passes between them on each one's ticks; a group taken by a process since gone (ex. an old worker restarted mid-deploy) comes back to the running workers within a tick.
+- Types a reactor only evolves (its history) don't count: adding one to a Decider changes nothing here. A Projector that evolves a new type still needs a reset, to rebuild its saved projections.
 
 ### Consumer group statuses
 
@@ -1768,6 +1778,7 @@ Each offset in the result is a Hash with:
 | `:group_status`  | `String`      | `"active"`, `"stopped"`, or `"failed"`               |
 | `:partition_key` | `String`      | Partition identifier (e.g. `"device_id:dev-1"`)      |
 | `:last_position` | `Integer`     | Highest acked position for this partition             |
+| `:next_position` | `Integer`, `nil`| Position of a message pending for this partition, `nil` when none is |
 | `:claimed`       | `Boolean`     | Whether a worker currently holds this partition       |
 | `:claimed_at`    | `String`, `nil`| ISO8601 timestamp of the claim                      |
 | `:claimed_by`    | `String`, `nil`| Worker ID holding the claim                         |
@@ -2212,9 +2223,9 @@ Two things the codec does not reach:
 
 ### Database setup
 
-The migration creates the tables and indexes, and sets the database to `journal_mode = WAL`: a property of the file, so once is enough, and it runs outside a transaction (SQLite can't change the journal mode inside one; every statement is idempotent, so a half-applied run is re-run). `Store#install!` applies the same migration directly, for scripts, tests and quick prototyping. Per-connection settings are the connection's: Sequel's SQLite adapter enables foreign keys and a 5s busy timeout on each connection it opens, configurable with `Sequel.sqlite(path, foreign_keys:, timeout:)`. On start, Sourced has the connections wait for a locked database by sleeping in Ruby between retries (`Sourced::Store::BusyHandler`), so a fiber waiting for a lock another process holds yields to the scheduler instead of blocking every fiber on its thread. A wait that still times out raises `Sourced::Store::BusyError`; workers release the claim they were processing and retry it later.
+The migration creates the tables and indexes, and sets the database to `journal_mode = WAL`: a property of the file, so once is enough, and it runs outside a transaction (SQLite can't change the journal mode inside one; every statement is idempotent, so a half-applied run is re-run). `Store#install!` applies the same migration directly, for scripts, tests and quick prototyping. Per-connection settings are the connection's: Sequel's SQLite adapter enables foreign keys and a 5s busy timeout on each connection it opens, configurable with `Sequel.sqlite(path, foreign_keys:, timeout:)`. On start, Sourced has the connections wait for a locked database by sleeping in Ruby between retries (`Sourced::Store::BusyHandler`), so a fiber waiting for a lock another process holds yields to the scheduler instead of blocking every fiber on its thread. SQLite has one writer, so the process's writes also take turns, in order, and one at a time waits for SQLite's lock: otherwise the process's other fibers take the lock whenever it's free, ahead of the one waiting. These are two Sequel extensions, `:sourced_sqlite_busy_wait` and `:sourced_sqlite_write_queue`, which you can apply to databases of your own with `db.extension`. Every write through the database takes its turn, your own included, and waiting for a turn times out like waiting for the lock (`Sequel.sqlite(path, write_queue_timeout:)`, else `timeout:`). So use a separate database object for long read transactions, or for work that shouldn't wait behind Sourced's writes, ex. reporting or slow imports. A wait that still times out raises `Sourced::Store::BusyError`; workers release the claim they were processing and retry it later.
 
-When Sourced starts, the `store` component checks the tables are there, raising `Store::NotInstalledError` if not, and compiles the message codec. Planner statistics (`ANALYZE`) are refreshed by the stale claim reaper, on its first tick and hourly. By default, booting Sourced doesn't create tables. Set `store.install_tables` for environments without migrations, ex. an in-memory database in tests, and the store installs them on start, before setting up:
+When Sourced starts, the `store` component checks the tables are there, raising `Store::NotInstalledError` if not, and compiles the message codec. Planner statistics are refreshed by the store's housekeeping (`Store#maintain`, which the stale claim reaper runs on every tick), with `PRAGMA optimize`, which analyzes only the tables that are new or have grown a lot since. By default, booting Sourced doesn't create tables. Set `store.install_tables` for environments without migrations, ex. an in-memory database in tests, and the store installs them on start, before setting up:
 
 ```ruby
 Sourced.config.config!('store.install_tables') { true }
