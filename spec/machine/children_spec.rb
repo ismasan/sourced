@@ -1073,7 +1073,7 @@ module MachineChildrenTest
     end
 
     describe 'registration' do
-      let(:config) { Sourced::Config.build }
+      let(:registry) { Sourced::Registry.new }
 
       def machine(*keys, &block)
         klass = Class.new(Sourced::Machine)
@@ -1083,7 +1083,7 @@ module MachineChildrenTest
         klass
       end
 
-      def registered?(reactor) = config.declared?(Sourced::Config.reactor_key(reactor))
+      def registered?(reactor) = registry.registered?(reactor)
 
       it 'returns the machine and the children its handlers and states start' do
         expect(OrderMachine.to_sourced_reactors).to eq([OrderMachine, LineItemMachine])
@@ -1092,9 +1092,7 @@ module MachineChildrenTest
       end
 
       it 'registers a machine with its children, not its parts' do
-        node = Sourced::Config.register(config, ShippingMachine)
-
-        expect(node.path).to eq(Sourced::Config.reactor_key(ShippingMachine))
+        expect(registry.register(ShippingMachine)).to be(ShippingMachine)
         expect(registered?(ParcelMachine)).to be(true)
         expect(ParcelMachine.to_sourced_reactors).not_to include(ParcelMachine::PreparingMachine)
       end
@@ -1106,7 +1104,7 @@ module MachineChildrenTest
         end
         top = machine { initial { command AddLine, starts: mid } }
 
-        Sourced::Config.register(config, top)
+        registry.register(top)
 
         expect([top, mid, LineItemMachine].map { |m| registered?(m) }).to eq([true, true, true])
       end
@@ -1123,23 +1121,25 @@ module MachineChildrenTest
         child.class_eval { state(:adding) { command PlaceOrder, starts: parent } }
         parent.class_eval { state(:adding) { command PlaceOrder, starts: child } }
 
-        Sourced::Config.register(config, parent)
+        registry.register(parent)
 
         expect([parent, child].map { |m| registered?(m) }).to eq([true, true])
       end
 
-      it "makes a router's setup! raise for children it doesn't route to" do
-        expect { Sourced::Router.new(store:, reactors: [OrderMachine]).setup! }
-          .to raise_error(Sourced::Router::MissingReactorsError, /OrderMachine needs .*LineItemMachine registered with this router too/)
-        expect(Sourced::Router.new(store:, reactors: [OrderMachine, LineItemMachine]).setup!).to be_a(Sourced::Router)
+      it 'makes a router built with a machine route to its children too' do
+        router = Sourced::Router.new(store:, reactors: [OrderMachine]).setup!
+
+        expect(router.reactors).to eq([OrderMachine, LineItemMachine])
+        expect(Sourced::Router.new(store:, reactors: [OrderMachine, LineItemMachine]).reactors)
+          .to eq([OrderMachine, LineItemMachine])
       end
 
       it 'skips a child registered by another parent, or on its own' do
         other = machine { initial { command AddLine, starts: LineItemMachine } }
 
-        Sourced::Config.register(config, LineItemMachine)
-        Sourced::Config.register(config, OrderMachine)
-        Sourced::Config.register(config, other)
+        registry.register(LineItemMachine)
+        registry.register(OrderMachine)
+        registry.register(other)
 
         expect([OrderMachine, other, LineItemMachine].map { |m| registered?(m) }).to eq([true, true, true])
       end

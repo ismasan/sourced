@@ -12,10 +12,7 @@ module Sourced
     # @!attribute history_selector [Selector] what a claim reads as history, bound to its partition
     # @!attribute needs_history [Boolean] whether the reactor's +handle_claim+ takes +history:+
     # @!attribute exclusive [Boolean] whether it solely owns its message types
-    Group = Data.define(:claim_selector, :history_selector, :needs_history, :exclusive) do
-      # @return [Array<String>]
-      def handled_types = claim_selector.type_names
-    end
+    Group = Data.define(:claim_selector, :history_selector, :needs_history, :exclusive)
 
     # Raised for a reactor class, or group_id, that isn't registered with this router
     class UnregisteredReactorError < Sourced::Error
@@ -23,46 +20,35 @@ module Sourced
         what = reactor_or_id.is_a?(Module) ? reactor_or_id.to_s : "group_id #{reactor_or_id.inspect}"
         registered = reactors.empty? ? 'none' : reactors.map { |r| "#{r} (#{r.group_id})" }.join(', ')
         super("#{what} is not registered with this router (registered: #{registered}). " \
-              'Sourced.register adds reactors to the configured router before it starts')
-      end
-    end
-
-    # Raised by {Router#setup!} for a reactor whose +to_sourced_reactors+ names
-    # reactors that aren't registered, ex. a machine's children
-    class MissingReactorsError < Sourced::Error
-      def initialize(reactor, missing)
-        super("#{reactor} needs #{missing.join(', ')} registered with this router too. " \
-              "Sourced.register(#{reactor}) registers them with it")
+              'Sourced.register adds reactors to the configured router')
       end
     end
 
     attr_reader :store, :reactors, :error_strategy
 
     # @param store [Config::StoreInterface]
-    # @param reactors [Array<Class>] reactors to route to. Validated here, but their
+    # @param reactors [Array<Class, #to_sourced_reactors>] reactors to route to,
+    #   registered in a {Registry} of the router's own, which checks them and adds
+    #   what their +to_sourced_reactors+ return (a machine's children). Their
     #   consumer groups are only registered with the store by {#setup!}
+    # @raise what {Registry#register} raises
     # @param error_strategy [#call] handles errors of reactors that don't define
     #   their own +on_exception+ (see {#handle_next_for})
     def initialize(store:, reactors: [], error_strategy: ErrorStrategy.new)
       @store = store
       @error_strategy = error_strategy
+      @registry = Registry.new(reactors)
       @reactors = []
       # {Group}s, by reactor
       @groups = {}
-      reactors.each { |reactor| add(reactor) }
+      track_new_reactors
     end
 
-    # Prepare for routing: check that every reactor's +to_sourced_reactors+
-    # (a machine's children) are registered too, register the consumer groups
-    # of every reactor with the store, and freeze the error strategy. The
-    # store must be ready (for Store, see {Store#setup!}). Idempotent.
+    # Prepare for routing: register the consumer groups of every reactor with the
+    # store, and freeze the error strategy. The store must be ready (for Store, see
+    # {Store#setup!}). Idempotent.
     # @return [self]
-    # @raise [MissingReactorsError]
     def setup!
-      @reactors.each do |reactor|
-        missing = ReactorDefaults.expand(reactor) - @reactors
-        raise MissingReactorsError.new(reactor, missing) if missing.any?
-      end
       @reactors.each { |reactor| register_consumer_group(reactor) }
       error_strategy.freeze
       self
@@ -81,11 +67,14 @@ module Sourced
     # A reactor must declare +partition_by+; an +exclusive+ reactor may omit it to
     # get an id-partitioned queue (one partition per message).
     #
-    # Also registers the reactor's consumer group with the store.
+    # Registered in the router's {Registry}, which checks it and adds what its
+    # +to_sourced_reactors+ returns. Also registers their consumer groups with the
+    # store.
     # @return [self]
+    # @raise what {Registry#register} raises
     def register(reactor_class)
-      add(reactor_class)
-      register_consumer_group(reactor_class)
+      @registry.register(reactor_class)
+      track_new_reactors.each { |reactor| register_consumer_group(reactor) }
       self
     end
 
@@ -228,45 +217,21 @@ module Sourced
 
     private
 
-    # Apply defaults to a reactor and validate it, without touching the store.
-    # @raise [ArgumentError] if another reactor has the same group_id, or for an
-    #   invalid partitioning or exclusive ownership
-    def add(reactor_class)
-      ReactorDefaults.apply(reactor_class)
-      # Reactors with a definition to check (ex. Sourced::Machine) fail at registration, not on first use.
-      reactor_class.validate! if reactor_class.respond_to?(:validate!)
-      unless Types::GroupIdFormat === reactor_class.group_id.to_s
-        raise ArgumentError, "Cannot register #{reactor_class.group_label || reactor_class.inspect}: group_id #{reactor_class.group_id.inspect} " \
-                             "isn't lowercase and dot-separated, like 'shop.orders' (see Sourced::Types::GroupId)"
+    # Read the routing data of the registry's reactors this router doesn't know yet,
+    # once each, so registration and every claim use the same selectors.
+    # @return [Array<Class>] the new ones
+    def track_new_reactors
+      added = @registry.reactors.reject { |r| @groups.key?(r) }
+      added.each do |reactor|
+        @groups[reactor] = Group.new(
+          claim_selector: reactor.claim_selector,
+          history_selector: reactor.history_selector,
+          needs_history: Injector.resolve_args(reactor, :handle_claim).include?(:history),
+          exclusive: reactor.exclusive?
+        )
       end
-      if (existing = @reactors.find { |r| r.group_id == reactor_class.group_id })
-        raise ArgumentError, "Cannot register #{reactor_class}: #{existing} already uses group_id #{reactor_class.group_id.inspect}"
-      end
-
-      group = Group.new(
-        claim_selector: reactor_class.claim_selector,
-        history_selector: reactor_class.history_selector,
-        needs_history: Injector.resolve_args(reactor_class, :handle_claim).include?(:history),
-        exclusive: reactor_class.exclusive?
-      )
-
-      # id-partitioning (declared as `partition_by :__id`, or implied by omitting
-      # partition_by) indexes messages by Message#id (key name "__id", chosen to
-      # not collide with a payload attribute) and must be sole-owned, so it is only
-      # allowed for exclusive reactors. This keeps id-indexing safe: a type is only
-      # id-indexed when its lone exclusive owner is id-partitioned.
-      if group.claim_selector.id_partitioned? && !group.exclusive
-        raise ArgumentError,
-          "#{reactor_class} must declare `partition_by`. (Only an `exclusive` reactor may " \
-          "be id-partitioned — one partition per message — whether by omitting " \
-          "partition_by or declaring `partition_by :__id`.)"
-      end
-
-      PartitionSchema.check_history_keys!(reactor_class)
-      validate_exclusive_ownership!(reactor_class, group)
-
-      @reactors << reactor_class
-      @groups[reactor_class] = group
+      @reactors = @registry.reactors
+      added
     end
 
     def register_consumer_group(reactor_class)
@@ -290,26 +255,6 @@ module Sourced
       end
     rescue Store::InvalidConsumerGroupTransitionError => e
       store.logger.warn "Sourced: #{e.message}, ignoring"
-    end
-
-    # Enforce that an exclusive reactor is the sole handler of its message types.
-    # A message deleted once the exclusive reactor acks it must not be needed by
-    # any other reactor.
-    #
-    # @raise [ArgumentError] on a message-type overlap involving an exclusive reactor
-    def validate_exclusive_ownership!(reactor_class, group)
-      @reactors.each do |existing|
-        existing_group = @groups.fetch(existing)
-        next unless group.exclusive || existing_group.exclusive
-
-        overlap = group.handled_types & existing_group.handled_types
-        next if overlap.empty?
-
-        offender = group.exclusive ? reactor_class : existing
-        raise ArgumentError, <<~MSG.strip
-          Cannot register #{reactor_class}: exclusive reactor #{offender} requires sole ownership of its message types, but #{reactor_class} and #{existing} both handle: #{overlap.sort.join(', ')}
-        MSG
-      end
     end
 
     # Normalize a pair's +signals+ into an array, without Hash-splatting a single

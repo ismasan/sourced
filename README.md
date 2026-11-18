@@ -1134,7 +1134,7 @@ end
 
 A machine is a child in one role: started by handlers (any number of them), or by one state.
 
-Registering a machine registers the children it starts too (including those started by its parts, and children's own children), so `Sourced.register(OrderMachine)` also registers `LineItemMachine`. A `Sourced::Router` built directly raises `Sourced::Router::MissingReactorsError` on `setup!` if a machine's children aren't among its reactors.
+Registering a machine registers the children it starts too (including those started by its parts, and children's own children), so `Sourced.register(OrderMachine)` also registers `LineItemMachine`. A `Sourced::Router` built directly routes to them too: it registers the reactors it's given in a `Sourced::Registry` of its own. Unregistering a child while its machine stays registered raises `Sourced::Registry::MissingReactorsError`.
 
 A child is only woken by messages carrying all of its partition keys: its own events, the parent's `Started`, and `Stop`. Parent facts with fewer keys (`OrderPlaced`) are in the child's partition reads, so it can evolve them, but they never wake it.
 
@@ -1323,7 +1323,25 @@ Sourced.register(EnrolmentDecider)
 Sourced.register(CourseCatalogReadModel)
 ```
 
-Each reactor becomes a component of Sourced's configuration, under `reactors` and keyed by its `group_id` with dots replaced by underscores (`Shop::CourseDecider` → `reactors.shop_course_decider`); the router and `Sourced.topology` depend on all of them. Register reactors before Sourced boots: registering once it's booted raises, and so does registering two different reactors with the same `group_id` (registering the same one again is a no-op). Their consumer groups are registered with the store when Sourced starts.
+Reactors go in `Sourced.registry`, a `Sourced::Registry`, in registration order. The router and `Sourced.topology` are built from it. Registering the same reactor again is a no-op. A change the router would reject, such as a different reactor with the same `group_id`, raises and leaves the registry as it was. Their consumer groups are registered with the store when the router starts.
+
+Reactors can be registered and unregistered at any time, ex. by a code reloader replacing classes. Once Sourced is built, a change rebuilds the router and the topology, and the dispatcher and pollers built on the router, each back to the status it had: a started dispatcher restarts its workers with the new set. A registered reactor's consumer group is registered as the new router starts. An unregistered one's stays in the store.
+
+```ruby
+Sourced.unregister(CourseDecider)
+
+# One rebuild for several changes
+Sourced.registry.batch do
+  Sourced.unregister(OldCourseDecider)
+  Sourced.register(CourseDecider)
+end
+```
+
+Each batch is checked when it ends, as a whole, so its changes can come in any order: a reloader can unregister a machine's child before the machine. If the block raises, or the new set is invalid, the registry goes back to what it was before the batch. Unregistering a machine keeps the children another registered machine starts.
+
+Reactors are identified by identity, so a reloaded class is a different reactor from the one it replaces, with the same `group_id`: unregister the old class before registering the new one.
+
+A registry change rebuilds the router, and building it recompiles the store's codec, so message types defined since boot, or redefined by a code reloader, are encoded and decoded from then on. The dispatcher is stopped while the router is rebuilt, and its stop waits for its workers, so no worker decodes a message into a class its reactor doesn't know.
 
 Anything that responds to `to_sourced_reactors` registers what that returns instead, recursively. A machine returns itself and the child machines it starts; a module can group a bounded context's reactors:
 
@@ -1378,7 +1396,7 @@ By default the log is append-only and each reactor keeps its own offset cursor, 
 
 Two ingredients:
 
-- **`exclusive`** — declares the reactor the *sole owner* of the message types it claims. The Router raises if another registered reactor also claims one of them, so nothing is left consuming a message the queue deletes. It is a routing marker only — it does not itself delete anything.
+- **`exclusive`** — declares the reactor the *sole owner* of the message types it claims. Registering it raises if another registered reactor also claims one of them, so nothing is left consuming a message the queue deletes. It is a routing marker only — it does not itself delete anything.
 - **`delete: true`** on an `:ack` signal — the *only* thing that deletes the source message. Deletion is never implied by partitioning or exclusivity, so forgetting a `partition_by` can never silently drop a message.
 
 An `exclusive` reactor claiming **by `__id`** is partitioned by `Message#id` — one partition per message: a concurrent, unordered queue (the id is indexed under the reserved key `__id`). A `Sourced::Consumer` with no `partition_by` claims that way. Id-partitioning is only allowed for `exclusive` reactors; non-exclusive ones must claim by real partition keys.
@@ -2074,9 +2092,8 @@ See `examples/app/` for a complete Sinatra application with:
 | `store` | `Sourced::Config::StoreInterface` | `Sourced::Store` over `db`. Sets itself up on start |
 | `store.table_prefix` | `String` (an identifier) | `'sourced'`: tables are named `sourced_messages`, ... |
 | `store.install_tables` | `Boolean` | `false`: whether the store creates its tables on start. Apps use a [migration](#database-setup) |
-| `reactors.*` | `#claim_selector`, `#handle_claim` | one per `Sourced.register` |
-| `router` | `Sourced::Router` | routes to `reactors.*`, using `store` and `error_strategy` |
-| `topology` | `Array` | the message-flow graph of `reactors.*`, built on each read |
+| `router` | `Sourced::Router` | routes to the reactors in `Sourced.registry`, using `store` and `error_strategy`. Rebuilt when the registry changes |
+| `topology` | `Array` | the message-flow graph of the reactors in `Sourced.registry`, built on its first read. Rebuilt when the registry changes |
 | `workers.count` | `Integer` (0 or more) | `2` |
 | `workers.batch_size` | `Integer` | `50`: messages per claim |
 | `workers.max_drain_rounds` | `Integer` | `10`: drain iterations per pickup |
