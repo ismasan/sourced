@@ -123,9 +123,10 @@ RSpec.describe Sourced::Evolve do
       end
     end
 
-    it 'shares the projection between reactors' do
+    it 'shares the projector between reactors, as it is' do
       [decider, projector].each do |reactor|
-        expect(reactor.projector.superclass).to eq(EvolveTestMessages::CartProjector)
+        expect(reactor.projector).to be(EvolveTestMessages::CartProjector)
+        expect(reactor.source).to be(EvolveTestMessages::CartProjector)
         expect(reactor.history_selector.types).to eq(
           [EvolveTestMessages::ItemAdded, EvolveTestMessages::ItemRemoved]
         )
@@ -138,52 +139,39 @@ RSpec.describe Sourced::Evolve do
       expect(projector.handled_messages).to eq([EvolveTestMessages::ItemAdded, EvolveTestMessages::ItemRemoved])
     end
 
-    it 'extends the reactor own subclass with inline evolve blocks, leaving the shared class alone' do
-      decider.evolve(EvolveTestMessages::CartClosed) { |context, _| context[:closed] = true }
+    it 'raises for context, evolve or before_evolve declared after adopting, leaving the projector alone' do
+      expect { decider.evolve(EvolveTestMessages::CartClosed) { |_, _| nil } }
+        .to raise_error(ArgumentError, /\.evolve: .* evolves EvolveTestMessages::CartProjector, .*subclass it/)
+      expect { decider.context { {} } }.to raise_error(ArgumentError, /\.context: .*subclass it/)
+      expect { decider.before_evolve { |_, _| nil } }.to raise_error(ArgumentError, /\.before_evolve: .*subclass it/)
 
-      expect(decider.history_selector.types).to include(EvolveTestMessages::CartClosed)
       expect(EvolveTestMessages::CartProjector.selector.types).not_to include(EvolveTestMessages::CartClosed)
-      expect(projector.history_selector.types).not_to include(EvolveTestMessages::CartClosed)
-      expect(EvolveTestMessages::CartProjector.new.respond_to?(
-        Sourced.message_method_name(Sourced::Projector::Inline::PREFIX, EvolveTestMessages::CartClosed.to_s)
-      )).to be(false)
+      expect(EvolveTestMessages::CartProjector.before_evolve_blocks).to be_empty
     end
 
-    it 'raises after the reactor own context or evolve declarations' do
+    it 'raises when adopting after the reactor own context, evolve or before_evolve declarations' do
       expect {
         Class.new(Sourced::Decider) do
           context { {} }
           evolve EvolveTestMessages::CartProjector
         end
-      }.to raise_error(ArgumentError, /must come before/)
+      }.to raise_error(ArgumentError, /declares context\/evolve\/before_evolve of its own/)
 
       expect {
         Class.new(Sourced::Decider) do
           evolve(EvolveTestMessages::CartClosed) { |_, _| nil }
           evolve EvolveTestMessages::CartProjector
         end
-      }.to raise_error(ArgumentError, /must come before/)
+      }.to raise_error(ArgumentError, /of its own/)
 
-      expect { decider.evolve(EvolveTestMessages::CartProjector) }
-        .to raise_error(ArgumentError, /must come before/)
-    end
-
-    it 'raises after the reactor own before_evolve declarations' do
       expect {
         Class.new(Sourced::Decider) do
           before_evolve { |_, _| nil }
           evolve EvolveTestMessages::CartProjector
         end
-      }.to raise_error(ArgumentError, /must come before/)
-    end
+      }.to raise_error(ArgumentError, /of its own/)
 
-    it 'adds before_evolve blocks to the reactor own subclass, leaving the shared class alone' do
-      decider.before_evolve { |context, _| context[:seen] = (context[:seen] || 0) + 1 }
-
-      instance = decider.new(cart_id: 'c1')
-      instance.evolve([added('i1'), added('i2')])
-      expect(instance.context[:seen]).to eq(2)
-      expect(EvolveTestMessages::CartProjector.before_evolve_blocks).to be_empty
+      expect { decider.evolve(EvolveTestMessages::CartProjector) }.to raise_error(ArgumentError, /of its own/)
     end
 
     it 'raises when given a block' do
@@ -191,10 +179,41 @@ RSpec.describe Sourced::Evolve do
         .to raise_error(ArgumentError, /takes no block/)
     end
 
-    it 'names the projection after the reactor and the adopted class' do
-      stub_const('CartDecider', decider)
-      expect(decider.projector.to_s).to eq('CartDecider::Projector(EvolveTestMessages::CartProjector)')
-      expect(decider.projector.inspect).to eq(decider.projector.to_s)
+    it 'adopts a subclass that extends a projector' do
+      extended = Class.new(EvolveTestMessages::CartProjector) do
+        evolve(EvolveTestMessages::CartClosed) { |context, _| context[:closed] = true }
+      end
+      reactor = Class.new(Sourced::Decider) do
+        partition_by :cart_id
+        evolve extended
+      end
+
+      expect(reactor.history_selector.types).to include(EvolveTestMessages::CartClosed)
+      instance = reactor.new(cart_id: 'c1')
+      instance.evolve([added('i1'), EvolveTestMessages::CartClosed.new(payload: { cart_id: 'c1' })])
+      expect(instance.context).to eq(cart_id: 'c1', items: %w[i1], closed: true)
+      expect(decider.history_selector.types).not_to include(EvolveTestMessages::CartClosed)
+    end
+
+    # Two files that refer to each other while loading: the projector's body
+    # names a constant whose file adopts the projector, before the projector
+    # has declared anything.
+    it 'evolves what the projector declares after it was adopted' do
+      cycle = Class.new(Sourced::Projector::Inline) do
+        reactor = Class.new(Sourced::Decider) do
+          partition_by :cart_id
+          consumer_group 'evolve_test.cycle'
+        end
+        reactor.evolve(self)
+        define_singleton_method(:reactor) { reactor }
+
+        context { { items: [], seen: 0 } }
+        before_evolve { |context, _| context[:seen] += 1 }
+        evolve(EvolveTestMessages::ItemAdded) { |context, evt| context[:items] << evt.payload.item_id }
+      end
+
+      expect(cycle.reactor.history_selector).to eq(Sourced::Selector[EvolveTestMessages::ItemAdded].by(:cart_id))
+      expect(cycle.reactor.new(cart_id: 'c1').evolve([added('i1'), added('i2')])).to eq(items: %w[i1 i2], seen: 2)
     end
   end
 
@@ -228,8 +247,17 @@ RSpec.describe Sourced::Evolve do
     it 'subclasses can adopt a projection, replacing the inherited one' do
       child = Class.new(parent) { evolve EvolveTestMessages::CartProjector }
 
-      expect(child.projector.selector.types).to eq([EvolveTestMessages::ItemAdded, EvolveTestMessages::ItemRemoved])
+      expect(child.projector).to be(EvolveTestMessages::CartProjector)
       expect(child.new(cart_id: 'c1').context).to eq(cart_id: nil, items: [])
+    end
+
+    it 'subclasses of a reactor that adopts a projector share it, and take no declarations of their own' do
+      adopting = Class.new(Sourced::Decider) { evolve EvolveTestMessages::CartProjector }
+      child = Class.new(adopting)
+
+      expect(child.projector).to be(EvolveTestMessages::CartProjector)
+      expect(child.source).to be(EvolveTestMessages::CartProjector)
+      expect { child.evolve(EvolveTestMessages::CartClosed) { |_, _| nil } }.to raise_error(ArgumentError, /subclass it/)
     end
   end
 
@@ -321,9 +349,11 @@ RSpec.describe Sourced::Evolve do
 
     it 'takes no inline declarations' do
       expect { decider.evolve(EvolveTestMessages::ItemRemoved) { |_, _| nil } }
+        .to raise_error(ArgumentError, /\.evolve: .* evolves .*Selector/)
+      expect { decider.context { {} } }.to raise_error(ArgumentError, /\.context: .* evolves .*Selector/)
+      expect { decider.before_evolve { |_, _| nil } }.to raise_error(ArgumentError, /\.before_evolve: .* evolves .*Selector/)
+      expect { decider.projector.evolve(EvolveTestMessages::ItemRemoved) { |_, _| nil } }
         .to raise_error(ArgumentError, /a selector projection takes no context/)
-      expect { decider.context { {} } }.to raise_error(ArgumentError, /a selector projection takes no/)
-      expect { decider.before_evolve { |_, _| nil } }.to raise_error(ArgumentError, /a selector projection takes no/)
     end
 
     it 'is inherited as given, and can be replaced' do
@@ -331,9 +361,9 @@ RSpec.describe Sourced::Evolve do
       replaced = Class.new(decider) { evolve EvolveTestMessages::CartProjector }
 
       expect(child.source).to be(selector)
-      expect(child.projector.superclass).to be(decider.projector)
+      expect(child.projector).to be(decider.projector)
       expect(replaced.source).to be(EvolveTestMessages::CartProjector)
-      expect(replaced.projector.superclass).to eq(EvolveTestMessages::CartProjector)
+      expect(replaced.projector).to be(EvolveTestMessages::CartProjector)
     end
   end
 end

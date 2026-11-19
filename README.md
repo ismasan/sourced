@@ -724,21 +724,6 @@ end
 Reactors adopt it with `evolve`:
 
 ```ruby
-class Carts < Sourced::Decider
-  partition_by :cart_id
-  evolve CartProjector
-
-  # More evolve blocks extend this reactor's copy, not CartProjector itself
-  evolve CartClosed do |context, _event|
-    context[:closed] = true
-  end
-
-  command AddItem => ItemAdded do |context, cmd|
-    raise 'Cart closed' if context[:closed]
-    event ItemAdded, cart_id: cmd.payload.cart_id, item_id: cmd.payload.item_id
-  end
-end
-
 class CartListing < Sourced::Projector::EventSourced
   partition_by :cart_id
   evolve CartProjector
@@ -747,7 +732,25 @@ class CartListing < Sourced::Projector::EventSourced
 end
 ```
 
-Each reactor works on an inline projector subclass of its own, so its extra `evolve` blocks never leak into the shared class or other reactors. `evolve SomeProjector` must come before the reactor's own `context` / `evolve` declarations.
+A reactor uses an adopted projector as it is, so it declares no `context` / `evolve` / `before_evolve` of its own (they raise `ArgumentError`). To extend a projector, subclass it and adopt the subclass:
+
+```ruby
+class ClosableCartProjector < CartProjector
+  evolve CartClosed do |context, _event|
+    context[:closed] = true
+  end
+end
+
+class Carts < Sourced::Decider
+  partition_by :cart_id
+  evolve ClosableCartProjector
+
+  command AddItem => ItemAdded do |context, cmd|
+    raise 'Cart closed' if context[:closed]
+    event ItemAdded, cart_id: cmd.payload.cart_id, item_id: cmd.payload.item_id
+  end
+end
+```
 
 `Sourced.load` reads a projection's context straight from the log, without a reactor. The attributes you pass are its partition:
 
