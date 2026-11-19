@@ -231,7 +231,7 @@ RSpec.describe Sourced::Machine::Part do
     it "can't be registered" do
       expect { Sourced::Router.new(store: Sourced::Store.new(Sequel.sqlite), reactors: [pending]) }
         .to raise_error(ArgumentError, /PendingMachine isn't a reactor: .*Missing methods: claim_selector, handle_claim/)
-      expect { Sourced::Config.register(Sourced::Config.build, pending) }
+      expect { Sourced::Registry.new.register(pending) }
         .to raise_error(ArgumentError, /PendingMachine isn't a reactor/)
     end
 

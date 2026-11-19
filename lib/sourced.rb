@@ -83,22 +83,35 @@ module Sourced
   #
   # @return [Sourced::Component]
   def self.config
-    @config ||= Config.build
+    @config ||= Config.build(registry:)
+  end
+
+  # The reactors {.config} routes to (see {Registry}).
+  # @return [Registry]
+  def self.registry
+    @registry ||= Registry.new
   end
 
   # Mountable: +App.mount('sourced', Sourced)+ mounts {.config}
   # @return [Sourced::Component]
   def self.to_component = config
 
-  # Register a reactor, as a component under +reactors+ in {.config}, with
-  # what its +to_sourced_reactors+ returns (a machine's children).
-  # Must be called before the configuration is prepared or booted.
+  # Register a reactor in {.registry}, with what its +to_sourced_reactors+
+  # returns (a machine's children). At any time: once {.config} is built, its
+  # router and topology are rebuilt to include it.
   # @param reactor [Class, #to_sourced_reactors] a reactor (see {Router#register} for the protocol)
-  # @return [Sourced::Component] the reactor's node (see {Config.register})
-  # @raise [ArgumentError] if a different reactor is already registered under the same key (its group_id, escaped)
-  # @raise [Sourced::Component::LockedComponentError] once the configuration is prepared
+  # @return [Class] the reactor, or the first one its +to_sourced_reactors+ returns
+  # @raise [ArgumentError] if a different reactor is registered with the same group_id
   def self.register(reactor)
-    Config.register(config, reactor)
+    registry.register(reactor)
+  end
+
+  # Unregister a reactor from {.registry}, with what its +to_sourced_reactors+
+  # returns. Its consumer group stays in the store.
+  # @param reactor [Class, #to_sourced_reactors]
+  # @return [Boolean] whether anything was unregistered
+  def self.unregister(reactor)
+    registry.unregister(reactor)
   end
 
   # Boot a standalone Sourced: build every component, set up the store and
@@ -149,6 +162,7 @@ module Sourced
   # Drop the configuration, so the next {.config} builds a fresh one. For specs.
   def self.reset!
     @config = nil
+    @registry = nil
   end
 
   # Generate a standardized method name for message handlers.
@@ -198,7 +212,7 @@ module Sourced
     raw_events = instance.decide(command)
     # Correlated before it's marked: what's correlated takes its metadata.
     correlated_events = raw_events.map { |e| command.correlate(e) }
-    registered = config.declared?(Config.reactor_key(reactor_class))
+    registered = registry.registered?(reactor_class)
     command = command.with_metadata(HANDLED_BY_KEY => [reactor_class.group_id, command.id]) if registered
 
     guard = read_result&.guard
@@ -302,6 +316,7 @@ require 'sourced/assertion'
 require 'sourced/actions'
 require 'sourced/action_runner'
 require 'sourced/reactor_defaults'
+require 'sourced/registry'
 require 'sourced/consumer'
 require 'sourced/partition_schema'
 require 'sourced/projector/inline'

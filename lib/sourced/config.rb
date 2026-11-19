@@ -15,9 +15,10 @@ module Sourced
   # Sourced's configuration: a tree of typed components (see sourced-component),
   # with defaults, dependencies and a lifecycle.
   #
-  #   config = Sourced::Config.build
+  #   registry = Sourced::Registry.new
+  #   config = Sourced::Config.build(registry:)
   #   config.config!('workers.count') { 4 }
-  #   Sourced::Config.register(config, Courses)
+  #   registry.register(Courses)
   #   config.start!(task)
   #
   # The tree:
@@ -33,12 +34,13 @@ module Sourced
   #   store.install_tables  whether the store creates its tables on start (default false: apps
   #                     install them with a migration; the store checks they're there)
   #   store.codec       the store's MessageCodec, compiled from the message registry on
-  #                     prepare and build. Recycle it to pick up reloaded message classes
-  #   reactors.*        one component per registered reactor (see .register)
-  #   router            routes to reactors.*. On start, registers consumer groups and
-  #                     freezes the error strategy (see Router#setup!)
-  #   topology          message-flow graph of reactors.*, built on its first read and kept
-  #   topology.graph    holds it (a Topology::Memo), rebuilt with reactors.*
+  #                     prepare and build
+  #   router            routes to the registry's reactors. Building it recompiles store.codec, so
+  #                     a registry change picks up message classes defined or reloaded since.
+  #                     On start, registers consumer groups and freezes the error strategy
+  #                     (see Router#setup!)
+  #   topology          message-flow graph of the registry's reactors, built on its first read and kept
+  #   topology.graph    holds it (a Topology::Memo)
   #   workers.*         count, batch_size, max_drain_rounds, catchup_interval, shutdown_timeout
   #   housekeeping.*    interval, claim_ttl_seconds
   #   dispatcher        spawns workers into the context passed to #start!. On stop (and so on
@@ -50,6 +52,10 @@ module Sourced
   #   scheduled_messages.interval    seconds between promotions of due scheduled messages
   #   scheduled_messages.poller      promotes them into the log. Runs with the dispatcher, so
   #                                  only where the workers run (ex. a leader process)
+  #
+  # The reactors aren't components: they're in the Registry the tree is built with.
+  # A change to the registry on a built tree recycles the router and topology.graph, and
+  # everything built on them (the dispatcher and its pollers), each back to the status it had.
   #
   # Building only constructs objects: nothing touches the database until #start!.
   # Preparing compiles the store's codec, so it can run once before forking.
@@ -93,19 +99,26 @@ module Sourced
     ReactorInterface = T::Interface[:claim_selector, :handle_claim]
 
     # What a store serializes messages with (see Store::MessageCodec)
-    MessageCodecInterface = T::Interface[:compile!, :encode, :decode]
+    MessageCodecInterface = T::Interface[:compile!, :recompile!, :encode, :decode]
 
     LoggerInterface = T::Interface[:debug, :info, :warn, :error]
     ExecutorInterface = T::Interface[:start]
     ErrorStrategyInterface = T::Interface[:call]
 
-    # Characters with a meaning in component keys
-    KEY_SEPARATORS = /[.*]/
+    # Components rebuilt when the registry changes. Their dependents follow
+    REGISTRY_DEPENDENTS = %w[router topology.graph].freeze
 
     # A fresh, open configuration tree, with defaults for every component.
+    # @param registry [Registry] the reactors the router and topology are built from
     # @return [Sourced::Component]
-    def self.build
+    def self.build(registry: Registry.new)
       Sourced::Component.new.tap do |c|
+        # Only once something's built from the registry: until then the router and topology
+        # are built from it as it is when they're built
+        registry.on_change do
+          c.recycle_components!(*REGISTRY_DEPENDENTS) if %i[built started].include?(c.root.boot_status)
+        end
+
         c.declare('logger', LoggerInterface) { Logger.new($stdout) }
 
         c.declare('db', Sequel::Database)
@@ -163,18 +176,24 @@ module Sourced
 
         # The router's start freezes the error strategy (see Router#setup!), so an
         # override only needs to build it.
+        # Building it recompiles the store's codec, for message classes defined, or
+        # redefined by a code reloader, since: a registry change rebuilds the router
+        # with its dispatcher stopped (it's a dependent, torn down first, and its
+        # stop waits for its workers), so no worker decodes a message into a class
+        # its reactor doesn't know.
         c.declare('router', Router)
-        c.component!('router', %w[store reactors.* error_strategy]) do
-          build do |store, reactors, error_strategy|
-            Router.new(store:, reactors: reactors.values, error_strategy:)
+        c.component!('router', %w[store store.codec error_strategy]) do
+          build do |store, codec, error_strategy|
+            codec.recompile!
+            Router.new(store:, reactors: registry.reactors, error_strategy:)
           end
           start { |router, _| router.setup! }
         end
 
         # Built on its first read and kept, as it parses the reactors' source and most processes
-        # never read it: topology.graph holds it, and is rebuilt (empty) with the reactors.
+        # never read it: topology.graph holds it, and is rebuilt (empty) when the registry changes.
         c.declare('topology.graph', T::Interface[:value])
-        c.config!('topology.graph', ['reactors.*']) { |reactors| Topology::Memo.new(reactors.values) }
+        c.config!('topology.graph') { Topology::Memo.new(registry.reactors) }
         # Checked, not copied (as T::Array would on every read): readers share the kept graph.
         c.declare('topology', T::Any[::Array])
         c.config('topology', ['topology.graph'], &:value)
@@ -242,56 +261,6 @@ module Sourced
           stop(&:stop!)
         end
       end
-    end
-
-    # Register a reactor as a component under +reactors+, which the router and
-    # topology depend on, keyed by its group_id (see {.reactor_key}).
-    # The router checks that group_ids are unique.
-    #
-    # A +reactor+ that responds to +to_sourced_reactors+ registers what that
-    # returns instead, recursively: a machine returns itself and the children
-    # it starts, and anything else (ex. a module) can return a group of reactors.
-    # A reactor already registered under its key is skipped.
-    #
-    # @param config [Sourced::Component] a tree built by {.build}
-    # @param reactor [Class, #to_sourced_reactors] a reactor (see {ReactorInterface})
-    # @return [Sourced::Component] the node of the first reactor registered (the reactor itself, for a machine)
-    # @raise [ArgumentError] if a different reactor is already registered under the same key
-    # @raise [Sourced::Component::LockedComponentError] once the tree is prepared
-    def self.register(config, reactor)
-      reactors = ReactorDefaults.expand(reactor)
-      raise ArgumentError, "#{reactor}.to_sourced_reactors returned no reactors" if reactors.empty?
-
-      reactors.map { |r| register_one(config, r) }.first
-    end
-
-    private_class_method def self.register_one(config, reactor)
-      ReactorDefaults.apply(reactor)
-      key = reactor_key(reactor)
-      provider = ReactorProvider.new(reactor)
-      return config.node(key) if config.declared?(key) && config.node(key).implementation&.provider == provider
-
-      begin
-        config.declare(key, ReactorInterface)
-      rescue Sourced::Component::DeclarationOverrideError
-        raise ArgumentError, "can't register #{reactor} (group_id #{reactor.group_id.inspect}) as #{key}: " \
-                             "a different reactor is already registered under that key. Keys are group_ids with '.' and '*' replaced by '_'"
-      end
-      config.component!(key, provider)
-      config.node(key)
-    end
-
-    # Builds a reactor's node, and tells {.register} the node is still the
-    # reactor's (not overridden) without building it.
-    ReactorProvider = Data.define(:reactor) do
-      def call = reactor
-    end
-    private_constant :ReactorProvider
-
-    # The component key of a reactor, ex. 'reactors.CourseDecider'
-    # @return [String]
-    def self.reactor_key(reactor)
-      "reactors.#{reactor.group_id.to_s.gsub(KEY_SEPARATORS, '_')}"
     end
   end
 end

@@ -1162,7 +1162,7 @@ module Sourced
 
     class << self
       # This machine and the children it starts, including its parts',
-      # so {Sourced.register} registers them with it (see {Config.register}).
+      # so {Sourced.register} registers them with it (see {Registry#register}).
       # @return [Array<Class>]
       def to_sourced_reactors = [self, *tree.children]
 

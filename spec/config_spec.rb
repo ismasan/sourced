@@ -3,6 +3,7 @@
 require 'spec_helper'
 require 'sourced'
 require 'timeout'
+require 'tmpdir'
 
 module ConfigTestMessages
   ThingAdded = Sourced::Event.define('config_test.thing_added') do
@@ -32,6 +33,21 @@ class ConfigTestReactor
   def self.handle_claim(_claim) = []
 end
 
+# Records what its workers handle, and acks it
+class ConfigTestRecorder
+  extend Sourced::Consumer
+
+  partition_by :thing_id
+
+  def self.handled = (@handled ||= [])
+  def self.handled_messages = [ConfigTestMessages::ThingAdded]
+
+  def self.handle_claim(claim)
+    handled.concat(claim.messages.map { |m| m.payload.thing_id })
+    claim.messages.map { |m| [[], m] }
+  end
+end
+
 class ConfigTestOtherReactor
   extend Sourced::Consumer
 
@@ -45,8 +61,10 @@ end
 RSpec.describe Sourced::Config, :async do
   let(:task) { CollectingTask.new }
 
+  let(:registry) { Sourced::Registry.new }
+
   subject(:config) do
-    described_class.build.tap do |c|
+    described_class.build(registry:).tap do |c|
       c.config!('logger') { Sourced::NULL_LOGGER }
       c.config!('store.install_tables') { true } # in-memory databases have no migrations
     end
@@ -103,14 +121,14 @@ RSpec.describe Sourced::Config, :async do
     end
 
     it 'describes its dependency graph before booting' do
-      described_class.register(config, ConfigTestReactor)
+      registry.register(ConfigTestReactor)
       components = config.graph.components.to_h { |c| [c[:key], c] }
 
       expect(components['store'][:deps])
         .to eq(%w[db notifier logger store.table_prefix store.install_tables store.codec])
-      expect(components['router'][:deps]).to eq(%w[store reactors.config_test_reactor error_strategy])
+      expect(components['router'][:deps]).to eq(%w[store store.codec error_strategy])
       expect(components['topology'][:deps]).to eq(%w[topology.graph])
-      expect(components['topology.graph'][:deps]).to eq(%w[reactors.config_test_reactor])
+      expect(components['topology.graph'][:deps]).to eq([])
       expect(components['dispatcher'][:deps]).to include('router', 'workers.count')
       expect(components['dispatcher.catchup_poller'][:deps]).to eq(%w[dispatcher workers.catchup_interval logger])
       expect(components['dispatcher.stale_claim_reaper'][:deps]).to include('dispatcher', 'store', 'housekeeping.interval')
@@ -156,7 +174,7 @@ RSpec.describe Sourced::Config, :async do
     before { config.config!('workers.count') { 0 } }
 
     it 'prepares the store, registers consumer groups and freezes the error strategy' do
-      described_class.register(config, ConfigTestReactor)
+      registry.register(ConfigTestReactor)
       config.start!
 
       expect(config['store'].installed?).to be(true)
@@ -271,7 +289,7 @@ RSpec.describe Sourced::Config, :async do
     end
 
     it 'picks up message types defined since boot when store.codec is recycled, along with the store' do
-      described_class.register(config, ConfigTestReactor)
+      registry.register(ConfigTestReactor)
       config.start!(task)
       store = config['store']
       router = config['router']
@@ -417,39 +435,26 @@ RSpec.describe Sourced::Config, :async do
     end
   end
 
-  describe '.register' do
+  describe 'the registry' do
     before { config.config!('workers.count') { 0 } }
 
-    it 'declares the reactor under reactors, keyed by group_id' do
-      node = described_class.register(config, ConfigTestReactor)
-
-      expect(node.path).to eq('reactors.config_test_reactor')
-      expect(config.declared?('reactors.config_test_reactor')).to be(true)
-    end
-
-    it 'escapes characters with a meaning in component keys' do
-      node = described_class.register(config, ConfigTestOtherReactor)
-
-      expect(node.path).to eq('reactors.config_test_other')
-    end
-
     it 'routes to every registered reactor, in registration order' do
-      described_class.register(config, ConfigTestReactor)
-      described_class.register(config, ConfigTestOtherReactor)
+      registry.register(ConfigTestReactor)
+      registry.register(ConfigTestOtherReactor)
       config.start!
 
       expect(config['router'].reactors).to eq([ConfigTestReactor, ConfigTestOtherReactor])
     end
 
     it 'builds the topology of registered reactors' do
-      described_class.register(config, ConfigTestReactor)
+      registry.register(ConfigTestReactor)
       config.build!
 
       expect(config['topology']).to eq(Sourced::Topology.build([ConfigTestReactor]))
     end
 
     it 'builds the topology on its first read, once, and keeps it' do
-      described_class.register(config, ConfigTestDecider)
+      registry.register(ConfigTestDecider)
       allow(Sourced::Topology).to receive(:build).and_call_original
       config.build!
       expect(Sourced::Topology).not_to have_received(:build)
@@ -463,7 +468,7 @@ RSpec.describe Sourced::Config, :async do
     end
 
     it 'freezes the topology its readers share' do
-      described_class.register(config, ConfigTestDecider)
+      registry.register(ConfigTestDecider)
       config.build!
       topology = config['topology']
       command = topology.find { it.type == 'command' }
@@ -473,93 +478,155 @@ RSpec.describe Sourced::Config, :async do
       expect { command.produces << 'x' }.to raise_error(FrozenError)
     end
 
-    it 'builds the topology again once the reactors are recycled' do
-      described_class.register(config, ConfigTestDecider)
-      config.build!
-      before = config['topology']
+    it 'builds the router and topology from it as it is when they are built' do
+      registry.register(ConfigTestReactor)
+      config.prepare!
+      registry.register(ConfigTestDecider) # nothing built yet: nothing to rebuild
+      config.start!
 
-      config.recycle_component!('reactors.config_test_decider')
-
-      expect(config['topology']).not_to be(before)
-      expect(config['topology']).to eq(before)
+      expect(config['router'].reactors).to eq([ConfigTestReactor, ConfigTestDecider])
+      expect(config['topology'].map(&:id)).to include('config_test.add_thing')
     end
 
-    it 'skips a reactor already registered under its key' do
-      node = described_class.register(config, ConfigTestReactor)
+    it 'rebuilds the router and topology when a reactor is registered once started' do
+      registry.register(ConfigTestReactor)
+      config.start!(task)
+      router = config['router']
+      topology = config['topology']
 
-      expect(described_class.register(config, ConfigTestReactor)).to be(node)
-      config.start!
+      registry.register(ConfigTestDecider)
+
+      expect(config['router']).not_to be(router)
+      expect(config['router'].reactors).to eq([ConfigTestReactor, ConfigTestDecider])
+      expect(config['store'].consumer_group_active?('config_test_decider')).to be(true) # the router's start
+      expect(config['topology']).not_to be(topology)
+      expect(config['topology'].map(&:id)).to include('config_test.add_thing')
+      expect(config.node('dispatcher').status).to eq(:started)
+      expect(config['dispatcher'].reactors).to eq([ConfigTestReactor, ConfigTestDecider])
+    end
+
+    it 'rebuilds them without a reactor unregistered once started' do
+      registry.register(ConfigTestReactor)
+      registry.register(ConfigTestOtherReactor)
+      config.start!(task)
+
+      registry.unregister(ConfigTestReactor)
+
+      expect(config['router'].reactors).to eq([ConfigTestOtherReactor])
+    end
+
+    it 'rebuilds them once for a batch of changes, and not for changes that change nothing' do
+      registry.register(ConfigTestReactor)
+      config.start!(task)
+      allow(config).to receive(:recycle_components!).and_call_original
+
+      registry.batch do
+        registry.unregister(ConfigTestReactor)
+        registry.register(ConfigTestReactor)
+        registry.register(ConfigTestOtherReactor)
+      end
+      registry.register(ConfigTestOtherReactor)
+      registry.unregister(ConfigTestDecider)
+
+      expect(config).to have_received(:recycle_components!).once
+      expect(config['router'].reactors).to eq([ConfigTestReactor, ConfigTestOtherReactor])
+    end
+
+    it 'leaves a deferred dispatcher stopped' do
+      config.defer('dispatcher')
+      config.start!(task)
+
+      registry.register(ConfigTestReactor)
+
+      expect(config.node('dispatcher').status).to eq(:built)
       expect(config['router'].reactors).to eq([ConfigTestReactor])
     end
 
-    it 'raises for a different reactor already registered under the same key' do
-      described_class.register(config, ConfigTestReactor)
+    it "leaves the router running when a change is invalid, and the registry as it was" do
+      registry.register(ConfigTestReactor)
+      config.start!(task)
+      router = config['router']
       lookalike = Class.new do
-        def self.name = 'ConfigTestLookalike'
         def self.group_id = 'config_test_reactor'
         def self.claim_selector = Sourced::Selector::NONE
         def self.handle_claim(_claim) = []
       end
 
-      expect {
-        described_class.register(config, lookalike)
-      }.to raise_error(ArgumentError, /\(group_id "config_test_reactor"\) as reactors\.config_test_reactor: a different reactor/)
+      expect { registry.register(lookalike) }.to raise_error(ArgumentError, /already uses group_id/)
+      expect(registry.reactors).to eq([ConfigTestReactor])
+      expect(config['router']).to be(router)
+      expect(config.node('router').status).to eq(:started)
     end
 
-    it 'raises for a reactor whose key was overridden' do
-      described_class.register(config, ConfigTestReactor)
-      config.config!('reactors.config_test_reactor') { ConfigTestOtherReactor }
+    describe 'with workers running' do
+      let(:path) { File.join(Dir.mktmpdir, 'config_test.db') }
 
-      expect {
-        described_class.register(config, ConfigTestReactor)
-      }.to raise_error(ArgumentError, /a different reactor/)
-    end
-
-    it 'registers what to_sourced_reactors returns, recursively, returning the first node' do
-      inner = Module.new { def self.to_sourced_reactors = [ConfigTestOtherReactor, ConfigTestReactor] }
-      bundle = Module.new
-      bundle.define_singleton_method(:to_sourced_reactors) { [ConfigTestReactor, inner] }
-
-      node = described_class.register(config, bundle)
-      config.start!
-
-      expect(node.path).to eq('reactors.config_test_reactor')
-      expect(config['router'].reactors).to eq([ConfigTestReactor, ConfigTestOtherReactor])
-    end
-
-    it 'raises when to_sourced_reactors returns nothing' do
-      empty = Module.new { def self.to_sourced_reactors = [] }
-
-      expect { described_class.register(config, empty) }.to raise_error(ArgumentError, /returned no reactors/)
-    end
-
-    it 'names the reactor when distinct group_ids map to the same key' do
-      described_class.register(config, ConfigTestOtherReactor) # 'config.test.other'
-      lookalike = Class.new do
-        def self.name = 'ConfigTestLookalike'
-        def self.group_id = 'config_test_other'
-        def self.claim_selector = Sourced::Selector::NONE
-        def self.handle_claim(_claim) = []
+      before do
+        db_path = path
+        config.component!('db') do
+          build { Sequel.sqlite(db_path) }
+          teardown(&:disconnect)
+        end
+        config.config!('workers.count') { 1 }
+        config.config!('workers.catchup_interval') { 0.05 }
+        ConfigTestRecorder.handled.clear
       end
 
-      expect {
-        described_class.register(config, lookalike)
-      }.to raise_error(ArgumentError, /\(group_id "config_test_other"\) as reactors\.config_test_other.*replaced by '_'/)
+      def handled_eventually(thing_id)
+        Timeout.timeout(3) { sleep 0.02 until ConfigTestRecorder.handled.include?(thing_id) }
+        ConfigTestRecorder.handled
+      end
+
+      it 'works the messages of a reactor registered after start' do
+        config.start!(Thread.current)
+
+        registry.register(ConfigTestRecorder)
+        config['store'].append(ConfigTestMessages::ThingAdded.new(payload: { thing_id: 't1' }))
+
+        expect(handled_eventually('t1')).to eq(['t1'])
+      end
+
+      it 'works the messages of a type defined after start, once a reactor handling it registers' do
+        config.start!(Thread.current)
+        late = Sourced::Event.define("config.test.late_#{SecureRandom.hex(4)}") { attribute :thing_id, String }
+        handled = []
+        reactor = Class.new do
+          extend Sourced::Consumer
+
+          partition_by :thing_id
+          define_singleton_method(:group_id) { 'config.test.late' }
+          define_singleton_method(:handled_messages) { [late] }
+          define_singleton_method(:handle_claim) do |claim|
+            handled.concat(claim.messages.map { |m| m.payload.thing_id })
+            claim.messages.map { |m| [[], m] }
+          end
+        end
+
+        registry.register(reactor)
+        config['store'].append(late.new(payload: { thing_id: 't1' }))
+
+        Timeout.timeout(3) { sleep 0.02 until handled.include?('t1') }
+        expect(handled).to eq(['t1'])
+      end
+
+      it 'works them with a deferred dispatcher, started by key' do
+        config.defer('dispatcher')
+        config.start!(Thread.current)
+        config.start_component!('dispatcher', Thread.current)
+
+        registry.register(ConfigTestRecorder)
+        config['store'].append(ConfigTestMessages::ThingAdded.new(payload: { thing_id: 't1' }))
+
+        expect(config.node('dispatcher').status).to eq(:started)
+        expect(handled_eventually('t1')).to eq(['t1'])
+      end
     end
 
-    it 'raises once the tree is prepared' do
-      config.prepare!
+    it 'does nothing once the tree is torn down' do
+      config.start!(task)
+      config.teardown!
 
-      expect {
-        described_class.register(config, ConfigTestReactor)
-      }.to raise_error(Sourced::Component::LockedComponentError)
-    end
-
-    it 'checks that implementations are reactors' do
-      described_class.register(config, ConfigTestReactor)
-      config.config!('reactors.config_test_reactor') { Object.new }
-
-      expect { config.build! }.to raise_error(Plumb::ParseError, /reactors\.config_test_reactor/)
+      expect { registry.register(ConfigTestReactor) }.not_to raise_error
     end
   end
 
@@ -576,12 +643,22 @@ RSpec.describe Sourced::Config, :async do
     end
 
     it 'boots with the host, using the overrides' do
-      described_class.register(config, ConfigTestReactor)
+      registry.register(ConfigTestReactor)
       host.start!
 
       expect(host['sourced.store'].db).to be(host_db)
       expect(config['store']).to be(host['sourced.store'])
       expect(config['router'].reactors).to eq([ConfigTestReactor])
+    ensure
+      host.teardown!
+    end
+
+    it "rebuilds its router when the registry changes, in the host's tree" do
+      host.start!
+
+      registry.register(ConfigTestReactor)
+
+      expect(host['sourced.router'].reactors).to eq([ConfigTestReactor])
     ensure
       host.teardown!
     end
