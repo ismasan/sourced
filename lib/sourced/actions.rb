@@ -83,6 +83,23 @@ module Sourced
       params.empty? ? work.call : work.call(appended)
     end
 
+    # Store a snapshot of the reactor's state for the claimed partition (see
+    # {Sourced::Snapshots}), in the claim's ack transaction.
+    class Snapshot
+      attr_reader :state, :position
+
+      # @param state [Object] a value of the reactor's snapshot type
+      # @param position [Integer] the last history message folded into +state+
+      def initialize(state:, position:)
+        @state = state
+        @position = position
+      end
+
+      def deconstruct_keys(_keys)
+        { type: :snapshot, state: @state, position: @position }
+      end
+    end
+
     # Execute a synchronous side effect within the current transaction.
     class Sync
       attr_reader :work

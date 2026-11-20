@@ -103,9 +103,23 @@ Sequel.migration do
       String :id, primary_key: true, null: false
       String :last_seen, null: false
     end
+
+    # A reactor's state for one partition (see Sourced::Snapshots): a cache of
+    # its history up to +position+, owned by the partition's offset. Its own
+    # table so that claims and acks, which update offsets, don't rewrite it.
+    create_table?(:<%= snapshots_table %>) do
+      foreign_key :offset_id, :<%= offsets_table %>, on_delete: :cascade, primary_key: true
+      # The last history message folded into the state.
+      Integer :position, null: false
+      # The reactor's snapshot version when written.
+      Integer :version, null: false
+      String :state, text: true, null: false
+      String :created_at, null: false
+    end
   end
 
   down do
+    drop_table?(:<%= snapshots_table %>)
     drop_table?(:<%= offset_key_pairs_table %>)
     drop_table?(:<%= offsets_table %>)
     drop_table?(:<%= consumer_groups_table %>)

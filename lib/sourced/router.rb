@@ -12,7 +12,8 @@ module Sourced
     # @!attribute history_selector [Selector] what a claim reads as history, bound to its partition
     # @!attribute needs_history [Boolean] whether the reactor's +handle_claim+ takes +history:+
     # @!attribute exclusive [Boolean] whether it solely owns its message types
-    Group = Data.define(:claim_selector, :history_selector, :needs_history, :exclusive)
+    # @!attribute snapshot [Snapshots::Config, nil] how it snapshots its partitions, if it does
+    Group = Data.define(:claim_selector, :history_selector, :needs_history, :exclusive, :snapshot)
 
     # Raised for a reactor class, or group_id, that isn't registered with this router
     class UnregisteredReactorError < Sourced::Error
@@ -110,7 +111,12 @@ module Sourced
         kwargs = {}
         if group.needs_history
           attrs = claim.partition_value.transform_keys(&:to_sym)
-          kwargs[:history] = store.read(group.history_selector.bind(**attrs))
+          # Only snapshotting groups look one up: others read as they always do.
+          if group.snapshot
+            snapshot = store.read_snapshot(group_id, offset_id: claim.offset_id)
+            kwargs[:snapshot] = snapshot
+          end
+          kwargs[:history] = store.read(group.history_selector.bind(**attrs), after_position: snapshot&.position)
         end
 
         action_pairs = reactor_class.handle_claim(claim, **kwargs)
@@ -227,7 +233,8 @@ module Sourced
           claim_selector: reactor.claim_selector,
           history_selector: reactor.history_selector,
           needs_history: Injector.resolve_args(reactor, :handle_claim).include?(:history),
-          exclusive: reactor.exclusive?
+          exclusive: reactor.exclusive?,
+          snapshot: reactor.snapshot_config
         )
       end
       @reactors = @registry.reactors
@@ -237,7 +244,8 @@ module Sourced
     def register_consumer_group(reactor_class)
       group = @groups.fetch(reactor_class)
       store.register_consumer_group(
-        reactor_class.group_id, group.claim_selector, label: reactor_class.group_label, exclusive: group.exclusive
+        reactor_class.group_id, group.claim_selector,
+        label: reactor_class.group_label, exclusive: group.exclusive, snapshot: group.snapshot
       )
     end
 
@@ -280,6 +288,22 @@ module Sourced
       reactor || raise(UnregisteredReactorError.new(reactor_or_id, @reactors))
     end
 
+    # Store a reactor's +:snapshot+ signal, if it returned one, after its ack
+    # (the store writes it only while the offset is at the claim's version).
+    def write_snapshot(signal, claim, reactor)
+      return unless signal
+
+      unless @groups.fetch(reactor).snapshot
+        raise Sourced::Error, "#{reactor} returned a :snapshot signal, but declares no snapshot_config"
+      end
+
+      store.write_snapshot(
+        reactor.group_id,
+        offset_id: claim.offset_id, offset_version: claim.offset_version,
+        position: signal[:position], state: signal[:state]
+      )
+    end
+
     # The partition a retrying group failed on went through: the group
     # recovers, in the ack's transaction.
     def recover(claim, group_id)
@@ -319,6 +343,7 @@ module Sourced
           # partitioning or exclusivity.
           store.delete_messages(flagged_deletes) if flagged_deletes.any?
           store.ack(group_id, offset_id: claim.offset_id, version: claim.offset_version, position: last_position)
+          write_snapshot(interpreter.snapshot, claim, reactor)
         else
           store.release(group_id, offset_id: claim.offset_id, version: claim.offset_version)
         end
