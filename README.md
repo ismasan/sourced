@@ -523,6 +523,62 @@ decider, read_result = Sourced.load(CourseDecider, course_name: 'Algebra')
 decider.context  # => { name_taken: true }
 ```
 
+#### Snapshots
+
+A Decider rebuilds its context from the partition's whole history on every claim. For partitions with long histories, `snapshot` has the background workers store the context every so often, and later claims read only the history after it:
+
+```ruby
+class ScanQueue < Sourced::Decider
+  partition_by :queue_name
+  snapshot every: 100, version: 1
+
+  context { { pending: [] } }
+
+  evolve ScanQueued do |context, evt|
+    context[:pending] << evt.payload.scan_id
+  end
+
+  evolve ScanStarted do |context, evt|
+    context[:pending].delete(evt.payload.scan_id)
+  end
+end
+```
+
+- `every:` writes a new snapshot once a claim's history, after the stored snapshot, has this many messages.
+- `version:` is the context's version. Bump it whenever an `evolve` block or the context's shape changes: a snapshot stored at another version is ignored. Forgetting to bump it gives silently wrong context.
+- `type:` (optional) is the Plumb type the context is stored as, encoded and decoded through `Plumb::Codec::JSON`. The default, `Sourced::Types::JSONData`, takes JSON-native values and decodes Hash keys as Symbols. Give a typed one for richer values (ex. `Date`, or value types registered with the codec). A type the codec can't encode fails the boot.
+
+```ruby
+Context = Sourced::Types::Hash[
+  pending: Sourced::Types::Array[String],
+  opened_on: Date
+]
+
+snapshot every: 100, version: 2, type: Context
+```
+
+For what `type:` can't express, two optional hooks map the context to and from what's stored: `#to_snapshot` returns the value to store (the context by default), and `.from_snapshot(state)` returns the context to start from (the decoded value by default).
+
+```ruby
+def to_snapshot = context.merge(pending: context[:pending].to_a)
+def self.from_snapshot(state) = state.merge(pending: Set.new(state[:pending]))
+```
+
+A snapshot is a cache, never the truth: with none, one stored at another version, or one that no longer decodes against `type:`, a claim reads the partition's whole history, and a new snapshot is stored when one is due. Resetting the consumer group deletes its snapshots. Snapshots are only used by background workers: `Sourced.handle!`, `Sourced.load`, `Decider.call` and the testing helpers always read the whole history.
+
+Messages are frozen all the way down, so an `evolve` block copies the payload collections it keeps in the context and changes later:
+
+```ruby
+evolve ItemsAdded do |context, evt|
+  context[:items] = evt.payload.items.dup # not evt.payload.items, which is frozen
+  context[:items] << 'extra'
+end
+```
+
+A Decider can't snapshot (raising `Sourced::DefinitionError`) when its context can't be rebuilt from history: when it's `exclusive` (messages may be deleted on ack), id-partitioned (no partition state), or reads its history [through a selector](#reading-history-through-a-selector).
+
+Snapshots are stored in the `sourced_snapshots` table, which the [migration](#database-setup) creates. Other reactors can snapshot too: see [Snapshots in custom reactors](#snapshots-in-custom-reactors).
+
 ### Projectors
 
 `Sourced::Projector` reactors build read models: for each partition they claim, they run their [inline projector](#inline-projectors) over the claimed events and persist the projection. Two flavours:
@@ -1392,6 +1448,62 @@ A **signal** is inert data — a plain `Hash` or a `Sourced::Actions` value obje
 | `{ type: :ack, delete: false }` | acknowledge the source message; `delete: true` removes it (see below) |
 
 The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name, normalized), `group_label` (the class name), `exclusive?` (`false`), `history_selector` (the history it reads, bound to each claimed partition: none), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate. Built-in reactors derive their `claim_selector` from their DSL: a Decider claims its commands and the events it reacts to, a projector what it evolves from and reacts to, both by their `partition_by` keys.
+
+### Snapshots in custom reactors
+
+[Decider snapshots](#snapshots) are the `Sourced::Snapshots` mixin, which other reactors can include. It works for a reactor whose class answers `new(partition_values)` and whose instances answer `#evolve(messages)` and `#context`, ex. a `Sourced::Consumer` with `Sourced::Evolve`. The reactor's `handle_claim` takes the stored snapshot, starts its instance from it, and adds the snapshot signal to what it returns:
+
+```ruby
+class Thresholds
+  extend Sourced::Consumer
+  include Sourced::Evolve
+  include Sourced::Snapshots
+
+  partition_by :counter_id
+  snapshot every: 500, version: 1
+
+  context { { total: 0 } }
+
+  evolve Added do |context, evt|
+    context[:total] += evt.payload.amount
+  end
+
+  def self.handled_messages = [Added]
+
+  def initialize(partition_values = {})
+    @partition_values = partition_values
+  end
+
+  # history: the partition's history after the snapshot (all of it, without one)
+  # snapshot: the stored Sourced::Snapshot, or nil
+  def self.handle_claim(claim, history:, snapshot: nil)
+    values = partition_keys.to_h { |key| [key, claim.partition_value[key.to_s]] }
+    # The snapshot to store, when one is due: computed on an instance of its own
+    signal = snapshot_signal(values, snapshot, history, before: claim.messages.first)
+
+    instance = snapshot_instance(values, snapshot) # a new instance, started from the snapshot
+    instance.evolve(history.messages)
+    pairs = claim.messages.map do |evt|
+      alert(instance.context[:total]) if instance.projection.current?(evt)
+      [Sourced::Actions::OK, evt]
+    end
+
+    with_snapshot(pairs, signal) # adds the signal to the first pair
+  end
+end
+```
+
+- `snapshot_instance(values, snapshot)` is `new(values)`, started from the snapshot's state (through `.from_snapshot`) when there is one.
+- `snapshot_signal(values, snapshot, history, before:)` returns the snapshot to store (a `Sourced::Actions::Snapshot`), or nil when it isn't due. It covers only the history before `before:`, the claim's first message, evolved on an instance of its own: the claimed messages may not all be acked, and what the claim decides isn't committed yet. `history` may include the claimed messages or not.
+- `with_snapshot(pairs, signal)` adds the signal to the first pair's signals, so it's stored when any of the claim is acked. If the reactor raises `Sourced::PartialBatchError`, re-raise it with the signal added to its `action_pairs` (see `Decider.handle_claim`).
+- `#to_snapshot` (the context by default) and `#restore_snapshot(context)` (which starts the instance's projection from `context`) are what to override for an instance that holds more than its projection's context.
+- Registering a snapshotting reactor raises `Sourced::DefinitionError` for exclusive and id-partitioned reactors, and for ones that evolve through a selector.
+
+Without the mixin, a duck-typed reactor snapshots through the protocol it implements:
+
+- `snapshot_config`: a `Sourced::Snapshots::Config` (`every:`, `version:`, `type:`), or nil. Read once, when the reactor is registered: the store records the group's version and type, and only these reactors' claims look up a snapshot.
+- `handle_claim(claim, history:, snapshot:)`: `snapshot` is a `Sourced::Snapshot` (`#position`, and `#state`, a fresh decoded copy per call) or nil, and `history` starts after its position. Registration raises `ArgumentError` if `handle_claim` doesn't take both.
+- a `{ type: :snapshot, state:, position: }` signal among its returned signals: `state` is stored (encoded with the config's `type:`) at `position`, the position of the last history message folded into it. It's written with the claim's ack, only if that ack is for the current claim, and replaces the partition's snapshot. `position` must be below the claim's first message, or later claims will skip or double-evolve claimed messages.
 
 ## Delete-on-ack queues
 
