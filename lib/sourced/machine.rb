@@ -2268,8 +2268,11 @@ module Sourced
       !@runtime.active_entry_of?(node, started_by)
     end
 
-    # Partition keys are filled in on dispatched messages too.
+    # Partition keys are filled in on dispatched messages too, but for one
+    # given as a message (or anything answering +to_message+): dispatched as it is.
     def dispatch(message_class, payload = {})
+      return super if message_class.respond_to?(:to_message)
+
       message_class = self.class[message_class] if message_class.is_a?(Symbol)
       super(message_class, with_partition_keys(message_class, payload))
     end

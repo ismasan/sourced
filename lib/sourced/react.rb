@@ -141,9 +141,14 @@ module Sourced
     # The returned {Dispatcher} can be chained to delay the message
     # or add metadata before it is appended.
     #
-    # @param message_class [Class] message class
-    # @param payload [Hash] message payload attributes
+    # +message+ is a message class, built with +payload+, or anything answering
+    # +to_message+ (a message, or something that builds one), dispatched as it
+    # returns it.
+    #
+    # @param message [Class, #to_message] message class, or the message
+    # @param payload [Hash] message payload attributes, for a message class
     # @return [Dispatcher] chainable wrapper around the dispatched message
+    # @raise [ArgumentError] for a payload given with a message
     #
     # @example Dispatch
     #   reaction StudentEnrolled => NotifyStudent do |_context, event|
@@ -156,9 +161,21 @@ module Sourced
     #       .with_metadata(channel: 'email')
     #       .at(Time.now + 300)
     #   end
-    def dispatch(message_class, payload = {})
+    #
+    # @example Dispatch a message, or a builder of one
+    #   dispatch NotifyStudent.new(payload: { student_id: })
+    #   dispatch Notifications.for(student_id) # answers #to_message
+    def dispatch(message, payload = {})
+      message =
+        if message.respond_to?(:to_message)
+          raise ArgumentError, "dispatch #{message.inspect} takes no payload" unless payload.empty?
+
+          message.to_message
+        else
+          message.new(payload: payload)
+        end
       message = @__message_for_reaction
-        .correlate(message_class.new(payload: payload))
+        .correlate(message)
         .with_metadata(producer: self.class.group_id)
 
       dispatcher = Dispatcher.new(message)

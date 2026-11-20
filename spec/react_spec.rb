@@ -311,6 +311,49 @@ RSpec.describe Sourced::React do
       end
     end
 
+    it 'dispatches a message, or anything answering to_message, as it is' do
+      builder = Struct.new(:thing_id) do
+        def to_message = ReactTestMessages::DelayedCommand.new(payload: { thing_id: })
+      end
+      klass = Class.new do
+        include Sourced::React
+        extend Sourced::Consumer
+
+        consumer_group 'ccc_reactor'
+
+        def context = {}
+
+        reaction ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext | ReactTestMessages::DelayedCommand do |_context, msg|
+          dispatch ReactTestMessages::DoNext.new(payload: { thing_id: msg.payload.thing_id })
+          dispatch(builder.new(msg.payload.thing_id)).with_metadata(foo: 'bar')
+        end
+      end
+      source = ReactTestMessages::SomethingHappened.new(payload: { thing_id: 't1' })
+
+      result = klass.new.react(source)
+
+      expect(result.map(&:class)).to eq([ReactTestMessages::DoNext, ReactTestMessages::DelayedCommand])
+      expect(result.map { it.payload.thing_id }).to eq(%w[t1 t1])
+      expect(result.map(&:causation_id)).to eq([source.id, source.id])
+      expect(result.last.metadata).to include(producer: 'ccc_reactor', foo: 'bar')
+    end
+
+    it 'refuses a payload with a message' do
+      klass = Class.new do
+        include Sourced::React
+        extend Sourced::Consumer
+
+        def context = {}
+
+        reaction ReactTestMessages::SomethingHappened => ReactTestMessages::DoNext do |_context, msg|
+          dispatch ReactTestMessages::DoNext.new(payload: { thing_id: 'a' }), thing_id: msg.payload.thing_id
+        end
+      end
+
+      expect { klass.new.react(ReactTestMessages::SomethingHappened.new(payload: { thing_id: 't1' })) }
+        .to raise_error(ArgumentError, /takes no payload/)
+    end
+
     it 'supports dispatching multiple messages from one reaction block' do
       klass = Class.new do
         include Sourced::React
