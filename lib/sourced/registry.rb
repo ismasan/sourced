@@ -185,6 +185,17 @@ module Sourced
       end
 
       PartitionSchema.check_history_keys!(reactor)
+      check_snapshots!(reactor)
+    end
+
+    # A snapshotting reactor is handed its history and snapshot (see Sourced::Snapshots).
+    def check_snapshots!(reactor)
+      return unless reactor.snapshot_config
+
+      args = Injector.resolve_args(reactor, :handle_claim)
+      return if args.include?(:history) && args.include?(:snapshot)
+
+      raise ArgumentError, "#{reactor} declares snapshot_config, so its handle_claim must take history: and snapshot:"
     end
 
     # What holds of the reactors together. Each is checked against the ones

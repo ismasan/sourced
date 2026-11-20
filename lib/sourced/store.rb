@@ -198,6 +198,10 @@ module Sourced
       @offsets_table           = @installer.offsets_table
       @offset_key_pairs_table  = @installer.offset_key_pairs_table
       @workers_table           = @installer.workers_table
+      @snapshots_table         = @installer.snapshots_table
+
+      # Snapshotting groups' codecs, by group id (see #register_consumer_group).
+      @snapshot_codecs = {}.freeze
 
       # Cache of registered consumer groups for eager offset creation in append.
       # Populated by register_consumer_group.
@@ -587,9 +591,15 @@ module Sourced
     #   class name). Updated on every registration, so it follows a renamed class.
     # @param exclusive [Boolean] when true, the group exclusively owns its message
     #   types and uses queue (delete-on-ack) semantics
+    # @param snapshot [#version, #type, nil] how the group snapshots its
+    #   partitions (a {Sourced::Snapshots::Config}), if it does: its type's
+    #   codec pair is compiled now, so {#read_snapshot} / {#write_snapshot} only
+    #   look it up
     # @return [void]
     # @raise [ArgumentError] for a selector that can't be claimed (see {#claim_next})
-    def register_consumer_group(group_id, selector = nil, label: nil, exclusive: false)
+    # @raise [Plumb::TypeError] for a snapshot type the codec can't encode
+    def register_consumer_group(group_id, selector = nil, label: nil, exclusive: false, snapshot: nil)
+      register_snapshots(group_id, snapshot) if snapshot
       partition_by_sorted = selector && !selector.none? ? claim_keys(selector) : nil
       partition_by_json = partition_by_sorted ? JSON.dump(partition_by_sorted) : nil
       rule = partition_by_sorted && ClaimRule.for(selector.type_names, partition_by_sorted)
@@ -711,6 +721,8 @@ module Sourced
 
       updating_consumer_group(group_id) do |group|
         group.reset
+        # Snapshots are caches of the history being replayed.
+        db[@snapshots_table].where(offset_id: db[@offsets_table].where(consumer_group_id: cg[:id]).select(:id)).delete
         db[@offsets_table].where(consumer_group_id: cg[:id]).update(
           replay_until: Sequel.function(:max, :replay_until, :last_position),
           last_position: 0,
@@ -954,6 +966,64 @@ module Sourced
         claimed_at: nil,
         claimed_by: nil
       )
+    end
+
+    # Raised by {#read_snapshot} / {#write_snapshot} for a group that wasn't
+    # registered with +snapshot:+ (see {#register_consumer_group}).
+    SnapshotsNotRegisteredError = Class.new(Sourced::Error)
+
+    # A snapshotting group's version, type and compiled codec pair.
+    SnapshotCodec = Data.define(:version, :type, :decoder, :encoder)
+    private_constant :SnapshotCodec
+
+    # The snapshot stored for a group's offset (see {Sourced::Snapshots}), when
+    # it was written at the group's snapshot version and still decodes against
+    # its type; nil otherwise, so the caller reads the partition's whole history.
+    #
+    # @param group_id [String]
+    # @param offset_id [Integer] a claim's +offset_id+
+    # @return [Snapshot, nil]
+    # @raise [SnapshotsNotRegisteredError]
+    def read_snapshot(group_id, offset_id:)
+      codec = snapshot_codec(group_id)
+      row = db[@snapshots_table].where(offset_id:, version: codec.version).select(:position, :state).first
+      return unless row
+
+      json = row[:state]
+      decoded = codec.decoder.resolve(JSON.parse(json))
+      unless decoded.valid?
+        logger.warn "Sourced: #{group_id} snapshot for offset #{offset_id} no longer decodes (#{decoded.errors}), ignoring it"
+        return
+      end
+
+      Snapshot.new(position: row[:position], first: decoded.value) { codec.decoder.parse(JSON.parse(json)) }
+    end
+
+    # Store a group's snapshot for an offset, encoded through its type's codec
+    # at its snapshot version, replacing any the offset had. Only while the
+    # offset is at +offset_version+: a claim that was reaped and re-claimed, or
+    # reset, writes nothing. Intended to run in the claim's ack transaction.
+    #
+    # @param group_id [String]
+    # @param offset_id [Integer]
+    # @param offset_version [Integer] the claim's +offset_version+
+    # @param position [Integer] the last history message folded into +state+
+    # @param state [Object] a value of the group's snapshot type
+    # @return [void]
+    # @raise [Plumb::ParseError] when +state+ doesn't fit the type
+    # @raise [SnapshotsNotRegisteredError]
+    def write_snapshot(group_id, offset_id:, offset_version:, position:, state:)
+      codec = snapshot_codec(group_id)
+      json = JSON.dump(codec.encoder.parse(state))
+      db.run(<<~SQL)
+        INSERT INTO #{@snapshots_table} (offset_id, position, version, state, created_at)
+        SELECT id, #{db.literal(position)}, #{db.literal(codec.version)}, #{db.literal(json)}, #{db.literal(Time.now.iso8601)}
+        FROM #{@offsets_table}
+        WHERE id = #{db.literal(offset_id)} AND version = #{db.literal(offset_version)}
+        ON CONFLICT (offset_id) DO UPDATE SET
+          position = excluded.position, version = excluded.version,
+          state = excluded.state, created_at = excluded.created_at
+      SQL
     end
 
     # Upsert heartbeat timestamps for active workers.
@@ -1320,6 +1390,7 @@ module Sourced
     #
     # @return [void]
     def clear!
+      db[@snapshots_table].delete
       db[@offset_key_pairs_table].delete
       db[@offsets_table].delete
       db[@consumer_groups_table].delete
@@ -1332,6 +1403,27 @@ module Sourced
     end
 
     private
+
+    # Compile a snapshotting group's codec pair. The codecs are a closed set
+    # that claims only read: each registration replaces the frozen Hash with a
+    # new one (registrations happen on start, or on a registry change with the
+    # dispatcher stopped), so a reader sees one or the other, whatever runs
+    # concurrently.
+    def register_snapshots(group_id, config)
+      current = @snapshot_codecs[group_id]
+      return if current && current.version == config.version && current.type.equal?(config.type)
+
+      decoder, encoder = Plumb::Codec::JSON.for(config.type)
+      codec = SnapshotCodec.new(version: config.version, type: config.type, decoder:, encoder:)
+      @snapshot_codecs = @snapshot_codecs.merge(group_id => codec).freeze
+    end
+
+    def snapshot_codec(group_id)
+      @snapshot_codecs.fetch(group_id) do
+        raise SnapshotsNotRegisteredError,
+              "consumer group #{group_id.inspect} wasn't registered with snapshot: in this store, so it has no snapshots"
+      end
+    end
 
     # The consumer group's row, for the lifecycle methods
     # @raise [UnknownConsumerGroupError]

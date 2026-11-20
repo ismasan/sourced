@@ -27,10 +27,15 @@ module Sourced
   #   after_syncs = []
   #   delete = runner.run_pair(signals, source_message, after_syncs)
   class ActionRunner
+    # @return [Hash, nil] the batch's +:snapshot+ signal, for the Router to
+    #   store once the claim is acked
+    attr_reader :snapshot
+
     # @param store [Sourced::Store]
     def initialize(store)
       @store = store
       @last_appended = nil
+      @snapshot = nil
     end
 
     # Run one action pair: every signal a reactor returned for one source
@@ -74,6 +79,9 @@ module Sourced
         false
       in { type: :ack } => s
         !!s[:delete]
+      in { type: :snapshot } => s
+        @snapshot = s if @snapshot.nil? || s[:position] > @snapshot[:position]
+        false
       end
     end
 

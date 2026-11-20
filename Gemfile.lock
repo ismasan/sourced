@@ -14,7 +14,7 @@ PATH
       plumb (>= 0.4.1)
       sequel
       sourced-component (~> 0.1, >= 0.1.1)
-      sourced-message (>= 0.5.3)
+      sourced-message (>= 0.5.4)
       sqlite3 (>= 2.10.2)
 
 GEM
@@ -112,7 +112,7 @@ GEM
       plumb (~> 0.4)
       sourced-message
       tsort (~> 0.2)
-    sourced-message (0.5.3)
+    sourced-message (0.5.4)
       fugit
       plumb (>= 0.4)
     sqlite3 (2.10.2-arm64-darwin)

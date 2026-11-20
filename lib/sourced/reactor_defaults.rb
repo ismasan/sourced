@@ -65,6 +65,9 @@ module Sourced
       # No history.
       def history_selector = Selector::NONE
 
+      # No snapshots (see Sourced::Snapshots).
+      def snapshot_config = nil
+
       # What {Sourced.load} reads (see Sourced::Consumer#partition_of).
       def partition_of(values) = Sourced.partition_keys_of(self).to_h { |key| [key, values[key]] }
       def history_for(partition) = history_selector.bind(**partition)

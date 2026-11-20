@@ -25,6 +25,7 @@ module Sourced
     include Sourced::Evolve
     include Sourced::React
     include Sourced::Sync
+    include Sourced::Snapshots
     extend Sourced::Consumer
 
     PREFIX = 'sourced_decide'
@@ -172,9 +173,11 @@ module Sourced
       # @param history [ReadResult] prior partition history (evolved into context)
       # @param replaying [Boolean] forwarded to {React#should_react?}, which by
       #   default skips the reaction branch when +true+
+      # @param snapshot [Snapshot, nil] the state to start from, before +history+
+      #   (see {Snapshots})
       # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
-      def handle_batch(partition_values, new_messages, history:, replaying: false)
-        instance = new(partition_values)
+      def handle_batch(partition_values, new_messages, history:, replaying: false, snapshot: nil)
+        instance = snapshot_instance(partition_values, snapshot)
         instance.evolve(history.messages)
 
         each_with_partial_ack(new_messages) do |msg|
@@ -211,12 +214,24 @@ module Sourced
       # messages; it is narrowed to prior history before being handed to
       # {.handle_batch}, which evolves the claimed batch itself.
       #
+      # With {Snapshots.snapshot} declared, +history+ starts after +snapshot+,
+      # and the actions carry a new snapshot when one is due, also when the
+      # batch fails part way (see {PartialBatchError}).
+      #
       # @param claim [ClaimResult] claimed partition batch
       # @param history [ReadResult] event history for the partition
+      # @param snapshot [Snapshot, nil] the stored snapshot +history+ starts after
       # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
-      def handle_claim(claim, history:)
+      def handle_claim(claim, history:, snapshot: nil)
         values = partition_keys.to_h { |k| [k, claim.partition_value[k.to_s]] }
-        handle_batch(values, claim.messages, history: history.excluding(claim.messages), replaying: claim.replaying)
+        history = history.excluding(claim.messages)
+        signal = snapshot_signal(values, snapshot, history, before: claim.messages.first)
+        pairs = handle_batch(values, claim.messages, history:, replaying: claim.replaying, snapshot:)
+        with_snapshot(pairs, signal)
+      rescue PartialBatchError => e
+        raise e unless signal
+
+        raise PartialBatchError.new(with_snapshot(e.action_pairs, signal), e.failed_message, e.cause || e), cause: e.cause
       end
 
       private def __partition_values_of(command)
