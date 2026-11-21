@@ -226,12 +226,9 @@ module Sourced
         values = partition_keys.to_h { |k| [k, claim.partition_value[k.to_s]] }
         history = history.excluding(claim.messages)
         signal = snapshot_signal(values, snapshot, history, before: claim.messages.first)
-        pairs = handle_batch(values, claim.messages, history:, replaying: claim.replaying, snapshot:)
-        with_snapshot(pairs, signal)
-      rescue PartialBatchError => e
-        raise e unless signal
-
-        raise PartialBatchError.new(with_snapshot(e.action_pairs, signal), e.failed_message, e.cause || e), cause: e.cause
+        with_snapshot_signal(signal) do
+          handle_batch(values, claim.messages, history:, replaying: claim.replaying, snapshot:)
+        end
       end
 
       private def __partition_values_of(command)

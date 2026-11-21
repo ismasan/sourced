@@ -1290,6 +1290,35 @@ end
 
 `Sourced.topology` describes machines' commands, states and actions, and `OrderMachine.to_mermaid` draws the machine as a Mermaid state diagram.
 
+#### Machine snapshots
+
+Machines take [`snapshot`](#snapshots) as Deciders do. A machine's snapshot holds its runtime as well as its context: the active states and the transitions that entered them, regions' history, and the children it started. The runtime is stored for you; `type:`, `#to_snapshot` and `.from_snapshot` cover the context only. A context that isn't a Hash maps itself:
+
+```ruby
+class TourBooking < Sourced::Machine
+  partition_by :booking_id
+  snapshot every: 100, version: 1, type: Sourced::Types::Hash[
+    budget: Sourced::Types::Integer.nullable,
+    depart_on: Sourced::Types::Date.nullable,
+    stops: Sourced::Types::Array[Sourced::Types::Tuple[String, Integer]]
+  ]
+
+  context { Tour.new }
+
+  def to_snapshot = { budget: context.budget, depart_on: context.depart_on, stops: context.stops.map(&:dup) }
+
+  def self.from_snapshot(state)
+    Tour.new.tap do |tour|
+      tour.budget = state[:budget]
+      tour.depart_on = state[:depart_on]
+      tour.stops.replace(state[:stops])
+    end
+  end
+end
+```
+
+The runtime is stored against the machine's definition: a snapshot stored before a state, region or child machine was added, removed or renamed is ignored, with no version bump, and the claim reads the whole history. Bump `version:` when the context's shape or what `evolve` does to it changes. Child machines are reactors of their own, each with its own `snapshot` (or none). A machine that reads its history [through a selector](#reading-history-through-a-selector) can't snapshot.
+
 ### Reactions
 
 Both deciders and projectors can react to events to produce follow-up messages, enabling workflow orchestration. A reaction declares what it may append, as a command handler does: `reaction Event => Command`, `=> Command | Other`, with `| nil` when it may append nothing. Reaction blocks queue messages via the `dispatch` helper rather than returning them — `dispatch` correlates each message with the triggering event, tags it with the reactor's `group_id` as `metadata[:producer]`, and returns a chainable `Dispatcher`.
@@ -1481,22 +1510,23 @@ class Thresholds
     # The snapshot to store, when one is due: computed on an instance of its own
     signal = snapshot_signal(values, snapshot, history, before: claim.messages.first)
 
-    instance = snapshot_instance(values, snapshot) # a new instance, started from the snapshot
-    instance.evolve(history.messages)
-    pairs = claim.messages.map do |evt|
-      alert(instance.context[:total]) if instance.projection.current?(evt)
-      [Sourced::Actions::OK, evt]
+    # Adds the signal to the first pair (also on a PartialBatchError)
+    with_snapshot_signal(signal) do
+      instance = snapshot_instance(values, snapshot) # a new instance, started from the snapshot
+      instance.evolve(history.messages)
+      claim.messages.map do |evt|
+        alert(instance.context[:total]) if instance.projection.current?(evt)
+        [Sourced::Actions::OK, evt]
+      end
     end
-
-    with_snapshot(pairs, signal) # adds the signal to the first pair
   end
 end
 ```
 
 - `snapshot_instance(values, snapshot)` is `new(values)`, started from the snapshot's state (through `.from_snapshot`) when there is one.
 - `snapshot_signal(values, snapshot, history, before:)` returns the snapshot to store (a `Sourced::Actions::Snapshot`), or nil when it isn't due. It covers only the history before `before:`, the claim's first message, evolved on an instance of its own: the claimed messages may not all be acked, and what the claim decides isn't committed yet. `history` may include the claimed messages or not.
-- `with_snapshot(pairs, signal)` adds the signal to the first pair's signals, so it's stored when any of the claim is acked. If the reactor raises `Sourced::PartialBatchError`, re-raise it with the signal added to its `action_pairs` (see `Decider.handle_claim`).
-- `#to_snapshot` (the context by default) and `#restore_snapshot(context)` (which starts the instance's projection from `context`) are what to override for an instance that holds more than its projection's context.
+- `with_snapshot_signal(signal) { pairs }` adds the signal to the first pair's signals, so it's stored when any of the claim is acked, and to the `action_pairs` of a `Sourced::PartialBatchError` the block raises. `with_snapshot(pairs, signal)` does the first part alone.
+- `#snapshot_state` (the whole state stored; `#to_snapshot` by default) and `#restore_snapshot_state(state)` (`#restore_snapshot(.from_snapshot(state))` by default) are what to override for an instance that holds more than its projection's context, as Machines do for their runtime. `#to_snapshot` and `.from_snapshot` then stay the users' hooks, for the context.
 - Registering a snapshotting reactor raises `Sourced::DefinitionError` for exclusive and id-partitioned reactors, and for ones that evolve through a selector.
 
 Without the mixin, a duck-typed reactor snapshots through the protocol it implements:
