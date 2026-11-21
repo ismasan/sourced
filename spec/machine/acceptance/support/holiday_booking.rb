@@ -81,6 +81,27 @@ module MachineAcceptanceHoliday
 
     context { Trip.new }
 
+    # Snapshotted every few messages, so the store specs claim from snapshots.
+    snapshot every: 2, version: 1, type: Sourced::Types::Hash[
+      **%i[booking_id destination flight hotel room board declined reference].to_h { |f| [f, Sourced::Types::String.nullable] },
+      depart_on: Sourced::Types::Date.nullable,
+      nights: Sourced::Types::Integer.nullable,
+      travellers: Sourced::Types::Integer.nullable,
+      hold_until: Sourced::Types::Time.nullable,
+      extras: Sourced::Types::Array[String]
+    ]
+
+    TRIP_FIELDS = %i[booking_id destination flight hotel room board declined reference depart_on nights travellers hold_until].freeze
+
+    def to_snapshot = TRIP_FIELDS.to_h { |f| [f, context.public_send(f)] }.merge(extras: context.extras.dup)
+
+    def self.from_snapshot(state)
+      Trip.new.tap do |trip|
+        TRIP_FIELDS.each { |f| trip.public_send(:"#{f}=", state[f]) }
+        trip.extras.replace(state[:extras])
+      end
+    end
+
     before_evolve { |trip, evt| trip.booking_id = evt.payload.booking_id }
 
     evolve TripPlanned do |trip, evt|
@@ -416,6 +437,29 @@ module MachineAcceptanceHoliday
     Cancelled = State(:cancelled)
 
     context { Tour.new }
+
+    # Snapshotted every few messages, so the store specs claim from snapshots.
+    snapshot every: 2, version: 1, type: Sourced::Types::Hash[
+      budget: Sourced::Types::Integer.nullable,
+      deposit: Sourced::Types::Integer.nullable,
+      visas_for: Sourced::Types::Array[String],
+      depart_on: Sourced::Types::Date.nullable,
+      reference: Sourced::Types::String.nullable,
+      pnr: Sourced::Types::String.nullable,
+      reminders: Sourced::Types::Integer,
+      stops: Sourced::Types::Array[Sourced::Types::Tuple[String, Integer]]
+    ]
+
+    TOUR_FIELDS = %i[budget deposit visas_for depart_on reference pnr reminders].freeze
+
+    def to_snapshot = TOUR_FIELDS.to_h { |f| [f, context.public_send(f)] }.merge(stops: context.stops.map(&:dup))
+
+    def self.from_snapshot(state)
+      Tour.new.tap do |tour|
+        TOUR_FIELDS.each { |f| tour.public_send(:"#{f}=", state[f]) }
+        tour.stops.replace(state[:stops])
+      end
+    end
 
     evolve TourRequested do |tour, evt|
       tour.budget = evt.payload.budget

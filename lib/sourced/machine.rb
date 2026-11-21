@@ -68,8 +68,23 @@ module Sourced
     include Sourced::Evolve
     include Sourced::React
     include Sourced::Sync
+    include Sourced::Snapshots
     extend Sourced::Consumer
     extend Definition
+
+    # A snapshotting machine stores its runtime with its context: its
+    # {Snapshots::Config} is the declared one, with the type a {SnapshotCodec}
+    # composes from the validated tree and the declared +type:+ (the context's),
+    # both fixed by +validate!+. Prepended after Sourced::Snapshots' class methods.
+    module SnapshotConfig
+      # @return [Snapshots::Config, nil]
+      def snapshot_config = declared_snapshot_config && validate! && @__snapshot_config
+
+      # @api private
+      # @return [SnapshotCodec, nil]
+      def __snapshot_codec = snapshot_config && @__snapshot_codec
+    end
+    singleton_class.prepend SnapshotConfig
 
     # The machine's transitions, its children's starts and finishes, and the
     # evolve types of its parts are read alongside the projector's selector.
@@ -97,6 +112,13 @@ module Sourced
 
           super(*args, &block)
         end
+      end
+
+      # Its snapshot type is composed from the validated tree, once.
+      def snapshot(...)
+        raise DefinitionError, "#{self}: snapshot declared after the machine was validated" if @validated
+
+        super
       end
     end
     singleton_class.prepend DefinitionLock
@@ -1098,6 +1120,60 @@ module Sourced
         end
       end
 
+      # Its positions, region history and children, as {SnapshotCodec#type}
+      # stores them: regions by index, states by path.
+      # @api private
+      # @param codec [SnapshotCodec]
+      # @return [Hash]
+      def __dump(codec)
+        events = @positions.values.filter_map(&:entered_by).uniq(&:id)
+        event_index = events.each_with_index.to_h { |event, i| [event.id, i] }
+        positions = @positions.map do |region, pos|
+          {
+            region: codec.region_index(region),
+            current: current_node(region).path,
+            entered_by: pos.entered_by && event_index.fetch(pos.entered_by.id),
+            visited: pos.visited.map { |key| region.nodes.fetch(key).path }
+          }
+        end
+        history = @history.map { |region, key| { region: codec.region_index(region), current: region.nodes.fetch(key).path } }
+        children = @children.map do |child, refs|
+          { child: child.group_id, refs: refs.values.map { |ref| ref.to_h.merge(state: ref.state.state_name.to_s) } }
+        end
+        events = events.map do |event|
+          { message: event.to_message.to_h, position: (event.position if event.respond_to?(:position)) }
+        end
+        { events:, positions:, history:, children: }
+      end
+
+      # Restore what {#__dump} returned, decoded, onto this fresh runtime.
+      # @api private
+      # @param data [Hash]
+      # @param codec [SnapshotCodec]
+      # @return [self]
+      def __restore!(data, codec)
+        events = data[:events].map do |entry|
+          event = codec.event(entry[:message])
+          entry[:position] ? PositionedMessage.new(event, entry[:position]) : event
+        end
+        data[:positions].each do |pos|
+          region = codec.region_at(pos[:region])
+          @positions[region] = Position.new(
+            codec.node_at(pos[:current]).key,
+            pos[:entered_by] && events.fetch(pos[:entered_by]),
+            pos[:visited].map { |path| codec.node_at(path).key }
+          )
+        end
+        data[:history].each { |entry| @history[codec.region_at(entry[:region])] = codec.node_at(entry[:current]).key }
+        data[:children].each do |entry|
+          child = codec.child(entry[:child])
+          @children[child] = entry[:refs].to_h do |ref|
+            [ref[:keys], ChildRef.new(**ref, state: codec.child_state(child, ref[:state]))]
+          end
+        end
+        self
+      end
+
       private
 
       def position(region) = @positions[region] ||= Position.new(INITIAL, nil, [])
@@ -1314,6 +1390,10 @@ module Sourced
         @__event_set = @__handled_events.to_set.freeze
         @__region_projectors = __region_projectors.freeze
         @__eventless_steps = __eventless_steps.freeze
+        if (declared = declared_snapshot_config)
+          @__snapshot_codec = SnapshotCodec.new(self, declared.type)
+          @__snapshot_config = declared.with(type: @__snapshot_codec.type)
+        end
         @validated = true
       ensure
         @validating = false
@@ -1327,12 +1407,19 @@ module Sourced
       # the latest state, and transitions run the exit and entry actions of the
       # states they left and entered.
       #
+      # For a snapshotting machine, +history+ starts after +snapshot+, and the
+      # instance starts from it (see {Sourced::Snapshots}).
+      #
       # @param claim [ClaimResult]
       # @param history [ReadResult]
+      # @param snapshot [Sourced::Snapshot, nil]
       # @return [Array<Array(Array<Object>, PositionedMessage)>] action/source pairs
-      def handle_claim(claim, history:)
+      def handle_claim(claim, history:, snapshot: nil)
         values = partition_keys.to_h { |k| [k, claim.partition_value[k.to_s]] }
-        __process(values, claim.messages, history.messages, guard: history.guard, replaying: claim.replaying)
+        signal = snapshot_signal(values, snapshot, history, before: claim.messages.first)
+        with_snapshot_signal(signal) do
+          __process(values, claim.messages, history.messages, guard: history.guard, replaying: claim.replaying, snapshot:)
+        end
       end
 
       # Build executable actions for +new_messages+, given prior +history+
@@ -1400,6 +1487,12 @@ module Sourced
         instance, = Sourced.load(self, store:, **values)
         Snapshot.new(value: instance.machine.value, context: instance.context, children: instance.machine.children)
       end
+
+      # A child's partition keys this machine doesn't share: what its
+      # {ChildRef#keys} hold.
+      # @api private
+      # @return [Array<Symbol>]
+      def __child_own_keys(child) = child.partition_keys - partition_keys
 
       # The events that move this machine: its states, its parts' (and the
       # compound states of those it mounts as one), and for a child,
@@ -1686,8 +1779,8 @@ module Sourced
         klass.respond_to?(:payload_attribute_names) ? klass.payload_attribute_names : []
       end
 
-      def __process(values, messages, full_history, guard:, replaying:)
-        instance = new(values)
+      def __process(values, messages, full_history, guard:, replaying:, snapshot: nil)
+        instance = snapshot_instance(values, snapshot)
         instance.evolve(full_history)
 
         each_with_partial_ack(messages) do |msg|
@@ -1768,6 +1861,29 @@ module Sourced
       @runtime.place(paths)
       moved!
       self
+    end
+
+    # Its runtime and context, as {SnapshotCodec#type} stores them; the
+    # context through {#to_snapshot}.
+    # @return [Hash]
+    def snapshot_state = self.class.__snapshot_codec.dump(@runtime, to_snapshot)
+
+    # Start from a stored {#snapshot_state}, decoded: its runtime, and its
+    # context through {.from_snapshot}.
+    # @param state [Hash]
+    # @return [void]
+    def restore_snapshot_state(state)
+      @runtime = self.class.__snapshot_codec.restore(state)
+      restore_snapshot(self.class.from_snapshot(state[:context]))
+      moved!
+    end
+
+    # Start from +context+; mounted parts' projections then evolve it.
+    # @param context [Object]
+    # @return [void]
+    def restore_snapshot(context)
+      super
+      @__region_projections = nil
     end
 
     # The machine's definition as {.to_h} returns it, with this instance's
@@ -2186,7 +2302,7 @@ module Sourced
       __append(started)
     end
 
-    def child_keys(child, msg) = msg.payload.to_h.slice(*(child.partition_keys - self.class.partition_keys))
+    def child_keys(child, msg) = msg.payload.to_h.slice(*self.class.__child_own_keys(child))
 
     def track_child(msg)
       child = self.class.tree.child_for(msg.to_message.class)
@@ -2305,3 +2421,4 @@ require 'sourced/machine/tree'
 require 'sourced/machine/chart'
 require 'sourced/machine/mermaid'
 require 'sourced/machine/part'
+require 'sourced/machine/snapshot_codec'

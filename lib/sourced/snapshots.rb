@@ -74,7 +74,10 @@ module Sourced
   # +#context+ (ex. through {Evolve}). Such a reactor's +handle_claim+ starts
   # its instance from {ClassMethods#snapshot_instance}, and adds
   # {ClassMethods#snapshot_signal} to its actions with
-  # {ClassMethods#with_snapshot}. See {Decider.handle_claim}.
+  # {ClassMethods#with_snapshot_signal}. See {Decider.handle_claim} and
+  # {Machine.handle_claim}. An instance that holds more than its context
+  # overrides {#snapshot_state} and {#restore_snapshot_state} (as {Machine}
+  # does for its runtime), leaving the hooks above to its users.
   module Snapshots
     # How a reactor snapshots (see {ClassMethods#snapshot}).
     class Config < Types::Data
@@ -92,8 +95,8 @@ module Sourced
       base.singleton_class.prepend ClassMethods
     end
 
-    # The state to store. Default: the context. Called on an instance only
-    # used to take the snapshot, so it may return the context itself.
+    # The context to store. Default: the context itself. Called on an
+    # instance only used to take the snapshot, so it may return the context.
     #
     # @return [Object] a value of the snapshot's +type+
     def to_snapshot = context
@@ -104,6 +107,23 @@ module Sourced
     # @return [void]
     def restore_snapshot(context)
       @projection = self.class.projector.new(context)
+    end
+
+    # The whole state to store: what {ClassMethods#snapshot_signal} stores.
+    # Default: {#to_snapshot}. A reactor whose instances hold more than their
+    # context (ex. {Machine}'s runtime) overrides this and
+    # {#restore_snapshot_state}, leaving {#to_snapshot} / {ClassMethods#from_snapshot}
+    # to its users, for the context.
+    #
+    # @return [Object] a value of the snapshot's +type+
+    def snapshot_state = to_snapshot
+
+    # Start from a stored {#snapshot_state}, decoded.
+    #
+    # @param state [Object]
+    # @return [void]
+    def restore_snapshot_state(state)
+      restore_snapshot(self.class.from_snapshot(state))
     end
 
     module ClassMethods
@@ -119,10 +139,15 @@ module Sourced
       end
 
       # @return [Config, nil] see {Snapshots}
-      def snapshot_config
+      def snapshot_config = declared_snapshot_config
+
+      # The {Config} +snapshot+ declared, here or on a superclass.
+      # @api private
+      # @return [Config, nil]
+      def declared_snapshot_config
         return @snapshot_config if defined?(@snapshot_config)
 
-        superclass.respond_to?(:snapshot_config) ? superclass.snapshot_config : nil
+        superclass.respond_to?(:declared_snapshot_config) ? superclass.declared_snapshot_config : nil
       end
 
       # The context an instance starts from, given a snapshot's decoded state.
@@ -139,7 +164,7 @@ module Sourced
       # @return [Object] an instance
       def snapshot_instance(partition_values, snapshot)
         instance = new(partition_values)
-        instance.restore_snapshot(from_snapshot(snapshot.state)) if snapshot
+        instance.restore_snapshot_state(snapshot.state) if snapshot
         instance
       end
 
@@ -170,7 +195,7 @@ module Sourced
 
         instance = snapshot_instance(partition_values, snapshot)
         instance.evolve(prior)
-        Actions::Snapshot.new(state: instance.to_snapshot, position: prior.last.position)
+        Actions::Snapshot.new(state: instance.snapshot_state, position: prior.last.position)
       end
 
       # +pairs+ with +signal+ added to the first pair's signals, so it's stored
@@ -187,11 +212,26 @@ module Sourced
         [[[signal, *signals], message], *rest]
       end
 
+      # Run +block+ (a claim's handling, returning its pairs), adding +signal+
+      # to its pairs, or to the action pairs of the {PartialBatchError} it
+      # raises, so it's stored when any of the claim is acked.
+      #
+      # @param signal [Actions::Snapshot, nil]
+      # @yieldreturn [Array<Array(Object, Sourced::Message)>]
+      # @return [Array<Array(Object, Sourced::Message)>]
+      def with_snapshot_signal(signal)
+        with_snapshot(yield, signal)
+      rescue PartialBatchError => e
+        raise e unless signal
+
+        raise PartialBatchError.new(with_snapshot(e.action_pairs, signal), e.failed_message, e.cause || e), cause: e.cause
+      end
+
       # @raise [DefinitionError] for a snapshotting reactor that can't rebuild
       #   its state from history, or reads it through a {Selector}
       def validate!
-        super
-        return unless snapshot_config
+        valid = super
+        return valid unless declared_snapshot_config
 
         if exclusive?
           raise DefinitionError, "#{self} is exclusive, so its messages may be deleted on ack: " \
@@ -205,6 +245,8 @@ module Sourced
           raise DefinitionError, "#{self} evolves #{source.inspect}, whose context is the messages it reads: " \
                                  'snapshots need an inline projector'
         end
+
+        valid
       end
     end
   end
