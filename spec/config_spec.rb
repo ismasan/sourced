@@ -87,6 +87,12 @@ RSpec.describe Sourced::Config, :async do
       expect { config['store'] }.to raise_error(Sourced::Component::NotBuiltError)
     end
 
+    it 'describes every component' do
+      undescribed = config.graph.components.reject { |c| c[:description] }.map { |c| c[:key] }
+
+      expect(undescribed).to eq([])
+    end
+
     it 'returns a fresh tree every time' do
       expect(described_class.build).not_to be(described_class.build)
     end

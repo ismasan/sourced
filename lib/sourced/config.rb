@@ -119,30 +119,61 @@ module Sourced
           c.recycle_components!(*REGISTRY_DEPENDENTS) if %i[built started].include?(c.root.boot_status)
         end
 
-        c.declare('logger', LoggerInterface) { Logger.new($stdout) }
+        c.declare(
+          'logger', LoggerInterface,
+          description: 'Logger every Sourced component writes to'
+        ) { Logger.new($stdout) }
 
-        c.declare('db', Sequel::Database)
+        c.declare(
+          'db', Sequel::Database,
+          description: 'Sequel database the store reads and writes. In-memory SQLite by default'
+        )
         c.component!('db') do
           build { Sequel.sqlite }
           teardown(&:disconnect)
         end
 
-        c.declare('notifier', NotifierInterface) { InlineNotifier.new }
-        c.declare('executor', ExecutorInterface) { AsyncExecutor.new }
+        c.declare(
+          'notifier', NotifierInterface,
+          description: 'Tells the dispatcher about appended messages and resumed reactors, to wake workers for them'
+        ) { InlineNotifier.new }
+        c.declare(
+          'executor', ExecutorInterface,
+          description: 'Async task Sourced::Supervisor starts the tree in, which workers and pollers spawn into'
+        ) { AsyncExecutor.new }
 
-        c.declare('error_strategy', ErrorStrategyInterface) { ErrorStrategy.new }
+        c.declare(
+          'error_strategy', ErrorStrategyInterface,
+          description: "What a reactor's failure does to its consumer group (retry with backoff, or fail) when the " \
+                       'reactor has no on_exception. Frozen when the router starts'
+        ) { ErrorStrategy.new }
 
         # Overriding db (ex. a file-backed SQLite) keeps this lifecycle. Re-implementing
         # store replaces it, along with its hooks: the new store brings its own.
-        c.declare('store', StoreInterface)
-        c.declare('store.table_prefix', Installer::TablePrefix) { 'sourced' }
-        c.declare('store.install_tables', T::Boolean) { false }
+        c.declare(
+          'store', StoreInterface,
+          description: 'The message log: appends, reads, consumer groups, claims, scheduled messages. On start, ' \
+                       'checks its tables are installed and compiles its codec'
+        )
+        c.declare(
+          'store.table_prefix', Installer::TablePrefix,
+          description: "Prefix of the store's table names, ex. 'sourced' => sourced_messages"
+        ) { 'sourced' }
+        c.declare(
+          'store.install_tables', T::Boolean,
+          description: 'Whether the store creates its tables on start. Off by default: apps install them with a ' \
+                       'migration (see Store#copy_migration_to)'
+        ) { false }
 
         # A codec of its own, compiled from the message registry when it's built, rather
         # than the process-wide MessageCodec.default: recycling it (ex. after a class
         # reloader replaced message classes) compiles a fresh one from the current
         # registry, and recycles the store and everything built on it.
-        c.declare('store.codec', MessageCodecInterface)
+        c.declare(
+          'store.codec', MessageCodecInterface,
+          description: "The store's message serializer, compiled from the message registry on prepare and build. A " \
+                       "message type it can't persist fails the boot"
+        )
         c.component!('store.codec') do
           # Compiles on prepare too, which only needs the message types, so a message
           # type the store can't persist fails the boot before anything connects. The
@@ -181,7 +212,11 @@ module Sourced
         # with its dispatcher stopped (it's a dependent, torn down first, and its
         # stop waits for its workers), so no worker decodes a message into a class
         # its reactor doesn't know.
-        c.declare('router', Router)
+        c.declare(
+          'router', Router,
+          description: "Routes claimed messages to the registry's reactors and runs the actions they return. " \
+                       'Building it recompiles store.codec; starting it registers consumer groups'
+        )
         c.component!('router', %w[store store.codec error_strategy]) do
           build do |store, codec, error_strategy|
             codec.recompile!
@@ -192,23 +227,58 @@ module Sourced
 
         # Built on its first read and kept, as it parses the reactors' source and most processes
         # never read it: topology.graph holds it, and is rebuilt (empty) when the registry changes.
-        c.declare('topology.graph', T::Interface[:value])
+        c.declare(
+          'topology.graph', T::Interface[:value],
+          description: "Holds the registry's topology, built on its first read and rebuilt (empty) when the " \
+                       'registry changes'
+        )
         c.config!('topology.graph') { Topology::Memo.new(registry.reactors) }
         # Checked, not copied (as T::Array would on every read): readers share the kept graph.
-        c.declare('topology', T::Any[::Array])
+        c.declare(
+          'topology', T::Any[::Array],
+          description: "Message-flow graph of the registry's reactors: commands, events, automations and read models"
+        )
         c.config('topology', ['topology.graph'], &:value)
 
-        c.declare('workers.count', T::Integer[0..]) { 2 }
-        c.declare('workers.batch_size', T::Integer[1..]) { 50 }
-        c.declare('workers.max_drain_rounds', T::Integer[1..]) { 10 }
-        c.declare('workers.catchup_interval', T::Numeric) { 5 }
-        c.declare('workers.shutdown_timeout', T::Numeric) { 30 }
-        c.declare('housekeeping.interval', T::Numeric) { 30 }
-        c.declare('housekeeping.claim_ttl_seconds', T::Integer[1..]) { 120 }
+        c.declare(
+          'workers.count', T::Integer[0..],
+          description: 'Number of workers the dispatcher runs in this process. 0 runs none'
+        ) { 2 }
+        c.declare(
+          'workers.batch_size', T::Integer[1..],
+          description: 'Maximum messages a worker claims from a partition at once'
+        ) { 50 }
+        c.declare(
+          'workers.max_drain_rounds', T::Integer[1..],
+          description: 'Batches a worker processes for one reactor before putting it back in the queue, so other ' \
+                       'reactors get a turn'
+        ) { 10 }
+        c.declare(
+          'workers.catchup_interval', T::Numeric,
+          description: 'Seconds between catch-up polls, which wake every reactor in case a notification was missed'
+        ) { 5 }
+        c.declare(
+          'workers.shutdown_timeout', T::Numeric,
+          description: 'Seconds the dispatcher waits for workers to finish their batches when stopping, before ' \
+                       'raising ShutdownTimeoutError'
+        ) { 30 }
+        c.declare(
+          'housekeeping.interval', T::Numeric,
+          description: 'Seconds between ticks of the stale claim reaper: heartbeats, stale claim release and the ' \
+                       "store's housekeeping"
+        ) { 30 }
+        c.declare(
+          'housekeeping.claim_ttl_seconds', T::Integer[1..],
+          description: "Seconds since a worker's last heartbeat after which its claims are released for other workers"
+        ) { 120 }
 
         # Restartable: a host can defer it and start and stop it by key, ex. only
         # while its process is the elected leader
-        c.declare('dispatcher', Dispatcher)
+        c.declare(
+          'dispatcher', Dispatcher,
+          description: 'Runs the workers that claim and process messages, woken by the notifier. Restartable: can ' \
+                       'be deferred, and started and stopped by key (ex. only on a leader)'
+        )
         c.component!('dispatcher', %w[router logger workers.*]) do
           build do |router, logger, workers|
             Dispatcher.new(
@@ -226,7 +296,10 @@ module Sourced
 
         # The loops around the dispatcher depend on it, so they start after its
         # workers and stop before them, and are deferred, stopped and started with it
-        c.declare('dispatcher.catchup_poller', CatchUpPoller)
+        c.declare(
+          'dispatcher.catchup_poller', CatchUpPoller,
+          description: 'Wakes every reactor each workers.catchup_interval, as a safety net for missed notifications'
+        )
         c.component!('dispatcher.catchup_poller', %w[dispatcher workers.catchup_interval logger]) do
           build do |dispatcher, interval, logger|
             CatchUpPoller.new(work_queue: dispatcher, reactors: dispatcher.reactors, interval:, logger:)
@@ -235,7 +308,11 @@ module Sourced
           stop(&:stop!)
         end
 
-        c.declare('dispatcher.stale_claim_reaper', StaleClaimReaper)
+        c.declare(
+          'dispatcher.stale_claim_reaper', StaleClaimReaper,
+          description: "Heartbeats the dispatcher's workers, releases dead workers' claims, and runs the store's " \
+                       'housekeeping'
+        )
         c.component!('dispatcher.stale_claim_reaper', %w[dispatcher store housekeeping.* logger]) do
           build do |dispatcher, store, housekeeping, logger|
             StaleClaimReaper.new(
@@ -253,8 +330,15 @@ module Sourced
         # Depends on the dispatcher only to run where it runs: one promoter, in the
         # process running the workers. Re-implement it with deps on store alone to
         # promote in a process without workers.
-        c.declare('scheduled_messages.interval', T::Numeric) { 5 }
-        c.declare('scheduled_messages.poller', ScheduledMessagePoller)
+        c.declare(
+          'scheduled_messages.interval', T::Numeric,
+          description: 'Seconds between promotions of due scheduled messages into the log'
+        ) { 5 }
+        c.declare(
+          'scheduled_messages.poller', ScheduledMessagePoller,
+          description: 'Promotes due scheduled (future-dated) messages into the log. Runs with the dispatcher, so ' \
+                       'only where workers run'
+        )
         c.component!('scheduled_messages.poller', %w[dispatcher store scheduled_messages.interval logger]) do
           build { |_dispatcher, store, interval, logger| ScheduledMessagePoller.new(store:, interval:, logger:) }
           start { |poller, context| poller.start(context) }

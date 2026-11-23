@@ -13,7 +13,7 @@ PATH
       async
       plumb (>= 0.4.1)
       sequel
-      sourced-component (~> 0.1, >= 0.1.1)
+      sourced-component (~> 0.1, >= 0.1.5)
       sourced-message (>= 0.5.4)
       sqlite3 (>= 2.10.2)
 
@@ -113,7 +113,7 @@ GEM
     ruby-progressbar (1.13.0)
     sequel (5.84.0)
       bigdecimal
-    sourced-component (0.1.2)
+    sourced-component (0.1.5)
       plumb (~> 0.4)
       sourced-message
       tsort (~> 0.2)
