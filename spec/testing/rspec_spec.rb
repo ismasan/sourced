@@ -7,40 +7,40 @@ require 'sourced/testing/rspec'
 # Reuse message definitions from decider_spec and projector_spec
 module GWTTestMessages
   DeviceRegistered = Sourced::Message.define('gwt_test.device.registered') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :name, String
   end
 
   DeviceBound = Sourced::Message.define('gwt_test.device.bound') do
-    attribute :device_id, String
-    attribute :asset_id, String
+    reference :device_id, String
+    reference :asset_id, String
   end
 
   BindDevice = Sourced::Message.define('gwt_test.bind_device') do
-    attribute :device_id, String
-    attribute :asset_id, String
+    reference :device_id, String
+    reference :asset_id, String
   end
 
   NotifyBound = Sourced::Message.define('gwt_test.notify_bound') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 
   NoopCommand = Sourced::Message.define('gwt_test.noop_command') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 
   ItemAdded = Sourced::Message.define('gwt_test.item.added') do
-    attribute :list_id, String
+    reference :list_id, String
     attribute :name, String
   end
 
   ItemArchived = Sourced::Message.define('gwt_test.item.archived') do
-    attribute :list_id, String
+    reference :list_id, String
     attribute :name, String
   end
 
   NotifyArchive = Sourced::Message.define('gwt_test.notify_archive') do
-    attribute :list_id, String
+    reference :list_id, String
   end
 end
 

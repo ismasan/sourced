@@ -7,11 +7,11 @@ require 'tmpdir'
 
 module ConfigTestMessages
   ThingAdded = Sourced::Event.define('config_test.thing_added') do
-    attribute :thing_id, String
+    reference :thing_id, String
   end
 
   AddThing = Sourced::Command.define('config_test.add_thing') do
-    attribute :thing_id, String
+    reference :thing_id, String
   end
 end
 
@@ -594,7 +594,7 @@ RSpec.describe Sourced::Config, :async do
 
       it 'works the messages of a type defined after start, once a reactor handling it registers' do
         config.start!(Thread.current)
-        late = Sourced::Event.define("config.test.late_#{SecureRandom.hex(4)}") { attribute :thing_id, String }
+        late = Sourced::Event.define("config.test.late_#{SecureRandom.hex(4)}") { reference :thing_id, String }
         handled = []
         reactor = Class.new do
           extend Sourced::Consumer

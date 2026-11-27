@@ -3,9 +3,9 @@
 require 'spec_helper'
 
 module SelectorTestMessages
-  E1 = Sourced::Message.define('selector_test.e1') { attribute :account_id, String }
-  E2 = Sourced::Message.define('selector_test.e2') { attribute :account_id, String }
-  E3 = Sourced::Message.define('selector_test.e3') { attribute :user_id, String }
+  E1 = Sourced::Message.define('selector_test.e1') { reference :account_id, String }
+  E2 = Sourced::Message.define('selector_test.e2') { reference :account_id, String }
+  E3 = Sourced::Message.define('selector_test.e3') { reference :user_id, String }
 end
 
 RSpec.describe Sourced::Selector do

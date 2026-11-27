@@ -238,7 +238,7 @@ module Sourced
 
         schema = machine.partition_schema
         klass = define(type) do
-          schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
+          schema.to_h.each { |key, key_type| reference key.to_sym, key_type }
           Machine.__transition_attributes(self)
         end
         klass.instance_variable_set(:@machine, machine)
@@ -1277,7 +1277,7 @@ module Sourced
         end
 
         schema = partition_schema
-        const_set(:Stop, Sourced::Command.define("#{type_prefix}.runtime.child.stop") { schema.to_h.each { |key, key_type| attribute key.to_sym, key_type } })
+        const_set(:Stop, Sourced::Command.define("#{type_prefix}.runtime.child.stop") { schema.to_h.each { |key, key_type| reference key.to_sym, key_type } })
         __define_child_messages
       end
 
@@ -1571,7 +1571,7 @@ module Sourced
       def __define_child_messages
         schema = partition_schema
         const_set(:Started, ChildEvent.define("#{type_prefix}.runtime.child.started") do
-          schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
+          schema.to_h.each { |key, key_type| reference key.to_sym, key_type }
           Machine.__transition_attributes(self)
           attribute :input, Sourced::Types::Hash.default { {} }
           # The parent's state that started it, for the parent to tell placements apart.
@@ -1579,7 +1579,7 @@ module Sourced
         end)
         @__started_class = self::Started
         @__finished_class = const_set(:Finished, ChildEvent.define("#{type_prefix}.runtime.child.finished") do
-          schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
+          schema.to_h.each { |key, key_type| reference key.to_sym, key_type }
           attribute :final, String
         end)
       end
@@ -2394,13 +2394,15 @@ module Sourced
     end
 
     # What the machine appends belongs to its partition: it declares every
-    # partition key, with this partition's value. An event declaring only some
+    # partition key as a reference (what the store indexes), with this
+    # partition's value. An event declaring only some
     # keys would be read into every partition sharing them.
     def check_partition!(evt)
-      names = evt.class.payload_attribute_names
+      names = evt.class.reference_attribute_names
       self.class.partition_keys.each do |key|
         unless names.include?(key)
-          raise InvalidEventError, "#{self.class}: #{evt.class} doesn't declare partition key #{key}, so it can't be appended to a #{self.class} partition"
+          raise InvalidEventError, "#{self.class}: #{evt.class} doesn't declare partition key #{key} as a reference, " \
+                                   "so it can't be appended to a #{self.class} partition"
         end
         next if evt.payload[key].to_s == partition_values[key].to_s
 

@@ -353,7 +353,7 @@ module Sourced
     # @param messages [Sourced::Message, Array<Sourced::Message>] one or more messages to append
     # @param guard [ConsistencyGuard, nil] optional guard for conflict detection
     # @param index_by [Symbol, nil] override for which message attributes to index as
-    #   key_pairs: +:payload+ indexes payload attributes; +:id+ indexes the message id.
+    #   key_pairs: +:payload+ indexes the payload's references and tags; +:id+ indexes the message id.
     #   When nil (default), the basis is resolved per message from its consuming group
     #   (see {#register_consumer_group}) — id-partitioned types index by id, all else
     #   by payload — so every append path indexes consistently.
@@ -1444,8 +1444,8 @@ module Sourced
 
     # The [name, value] key pairs to index for a message, per +index_by+.
     # +:id+ indexes the message id under the reserved key name "__id" (chosen to
-    # not collide with a payload attribute); +:payload+ (default) indexes payload
-    # attributes.
+    # not collide with a payload attribute); +:payload+ (default) indexes the
+    # payload's references and tags ({Message#extracted_keys}).
     #
     # The +__id+ key is *always* indexed, even on the payload path. An
     # id-partitioned reactor (+partition_by ['__id']+) can only discover a message

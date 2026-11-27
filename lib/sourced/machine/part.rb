@@ -167,7 +167,7 @@ module Sourced
         schema = partition_schema
         @__messages_defined = true
         base.define("#{message_prefix}.#{name}") do
-          schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
+          schema.to_h.each { |key, key_type| reference key.to_sym, key_type }
           class_exec(&block) if block
         end
       end

@@ -9,8 +9,8 @@ module Sourced
   # as the partition key. All lifecycle events (WorkflowStarted, StepStarted,
   # StepFailed, StepComplete, ContextUpdated, WaitStarted, WaitEnded,
   # WorkflowComplete, WorkflowFailed) carry +workflow_id+ as their first
-  # payload attribute so {Sourced::Message#extracted_keys} indexes them for
-  # partition queries.
+  # payload attribute, a reference, so {Sourced::Message#extracted_keys} indexes
+  # them for partition queries.
   #
   # The step-memoisation mechanism (<tt>@lookup</tt> + <tt>catch(:halt)</tt>)
   # allows +durable+ / +wait+ / +context+ / +execute+ to be re-entered safely.
@@ -36,28 +36,28 @@ module Sourced
         .downcase
 
       child.const_set(:WorkflowStarted, Sourced::Event.define("#{cname}.workflow.started") do
-        attribute :workflow_id, String
+        reference :workflow_id, String
         attribute :args, Sourced::Types::Array[Sourced::Types::JSONData].default([].freeze)
       end)
       child.const_set(:ContextUpdated, Sourced::Event.define("#{cname}.context.updated") do
-        attribute :workflow_id, String
+        reference :workflow_id, String
         attribute :context, Sourced::Types::JSONData
       end)
       child.const_set(:WorkflowComplete, Sourced::Event.define("#{cname}.workflow.complete") do
-        attribute :workflow_id, String
+        reference :workflow_id, String
         attribute :output, Sourced::Types::JSONData
       end)
       child.const_set(:WorkflowFailed, Sourced::Event.define("#{cname}.workflow.failed") do
-        attribute :workflow_id, String
+        reference :workflow_id, String
       end)
       child.const_set(:StepStarted, Sourced::Event.define("#{cname}.step.started") do
-        attribute :workflow_id, String
+        reference :workflow_id, String
         attribute :key, String
         attribute :step_name, Symbol
         attribute :args, Sourced::Types::Array[Sourced::Types::JSONData].default([].freeze)
       end)
       child.const_set(:StepFailed, Sourced::Event.define("#{cname}.step.failed") do
-        attribute :workflow_id, String
+        reference :workflow_id, String
         attribute :key, String
         attribute :step_name, Symbol
         attribute :error_message, String
@@ -65,18 +65,18 @@ module Sourced
         attribute :backtrace, [String]
       end)
       child.const_set(:StepComplete, Sourced::Event.define("#{cname}.step.complete") do
-        attribute :workflow_id, String
+        reference :workflow_id, String
         attribute :key, String
         attribute :step_name, Symbol
         attribute :output, Sourced::Types::JSONData
       end)
       child.const_set(:WaitStarted, Sourced::Event.define("#{cname}.wait.started") do
-        attribute :workflow_id, String
+        reference :workflow_id, String
         attribute :count, Integer
         attribute :at, Time
       end)
       child.const_set(:WaitEnded, Sourced::Event.define("#{cname}.wait.ended") do
-        attribute :workflow_id, String
+        reference :workflow_id, String
       end)
 
       # The workflow's events are both what the Router claims on our consumer

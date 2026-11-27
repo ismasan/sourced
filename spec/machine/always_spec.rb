@@ -4,8 +4,8 @@ require 'spec_helper'
 require_relative '../support/machine_helpers'
 
 module MachineAlwaysTest
-  def self.command(name, *attrs) = Sourced::Command.define("machine_always_test.#{name}") { ([:trip_id] + attrs).each { |a| attribute a, String } }
-  def self.event(name, *attrs) = Sourced::Event.define("machine_always_test.#{name}") { ([:trip_id] + attrs).each { |a| attribute a, String } }
+  def self.command(name, *attrs) = Sourced::Command.define("machine_always_test.#{name}") { reference :trip_id, String; attrs.each { |a| a.end_with?('_id') ? reference(a, String) : attribute(a, String) } }
+  def self.event(name, *attrs) = Sourced::Event.define("machine_always_test.#{name}") { reference :trip_id, String; attrs.each { |a| a.end_with?('_id') ? reference(a, String) : attribute(a, String) } }
 
   OpenTrip = command(:open_trip)
   AddBooking = command(:add_booking, :status)

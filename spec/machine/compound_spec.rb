@@ -4,8 +4,8 @@ require 'spec_helper'
 require_relative '../support/machine_helpers'
 
 module MachineCompoundTest
-  def self.command(name, *attrs) = Sourced::Command.define("machine_compound_test.#{name}") { ([:order_id] + attrs).each { |a| attribute a, String } }
-  def self.event(name, *attrs) = Sourced::Event.define("machine_compound_test.#{name}") { ([:order_id] + attrs).each { |a| attribute a, String } }
+  def self.command(name, *attrs) = Sourced::Command.define("machine_compound_test.#{name}") { reference :order_id, String; attrs.each { |a| a.end_with?('_id') ? reference(a, String) : attribute(a, String) } }
+  def self.event(name, *attrs) = Sourced::Event.define("machine_compound_test.#{name}") { reference :order_id, String; attrs.each { |a| a.end_with?('_id') ? reference(a, String) : attribute(a, String) } }
 
   PlaceOrder = command(:place_order)
   StartThing = command(:start_thing, :thing_id)
@@ -53,10 +53,10 @@ module MachineCompoundTest
     class ThingMachine < Sourced::Machine::Part
       part_of OrderMachine
 
-      Begin = Command(:begin) { attribute :thing_id, String }
-      Progress = Command(:progress) { attribute :thing_id, String }
-      Finish = Command(:finish) { attribute :thing_id, String }
-      Nudge = Command(:nudge) { attribute :thing_id, String }
+      Begin = Command(:begin) { reference :thing_id, String }
+      Progress = Command(:progress) { reference :thing_id, String }
+      Finish = Command(:finish) { reference :thing_id, String }
+      Nudge = Command(:nudge) { reference :thing_id, String }
 
       Begun = State(:begun)
       Progressed = State(:progressed)

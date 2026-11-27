@@ -32,8 +32,8 @@ module PartitionSchemaTest
   end
 
   OrderNoted = Sourced::Event.define('partition_schema_test.order_noted') do
-    attribute :order_id, String
-    attribute :note, String
+    reference :order_id, String
+    reference :note, String
   end
 
   Unkeyed = Sourced::Event.define('partition_schema_test.unkeyed') do
@@ -45,15 +45,15 @@ module PartitionSchemaTest
   end
 
   OptionalOrder = Sourced::Command.define('partition_schema_test.optional_order') do
-    attribute? :order_id, String
+    reference? :order_id, String
   end
 
   PresentOrder = Sourced::Command.define('partition_schema_test.present_order') do
-    attribute :order_id, Sourced::Types::String.present
+    reference :order_id, Sourced::Types::String.present
   end
 
   PlaceOrder = Sourced::Command.define('partition_schema_test.place_order') do
-    attribute :order_id, String
+    reference :order_id, String
   end
 end
 
@@ -79,6 +79,22 @@ RSpec.describe Sourced::PartitionSchema do
     it 'wraps Ruby classes as types' do
       klass = Class.new(Sourced::Decider) { partition_by order_id: Integer }
       expect(klass.partition_schema).to eq(Sourced::Types::Hash[order_id: Integer])
+    end
+
+    it "raises on a key whose values aren't Strings or Integers" do
+      [Time, Sourced::Types::Decimal, Sourced::Types::Boolean].each do |type|
+        expect { Class.new(Sourced::Decider) { partition_by at: type } }
+          .to raise_error(ArgumentError, /partition key at is .*, but partition keys are Strings or Integers/)
+      end
+    end
+
+    it 'declares the keys as references in the messages it defines' do
+      klass = Class.new(Sourced::Decider) do
+        consumer_group 'partition_schema_test.helper_references'
+        partition_by :order_id, run: Integer
+      end
+      cmd = klass.Command(:place) { attribute :note, String }
+      expect(cmd.reference_attribute_names).to eq(%i[order_id run])
     end
 
     it 'raises on a key declared twice' do
@@ -297,6 +313,24 @@ RSpec.describe Sourced::PartitionSchema do
     expect { router.register(reactor) }.to raise_error(Sourced::DefinitionError, /declares order_id as Integer/)
   end
 
+  it "raises for a partition key a message declares, but not as a reference" do
+    unindexed = Sourced::Command.define('partition_schema_test.unindexed') { attribute :order_id, String }
+    reactor = decider { command(unindexed => nil) { |*| } }
+    expect { described_class.check!(reactor) }.to raise_error(
+      Sourced::DefinitionError, /command .* declares order_id, but not as a reference, so the store doesn't index it/
+    )
+  end
+
+  it 'takes a UUID partition key as a reference' do
+    uuid = Sourced::Command.define('partition_schema_test.uuid_order') { attribute :order_id, Sourced::Types::UUID::V4 }
+    reactor = Class.new(Sourced::Decider) do
+      consumer_group 'partition_schema_test.uuid'
+      partition_by order_id: Sourced::Types::UUID::V4
+      command(uuid => nil) { |*| }
+    end
+    expect { described_class.check!(reactor) }.not_to raise_error
+  end
+
   it 'is checked by the GWT helpers' do
     reactor = decider { command(PartitionSchemaTest::IntegerOrder => nil) { |*| } }
     expect { with_reactor(reactor, order_id: 'o1') }.to raise_error(Sourced::DefinitionError, /declares order_id as Integer/)
@@ -310,7 +344,8 @@ RSpec.describe Sourced::PartitionSchema do
         State(:open)
       end
       type, = Sourced::PartitionSchema.attributes_of(machine.declared_states.values.first)[:order_id]
-      expect(type).to eq(Sourced::Types::Integer)
+      expect(type).to eq(Sourced::Types::Integer.reference)
+      expect(machine.declared_states.values.first.reference_attribute_names).to include(:order_id)
     end
 
     it 'check commands against the schema' do

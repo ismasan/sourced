@@ -278,12 +278,14 @@ module Sourced
     reactor_class.respond_to?(:history_selector) ? keys | reactor_class.history_selector.keys : keys
   end
 
-  # A message's values for +keys+, from its payload or else its tags; keys
-  # without a value are left out.
+  # A message's values for +keys+, from its payload's references or else its
+  # tags (what the store indexes it by); keys without a value are left out.
   # @api private
   def self.extract_partition_attrs(message, keys)
+    message = message.to_message
+    references = message.class.reference_attribute_names
     keys.each_with_object({}) do |key, h|
-      value = message.payload&.respond_to?(key) ? message.payload.public_send(key) : nil
+      value = message.payload[key] if references.include?(key)
       value = message.tags[key] if value.nil?
       h[key] = value unless value.nil?
     end

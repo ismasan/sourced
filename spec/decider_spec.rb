@@ -6,30 +6,30 @@ require 'sequel'
 
 module DeciderTestMessages
   DeviceRegistered = Sourced::Message.define('decider_test.device.registered') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :name, String
   end
 
   DeviceBound = Sourced::Message.define('decider_test.device.bound') do
-    attribute :device_id, String
-    attribute :asset_id, String
+    reference :device_id, String
+    reference :asset_id, String
   end
 
   BindDevice = Sourced::Message.define('decider_test.bind_device') do
-    attribute :device_id, String
-    attribute :asset_id, String
+    reference :device_id, String
+    reference :asset_id, String
   end
 
   NotifyBound = Sourced::Message.define('decider_test.notify_bound') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 
   DelayedNotifyBound = Sourced::Message.define('decider_test.delayed_notify_bound') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 
   BindingRejected = Sourced::Message.define('decider_test.binding_rejected') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 end
 
@@ -679,6 +679,14 @@ RSpec.describe Sourced::Decider do
       cmd = DeciderTestMessages::BindDevice.new(payload: { asset_id: 'a1' })
 
       expect { TestDeviceDecider.call([], cmd) }.to raise_error(Sourced::MissingPartitionKeyError, /device_id/)
+    end
+
+    it "reads partition values from references, not other attributes, as the store does" do
+      unindexed = Sourced::Command.define('decider_test.unindexed_bind') { attribute :device_id, String }
+      cmd = unindexed.new(payload: { device_id: 'd1' })
+
+      expect(Sourced.extract_partition_attrs(cmd, %i[device_id])).to eq({})
+      expect(Sourced.extract_partition_attrs(cmd.with_tags(device_id: 'd1'), %i[device_id])).to eq(device_id: 'd1')
     end
   end
 

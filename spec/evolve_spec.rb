@@ -6,22 +6,22 @@ require 'sourced/testing/rspec'
 
 module EvolveTestMessages
   ItemAdded = Sourced::Message.define('evolve_test.item.added') do
-    attribute :cart_id, String
-    attribute :item_id, String
+    reference :cart_id, String
+    reference :item_id, String
   end
 
   ItemRemoved = Sourced::Message.define('evolve_test.item.removed') do
-    attribute :cart_id, String
-    attribute :item_id, String
+    reference :cart_id, String
+    reference :item_id, String
   end
 
   CartClosed = Sourced::Message.define('evolve_test.cart.closed') do
-    attribute :cart_id, String
+    reference :cart_id, String
   end
 
   AddItem = Sourced::Command.define('evolve_test.add_item') do
-    attribute :cart_id, String
-    attribute :item_id, String
+    reference :cart_id, String
+    reference :item_id, String
   end
 
   class CartProjector < Sourced::Projector::Inline

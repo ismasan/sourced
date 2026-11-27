@@ -7,7 +7,7 @@ require 'sequel'
 
 module StaleClaimReaperTestMessages
   DeviceRegistered = Sourced::Message.define('reaper_test.device.registered') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :name, String
   end
 end

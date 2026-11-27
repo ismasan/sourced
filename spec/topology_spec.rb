@@ -6,37 +6,37 @@ require 'sourced'
 module TopologyTest
   # --- Messages ---
   CreateWidget = Sourced::Command.define('ccc_topo.create_widget') do
-    attribute :widget_id, String
+    reference :widget_id, String
     attribute :name, String
   end
 
   WidgetCreated = Sourced::Event.define('ccc_topo.widget_created') do
-    attribute :widget_id, String
+    reference :widget_id, String
     attribute :name, String
   end
 
   NotifyWidget = Sourced::Command.define('ccc_topo.notify_widget') do
-    attribute :widget_id, String
+    reference :widget_id, String
   end
 
   WidgetNotified = Sourced::Event.define('ccc_topo.widget_notified') do
-    attribute :widget_id, String
+    reference :widget_id, String
   end
 
   ArchiveWidget = Sourced::Command.define('ccc_topo.archive_widget') do
-    attribute :widget_id, String
+    reference :widget_id, String
   end
 
   WidgetArchived = Sourced::Event.define('ccc_topo.widget_archived') do
-    attribute :widget_id, String
+    reference :widget_id, String
   end
 
   DelayedCmd = Sourced::Command.define('ccc_topo.delayed_cmd') do
-    attribute :widget_id, String
+    reference :widget_id, String
   end
 
   ScheduleEvent = Sourced::Event.define('ccc_topo.schedule_event') do
-    attribute :widget_id, String
+    reference :widget_id, String
   end
 
   # --- Decider ---

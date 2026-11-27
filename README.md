@@ -66,13 +66,13 @@ class MyCommand < Sourced::Command; end
 
 # Define typed messages with payload attributes
 CreateCourse = MyCommand.define('courses.create') do
-  attribute :course_id, String
-  attribute :course_name, String
+  reference :course_id, String
+  reference :course_name, String
 end
 
 CourseCreated = MyEvent.define('courses.created') do
-  attribute :course_id, String
-  attribute :course_name, String
+  reference :course_id, String
+  reference :course_name, String
 end
 ```
 
@@ -81,7 +81,7 @@ JSON and back:
 
 ```ruby
 CourseScheduled = MyEvent.define('courses.scheduled') do
-  attribute :course_id, String
+  reference :course_id, String
   attribute :starts_on, Date         # stored as "2026-01-02"
   attribute :published_at, Time      # stored as ISO 8601, microseconds kept
   attribute :level, Types::Symbol    # stored as "beginner"
@@ -97,11 +97,29 @@ messages.first.payload.starts_on   # => #<Date 2026-01-02>
 
 See [Codecs](#codecs) for the types covered out of the box and how to add your own.
 
+### References
+
+The store indexes a message by its payload's **references**: the attributes that point at something, which reactors partition by and selectors read with. Other attributes (text, dates, amounts) are payload only.
+
+```ruby
+DoSomething = MyCommand.define('do.something') do
+  attribute :user_id, Types::UUID::V4               # a reference: UUIDs always are
+  attribute :account_name, Types::String.reference  # a reference
+  reference :region, String                         # the same, shorter
+  reference? :seq, Integer                          # optional
+  attribute :amount, Integer                        # not a reference
+end
+
+DoSomething.reference_attribute_names # => [:user_id, :account_name, :region, :seq]
+```
+
+References are Strings or Integers (nil allowed): `.reference` raises `Sourced::Message::ReferenceTypeError` for other types. A selector part keyed by an attribute that isn't a reference reads nothing, so the partition keys a reactor's messages declare must be references, which `PartitionSchema.check!` enforces when the reactor is registered. Messages defined with a reactor's `Command` / `Event` helpers declare its partition keys as references. Tags are indexed too, except for message types an id-partitioned queue handles, which are indexed by message id.
+
 ### Message features
 
 - **Auto-generated UUIDs** for `id`, `causation_id`, and `correlation_id`
 - **Causal tracing** via `#correlate(other_message)` — sets `causation_id` and `correlation_id`
-- **Auto-indexed keys** — `#extracted_keys` returns `[["course_id", "c1"], ["course_name", "Algebra"]]` from payload attributes, used by the store to index messages for querying
+- **Indexed references** — `#extracted_keys` returns `[["course_id", "c1"]]` from the payload's [references](#references) and tags, used by the store to index messages for querying
 - **Registry** — `Sourced::Message.registry` indexes defined types. Use `.from(type: "courses.created", payload: {...})` to instantiate from a type string.
 - **Typed payloads** — Plumb/Types DSL for attribute coercion and validation
 
@@ -506,8 +524,8 @@ By default, `CommandContext` looks up types in `Sourced::Command.registry`. Pass
 class PublicCommand < Sourced::Command; end
 
 CreateCourse = PublicCommand.define('courses.create') do
-  attribute :course_id, String
-  attribute :course_name, String
+  reference :course_id, String
+  reference :course_name, String
 end
 
 # Only PublicCommand subclasses are allowed

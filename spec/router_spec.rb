@@ -7,66 +7,66 @@ require 'sequel'
 
 module RouterTestMessages
   DeviceRegistered = Sourced::Message.define('router_test.device.registered') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :name, String
   end
 
   DeviceBound = Sourced::Message.define('router_test.device.bound') do
-    attribute :device_id, String
-    attribute :asset_id, String
+    reference :device_id, String
+    reference :asset_id, String
   end
 
   BindDevice = Sourced::Message.define('router_test.bind_device') do
-    attribute :device_id, String
-    attribute :asset_id, String
+    reference :device_id, String
+    reference :asset_id, String
   end
 
   NotifyBound = Sourced::Message.define('router_test.notify_bound') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 
   RenameDevice = Sourced::Message.define('router_test.rename_device') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :name, String
   end
 
   DeviceRenamed = Sourced::Message.define('router_test.device.renamed') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :name, String
   end
 
   # Projector messages
   DeviceListed = Sourced::Message.define('router_test.device.listed') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 
   # Simple reactor messages
   DeviceAudited = Sourced::Message.define('router_test.device.audited') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :event_type, String
   end
 
   # Queue-mode worker messages
   QueueJob = Sourced::Message.define('router_test.queue_job') do
-    attribute :queue_id, String
+    reference :queue_id, String
     attribute :name, String
   end
 
   # Carries order_id in its payload; tenant_id comes as a tag.
   SomethingHappened = Sourced::Message.define('router_test.something.happened') do
-    attribute :order_id, String
+    reference :order_id, String
     attribute :note, String
   end
 
   # Foreign event carrying only order_id.
   OrderTouched = Sourced::Message.define('router_test.order.touched') do
-    attribute :order_id, String
+    reference :order_id, String
   end
 
   # Declares both keys, so the mixed-keys reactors pass PartitionSchema.check!.
   OrderOpened = Sourced::Message.define('router_test.order.opened') do
-    attribute :order_id, String
-    attribute :tenant_id, String
+    reference :order_id, String
+    reference :tenant_id, String
   end
 end
 

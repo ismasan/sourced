@@ -11,37 +11,37 @@ require 'date'
 # Define test messages for store specs (namespaced to avoid collisions)
 module StoreTestMessages
   DeviceRegistered = Sourced::Message.define('store_test.device.registered') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :name, String
   end
 
   AssetRegistered = Sourced::Message.define('store_test.asset.registered') do
-    attribute :asset_id, String
+    reference :asset_id, String
     attribute :label, String
   end
 
   DeviceBound = Sourced::Message.define('store_test.device.bound') do
-    attribute :device_id, String
-    attribute :asset_id, String
+    reference :device_id, String
+    reference :asset_id, String
   end
 
   # Course/user messages for composite partition tests
   CourseCreated = Sourced::Message.define('store_test.course.created') do
-    attribute :course_name, String
+    reference :course_name, String
   end
 
   UserRegistered = Sourced::Message.define('store_test.user.registered') do
-    attribute :user_id, String
+    reference :user_id, String
     attribute :name, String
   end
 
   UserJoinedCourse = Sourced::Message.define('store_test.user.joined_course') do
-    attribute :course_name, String
-    attribute :user_id, String
+    reference :course_name, String
+    reference :user_id, String
   end
 
   CourseClosed = Sourced::Message.define('store_test.course.closed') do
-    attribute :course_name, String
+    reference :course_name, String
   end
 
   # Declares no partition key: it reaches a partition only through tags.
@@ -51,18 +51,18 @@ module StoreTestMessages
 
   # Carries order_id in its payload; tenant_id comes as a tag.
   SomethingHappened = Sourced::Message.define('store_test.something.happened') do
-    attribute :order_id, String
+    reference :order_id, String
     attribute :note, String
   end
 
   # A foreign event: carries only order_id, so it's read into every (order_id, *) partition.
   OrderTouched = Sourced::Message.define('store_test.order.touched') do
-    attribute :order_id, String
+    reference :order_id, String
   end
 
   # Native Ruby types, carried through the JSON payload column by the codec.
   Booking = Sourced::Message.define('store_test.booking') do
-    attribute :booking_id, String
+    reference :booking_id, String
     attribute :starts_on, Date
     attribute :booked_at, Time
     attribute :status, Sourced::Types::Symbol
@@ -88,7 +88,7 @@ module StoreTestMessages
   # Unregistered: only StoreCodec can serialize it, and every boot in the
   # suite compiles the global registry.
   PointPlotted = CodecSpecHelpers.unregistered_message('store_test.point.plotted') do
-    attribute :plot_id, String
+    reference :plot_id, String
     attribute :point, Sourced::Types::Any[Point]
   end
 end
@@ -283,7 +283,7 @@ RSpec.describe Sourced::Store do
       expect(pos).to eq(2)
     end
 
-    it 'extracts and indexes key pairs (plus the always-present __id key)' do
+    it "indexes the payload's references (plus the always-present __id key), not its other attributes" do
       msg = StoreTestMessages::DeviceRegistered.new(
         payload: { device_id: 'dev-1', name: 'Sensor A' }
       )
@@ -294,12 +294,11 @@ RSpec.describe Sourced::Store do
       key_pairs = db[:sourced_key_pairs].all
       expect(key_pairs.map { |r| [r[:name], r[:value]] }).to contain_exactly(
         ['__id', msg.id],
-        ['device_id', 'dev-1'],
-        ['name', 'Sensor A']
+        ['device_id', 'dev-1']
       )
 
       join_rows = db[:sourced_message_key_pairs].all
-      expect(join_rows.size).to eq(3)
+      expect(join_rows.size).to eq(2)
     end
 
     it 'deduplicates key pairs across messages' do
@@ -3608,6 +3607,37 @@ RSpec.describe Sourced::Store do
       messages, = store.read(Sourced::Selector[StoreTestMessages::NoteAdded].by(:device_id).bind(device_id: 'dev-1'))
       expect(messages.map { |m| m.payload.text }).to eq(['later'])
       expect(messages.first.tags).to eq(device_id: 'dev-1')
+    end
+  end
+
+  describe 'references' do
+    # :name isn't a reference: the store doesn't index it, so it partitions nothing.
+    let(:unindexed) { Sourced::Selector[StoreTestMessages::DeviceRegistered].by(name: 'Sensor A') }
+    let(:indexed) { Sourced::Selector[StoreTestMessages::DeviceRegistered].by(device_id: 'dev-1') }
+
+    before do
+      store.append([
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' }),
+        StoreTestMessages::DeviceRegistered.new(payload: { device_id: 'dev-2', name: 'Sensor B' })
+      ])
+    end
+
+    it 'reads a partition by a reference' do
+      expect(store.read(indexed).messages.map { |m| m.payload.device_id }).to eq(['dev-1'])
+    end
+
+    it "doesn't read a partition by an attribute that isn't a reference" do
+      expect(store.read(unindexed).messages).to eq([])
+    end
+
+    it 'claims partitions by a reference only' do
+      selector = Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:device_id)
+      store.register_consumer_group('by_device', selector)
+      claim = store.claim_next('by_device', selector, worker_id: 'w-1')
+      expect(claim.partition_value).to eq('device_id' => 'dev-1')
+
+      store.register_consumer_group('by_name', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:name))
+      expect(store.claim_next('by_name', Sourced::Selector[StoreTestMessages::DeviceRegistered].by(:name), worker_id: 'w-1')).to be_nil
     end
   end
 

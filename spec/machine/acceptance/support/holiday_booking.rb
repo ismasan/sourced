@@ -24,8 +24,8 @@ module MachineAcceptanceHoliday
   end
 
   def self.keyed(message, attrs)
-    message.attribute :booking_id, String
-    attrs.each { |name, type| message.attribute name, type }
+    message.reference :booking_id, String
+    attrs.each { |name, type| name.end_with?('_id') ? message.reference(name, type) : message.attribute(name, type) }
   end
 
   StartBooking = command(:start_booking, destination: String, depart_on: Date, nights: Integer, travellers: Integer)

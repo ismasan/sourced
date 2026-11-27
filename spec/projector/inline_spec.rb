@@ -5,12 +5,12 @@ require 'sourced'
 
 module ProjectionTestMessages
   ItemAdded = Sourced::Message.define('projection_test.item.added') do
-    attribute :item_id, String
+    reference :item_id, String
     attribute :name, String
   end
 
   ItemRemoved = Sourced::Message.define('projection_test.item.removed') do
-    attribute :item_id, String
+    reference :item_id, String
   end
 
   Unhandled = Sourced::Message.define('projection_test.unhandled') do

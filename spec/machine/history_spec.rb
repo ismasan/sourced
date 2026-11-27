@@ -4,7 +4,7 @@ require 'spec_helper'
 require_relative '../support/machine_helpers'
 
 module MachineHistoryTest
-  def self.command(name, *attrs) = Sourced::Command.define("machine_history_test.#{name}") { ([:doc_id] + attrs).each { |a| attribute a, String } }
+  def self.command(name, *attrs) = Sourced::Command.define("machine_history_test.#{name}") { reference :doc_id, String; attrs.each { |a| a.end_with?('_id') ? reference(a, String) : attribute(a, String) } }
 
   Start = command(:start)
   Draft = command(:draft)
@@ -20,7 +20,7 @@ module MachineHistoryTest
   Bounce = command(:bounce)
   Archive = command(:archive)
   NotifyLaidOut = command(:notify_laid_out)
-  Unblocked = Sourced::Event.define('machine_history_test.unblocked') { attribute :doc_id, String }
+  Unblocked = Sourced::Event.define('machine_history_test.unblocked') { reference :doc_id, String }
 
   class DocMachine < Sourced::Machine
     partition_by :doc_id

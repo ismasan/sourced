@@ -4,8 +4,8 @@ require 'spec_helper'
 require 'json'
 
 module MachineChartTest
-  def self.command(name, *attrs) = Sourced::Command.define("machine_chart_test.#{name}") { attrs.each { |a| attribute a, String } }
-  def self.event(name, *attrs) = Sourced::Event.define("machine_chart_test.#{name}") { attrs.each { |a| attribute a, String } }
+  def self.command(name, *attrs) = Sourced::Command.define("machine_chart_test.#{name}") { attrs.each { |a| a.end_with?('_id') ? reference(a, String) : attribute(a, String) } }
+  def self.event(name, *attrs) = Sourced::Event.define("machine_chart_test.#{name}") { attrs.each { |a| a.end_with?('_id') ? reference(a, String) : attribute(a, String) } }
 
   Open = command(:open, :trip_id)
   Note = command(:note, :trip_id)

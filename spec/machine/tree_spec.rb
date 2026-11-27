@@ -3,7 +3,7 @@
 require 'spec_helper'
 
 module MachineTreeTest
-  def self.command(name) = Sourced::Command.define("machine_tree_test.#{name}") { attribute :order_id, String }
+  def self.command(name) = Sourced::Command.define("machine_tree_test.#{name}") { reference :order_id, String }
 
   PlaceOrder = command(:place_order)
   StartPayment = command(:start_payment)

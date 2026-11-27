@@ -6,22 +6,22 @@ require 'date'
 require_relative 'acceptance/support/holiday_booking'
 
 module MachineSnapshotSpec
-  Open = Sourced::Command.define('machine_snapshot_spec.open') { attribute :door_id, String }
-  Close = Sourced::Command.define('machine_snapshot_spec.close') { attribute :door_id, String }
-  Lock = Sourced::Command.define('machine_snapshot_spec.lock') { attribute :door_id, String }
+  Open = Sourced::Command.define('machine_snapshot_spec.open') { reference :door_id, String }
+  Close = Sourced::Command.define('machine_snapshot_spec.close') { reference :door_id, String }
+  Lock = Sourced::Command.define('machine_snapshot_spec.lock') { reference :door_id, String }
   Turn = Sourced::Command.define('machine_snapshot_spec.turn') do
-    attribute :door_id, String
-    attribute :knob_id, String
+    reference :door_id, String
+    reference :knob_id, String
   end
   Twist = Sourced::Command.define('machine_snapshot_spec.twist') do
-    attribute :door_id, String
-    attribute :knob_id, String
+    reference :door_id, String
+    reference :knob_id, String
   end
 
-  Inspect = Sourced::Command.define('machine_snapshot_spec.inspect') { attribute :door_id, String }
+  Inspect = Sourced::Command.define('machine_snapshot_spec.inspect') { reference :door_id, String }
   Release = Sourced::Command.define('machine_snapshot_spec.release') do
-    attribute :door_id, String
-    attribute :knob_id, String
+    reference :door_id, String
+    reference :knob_id, String
   end
 
   # A child that snapshots too: its entering event is its own Started.

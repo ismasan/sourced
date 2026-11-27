@@ -154,11 +154,12 @@ module Sourced
     end
 
     # Declare the partition keys. Bare keys are +Types::String+; give a type
-    # with a Hash:
+    # with a Hash (Strings or Integers, the values a store indexes):
     #
     #   partition_by :order_id, item_id: Types::UUID::V4
     #
-    # Messages handled by the reactor are checked against it (see {PartitionSchema}).
+    # Messages handled by the reactor are checked against it (see {PartitionSchema});
+    # {.Command} and {.Event} declare the keys as references.
     #
     # @return [self]
     def partition_by(*keys, **typed)
@@ -170,7 +171,12 @@ module Sourced
           raise ArgumentError, "#{self}: partition key #{key} needs a Plumb type or a class, got #{type.inspect}"
         end
 
-        schema[key.to_sym] = Plumb::Composable.wrap(type)
+        type = Plumb::Composable.wrap(type)
+        unless Sourced::Message::Types.referenceable?(type)
+          raise ArgumentError, "#{self}: partition key #{key} is #{type.inspect}, but partition keys are Strings or Integers"
+        end
+
+        schema[key.to_sym] = type
       end
       @partition_keys = nil
       @partition_schema = Types::Hash[schema]
@@ -332,7 +338,7 @@ module Sourced
       schema = partition_schema
       @__messages_defined = true
       base.define("#{prefix}.#{name}") do
-        schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
+        schema.to_h.each { |key, key_type| reference key.to_sym, key_type }
         class_exec(&block) if block
       end
     end

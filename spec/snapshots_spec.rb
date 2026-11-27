@@ -6,27 +6,27 @@ require 'sequel'
 
 module SnapshotSpec
   Add = Sourced::Command.define('snapshot_spec.add') do
-    attribute :counter_id, String
+    reference :counter_id, String
     attribute :amount, Integer
   end
 
   Added = Sourced::Event.define('snapshot_spec.added') do
-    attribute :counter_id, String
+    reference :counter_id, String
     attribute :amount, Integer
   end
 
   Noted = Sourced::Event.define('snapshot_spec.noted') do
-    attribute :counter_id, String
+    reference :counter_id, String
     attribute :total, Integer
   end
 
   Since = Sourced::Event.define('snapshot_spec.since') do
-    attribute :counter_id, String
+    reference :counter_id, String
     attribute :on, Date
   end
 
   Track = Sourced::Command.define('snapshot_spec.track') do
-    attribute :counter_id, String
+    reference :counter_id, String
     attribute :on, Date
   end
 
