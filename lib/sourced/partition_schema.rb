@@ -89,6 +89,25 @@ module Sourced
       klass::Payload._schema.to_h.to_h { |key, type| [key.to_sym, [type, key.optional?]] }
     end
 
+    # Checks the keys a projection is loaded by ({Sourced.load}): a type that
+    # declares one must declare it as a reference, or its messages, never
+    # indexed by it, would be left out of the read. Types that don't declare
+    # it are read by their tags.
+    # @param owner [Class] the projector, for the message
+    # @param types [Enumerable<Class>] the message types it reads
+    # @param keys [Enumerable<Symbol>]
+    # @raise [DefinitionError]
+    # @return [void]
+    def check_loaded_keys!(owner, types, keys)
+      types.each do |klass|
+        unindexed = (keys & klass.payload_attribute_names) - klass.reference_attribute_names
+        next if unindexed.empty?
+
+        raise DefinitionError, "#{owner} is loaded by #{unindexed.join(', ')}, which #{klass} declares, but not as a " \
+                               "reference, so the store doesn't index it: declare it with `reference` or a `.reference` type"
+      end
+    end
+
     # @param reactor [#claim_selector, #history_selector]
     # @param error [Class] the exception class to raise
     # @raise [DefinitionError]

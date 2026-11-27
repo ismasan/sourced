@@ -113,7 +113,7 @@ end
 DoSomething.reference_attribute_names # => [:user_id, :account_name, :region, :seq]
 ```
 
-References are Strings or Integers (nil allowed): `.reference` raises `Sourced::Message::ReferenceTypeError` for other types. A selector part keyed by an attribute that isn't a reference reads nothing, so the partition keys a reactor's messages declare must be references, which `PartitionSchema.check!` enforces when the reactor is registered. Messages defined with a reactor's `Command` / `Event` helpers declare its partition keys as references. Tags are always indexed.
+References are Strings or Integers (nil allowed): `.reference` raises `Sourced::Message::ReferenceTypeError` for other types. A selector part keyed by an attribute that isn't a reference reads nothing, so the partition keys a reactor's messages declare must be references, which `PartitionSchema.check!` enforces when the reactor is registered. Messages defined with a reactor's `Command` / `Event` helpers declare its partition keys as references. Tags are indexed too, except for message types an id-partitioned queue handles, which are indexed by message id.
 
 ### Message features
 
@@ -525,7 +525,7 @@ class PublicCommand < Sourced::Command; end
 
 CreateCourse = PublicCommand.define('courses.create') do
   reference :course_id, String
-  attribute :course_name, String
+  reference :course_name, String
 end
 
 # Only PublicCommand subclasses are allowed

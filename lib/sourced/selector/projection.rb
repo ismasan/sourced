@@ -31,7 +31,10 @@ module Sourced
 
         # {Sourced.load}'s protocol, as {Projector::Inline}'s: every value is the partition.
         def partition_of(values) = values
-        def history_for(partition) = selector.by(**partition)
+        def history_for(partition)
+          PartitionSchema.check_loaded_keys!(self, selector.types, partition.keys)
+          selector.by(**partition)
+        end
         def for_partition(_values) = new
 
         %i[context evolve before_evolve].each do |dsl|

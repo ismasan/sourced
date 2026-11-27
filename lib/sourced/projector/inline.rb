@@ -52,7 +52,11 @@ module Sourced
         end
 
         # {Sourced.load} protocol: {.selector} scoped by +partition+.
-        def history_for(partition) = selector.by(**partition)
+        # @raise [DefinitionError] when a type declares a key, but not as a reference
+        def history_for(partition)
+          PartitionSchema.check_loaded_keys!(self, selector.types, partition.keys)
+          selector.by(**partition)
+        end
 
         # {Sourced.load} protocol: all +values+, as it declares no partition keys.
         def partition_of(values) = values

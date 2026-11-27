@@ -2394,13 +2394,15 @@ module Sourced
     end
 
     # What the machine appends belongs to its partition: it declares every
-    # partition key, with this partition's value. An event declaring only some
+    # partition key as a reference (what the store indexes), with this
+    # partition's value. An event declaring only some
     # keys would be read into every partition sharing them.
     def check_partition!(evt)
-      names = evt.class.payload_attribute_names
+      names = evt.class.reference_attribute_names
       self.class.partition_keys.each do |key|
         unless names.include?(key)
-          raise InvalidEventError, "#{self.class}: #{evt.class} doesn't declare partition key #{key}, so it can't be appended to a #{self.class} partition"
+          raise InvalidEventError, "#{self.class}: #{evt.class} doesn't declare partition key #{key} as a reference, " \
+                                   "so it can't be appended to a #{self.class} partition"
         end
         next if evt.payload[key].to_s == partition_values[key].to_s
 

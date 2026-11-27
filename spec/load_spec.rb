@@ -399,4 +399,34 @@ RSpec.describe 'Sourced.load' do
       expect(instance.context.map { it.payload.student_id }).to eq(['joe'])
     end
   end
+
+  describe 'by a key a type declares, but not as a reference' do
+    let(:noted) do
+      Sourced::Event.define('load_test.course.noted') do
+        attribute :course_id, String
+        attribute :text, String
+      end
+    end
+
+    it 'raises for an inline projector' do
+      noted_class = noted
+      projector = Class.new(Sourced::Projector::Inline) { evolve(noted_class) { |*| } }
+
+      expect { Sourced.load(projector, store:, course_id: 'algebra') }
+        .to raise_error(Sourced::DefinitionError, /loaded by course_id, which .* declares, but not as a reference/)
+    end
+
+    it 'raises for a selector projection' do
+      expect { Sourced.load(Sourced::Selector[noted].to_projector, store:, course_id: 'algebra') }
+        .to raise_error(Sourced::DefinitionError, /not as a reference/)
+    end
+
+    it "loads by a key a type doesn't declare, which its tags carry" do
+      store.append(LoadTestMessages::StudentEnrolled.new(payload: { course_id: 'algebra', student_id: 'joe' }).with_tags(term: 'fall'))
+      store.append(LoadTestMessages::StudentEnrolled.new(payload: { course_id: 'algebra', student_id: 'ann' }).with_tags(term: 'spring'))
+
+      instance, = Sourced.load(LoadTestInlineProjector, store:, term: 'fall')
+      expect(instance.context[:students]).to eq(['joe'])
+    end
+  end
 end

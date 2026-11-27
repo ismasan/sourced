@@ -680,6 +680,14 @@ RSpec.describe Sourced::Decider do
 
       expect { TestDeviceDecider.call([], cmd) }.to raise_error(Sourced::MissingPartitionKeyError, /device_id/)
     end
+
+    it "reads partition values from references, not other attributes, as the store does" do
+      unindexed = Sourced::Command.define('decider_test.unindexed_bind') { attribute :device_id, String }
+      cmd = unindexed.new(payload: { device_id: 'd1' })
+
+      expect(Sourced.extract_partition_attrs(cmd, %i[device_id])).to eq({})
+      expect(Sourced.extract_partition_attrs(cmd.with_tags(device_id: 'd1'), %i[device_id])).to eq(device_id: 'd1')
+    end
   end
 
   describe 'Sourced::Decider(source, Command => outputs)' do

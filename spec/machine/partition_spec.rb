@@ -74,17 +74,25 @@ module MachinePartitionTest
     reference :order_id, String
   end
 
+  # Declares both keys, but line_id not as a reference: never indexed by it.
+  LineNotedUnindexed = Sourced::Event.define('machine_partition_test.line_noted_unindexed') do
+    reference :order_id, String
+    attribute :line_id, String
+  end
+
   class LineNotes < Sourced::Machine
     partition_by :order_id, :line_id
 
     Note = Command(:note)
     Misnote = Command(:misnote)
+    Unindexed = Command(:unindexed)
     Noted = Event(:noted)
 
     initial do
       command(Note) { |_context, _cmd| event OrderNoted }
       # Puts another line's id in an event declaring the key.
       command(Misnote) { |_context, _cmd| event Noted, line_id: 'l2' }
+      command(Unindexed) { |_context, _cmd| event LineNotedUnindexed }
     end
   end
 end
@@ -179,7 +187,12 @@ RSpec.describe 'Sourced::Machine partition' do
 
     it "raises for an event that doesn't declare every partition key" do
       expect { instance.decide(mod::LineNotes::Note.new(payload: keys)) }
-        .to raise_error(Sourced::Machine::InvalidEventError, /OrderNoted doesn't declare partition key line_id/)
+        .to raise_error(Sourced::Machine::InvalidEventError, /OrderNoted doesn't declare partition key line_id as a reference/)
+    end
+
+    it 'raises for an event declaring a partition key, but not as a reference' do
+      expect { instance.decide(mod::LineNotes::Unindexed.new(payload: keys)) }
+        .to raise_error(Sourced::Machine::InvalidEventError, /LineNotedUnindexed doesn't declare partition key line_id as a reference/)
     end
 
     it "raises for an event declaring another partition's key value" do
