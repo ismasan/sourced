@@ -14,7 +14,7 @@ PATH
       plumb (>= 0.4.1)
       sequel
       sourced-component (~> 0.1, >= 0.1.5)
-      sourced-message (>= 0.5.4)
+      sourced-message (>= 0.6.0)
       sqlite3 (>= 2.10.2)
 
 GEM
@@ -64,7 +64,7 @@ GEM
     parser (3.3.14.0)
       ast (~> 2.4.1)
       racc
-    plumb (0.4.1)
+    plumb (0.4.2)
       bigdecimal
       concurrent-ruby
     prism (2.1.0-arm64-darwin)
@@ -117,9 +117,9 @@ GEM
       plumb (~> 0.4)
       sourced-message
       tsort (~> 0.2)
-    sourced-message (0.5.4)
+    sourced-message (0.6.0)
       fugit
-      plumb (>= 0.4)
+      plumb (>= 0.4.1)
     sqlite3 (2.10.2-arm64-darwin)
     sqlite3 (2.10.2-x86_64-linux-gnu)
     stringio (3.2.0)

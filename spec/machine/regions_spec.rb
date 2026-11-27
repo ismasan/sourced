@@ -5,8 +5,8 @@ require 'sequel'
 require_relative '../support/machine_helpers'
 
 module MachineRegionsTest
-  def self.command(name, *attrs) = Sourced::Command.define("machine_regions_test.#{name}") { ([:order_id] + attrs).each { |a| attribute a, String } }
-  def self.event(name, *attrs) = Sourced::Event.define("machine_regions_test.#{name}") { ([:order_id] + attrs).each { |a| attribute a, String } }
+  def self.command(name, *attrs) = Sourced::Command.define("machine_regions_test.#{name}") { reference :order_id, String; attrs.each { |a| a.end_with?('_id') ? reference(a, String) : attribute(a, String) } }
+  def self.event(name, *attrs) = Sourced::Event.define("machine_regions_test.#{name}") { reference :order_id, String; attrs.each { |a| a.end_with?('_id') ? reference(a, String) : attribute(a, String) } }
 
   PlaceOrder = command(:place_order, :total)
   OrderPlaced = event(:order_placed, :total)

@@ -3,8 +3,8 @@
 require 'spec_helper'
 
 module MachineUnresolvablePathsTest
-  Open = Sourced::Command.define('machine_unresolvable_paths_test.open') { attribute :doc_id, String }
-  Tick = Sourced::Command.define('machine_unresolvable_paths_test.tick') { attribute :doc_id, String }
+  Open = Sourced::Command.define('machine_unresolvable_paths_test.open') { reference :doc_id, String }
+  Tick = Sourced::Command.define('machine_unresolvable_paths_test.tick') { reference :doc_id, String }
 
   class DocMachine < Sourced::Machine
     partition_by :doc_id

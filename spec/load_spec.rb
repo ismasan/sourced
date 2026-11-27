@@ -6,18 +6,18 @@ require 'sequel'
 
 module LoadTestMessages
   CourseCreated = Sourced::Message.define('load_test.course.created') do
-    attribute :course_id, String
+    reference :course_id, String
     attribute :title, String
   end
 
   StudentEnrolled = Sourced::Message.define('load_test.student.enrolled') do
-    attribute :course_id, String
-    attribute :student_id, String
+    reference :course_id, String
+    reference :student_id, String
   end
 
   AssignmentSubmitted = Sourced::Message.define('load_test.assignment.submitted') do
-    attribute :course_id, String
-    attribute :student_id, String
+    reference :course_id, String
+    reference :student_id, String
     attribute :grade, String
   end
 end

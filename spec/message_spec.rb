@@ -5,12 +5,12 @@ require 'sourced'
 
 module TestMessages
   DeviceRegistered = Sourced::Message.define('device.registered') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :name, String
   end
 
   AssetRegistered = Sourced::Message.define('asset.registered') do
-    attribute :asset_id, String
+    reference :asset_id, String
     attribute :label, String
   end
 
@@ -19,8 +19,14 @@ module TestMessages
   end
 
   OptionalFields = Sourced::Message.define('test.optional_fields') do
-    attribute? :required_field, String
-    attribute? :optional_field, String
+    reference? :required_field, String
+    reference? :optional_field, String
+  end
+
+  Numbered = Sourced::Message.define('test.numbered') do
+    attribute :account_id, Sourced::Types::UUID::V4
+    reference :seq, Integer
+    attribute :amount, Integer
   end
 end
 
@@ -105,14 +111,18 @@ RSpec.describe Sourced::Message do
   end
 
   describe '#extracted_keys' do
-    it 'includes tags, deduped against payload pairs' do
+    it 'includes tags, deduped against payload references' do
       msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' })
         .with_tags(device_id: 'dev-1', order_id: 'o1')
       expect(msg.extracted_keys).to contain_exactly(
         ['device_id', 'dev-1'],
-        ['name', 'A'],
         ['order_id', 'o1']
       )
+    end
+
+    it "indexes a tag equal to a payload attribute that isn't a reference" do
+      msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }).with_tags(name: 'A')
+      expect(msg.extracted_keys).to contain_exactly(['device_id', 'dev-1'], ['name', 'A'])
     end
 
     it 'raises when a tag passed to .new names a payload attribute with a different value' do
@@ -125,16 +135,18 @@ RSpec.describe Sourced::Message do
 
     it 'accepts a tag passed to .new equal to its payload attribute, compared as strings' do
       msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'A' }, tags: { device_id: 'dev-1' })
-      expect(msg.extracted_keys).to contain_exactly(['device_id', 'dev-1'], ['name', 'A'])
+      expect(msg.extracted_keys).to eq([['device_id', 'dev-1']])
     end
 
-    it 'extracts all top-level payload attributes as string pairs' do
+    it "extracts the payload's references as string pairs, and no other attributes" do
       msg = TestMessages::DeviceRegistered.new(payload: { device_id: 'dev-1', name: 'Sensor A' })
-      keys = msg.extracted_keys
-      expect(keys).to contain_exactly(
-        ['device_id', 'dev-1'],
-        ['name', 'Sensor A']
-      )
+      expect(msg.extracted_keys).to eq([['device_id', 'dev-1']])
+    end
+
+    it 'counts UUIDs as references, and stringifies Integers' do
+      id = SecureRandom.uuid
+      msg = TestMessages::Numbered.new(payload: { account_id: id, seq: 3, amount: 10 })
+      expect(msg.extracted_keys).to eq([['account_id', id], ['seq', '3']])
     end
 
     it 'skips nil values' do
@@ -143,10 +155,9 @@ RSpec.describe Sourced::Message do
       expect(keys).to eq([['required_field', 'present']])
     end
 
-    it 'converts values to strings' do
+    it 'returns no pairs for a payload without references' do
       msg = TestMessages::SystemUpdated.new(payload: { version: 'v2.0.5' })
-      keys = msg.extracted_keys
-      expect(keys).to eq([['version', 'v2.0.5']])
+      expect(msg.extracted_keys).to eq([])
     end
 
     it 'returns empty array for messages without payload attributes' do

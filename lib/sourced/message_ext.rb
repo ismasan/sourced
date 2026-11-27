@@ -24,20 +24,25 @@ module Sourced
     # @return [Class<Message>]
     def self.to_message_class = self
 
-    # Key-value pairs from all top-level payload attributes and {#tags}.
-    # Used by {Store#append} to index messages for querying.
+    # Key-value pairs from the payload's references ({.reference_attribute_names})
+    # and {#tags}. Used by {Store#append} to index messages for querying.
     #
     # @return [Array<Array(String, String)>] pairs of [name, value], skipping nils
     # @raise [TagConflictError] if a tag names a payload attribute with a different
     #   value (compared as strings, as {#with_tags} does)
     def extracted_keys
-      pairs = payload ? payload.to_h.filter_map { |k, v| [k.to_s, v.to_s] unless v.nil? } : Plumb::BLANK_ARRAY
+      references = self.class.reference_attribute_names
+      pairs = references.filter_map do |name|
+        value = payload[name]
+        [name.name, value.to_s] unless value.nil?
+      end
       return pairs if tags.empty?
 
       declared = self.class.payload_attribute_names
       tag_pairs = tags.filter_map do |key, value|
         next [key.to_s, value] unless declared.include?(key)
-        next if payload[key].to_s == value
+        # A reference's pair is already in; a tag indexes an attribute that isn't one.
+        next (references.include?(key) ? nil : [key.to_s, value]) if payload[key].to_s == value
 
         raise TagConflictError,
               "#{type} tag #{key}: #{value.inspect} conflicts with its payload value #{payload[key].inspect}"

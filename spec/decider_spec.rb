@@ -6,30 +6,30 @@ require 'sequel'
 
 module DeciderTestMessages
   DeviceRegistered = Sourced::Message.define('decider_test.device.registered') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :name, String
   end
 
   DeviceBound = Sourced::Message.define('decider_test.device.bound') do
-    attribute :device_id, String
-    attribute :asset_id, String
+    reference :device_id, String
+    reference :asset_id, String
   end
 
   BindDevice = Sourced::Message.define('decider_test.bind_device') do
-    attribute :device_id, String
-    attribute :asset_id, String
+    reference :device_id, String
+    reference :asset_id, String
   end
 
   NotifyBound = Sourced::Message.define('decider_test.notify_bound') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 
   DelayedNotifyBound = Sourced::Message.define('decider_test.delayed_notify_bound') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 
   BindingRejected = Sourced::Message.define('decider_test.binding_rejected') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 end
 

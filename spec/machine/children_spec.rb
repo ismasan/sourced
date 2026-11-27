@@ -6,7 +6,7 @@ require_relative '../support/machine_helpers'
 
 module MachineChildrenTest
   def self.message(base, name, keys, *attrs)
-    base.define("machine_children_test.#{name}") { (keys + attrs).each { |a| attribute a, String } }
+    base.define("machine_children_test.#{name}") { keys.each { |a| reference a, String }; attrs.each { |a| a.end_with?('_id') ? reference(a, String) : attribute(a, String) } }
   end
 
   ORDER = %i[order_id].freeze
@@ -293,7 +293,7 @@ module MachineChildrenTest
     class ActiveMachine < Sourced::Machine::Part
       part_of AccountMachine
 
-      LogIn = Command(:log_in) { attribute :session_id, String }
+      LogIn = Command(:log_in) { reference :session_id, String }
       Invite = Command(:invite) { attribute :session_ids, String }
 
       started :open do
@@ -718,7 +718,7 @@ module MachineChildrenTest
         end
         part = Class.new(Sourced::Machine::Part) do
           part_of owner, prefix: 'active'
-          log_in = const_set(:LogIn, Command(:log_in) { attribute :session_id, String })
+          log_in = const_set(:LogIn, Command(:log_in) { reference :session_id, String })
           started(:open) { command log_in, starts: MachineChildrenTest::SessionMachine }
         end
         owner.initial { command MachineChildrenTest::OpenAccount => part }

@@ -238,7 +238,7 @@ module Sourced
 
         schema = machine.partition_schema
         klass = define(type) do
-          schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
+          schema.to_h.each { |key, key_type| reference key.to_sym, key_type }
           Machine.__transition_attributes(self)
         end
         klass.instance_variable_set(:@machine, machine)
@@ -1277,7 +1277,7 @@ module Sourced
         end
 
         schema = partition_schema
-        const_set(:Stop, Sourced::Command.define("#{type_prefix}.runtime.child.stop") { schema.to_h.each { |key, key_type| attribute key.to_sym, key_type } })
+        const_set(:Stop, Sourced::Command.define("#{type_prefix}.runtime.child.stop") { schema.to_h.each { |key, key_type| reference key.to_sym, key_type } })
         __define_child_messages
       end
 
@@ -1571,7 +1571,7 @@ module Sourced
       def __define_child_messages
         schema = partition_schema
         const_set(:Started, ChildEvent.define("#{type_prefix}.runtime.child.started") do
-          schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
+          schema.to_h.each { |key, key_type| reference key.to_sym, key_type }
           Machine.__transition_attributes(self)
           attribute :input, Sourced::Types::Hash.default { {} }
           # The parent's state that started it, for the parent to tell placements apart.
@@ -1579,7 +1579,7 @@ module Sourced
         end)
         @__started_class = self::Started
         @__finished_class = const_set(:Finished, ChildEvent.define("#{type_prefix}.runtime.child.finished") do
-          schema.to_h.each { |key, key_type| attribute key.to_sym, key_type }
+          schema.to_h.each { |key, key_type| reference key.to_sym, key_type }
           attribute :final, String
         end)
       end

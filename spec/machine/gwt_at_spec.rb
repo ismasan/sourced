@@ -4,7 +4,7 @@ require 'spec_helper'
 require 'sourced/testing/rspec'
 
 module GWTAtTest
-  Notify = Sourced::Command.define('gwt_at_test.notify') { attribute :order_id, String }
+  Notify = Sourced::Command.define('gwt_at_test.notify') { reference :order_id, String }
 
   class Order < Sourced::Machine
     partition_by :order_id

@@ -5,21 +5,21 @@ require 'sourced'
 
 module ProjectorTestMessages
   ItemAdded = Sourced::Message.define('projector_test.item.added') do
-    attribute :list_id, String
+    reference :list_id, String
     attribute :name, String
   end
 
   ItemArchived = Sourced::Message.define('projector_test.item.archived') do
-    attribute :list_id, String
+    reference :list_id, String
     attribute :name, String
   end
 
   NotifyArchive = Sourced::Message.define('projector_test.notify_archive') do
-    attribute :list_id, String
+    reference :list_id, String
   end
 
   DelayedNotifyArchive = Sourced::Message.define('projector_test.delayed_notify_archive') do
-    attribute :list_id, String
+    reference :list_id, String
   end
 end
 

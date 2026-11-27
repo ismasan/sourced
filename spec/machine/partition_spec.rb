@@ -62,7 +62,7 @@ module MachinePartitionTest
   class LinesOrder < Sourced::Machine
     partition_by :order_id
 
-    AddLine = Command(:add_line) { attribute :line_id, String }
+    AddLine = Command(:add_line) { reference :line_id, String }
     Open = State(:open)
 
     initial { command AddLine => Open, starts: LineMachine }
@@ -71,7 +71,7 @@ module MachinePartitionTest
 
   # Defined outside any machine: declares only some of LineNotes' keys.
   OrderNoted = Sourced::Event.define('machine_partition_test.order_noted') do
-    attribute :order_id, String
+    reference :order_id, String
   end
 
   class LineNotes < Sourced::Machine

@@ -5,8 +5,8 @@ require 'sequel'
 require_relative '../support/machine_helpers'
 
 module MachineMountsTest
-  def self.command(name, *attrs) = Sourced::Command.define("machine_mounts_test.#{name}") { ([:order_id] + attrs).each { |a| attribute a, String } }
-  def self.event(name, *attrs) = Sourced::Event.define("machine_mounts_test.#{name}") { ([:order_id] + attrs).each { |a| attribute a, String } }
+  def self.command(name, *attrs) = Sourced::Command.define("machine_mounts_test.#{name}") { reference :order_id, String; attrs.each { |a| a.end_with?('_id') ? reference(a, String) : attribute(a, String) } }
+  def self.event(name, *attrs) = Sourced::Event.define("machine_mounts_test.#{name}") { reference :order_id, String; attrs.each { |a| a.end_with?('_id') ? reference(a, String) : attribute(a, String) } }
 
   PlaceOrder = command(:place_order)
   CancelOrder = command(:cancel_order)
@@ -201,7 +201,7 @@ module MachineMountsTest
     class LinesRegion < Sourced::Machine::Part
       part_of OrderWithLines
 
-      AddLine = Command(:add_line) { attribute :line_id, String }
+      AddLine = Command(:add_line) { reference :line_id, String }
 
       initial do
         command(AddLine, starts: LineMachine) { |_order, cmd| start LineMachine, line_id: cmd.payload.line_id }

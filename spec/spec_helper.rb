@@ -36,6 +36,8 @@ module CodecSpecHelpers
       attribute :payload, payload_class
       names = payload_class._schema.to_h.keys.map(&:to_sym).freeze
       define_singleton_method(:payload_attribute_names) { names }
+      references = payload_class.reference_attribute_names.freeze
+      define_singleton_method(:reference_attribute_names) { references }
     end
   end
 

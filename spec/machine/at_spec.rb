@@ -3,7 +3,7 @@
 require 'spec_helper'
 
 module MachineAtTest
-  def self.command(name) = Sourced::Command.define("machine_at_test.#{name}") { attribute :order_id, String }
+  def self.command(name) = Sourced::Command.define("machine_at_test.#{name}") { reference :order_id, String }
 
   Place = command(:place)
   Pay = command(:pay)

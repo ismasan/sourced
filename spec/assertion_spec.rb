@@ -3,9 +3,9 @@
 require 'spec_helper'
 
 module AssertionTest
-  Cancelled = Sourced::Event.define('assertion_test.cancelled') { attribute :order_id, String }
-  Reopened = Sourced::Event.define('assertion_test.reopened') { attribute :order_id, String }
-  Paid = Sourced::Event.define('assertion_test.paid') { attribute :order_id, String }
+  Cancelled = Sourced::Event.define('assertion_test.cancelled') { reference :order_id, String }
+  Reopened = Sourced::Event.define('assertion_test.reopened') { reference :order_id, String }
+  Paid = Sourced::Event.define('assertion_test.paid') { reference :order_id, String }
 end
 
 RSpec.describe Sourced::Assertion do

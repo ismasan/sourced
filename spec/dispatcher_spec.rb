@@ -7,22 +7,22 @@ require 'sequel'
 
 module DispatcherTestMessages
   DeviceRegistered = Sourced::Message.define('dispatch_test.device.registered') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :name, String
   end
 
   DeviceBound = Sourced::Message.define('dispatch_test.device.bound') do
-    attribute :device_id, String
-    attribute :asset_id, String
+    reference :device_id, String
+    reference :asset_id, String
   end
 
   BindDevice = Sourced::Message.define('dispatch_test.bind_device') do
-    attribute :device_id, String
-    attribute :asset_id, String
+    reference :device_id, String
+    reference :asset_id, String
   end
 
   DelayedNotify = Sourced::Message.define('dispatch_test.delayed_notify') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 end
 

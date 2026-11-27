@@ -7,12 +7,12 @@ require 'timecop'
 
 module PendingTrackingMessages
   Joined = Sourced::Message.define('pending_tracking.joined') do
-    attribute :course_name, String
-    attribute :user_id, String
+    reference :course_name, String
+    reference :user_id, String
   end
 
   Closed = Sourced::Message.define('pending_tracking.closed') do
-    attribute :course_name, String
+    reference :course_name, String
   end
 
   Noted = Sourced::Message.define('pending_tracking.noted') do
@@ -20,12 +20,12 @@ module PendingTrackingMessages
   end
 
   Unclaimed = Sourced::Message.define('pending_tracking.unclaimed') do
-    attribute :course_name, String
-    attribute :user_id, String
+    reference :course_name, String
+    reference :user_id, String
   end
 
   Job = Sourced::Message.define('pending_tracking.job') do
-    attribute :name, String
+    reference :name, String
   end
 end
 

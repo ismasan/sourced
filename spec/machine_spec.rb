@@ -6,76 +6,76 @@ require_relative 'support/machine_helpers'
 
 module MachineTest
   OpenCart = Sourced::Command.define('machine_test.open_cart') do
-    attribute :cart_id, String
+    reference :cart_id, String
     attribute :currency, String
     attribute :channel, Sourced::Types::String.default('web'.freeze)
   end
   CartOpened = Sourced::Event.define('machine_test.cart_opened') do
-    attribute :cart_id, String
+    reference :cart_id, String
     attribute :currency, String
   end
   AddItem = Sourced::Command.define('machine_test.add_item') do
-    attribute :cart_id, String
+    reference :cart_id, String
     attribute :sku, String
     attribute :qty, Integer
     attribute :unit_price, Integer
   end
   ItemAdded = Sourced::Event.define('machine_test.item_added') do
-    attribute :cart_id, String
+    reference :cart_id, String
     attribute :sku, String
     attribute :qty, Integer
     attribute :unit_price, Integer
   end
   Checkout = Sourced::Command.define('machine_test.checkout') do
-    attribute :cart_id, String
+    reference :cart_id, String
   end
   CheckedOut = Sourced::Event.define('machine_test.checked_out') do
-    attribute :cart_id, String
+    reference :cart_id, String
     attribute :total, Integer
   end
   CheckoutRejected = Sourced::Event.define('machine_test.checkout_rejected') do
-    attribute :cart_id, String
+    reference :cart_id, String
     attribute :reason, String
   end
   Reopen = Sourced::Command.define('machine_test.reopen') do
-    attribute :cart_id, String
+    reference :cart_id, String
   end
   Pay = Sourced::Command.define('machine_test.pay') do
-    attribute :cart_id, String
+    reference :cart_id, String
   end
   SendReceipt = Sourced::Command.define('machine_test.send_receipt') do
-    attribute :cart_id, String
+    reference :cart_id, String
     attribute :total, Integer
   end
   ReleaseStock = Sourced::Command.define('machine_test.release_stock') do
-    attribute :cart_id, String
+    reference :cart_id, String
     attribute :skus, [String]
   end
 
   Ping = Sourced::Command.define('machine_test.ping') do
-    attribute :cart_id, String
+    reference :cart_id, String
     attribute :note, String
   end
   NoteTaken = Sourced::Event.define('machine_test.note_taken') do
-    attribute :cart_id, String
+    reference :cart_id, String
     attribute :note, String
   end
   Notify = Sourced::Command.define('machine_test.notify') do
-    attribute :cart_id, String
+    reference :cart_id, String
     attribute :note, Sourced::Types::String.nullable
   end
 
   Expire = Sourced::Command.define('machine_test.expire') do
-    attribute :cart_id, String
+    reference :cart_id, String
   end
   DelayChosen = Sourced::Event.define('machine_test.delay_chosen') do
-    attribute :cart_id, String
+    reference :cart_id, String
     attribute :delay, Sourced::Types::JSONData
   end
 
   # Not a valid command for a cart machine: it lacks cart_id
   Unkeyed = Sourced::Command.define('machine_test.unkeyed') do
-    attribute :order_id, String
+    reference :order_id, String
   end
 
   class CartState
@@ -327,7 +327,7 @@ RSpec.describe Sourced::Machine do
       end
       m.validate!
 
-      late = Sourced::Event.define('machine_test.late') { attribute :cart_id, String }
+      late = Sourced::Event.define('machine_test.late') { reference :cart_id, String }
       [
         -> { m.context { {} } },
         -> { m.evolve(late) { |_s, _e| nil } },
@@ -349,7 +349,7 @@ RSpec.describe Sourced::Machine do
       parent.state(:pinged) { region :sub, part }
       parent.validate!
 
-      late = Sourced::Event.define('machine_test.late_mounted') { attribute :cart_id, String }
+      late = Sourced::Event.define('machine_test.late_mounted') { reference :cart_id, String }
       expect { part.evolve(late) { |_s, _e| nil } }
         .to raise_error(Sourced::Machine::DefinitionError, /evolve declared after .* was validated/)
     end
@@ -359,7 +359,7 @@ RSpec.describe Sourced::Machine do
     end
 
     it "reject a type another message already has" do
-      Sourced::Event.define('machine_test.taken.runtime.open') { attribute :cart_id, String }
+      Sourced::Event.define('machine_test.taken.runtime.open') { reference :cart_id, String }
       expect do
         Class.new(Sourced::Machine) do
           partition_by :cart_id

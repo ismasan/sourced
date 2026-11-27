@@ -7,11 +7,11 @@ require 'sequel'
 
 module InterpreterTestMessages
   DoThing = Sourced::Command.define('interp_test.do_thing') do
-    attribute :thing_id, String
+    reference :thing_id, String
   end
 
   ThingDone = Sourced::Event.define('interp_test.thing_done') do
-    attribute :thing_id, String
+    reference :thing_id, String
   end
 end
 

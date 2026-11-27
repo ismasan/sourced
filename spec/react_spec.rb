@@ -5,11 +5,11 @@ require 'sourced'
 
 module ReactTestMessages
   SomethingHappened = Sourced::Message.define('react_test.something.happened') do
-    attribute :thing_id, String
+    reference :thing_id, String
   end
 
   DoNext = Sourced::Message.define('react_test.do_next') do
-    attribute :thing_id, String
+    reference :thing_id, String
   end
 
   Unhandled = Sourced::Message.define('react_test.unhandled') do
@@ -17,19 +17,19 @@ module ReactTestMessages
   end
 
   Wildcarded = Sourced::Message.define('react_test.wildcarded') do
-    attribute :thing_id, String
+    reference :thing_id, String
   end
 
   DelayedCommand = Sourced::Message.define('react_test.delayed.command') do
-    attribute :thing_id, String
+    reference :thing_id, String
   end
 
   MultiReaction = Sourced::Message.define('react_test.multi.reaction') do
-    attribute :thing_id, String
+    reference :thing_id, String
   end
 
   AnotherMultiReaction = Sourced::Message.define('react_test.another.multi.reaction') do
-    attribute :thing_id, String
+    reference :thing_id, String
   end
 
   # Unwraps through to_message, without overriding #class.

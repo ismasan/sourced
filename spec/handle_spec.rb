@@ -6,31 +6,31 @@ require 'sequel'
 
 module HandleTestMessages
   CreateDevice = Sourced::Command.define('handle_test.create_device') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :name, Sourced::Types::String.present
   end
 
   DeviceCreated = Sourced::Event.define('handle_test.device_created') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :name, String
   end
 
   ActivateDevice = Sourced::Command.define('handle_test.activate_device') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 
   DeviceActivated = Sourced::Event.define('handle_test.device_activated') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 
   # Handled by HandleTestReactingDecider.
   RegisterDevice = Sourced::Command.define('handle_test.register_device') do
-    attribute :device_id, String
+    reference :device_id, String
     attribute :name, String
   end
 
   NotifyCreated = Sourced::Command.define('handle_test.notify_created') do
-    attribute :device_id, String
+    reference :device_id, String
   end
 end
 
@@ -79,24 +79,24 @@ end
 # Events carry order_id in the payload and tenant_id as a tag; the command declares both.
 module HandleMixedTestMessages
   AddNote = Sourced::Command.define('handle_mixed_test.add_note') do
-    attribute :order_id, String
-    attribute :tenant_id, String
+    reference :order_id, String
+    reference :tenant_id, String
     attribute :note, String
   end
 
   SomethingHappened = Sourced::Event.define('handle_mixed_test.something_happened') do
-    attribute :order_id, String
+    reference :order_id, String
     attribute :note, String
   end
 
   # Foreign event carrying only order_id.
   OrderTouched = Sourced::Event.define('handle_mixed_test.order_touched') do
-    attribute :order_id, String
+    reference :order_id, String
   end
 
   NotesCounted = Sourced::Event.define('handle_mixed_test.notes_counted') do
-    attribute :order_id, String
-    attribute :tenant_id, String
+    reference :order_id, String
+    reference :tenant_id, String
     attribute :count, Integer
   end
 end
