@@ -67,12 +67,12 @@ class MyCommand < Sourced::Command; end
 # Define typed messages with payload attributes
 CreateCourse = MyCommand.define('courses.create') do
   reference :course_id, String
-  reference :course_name, String
+  attribute :course_name, String
 end
 
 CourseCreated = MyEvent.define('courses.created') do
   reference :course_id, String
-  reference :course_name, String
+  attribute :course_name, String
 end
 ```
 
@@ -431,7 +431,7 @@ Carts.call([cart_started], AddItem.new(payload: { cart_id: 'c1', sku: 'apple' })
 
 #### CommandContext
 
-`Sourced::CommandContext` is a factory for building Sourced commands from raw Hash attributes (e.g. HTTP params), injecting defaults like `metadata`. It mirrors `Sourced::CommandContext` but without `stream_id`, since Sourced messages are stream-less.
+`Sourced::CommandContext` is a factory for building Sourced commands from raw Hash attributes (e.g. HTTP params), injecting defaults like `metadata`.
 
 ```ruby
 # In a web controller, build a context with shared metadata
@@ -518,20 +518,20 @@ end
 
 ##### Scoping to a command subset
 
-By default, `CommandContext` looks up types in `Sourced::Command.registry`. Pass a `scope:` to restrict lookups to a specific command subclass — attempts to build commands outside the scope raise `Sourced::UnknownMessageError`.
+By default, `CommandContext` looks up types in `Sourced::Command.registry`. Pass a `scope:` to restrict lookups to a specific command subclass — attempts to build commands outside the scope raise `Sourced::Message::UnknownMessageError`.
 
 ```ruby
 class PublicCommand < Sourced::Command; end
 
 CreateCourse = PublicCommand.define('courses.create') do
   reference :course_id, String
-  reference :course_name, String
+  attribute :course_name, String
 end
 
 # Only PublicCommand subclasses are allowed
 ctx = Sourced::CommandContext.new(scope: PublicCommand)
 ctx.build(type: 'courses.create', payload: { ... })  # OK
-ctx.build(type: 'admin.delete_all', payload: {})      # raises UnknownMessageError
+ctx.build(type: 'admin.delete_all', payload: {})      # raises Sourced::Message::UnknownMessageError
 ```
 
 #### Loading a decider's context
@@ -541,61 +541,7 @@ decider, read_result = Sourced.load(CourseDecider, course_name: 'Algebra')
 decider.context  # => { name_taken: true }
 ```
 
-#### Snapshots
-
-A Decider rebuilds its context from the partition's whole history on every claim. For partitions with long histories, `snapshot` has the background workers store the context every so often, and later claims read only the history after it:
-
-```ruby
-class ScanQueue < Sourced::Decider
-  partition_by :queue_name
-  snapshot every: 100, version: 1
-
-  context { { pending: [] } }
-
-  evolve ScanQueued do |context, evt|
-    context[:pending] << evt.payload.scan_id
-  end
-
-  evolve ScanStarted do |context, evt|
-    context[:pending].delete(evt.payload.scan_id)
-  end
-end
-```
-
-- `every:` writes a new snapshot once a claim's history, after the stored snapshot, has this many messages.
-- `version:` is the context's version. Bump it whenever an `evolve` block or the context's shape changes: a snapshot stored at another version is ignored. Forgetting to bump it gives silently wrong context.
-- `type:` (optional) is the Plumb type the context is stored as, encoded and decoded through `Plumb::Codec::JSON`. The default, `Sourced::Types::JSONData`, takes JSON-native values and decodes Hash keys as Symbols. Give a typed one for richer values (ex. `Date`, or value types registered with the codec). A type the codec can't encode fails the boot.
-
-```ruby
-Context = Sourced::Types::Hash[
-  pending: Sourced::Types::Array[String],
-  opened_on: Date
-]
-
-snapshot every: 100, version: 2, type: Context
-```
-
-For what `type:` can't express, two optional hooks map the context to and from what's stored: `#to_snapshot` returns the value to store (the context by default), and `.from_snapshot(state)` returns the context to start from (the decoded value by default).
-
-```ruby
-def to_snapshot = context.merge(pending: context[:pending].to_a)
-def self.from_snapshot(state) = state.merge(pending: Set.new(state[:pending]))
-```
-
-A snapshot is a cache, never the truth: with none, one stored at another version, or one that no longer decodes against `type:`, a claim reads the partition's whole history, and a new snapshot is stored when one is due. Resetting the consumer group deletes its snapshots. Snapshots are only used by background workers: `Sourced.handle!`, `Sourced.load`, `Decider.call` and the testing helpers always read the whole history.
-
-Messages are frozen all the way down, so an `evolve` block copies the payload collections it keeps in the context and changes later:
-
-```ruby
-evolve ItemsAdded do |context, evt|
-  context[:items] = evt.payload.items.dup # not evt.payload.items, which is frozen
-  context[:items] << 'extra'
-end
-```
-
-A Decider can't snapshot (raising `Sourced::DefinitionError`) when its context can't be rebuilt from history: when it's `exclusive` (messages may be deleted on ack), id-partitioned (no partition state), or reads its history [through a selector](#reading-history-through-a-selector).
-
-Snapshots are stored in the `sourced_snapshots` table, which the [migration](#database-setup) creates. Other reactors can snapshot too: see [Snapshots in custom reactors](#snapshots-in-custom-reactors).
+For partitions with long histories, a Decider can store its context every so often, so claims read only the history after it: see [Decider snapshots](#decider-snapshots).
 
 ### Projectors
 
@@ -1308,34 +1254,7 @@ end
 
 `Sourced.topology` describes machines' commands, states and actions, and `OrderMachine.to_mermaid` draws the machine as a Mermaid state diagram.
 
-#### Machine snapshots
-
-Machines take [`snapshot`](#snapshots) as Deciders do. A machine's snapshot holds its runtime as well as its context: the active states and the transitions that entered them, regions' history, and the children it started. The runtime is stored for you; `type:`, `#to_snapshot` and `.from_snapshot` cover the context only. A context that isn't a Hash maps itself:
-
-```ruby
-class TourBooking < Sourced::Machine
-  partition_by :booking_id
-  snapshot every: 100, version: 1, type: Sourced::Types::Hash[
-    budget: Sourced::Types::Integer.nullable,
-    depart_on: Sourced::Types::Date.nullable,
-    stops: Sourced::Types::Array[Sourced::Types::Tuple[String, Integer]]
-  ]
-
-  context { Tour.new }
-
-  def to_snapshot = { budget: context.budget, depart_on: context.depart_on, stops: context.stops.map(&:dup) }
-
-  def self.from_snapshot(state)
-    Tour.new.tap do |tour|
-      tour.budget = state[:budget]
-      tour.depart_on = state[:depart_on]
-      tour.stops.replace(state[:stops])
-    end
-  end
-end
-```
-
-The runtime is stored against the machine's definition: a snapshot stored before a state, region or child machine was added, removed or renamed is ignored, with no version bump, and the claim reads the whole history. Bump `version:` when the context's shape or what `evolve` does to it changes. Child machines are reactors of their own, each with its own `snapshot` (or none). A machine that reads its history [through a selector](#reading-history-through-a-selector) can't snapshot.
+For partitions with long histories, a machine can store its state every so often, so claims read only the history after it: see [Machine snapshots](#machine-snapshots).
 
 ### Reactions
 
@@ -1496,9 +1415,98 @@ A **signal** is inert data — a plain `Hash` or a `Sourced::Actions` value obje
 
 The `ActionRunner` is the only code that touches the store on behalf of signals, applying correlation at execution time. Anything a reactor doesn't define — `group_id` (defaults to the class name, normalized), `group_label` (the class name), `exclusive?` (`false`), `history_selector` (the history it reads, bound to each claimed partition: none), lifecycle hooks — is filled in by `ReactorDefaults`, so a minimal handler stays free of Sourced boilerplate. Built-in reactors derive their `claim_selector` from their DSL: a Decider claims its commands and the events it reacts to, a projector what it evolves from and reacts to, both by their `partition_by` keys.
 
+## Snapshots
+
+A reactor that evolves its context from history rebuilds it from the partition's whole history on every claim. For partitions with long histories, `snapshot` has the background workers store that state every so often, and later claims read only the history after it. [Deciders](#decider-snapshots) and [Machines](#machine-snapshots) declare it in their class body; [custom reactors](#snapshots-in-custom-reactors) include the `Sourced::Snapshots` mixin or implement the snapshot protocol themselves.
+
+A snapshot is a cache, never the truth: with none, one stored at another version, or one that no longer decodes against `type:`, a claim reads the partition's whole history, and a new snapshot is stored when one is due. Resetting the consumer group deletes its snapshots. Snapshots are only used by background workers: `Sourced.handle!`, `Sourced.load`, `Decider.call` and the testing helpers always read the whole history.
+
+A reactor can't snapshot (registering it raises `Sourced::DefinitionError`) when its context can't be rebuilt from history: when it's `exclusive` (messages may be deleted on ack), id-partitioned (no partition state), or reads its history [through a selector](#reading-history-through-a-selector).
+
+Snapshots are stored in the `sourced_snapshots` table, which the [migration](#database-setup) creates.
+
+### Decider snapshots
+
+A Decider takes `snapshot` in its class body:
+
+```ruby
+class ScanQueue < Sourced::Decider
+  partition_by :queue_name
+  snapshot every: 100, version: 1
+
+  context { { pending: [] } }
+
+  evolve ScanQueued do |context, evt|
+    context[:pending] << evt.payload.scan_id
+  end
+
+  evolve ScanStarted do |context, evt|
+    context[:pending].delete(evt.payload.scan_id)
+  end
+end
+```
+
+- `every:` writes a new snapshot once a claim's history, after the stored snapshot, has this many messages.
+- `version:` is the context's version. Bump it whenever an `evolve` block or the context's shape changes: a snapshot stored at another version is ignored. Forgetting to bump it gives silently wrong context.
+- `type:` (optional) is the Plumb type the context is stored as, encoded and decoded through `Plumb::Codec::JSON`. The default, `Sourced::Types::JSONData`, takes JSON-native values and decodes Hash keys as Symbols. Give a typed one for richer values (ex. `Date`, or value types registered with the codec). A type the codec can't encode fails the boot.
+
+```ruby
+Context = Sourced::Types::Hash[
+  pending: Sourced::Types::Array[String],
+  opened_on: Date
+]
+
+snapshot every: 100, version: 2, type: Context
+```
+
+For what `type:` can't express, two optional hooks map the context to and from what's stored: `#to_snapshot` returns the value to store (the context by default), and `.from_snapshot(state)` returns the context to start from (the decoded value by default).
+
+```ruby
+def to_snapshot = context.merge(pending: context[:pending].to_a)
+def self.from_snapshot(state) = state.merge(pending: Set.new(state[:pending]))
+```
+
+Messages are frozen all the way down, so an `evolve` block copies the payload collections it keeps in the context and changes later:
+
+```ruby
+evolve ItemsAdded do |context, evt|
+  context[:items] = evt.payload.items.dup # not evt.payload.items, which is frozen
+  context[:items] << 'extra'
+end
+```
+
+### Machine snapshots
+
+Machines take `snapshot` as [Deciders](#decider-snapshots) do. A machine's snapshot holds its runtime as well as its context: the active states and the transitions that entered them, regions' history, and the children it started. The runtime is stored for you; `type:`, `#to_snapshot` and `.from_snapshot` cover the context only. A context that isn't a Hash maps itself:
+
+```ruby
+class TourBooking < Sourced::Machine
+  partition_by :booking_id
+  snapshot every: 100, version: 1, type: Sourced::Types::Hash[
+    budget: Sourced::Types::Integer.nullable,
+    depart_on: Sourced::Types::Date.nullable,
+    stops: Sourced::Types::Array[Sourced::Types::Tuple[String, Integer]]
+  ]
+
+  context { Tour.new }
+
+  def to_snapshot = { budget: context.budget, depart_on: context.depart_on, stops: context.stops.map(&:dup) }
+
+  def self.from_snapshot(state)
+    Tour.new.tap do |tour|
+      tour.budget = state[:budget]
+      tour.depart_on = state[:depart_on]
+      tour.stops.replace(state[:stops])
+    end
+  end
+end
+```
+
+The runtime is stored against the machine's definition: a snapshot stored before a state, region or child machine was added, removed or renamed is ignored, with no version bump, and the claim reads the whole history. Bump `version:` when the context's shape or what `evolve` does to it changes. Child machines are reactors of their own, each with its own `snapshot` (or none).
+
 ### Snapshots in custom reactors
 
-[Decider snapshots](#snapshots) are the `Sourced::Snapshots` mixin, which other reactors can include. It works for a reactor whose class answers `new(partition_values)` and whose instances answer `#evolve(messages)` and `#context`, ex. a `Sourced::Consumer` with `Sourced::Evolve`. The reactor's `handle_claim` takes the stored snapshot, starts its instance from it, and adds the snapshot signal to what it returns:
+Deciders and Machines snapshot through the `Sourced::Snapshots` mixin, which other reactors can include. It works for a reactor whose class answers `new(partition_values)` and whose instances answer `#evolve(messages)` and `#context`, ex. a `Sourced::Consumer` with `Sourced::Evolve`. The reactor's `handle_claim` takes the stored snapshot, starts its instance from it, and adds the snapshot signal to what it returns:
 
 ```ruby
 class Thresholds
@@ -1545,7 +1553,6 @@ end
 - `snapshot_signal(values, snapshot, history, before:)` returns the snapshot to store (a `Sourced::Actions::Snapshot`), or nil when it isn't due. It covers only the history before `before:`, the claim's first message, evolved on an instance of its own: the claimed messages may not all be acked, and what the claim decides isn't committed yet. `history` may include the claimed messages or not.
 - `with_snapshot_signal(signal) { pairs }` adds the signal to the first pair's signals, so it's stored when any of the claim is acked, and to the `action_pairs` of a `Sourced::PartialBatchError` the block raises. `with_snapshot(pairs, signal)` does the first part alone.
 - `#snapshot_state` (the whole state stored; `#to_snapshot` by default) and `#restore_snapshot_state(state)` (`#restore_snapshot(.from_snapshot(state))` by default) are what to override for an instance that holds more than its projection's context, as Machines do for their runtime. `#to_snapshot` and `.from_snapshot` then stay the users' hooks, for the context.
-- Registering a snapshotting reactor raises `Sourced::DefinitionError` for exclusive and id-partitioned reactors, and for ones that evolve through a selector.
 
 Without the mixin, a duck-typed reactor snapshots through the protocol it implements:
 
@@ -2025,7 +2032,7 @@ end
 # ...
 ```
 
-The topology is a component that depends on every registered reactor, available once Sourced is built: `Sourced.config.build!` gets there without touching the database or starting workers. It's built on each read, since it parses the reactors' source and most processes never need it, so keep the result rather than calling `Sourced.topology` repeatedly. Typical uses are generating [Event Modeling](https://eventmodeling.org/) diagrams, debugging "which reactor produces this event", or driving visual service-dependency tooling.
+The topology is a component that depends on every registered reactor, available once Sourced is built: `Sourced.config.build!` gets there without touching the database or starting workers. It's built on its first read, since most processes never need it, and kept until the registry changes. Typical uses are generating [Event Modeling](https://eventmodeling.org/) diagrams, debugging "which reactor produces this event", or driving visual service-dependency tooling.
 
 ```ruby
 # Which commands produce the `courses.created` event?
