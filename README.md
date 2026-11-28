@@ -1772,6 +1772,24 @@ All three raise `Sourced::Store::UnknownConsumerGroupError`, naming the register
 
 Each partition's offset records whether it has a pending message, so a claim takes the unclaimed partition with the earliest pending message in one index lookup, however many partitions are idle. Appends mark the partitions their messages are in, for the consumer groups registered in the appending process: `Sourced.start!` registers every reactor's group, in web processes too, so Sourced's own paths are covered. A script appending through a bare `Store` registers the groups it feeds, each with its reactor's `claim_selector` (`store.register_consumer_group(Reactor.group_id, Reactor.claim_selector)`): registering with another selector hands the group to that selector's rule, and the reactor's workers stop claiming it (see below). Unregistered, its appends don't mark the group's existing partitions: the store's housekeeping finds them, on its next tick, and logs a warning.
 
+```mermaid
+flowchart TD
+    A["append(messages)"] -->|"marks next_position on the offsets<br/>of the partitions each message is in"| O[("offsets<br/>next_position per partition")]
+    H["housekeeping tick<br/>(sweep_pending)"] -.->|"marks partitions that appends<br/>from other processes missed"| O
+    W["worker: claim_next(group)"] --> G{"group active or retrying,<br/>and running under this<br/>worker's rule?"}
+    G -->|no| N["nothing to claim"]
+    G -->|yes| F["claim the unclaimed offset<br/>with the lowest next_position"]
+    O -.-> F
+    F -->|none found| D["discover new partitions<br/>(once per claim)"]
+    D --> F
+    F -->|claimed| R["read the partition's pending batch"]
+    R -->|"empty (a false positive)"| C["recompute next_position,<br/>release, try the next offset"]
+    C --> F
+    R -->|messages| P["reactor handles the batch"]
+    P --> K["ack: advance the cursor and<br/>recompute next_position"]
+    K --> O
+```
+
 A group runs under one set of message types and partition keys, its rule, recorded on the group: the rule of the first process that registered it, then of the workers that took it. Registering a group doesn't change its rule, so a web process booting with a new deploy leaves it to the running workers. When a deploy changes a group's types, ex. a Decider gains a command or a reaction:
 
 - The store's housekeeping (`Store#maintain`), which the stale claim reaper runs where workers run (only on the leader, when the dispatcher is deferred to one), takes its process's groups under its rule on its first tick, and checks again every tick. Taking a group marks the partitions with messages pending under the new types, including messages of a new type already in the log, so they're processed without a reset.
